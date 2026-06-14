@@ -1,0 +1,27 @@
+NAME
+  VTK::IOEnSight
+LIBRARY_NAME
+  vtkIOEnSight
+GROUPS
+  StandAlone
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonExecutionModel
+PRIVATE_DEPENDS
+  VTK::FiltersGeneral
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::FiltersTemporal
+  VTK::ParallelCore
+OPTIONAL_DEPENDS
+  VTK::ParallelMPI
+TEST_DEPENDS
+  VTK::FiltersGeometry
+  VTK::RenderingOpenGL2
+  VTK::RenderingParallel
+  VTK::TestingRendering
+TEST_OPTIONAL_DEPENDS
+  VTK::ParallelMPI

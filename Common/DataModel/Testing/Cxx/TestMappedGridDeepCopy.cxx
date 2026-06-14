@@ -1,0 +1,106 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-License-Identifier: BSD-3-Clause
+/*----------------------------------------------------------------------------
+  This test was written by Menno Deij - van Rijswijk (MARIN).
+----------------------------------------------------------------------------*/
+
+#include "vtkCell.h" // for cell types
+#include "vtkCellIterator.h"
+#include "vtkDataArray.h"
+#include "vtkDebugLeaks.h"
+#include "vtkIdList.h"
+#include "vtkIdTypeArray.h"
+#include "vtkInformation.h"
+#include "vtkMappedUnstructuredGridGenerator.h"
+#include "vtkNew.h"
+#include "vtkPoints.h"
+#include "vtkTestUtilities.h"
+#include "vtkUnstructuredGrid.h"
+#include "vtkXMLUnstructuredGridReader.h"
+#include "vtkXMLUnstructuredGridWriter.h"
+
+#include <algorithm>
+#include <fstream>
+
+#include <iostream>
+
+int TestMappedGridDeepCopy(int vtkNotUsed(argc), char*[] vtkNotUsed(argv))
+{
+  vtkUnstructuredGrid* original;
+  vtkMappedUnstructuredGridGenerator::GenerateUnstructuredGrid(&original);
+
+  vtkUnstructuredGridBase* mg;
+  vtkMappedUnstructuredGridGenerator::GenerateMappedUnstructuredGrid(&mg);
+
+  // copy the mapped grid into a normal unstructured grid.
+  // copying will proceed via the super class
+  // vtkUnstructuredGridBase::DeepCopy function
+  // implementation that uses a cell iterator. This will
+  // invoke to InsertNextCell function with face list
+  // for *all* cells (even if they are not VTK_POLYHEDRON).
+  // In the old implementation this gave copy errors. The fix
+  // proposed together with this test addresses that issue.
+  vtkNew<vtkUnstructuredGrid> copy;
+  copy->Allocate(mg->GetNumberOfCells());
+  copy->DeepCopy(mg);
+
+  vtkCellIterator* oIt = original->NewCellIterator();
+  vtkCellIterator* cIt = copy->NewCellIterator();
+
+  vtkNew<vtkGenericCell> orig, copied;
+  for (cIt->InitTraversal(), oIt->InitTraversal();
+       !cIt->IsDoneWithTraversal() && !oIt->IsDoneWithTraversal();
+       cIt->GoToNextCell(), oIt->GoToNextCell())
+  {
+    oIt->GetCell(orig.GetPointer());
+    cIt->GetCell(copied.GetPointer());
+
+    if (cIt->GetCellType() != oIt->GetCellType())
+    {
+      std::cerr << "Cell types do not match" << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    if (cIt->GetCellType() == VTK_POLYHEDRON)
+    {
+      vtkIdList* oFaces = oIt->GetSerializedCellFaces();
+      vtkIdList* cFaces = cIt->GetSerializedCellFaces();
+
+      if (cFaces->GetNumberOfIds() != oFaces->GetNumberOfIds())
+      {
+        std::cerr << "Face id list length does not match" << std::endl;
+        std::cerr << "Original: ";
+        for (vtkIdType i = 0; i < oFaces->GetNumberOfIds(); ++i)
+        {
+          std::cerr << oFaces->GetId(i) << " ";
+        }
+        std::cerr << std::endl;
+
+        std::cerr << "Copied:   ";
+        for (vtkIdType i = 0; i < cFaces->GetNumberOfIds(); ++i)
+          std::cerr << cFaces->GetId(i) << " ";
+        std::cerr << std::endl;
+
+        return EXIT_FAILURE;
+      }
+
+      for (vtkIdType i = 0; i < cFaces->GetNumberOfIds(); ++i)
+      {
+        vtkIdType c = cFaces->GetId(i);
+        vtkIdType o = oFaces->GetId(i);
+
+        if (c != o)
+        {
+          std::cerr << "Face id list content does not match at" << i << std::endl;
+          return EXIT_FAILURE;
+        }
+      }
+    }
+  }
+  oIt->Delete();
+  cIt->Delete();
+
+  original->Delete();
+  mg->Delete();
+  return EXIT_SUCCESS;
+}

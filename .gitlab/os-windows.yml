@@ -1,0 +1,489 @@
+# Windows-specific builder configurations and build commands
+
+## Base configurations
+
+.windows:
+    variables:
+        GIT_CLONE_PATH: "$CI_BUILDS_DIR\\vtk-ci-ext\\$CI_CONCURRENT_ID"
+        # Turn off direct mode until we test it.
+        BUILDCACHE_DIRECT_MODE: "false"
+
+.wheel_windows_x86_64:
+    extends: .windows
+
+    variables:
+        VCVARSALL: "${VS170COMNTOOLS}\\..\\..\\VC\\Auxiliary\\Build\\vcvarsall.bat"
+        VCVARSPLATFORM: "x64"
+        VCVARSVERSION: "14.35.32215"
+        VTK_INSTALL: 1
+
+.wheel_windows_osmesa_addon:
+    variables:
+        VTK_DEFAULT_OPENGL_WINDOW: vtkOSOpenGLRenderWindow
+
+.wheel_windows39_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows39_x86_64
+
+.wheel_windows39_x86_64_osmesa:
+    extends:
+        - .wheel_windows39_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows39_x86_64_osmesa
+
+.wheel_windows310_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows310_x86_64
+
+.wheel_windows310_x86_64_osmesa:
+    extends:
+        - .wheel_windows310_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows310_x86_64_osmesa
+
+.wheel_windows311_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows311_x86_64
+
+.wheel_windows311_x86_64_osmesa:
+    extends:
+        - .wheel_windows311_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows311_x86_64_osmesa
+
+.wheel_windows312_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows312_x86_64
+
+.wheel_windows312_x86_64_osmesa:
+    extends:
+        - .wheel_windows312_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows312_x86_64_osmesa
+
+.wheel_windows313_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows313_x86_64
+
+.wheel_windows313_x86_64_osmesa:
+    extends:
+        - .wheel_windows313_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows313_x86_64_osmesa
+
+.wheel_windows314_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows314_x86_64
+
+.wheel_windows314_x86_64_osmesa:
+    extends:
+        - .wheel_windows314_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows314_x86_64_osmesa
+
+.wheel_windows314t_x86_64:
+    extends: .wheel_windows_x86_64
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows314t_x86_64
+
+.wheel_windows314t_x86_64_osmesa:
+    extends:
+        - .wheel_windows314t_x86_64
+        - .wheel_windows_osmesa_addon
+
+    variables:
+        CMAKE_CONFIGURATION: wheel_windows314t_x86_64_osmesa
+
+### Build and test
+
+.windows_build:
+    extends: .windows
+
+    variables:
+        # Note that shell runners only support runners with a single
+        # concurrency level. We can't use `$CI_CONCURRENCY_ID` because this may
+        # change between the build and test stages which CMake doesn't support.
+        # Even if we could, it could change if other runners on the machine
+        # could run at the same time, so we drop it.
+        GIT_CLONE_PATH: "$CI_BUILDS_DIR\\vtk-ci"
+        # Force "desktop" OpenGL support. Qt seems to want to use EGL when run
+        # from GitLab-CI by default (it runs as a Windows service).
+        QT_OPENGL: desktop
+
+.windows_vs2022:
+    extends: .windows_build
+
+    variables:
+        VCVARSALL: "${VS170COMNTOOLS}\\..\\..\\VC\\Auxiliary\\Build\\vcvarsall.bat"
+        VCVARSPLATFORM: "x64"
+        VCVARSVERSION: "14.35.32215"
+
+.windows_vs2022_debug_mpi_qt:
+    extends:
+        - .windows_vs2022
+
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_debug_mpi_qt
+        CMAKE_BUILD_TYPE: Debug
+
+.windows_vs2022_kits_mpi_python_qt:
+    extends:
+        - .windows_vs2022
+
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_kits_mpi_python_qt
+
+.windows_vs2022_kits_mpi_python_qt_stdthread:
+    extends:
+        - .windows_vs2022
+
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_kits_mpi_python_qt_stdthread
+
+.windows_vs2022_kits_mpi_python_qt_ext_vtk:
+    extends:
+        - .windows_vs2022
+
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_kits_mpi_python_qt_ext_vtk
+
+.windows_vs2022_mpi_python_qt:
+    extends:
+        - .windows_vs2022
+
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_mpi_python_qt
+
+.windows_vs2022_mpi_python_qt_static:
+    extends:
+        - .windows_vs2022
+
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_mpi_python_qt_static
+
+.wasm32_emscripten_windows_chrome_ext_vtk:
+    extends: .windows
+
+    variables:
+        CMAKE_CONFIGURATION: wasm32_emscripten_windows_chrome_ext_vtk
+        WASM_ARCHITECTURE: wasm32-emscripten
+
+
+.wasm64_emscripten_windows_chrome_ext_vtk:
+   extends: .windows
+
+   variables:
+        CMAKE_CONFIGURATION: wasm64_emscripten_windows_chrome_ext_vtk
+        WASM_ARCHITECTURE: wasm64-emscripten
+
+.windows_vs2022_java:
+    extends: .windows_vs2022
+    variables:
+        CMAKE_CONFIGURATION: windows_vs2022_java
+        VTK_INSTALL: 1
+
+## Tags
+
+.windows_builder_tags:
+    tags:
+        - vtk # Since this is a bare runner, pin to a project.
+        - msvc-19.35
+        - nonconcurrent
+        - shell
+        - vs2022
+        - windows-x86_64
+
+.windows_wheel_builder_tags:
+    tags:
+        - vtk # Since this is a bare runner, pin to a project.
+        - msvc-19.35
+        - concurrent
+        - shell
+        - vs2022
+        - windows-x86_64
+
+.windows_tester_tags:
+    tags:
+        - vtk # Since this is a bare runner, pin to a project.
+        - msvc-19.35
+        - nonconcurrent
+        - shell
+        - vs2022
+        - windows-x86_64
+        # - test # Not needed yet?
+
+.windows_ext_builder_tags:
+    tags:
+        - vtk # Since this is a bare runner, pin to a project.
+        - msvc-19.35
+        # - concurrent
+        - nonconcurrent # FIXME: non-relocatability in Viskores and `VTK_DLL_PATHS`
+        - shell
+        - vs2022
+        - windows-x86_64
+        # - test # Not needed yet?
+
+## Windows-specific scripts
+
+.before_script_windows: &before_script_windows
+    - $pwdpath = $pwd.Path
+    - powershell -File ".gitlab/ci/cmake.ps1"
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\cmake\bin;$env:PATH"
+    - powershell -File ".gitlab/ci/ninja.ps1"
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab;$env:PATH"
+    - cmake --version
+    - ninja --version
+    - cmake -P "$PWD/.gitlab/ci/fetch_tags.cmake"
+
+.before_script_windows_openxr_deps: &before_script_windows_openxr_deps
+    - cmake -P .gitlab/ci/download_openxr.cmake
+    - Set-Item -Force -Path "env:CMAKE_PREFIX_PATH" -Value "$pwdpath\.gitlab\openxr;$env:CMAKE_PREFIX_PATH"
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\openxr\x64\bin;$env:PATH"
+    - cmake -P .gitlab/ci/download_openxrremoting.cmake
+    - Set-Item -Force -Path "env:CMAKE_PREFIX_PATH" -Value "$pwdpath\.gitlab\openxrremoting\build\native;$env:CMAKE_PREFIX_PATH"
+
+.before_script_windows_deps: &before_script_windows_deps
+    - cmake -P .gitlab/ci/download_qt6.cmake
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\qt6\bin;$env:PATH"
+    - cmake -P .gitlab/ci/download_python.cmake
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\python;$env:PATH"
+    - Set-Item -Force -Path "env:PYTHONHOME" -Value "$pwdpath\.gitlab\python"
+    - cmake -P .gitlab/ci/download_tbb.cmake
+    - Set-Item -Force -Path "env:CMAKE_PREFIX_PATH" -Value "$pwdpath\.gitlab\tbb;$env:CMAKE_PREFIX_PATH"
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\tbb\redist\$env:TBB_REDIST_DIR;$env:PATH"
+
+.before_script_java_windows: &before_script_java_windows
+    - cmake -P .gitlab/ci/download_java.cmake
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\jdk\bin\;$env:PATH"
+    - Set-Item -Force -Path "env:JAVA_HOME" -Value "$pwdpath\.gitlab\jdk\"
+    - cmake -P .gitlab/ci/download_maven.cmake
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\maven\bin\;$env:PATH"
+    - Set-Item -Force -Path "env:MAVEN_OPTS" -Value "-Dmaven.artifact.threads=1 -Daether.connector.http.supportedProtocols=HTTP/1.1"
+    - Set-Item -Force -Path "env:MVN_REPOS" -Value "central::default::https://repo.maven.apache.org/maven2,jogamp::default::https://jogamp.org/deployment/maven"
+    - Set-Item -Force -Path "env:MVN_LOCAL_REPO" -Value "$env:GIT_CLONE_PATH\.gitlab\m2"
+    - mvn dependency:get "-DremoteRepositories=$env:MVN_REPOS" "-Dmaven.repo.local=$env:MVN_LOCAL_REPO" "-Dartifact=org.jogamp.gluegen:gluegen-rt:2.6.0"
+    - mvn dependency:get "-DremoteRepositories=$env:MVN_REPOS" "-Dmaven.repo.local=$env:MVN_LOCAL_REPO" "-Dartifact=org.jogamp.gluegen:gluegen-rt:2.6.0:jar:natives-windows-amd64"
+    - mvn dependency:get "-DremoteRepositories=$env:MVN_REPOS" "-Dmaven.repo.local=$env:MVN_LOCAL_REPO" "-Dartifact=org.jogamp.jogl:jogl-all:2.6.0"
+    - mvn dependency:get "-DremoteRepositories=$env:MVN_REPOS" "-Dmaven.repo.local=$env:MVN_LOCAL_REPO" "-Dartifact=org.jogamp.jogl:jogl-all:2.6.0:jar:natives-windows-amd64"
+
+.script_windows: &script_windows
+    # Build and activate the venv
+    - python -m venv $pwdpath\build\ci-venv
+    # This may be necessary when running manually.
+    # Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+    - . .\build\ci-venv\Scripts\Activate.ps1
+    - pip install -qq -r $pwdpath\.gitlab\ci\requirements.txt
+    - Invoke-Expression -Command .gitlab/ci/buildcache.ps1
+    - Set-Item -Force -Path "env:PATH" -Value "$env:PATH;$pwdpath\.gitlab\buildcache\bin"
+    - Invoke-Expression -Command .gitlab/ci/vcvarsall.ps1
+    - buildcache --show-stats
+    - ctest -VV -S .gitlab/ci/ctest_configure.cmake
+    - ctest -VV -S .gitlab/ci/ctest_build.cmake | Out-File -FilePath compile_output.log
+    - buildcache --show-stats
+    - .gitlab\ci\check_warnings.ps1 -BuildPath . # This will call exit in case of warnings
+
+.cmake_build_windows:
+    stage: build
+    extends: .warning_policy
+    script:
+        - *before_script_windows
+        - *before_script_windows_deps
+        - *before_script_windows_openxr_deps
+        - *script_windows
+    interruptible: true
+
+.cmake_test_windows:
+    stage: test
+
+    script:
+        - *before_script_windows
+        - *before_script_windows_deps
+        - *before_script_windows_openxr_deps
+        # Reuse the venv from the build step (avoids version changes between
+        # build and testing). This is set up manually because Activate.ps1
+        # doesn't seem to work for our extracted Python tarball.
+        - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\build\ci-venv\Scripts;$env:PATH"
+        - Set-Item -Force -Path "env:PYTHONPATH" -Value "$pwdpath\build\ci-venv\Lib\site-packages"
+        # Some tests run CMake steps, so we need a compiler environment.
+        - Invoke-Expression -Command .gitlab/ci/vcvarsall.ps1
+        - ctest --output-on-failure -V -S .gitlab/ci/ctest_test.cmake
+    interruptible: true
+
+.cmake_test_external_windows:
+    stage: test-ext
+    extends: .warning_policy
+
+    script:
+        - *before_script_windows
+        - *before_script_windows_deps
+        - *before_script_windows_openxr_deps
+        # Reuse the venv from the build step (avoids version changes between
+        # build and testing). This is set up manually because Activate.ps1
+        # doesn't seem to work for our extracted Python tarball.
+        - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\build\ci-venv\Scripts;$env:PATH"
+        - Set-Item -Force -Path "env:PYTHONPATH" -Value "$pwdpath\build\ci-venv\Lib\site-packages"
+        - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\build\install\bin;$env:PATH"
+        - Invoke-Expression -Command .gitlab/ci/vcvarsall.ps1
+        - ctest -VV --output-on-failure -S .gitlab/ci/ctest_test_external.cmake
+        - .gitlab\ci\check_warnings.ps1 -BuildPath .\Testing\External\ # This will call exit in case of warnings
+
+    interruptible: true
+
+.cmake_build_wheel_windows:
+    stage: build
+    extends: .warning_policy
+
+    script:
+        - *before_script_windows
+        - *before_script_windows_openxr_deps
+        - cmake -P .gitlab/ci/download_wheel_python.cmake
+        - Set-Item -Force -Path "env:PYTHON_PREFIX" -Value "$pwdpath\.gitlab\python"
+        - Invoke-Expression -Command .gitlab/ci/buildcache.ps1
+        - Set-Item -Force -Path "env:PATH" -Value "$env:PATH;$pwdpath\.gitlab\buildcache\bin"
+        - Invoke-Expression -Command .gitlab/ci/vcvarsall.ps1
+        - buildcache --show-stats
+        - 'if ("$env:EXTRA_PYTHON_PATH" -ne "") { Set-Item -Force -Path "env:PATH" -Value "$env:PATH;$pwdpath\$env:EXTRA_PYTHON_PATH\vtkmodules" }'
+        - ctest -VV -S .gitlab/ci/ctest_configure.cmake
+        - ctest -VV -S .gitlab/ci/ctest_build.cmake | Out-File -FilePath compile_output.log
+        - buildcache --show-stats
+        - cd build
+        - Set-Item -Force -Path "env:PATH" -Value "$env:PYTHON_PREFIX;$env:PATH"
+        - python -m venv venv
+        - . .\venv\Scripts\Activate.ps1
+        - pip install setuptools
+        - pip install wheel
+        - python setup.py bdist_wheel
+        - python "$env:GIT_CLONE_PATH\.gitlab\ci\create_wheel_sdk_archive.py"
+        - cd wheel_sdks # wheel sdk is built in a subdirectory to prevent any clash with normal wheel process
+        - python -m pip wheel .
+        - cd ..
+        - pip install delvewheel
+        - delvewheel show --add-path "bin" (Get-ChildItem dist\*.whl | % FullName) | Out-File -FilePath "$env:GIT_CLONE_PATH\wheel_output.log"
+        - $no_mangle = (Get-ChildItem -Path ".\bin" -Filter "*.dll" -File -Name) -join ';'
+        - delvewheel repair --add-path "bin" --no-mangle "$no_mangle" (Get-ChildItem dist\*.whl | % FullName) | Out-File -Append -FilePath "$env:GIT_CLONE_PATH\wheel_output.log"
+        - Rename-Item -Path dist -NewName dist-orig
+        - Rename-Item -Path wheelhouse -NewName dist
+        - cd ..
+        - .gitlab\ci\check_warnings.ps1 -BuildPath . # This will call exit in case of warnings
+    interruptible: true
+
+.cmake_test_wheel_windows:
+    stage: test
+
+    script:
+        - *before_script_windows
+        - *before_script_windows_openxr_deps
+        - cmake -P .gitlab/ci/download_osmesa_windows.cmake
+        - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\osmesa\bin;$env:PATH"
+        - cmake -P .gitlab/ci/download_wheel_python.cmake
+        - Set-Item -Force -Path "env:PYTHON_PREFIX" -Value "$pwdpath\.gitlab\python"
+        - Set-Item -Force -Path "env:PATH" -Value "$env:PYTHON_PREFIX;$env:PATH"
+        - python -m venv venv
+        - . .\venv\Scripts\Activate.ps1
+        - pip install twine
+        - twine check (Get-ChildItem build\dist\*.whl | % FullName)
+        - pip install (Get-ChildItem build\dist\*.whl | % FullName)
+        - $PYTHON_VERSION_SUFFIX=python -c "import sys;print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
+        - pip install -r $pwdpath\.gitlab\ci\requirements-wheel$PYTHON_VERSION_SUFFIX-test.txt
+        - python -c "import xarray"
+        - python -c "import vtk"
+        - if ( "$env:VTK_DISABLE_PYI_TESTING" -ne "1" ) { python -m vtkmodules.generate_pyi --test -p vtkmodules } else { echo "pyi test is disabled." }
+        - ctest -VV --output-on-failure -S .gitlab/ci/ctest_test_external_wheel.cmake
+        # Verify default render window backend works.
+        - Set-Item -Force -Path "env:VTK_DEFAULT_OPENGL_WINDOW" -Value ""
+        - python -c "import vtk; assert(vtk.vtkRenderWindow().GetClassName() == 'vtkWin32OpenGLRenderWindow')"
+        # Force osmesa render window and verify it worked.
+        - Set-Item -Force -Path "env:VTK_DEFAULT_OPENGL_WINDOW" -Value "vtkOSOpenGLRenderWindow"
+        - python -c "import vtk; assert(vtk.vtkRenderWindow().GetClassName() == 'vtkOSOpenGLRenderWindow')"
+        # Run vtk-sdk tests
+        - cd build/wheel_sdks
+        - pip install --find-links . vtk-sdk virtualenv pytest
+        - python -m pytest -ra
+        - cd ../..
+        # This will call exit in case of warnings
+        - .gitlab\ci\check_warnings.ps1 -BuildPath ./Testing/ExternalWheel
+    interruptible: true
+
+.before_script_windows_emscripten: &before_script_windows_emscripten
+    - *before_script_windows
+    - cmake -P .gitlab/ci/download_python.cmake
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\python;$env:PATH"
+    - Set-Item -Force -Path "env:PYTHONHOME" -Value "$pwdpath\.gitlab\python"
+    - Set-Item -Force -Path "env:EMSDK_PYTHON" -Value "$pwdpath\.gitlab\python\python.exe"
+    - cmake -P .gitlab/ci/download_node.cmake
+    - Set-Item -Force -Path "env:NODE_DIR" -Value "$pwdpath\.gitlab\node"
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\node;$env:PATH"
+    - node --version
+    - cmake -P .gitlab/ci/download_emsdk.cmake
+    - .gitlab\emsdk\emsdk.ps1 install latest
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\emsdk\upstream\bin;$env:PATH"
+    - Set-Item -Force -Path "env:PATH" -Value "$pwdpath\.gitlab\emsdk\upstream\emscripten;$env:PATH"
+    - clang --version
+    - wasm-as --version
+    - wasm-ld --version
+    - wasm-opt --version
+    - emcc --version
+
+.cmake_test_wasm_emscripten_windows_ext:
+    stage: test-ext
+    extends: .warning_policy
+
+    script:
+        - *before_script_windows_emscripten
+        - Invoke-Expression -Command .gitlab/ci/buildcache.ps1
+        - Set-Item -Force -Path "env:PATH" -Value "$env:PATH;$pwdpath\.gitlab\buildcache\bin"
+        - buildcache --show-stats
+        # Fetch chrome-for-testing
+        - cmake -P .gitlab/ci/download_chrome.cmake
+        - Set-Item -Force -Path "env:VTK_TESTING_WASM_ENGINE" -Value "$pwdpath\.gitlab\chrome\chrome.exe"
+        - ctest --output-on-failure -VV -S .gitlab/ci/ctest_test_external_wasm.cmake
+        - buildcache --show-stats
+        - powershell -File ".gitlab/ci/terminate_chrome_processes.ps1"
+        - .gitlab\ci\check_warnings.ps1 -BuildPath .\Testing\ExternalWasm # This will call exit in case of warnings
+
+    interruptible: true
+
+.cmake_build_java_windows:
+    stage: build
+    extends: .cmake_build_windows
+    script:
+        - *before_script_windows
+        - *before_script_windows_deps
+        - *before_script_windows_openxr_deps
+        - *before_script_java_windows
+        - *script_windows
+
+.cmake_test_java_windows:
+    stage: test
+    script:
+        - *before_script_windows
+        - *before_script_windows_deps
+        - *before_script_java_windows
+        - Invoke-Expression -Command .gitlab/ci/vcvarsall.ps1
+        - ctest --output-on-failure -V -S .gitlab/ci/ctest_test.cmake
+    interruptible: true

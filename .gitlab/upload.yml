@@ -1,0 +1,94 @@
+# Steps for uploading artifacts
+
+.rsync_upload:
+    image: "fedora:42"
+    stage: upload
+    tags:
+        - docker
+        - linux-x86_64
+        - build
+
+    script:
+        - ls build/
+        - dnf install -y --setopt=install_weak_deps=False rsync openssh-clients
+        - chmod 400 $RSYNC_KEY_PATH
+        - ssh-keygen -y -f $RSYNC_KEY_PATH > $RSYNC_KEY_PATH.pub
+        - rsync -tv $RSYNC_DELETE_ARG --recursive -e "ssh -i $RSYNC_KEY_PATH -o StrictHostKeyChecking=no" $RSYNC_SOURCE kitware@web.kitware.com:$RSYNC_DESTINATION/
+
+.rsync_upload_docs:
+    extends: .rsync_upload
+    environment:
+        name: rsync-upload-docs
+    variables:
+        RSYNC_KEY_PATH: $RSYNC_DOCS_KEY
+        RSYNC_DELETE_ARG: --delete
+
+    interruptible: false
+
+.rsync_upload_wheel_sdk:
+    extends: .rsync_upload
+    environment:
+        name: rsync-upload-wheel-sdk
+    variables:
+        RSYNC_KEY_PATH: $RSYNC_WHEEL_SDK_KEY
+
+.rsync_upload_release_artifacts:
+    extends: .rsync_upload
+    environment:
+        name: rsync-upload-release-artifacts
+    before_script:
+        # Generate the artifact inventory before adding the wheels[+sdk] to the release dir since
+        # we do not want to include them in it.
+        - dnf install -y --setopt=install_weak_deps=False python3
+        - .gitlab/ci/generate-artifacts-inventory.py --artifacts-dir "${RSYNC_SOURCE}" --output-file "${RSYNC_SOURCE}/${CI_COMMIT_TAG}-artifacts.json"
+        - . .gitlab/ci/prepare-release-env.sh
+    variables:
+        RSYNC_KEY_PATH: $RSYNC_RELEASE_KEY
+
+.pypi_upload:
+    image: "fedora:42"
+    stage: upload
+    tags:
+        - docker
+        - linux-x86_64
+        - build
+    environment:
+        name: pypi-upload
+
+    script:
+        - cd build/
+        - ls dist
+        - dnf install -y --setopt=install_weak_deps=False pipx
+        - pipx ensurepath
+        - source $HOME/.bash_profile
+        - pipx install twine==6.1.0
+        - twine upload --verbose -u __token__ -p $PYPI_UPLOAD_TOKEN dist/*
+
+.pypi_vtk_upload:
+    image: "fedora:42"
+    stage: upload
+    tags:
+        - docker
+        - linux-x86_64
+        - build
+
+    script:
+        - cd build/
+        - ls dist
+        - dnf install -y --setopt=install_weak_deps=False pipx
+        - pipx ensurepath
+        - source $HOME/.bash_profile
+        - pipx install twine==6.1.0
+        - twine upload --verbose -u gitlab-ci-token -p $CI_JOB_TOKEN --repository-url https://gitlab.kitware.com/api/v4/projects/$CI_PROJECT_ID/packages/pypi dist/*
+
+.generic_vtk_wasm_emscripten_linux_upload:
+    stage: upload
+    tags:
+        - docker
+        - linux-x86_64
+        - build
+
+    script:
+        - .gitlab/ci/upload_webassembly_archive.sh $WASM_ARCHITECTURE
+
+    interruptible: true

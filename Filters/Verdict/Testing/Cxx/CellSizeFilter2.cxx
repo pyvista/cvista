@@ -1,0 +1,88 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-License-Identifier: BSD-3-Clause
+#include "vtkCellData.h"
+#include "vtkCellSizeFilter.h"
+#include "vtkCellType.h"
+#include "vtkCellTypeSource.h"
+#include "vtkCellTypeUtilities.h"
+#include "vtkDoubleArray.h"
+#include "vtkMathUtilities.h"
+#include "vtkNew.h"
+#include "vtkTestUtilities.h"
+#include "vtkUnstructuredGrid.h"
+#include "vtkUnstructuredGridReader.h"
+
+#include <set>
+
+int CellSizeFilter2(int vtkNotUsed(argc), char* vtkNotUsed(argv)[])
+{
+
+  const std::set<int> SupportedCellTypes = { VTK_LINE, VTK_QUADRATIC_EDGE, VTK_CUBIC_LINE,
+    VTK_LAGRANGE_CURVE, VTK_BEZIER_CURVE, VTK_TRIANGLE, VTK_QUAD, VTK_POLYGON, VTK_PIXEL,
+    VTK_QUADRATIC_TRIANGLE, VTK_QUADRATIC_QUAD, VTK_BIQUADRATIC_QUAD, VTK_LAGRANGE_TRIANGLE,
+    VTK_LAGRANGE_QUADRILATERAL, VTK_BEZIER_TRIANGLE, VTK_BEZIER_QUADRILATERAL, VTK_TETRA,
+    VTK_HEXAHEDRON, VTK_POLYHEDRON, VTK_VOXEL, VTK_WEDGE, VTK_PYRAMID, VTK_PENTAGONAL_PRISM,
+    VTK_HEXAGONAL_PRISM, VTK_QUADRATIC_TETRA, VTK_QUADRATIC_HEXAHEDRON, VTK_TRIQUADRATIC_HEXAHEDRON,
+    VTK_QUADRATIC_WEDGE, VTK_QUADRATIC_PYRAMID, VTK_TRIQUADRATIC_PYRAMID, VTK_LAGRANGE_TETRAHEDRON,
+    VTK_LAGRANGE_HEXAHEDRON, VTK_LAGRANGE_WEDGE, VTK_BEZIER_TETRAHEDRON, VTK_BEZIER_HEXAHEDRON,
+    VTK_BEZIER_WEDGE };
+
+  for (const auto cellType : SupportedCellTypes)
+  {
+    for (bool complete : { false, true })
+    {
+      vtkNew<vtkCellTypeSource> cellTypeSource;
+      cellTypeSource->SetBlocksDimensions(1, 1, 1);
+      cellTypeSource->SetCellOrder(2);
+      cellTypeSource->SetCellType(cellType);
+      cellTypeSource->SetCompleteQuadraticSimplicialElements(complete);
+      vtkNew<vtkCellSizeFilter> filter;
+      filter->SetInputConnection(cellTypeSource->GetOutputPort());
+      filter->ComputeSumOn();
+      filter->Update();
+      const int cellDim = vtkCellTypeUtilities::GetDimension(cellType);
+      std::string sizeType;
+      switch (cellDim)
+      {
+        case 1:
+          sizeType = "Length";
+          break;
+        case 2:
+          sizeType = "Area";
+          break;
+        default:
+          sizeType = "Volume";
+          break;
+      }
+
+      const double size =
+        vtkDoubleArray::SafeDownCast(vtkUnstructuredGrid::SafeDownCast(filter->GetOutput())
+                                       ->GetFieldData()
+                                       ->GetArray(sizeType.c_str()))
+          ->GetValue(0);
+
+      double correctSize;
+      switch (cellType)
+      {
+        case VTK_QUADRATIC_HEXAHEDRON:
+          correctSize = 1. / 12.;
+          break;
+        case VTK_TRIQUADRATIC_HEXAHEDRON:
+          correctSize = 1. / 48.;
+          break;
+        default:
+          correctSize = 1.;
+          break;
+      }
+      if (!vtkMathUtilities::NearlyEqual(std::abs(size), correctSize, 1e-15))
+      {
+        vtkGenericWarningMacro("Wrong " << sizeType << " dimension for the cell source type "
+                                        << vtkCellTypeUtilities::GetClassNameFromTypeId(cellType)
+                                        << " supposed to be " << correctSize << " whereas it is "
+                                        << size);
+        return EXIT_FAILURE;
+      }
+    }
+  }
+  return EXIT_SUCCESS;
+}

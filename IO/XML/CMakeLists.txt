@@ -1,0 +1,63 @@
+set(classes
+  vtkRTXMLPolyDataReader
+  vtkXMLCompositeDataReader
+  vtkXMLCompositeDataWriter
+  vtkXMLDataObjectWriter
+  vtkXMLDataReader
+  vtkXMLDataSetWriter
+  vtkXMLFileReadTester
+  vtkXMLGenericDataObjectReader
+  vtkXMLHierarchicalBoxDataFileConverter
+  vtkXMLHierarchicalBoxDataReader
+  vtkXMLHierarchicalBoxDataWriter
+  vtkXMLHierarchicalDataReader
+  vtkXMLHyperTreeGridReader
+  vtkXMLHyperTreeGridWriter
+  vtkXMLImageDataReader
+  vtkXMLImageDataWriter
+  vtkXMLMultiBlockDataReader
+  vtkXMLMultiBlockDataWriter
+  vtkXMLMultiGroupDataReader
+  vtkXMLPDataObjectReader
+  vtkXMLPDataReader
+  vtkXMLPHyperTreeGridReader
+  vtkXMLPImageDataReader
+  vtkXMLPPolyDataReader
+  vtkXMLPRectilinearGridReader
+  vtkXMLPStructuredDataReader
+  vtkXMLPStructuredGridReader
+  vtkXMLPTableReader
+  vtkXMLPUnstructuredDataReader
+  vtkXMLPUnstructuredGridReader
+  vtkXMLPartitionedDataSetCollectionReader
+  vtkXMLPartitionedDataSetReader
+  vtkXMLPolyDataReader
+  vtkXMLPolyDataWriter
+  vtkXMLReader
+  vtkXMLRectilinearGridReader
+  vtkXMLRectilinearGridWriter
+  vtkXMLStatisticalModelReader
+  vtkXMLStatisticalModelWriter
+  vtkXMLStructuredDataReader
+  vtkXMLStructuredDataWriter
+  vtkXMLStructuredGridReader
+  vtkXMLStructuredGridWriter
+  vtkXMLTableReader
+  vtkXMLTableWriter
+  vtkXMLUniformGridAMRReader
+  vtkXMLUniformGridAMRWriter
+  vtkXMLUnstructuredDataReader
+  vtkXMLUnstructuredDataWriter
+  vtkXMLUnstructuredGridReader
+  vtkXMLUnstructuredGridWriter
+  vtkXMLWriter
+  vtkXMLWriterBase
+  vtkXMLWriterC)
+
+set(private_templates
+  vtkXMLUnstructuredPolyReader.txx)
+
+vtk_module_add_module(VTK::IOXML
+  CLASSES ${classes}
+  PRIVATE_TEMPLATES ${private_templates})
+vtk_add_test_mangling(VTK::IOXML)
