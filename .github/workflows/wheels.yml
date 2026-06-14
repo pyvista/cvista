@@ -61,14 +61,25 @@ jobs:
       - name: Configure sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache (disable if backend unavailable)
+        shell: bash
+        run: |
+          set -uxo pipefail
+          if sccache --start-server && sccache --show-stats; then
+            echo "SCCACHE_LAUNCHER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache backend unavailable; building without compiler cache"
+            echo "SCCACHE_LAUNCHER=" >> "$GITHUB_ENV"
+          fi
+
       - name: Configure
         run: |
           set -euxo pipefail
           export PATH="$PYBIN:$PATH"
           cmake -S . -B build -G Ninja \
             -C ci/cmake/linux.cmake \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_C_COMPILER_LAUNCHER="${SCCACHE_LAUNCHER}" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER="${SCCACHE_LAUNCHER}" \
             -DPython3_EXECUTABLE="$PYBIN/python" \
             -DPython3_FIND_STRATEGY=LOCATION
 
@@ -171,13 +182,24 @@ jobs:
       - name: Configure sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache (disable if backend unavailable)
+        shell: bash
+        run: |
+          set -uxo pipefail
+          if sccache --start-server && sccache --show-stats; then
+            echo "SCCACHE_LAUNCHER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache backend unavailable; building without compiler cache"
+            echo "SCCACHE_LAUNCHER=" >> "$GITHUB_ENV"
+          fi
+
       - name: Configure
         run: |
           set -euxo pipefail
           cmake -S . -B build -G Ninja \
             -C ci/cmake/macos.cmake \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_C_COMPILER_LAUNCHER="${SCCACHE_LAUNCHER}" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER="${SCCACHE_LAUNCHER}" \
             -DPython3_EXECUTABLE="$(which python)" \
             -DPython3_FIND_STRATEGY=LOCATION
 
@@ -244,6 +266,17 @@ jobs:
       - name: Configure sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
+      - name: Probe sccache (disable if backend unavailable)
+        shell: bash
+        run: |
+          set -uxo pipefail
+          if sccache --start-server && sccache --show-stats; then
+            echo "SCCACHE_LAUNCHER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache backend unavailable; building without compiler cache"
+            echo "SCCACHE_LAUNCHER=" >> "$GITHUB_ENV"
+          fi
+
       - name: Enable MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -257,8 +290,8 @@ jobs:
             -C ci/cmake/windows.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_C_COMPILER_LAUNCHER="${SCCACHE_LAUNCHER}" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER="${SCCACHE_LAUNCHER}" \
             -DPython3_EXECUTABLE="$(which python)" \
             -DPython3_FIND_STRATEGY=LOCATION
 
