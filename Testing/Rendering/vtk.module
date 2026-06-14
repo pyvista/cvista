@@ -1,0 +1,28 @@
+NAME
+  VTK::TestingRendering
+LIBRARY_NAME
+  vtkTestingRendering
+GROUPS
+  Rendering
+DESCRIPTION
+  Utilities for testing VTK by rendering and image comparison.
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+  VTK::ImagingColor
+  VTK::IOXML
+  VTK::RenderingCore
+  VTK::TestingCore
+PRIVATE_DEPENDS
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+  VTK::CommonSystem
+  VTK::IOImage
+  VTK::ImagingCore
+  VTK::ParallelCore
+  VTK::vtksys
+OPTIONAL_DEPENDS
+  VTK::ParallelMPI

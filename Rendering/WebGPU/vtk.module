@@ -1,0 +1,34 @@
+NAME
+  VTK::RenderingWebGPU
+LIBRARY_NAME
+  vtkRenderingWebGPU
+GROUPS
+  Rendering
+IMPLEMENTS
+  VTK::RenderingCore
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+  VTK::RenderingCore
+  VTK::IOImage
+PRIVATE_DEPENDS
+  VTK::CommonDataModel
+  VTK::CommonSystem
+  VTK::fmt
+TEST_DEPENDS
+  VTK::CommonColor
+  VTK::CommonSystem
+  VTK::RenderingAnnotation
+  VTK::FiltersExtraction
+  VTK::FiltersGeneral
+  VTK::FiltersSources
+  VTK::RenderingUI
+  VTK::InteractionStyle
+  VTK::InteractionWidgets
+  VTK::IOParallel
+  VTK::TestingCore
+  VTK::TestingRendering
+INCLUDE_MARSHAL

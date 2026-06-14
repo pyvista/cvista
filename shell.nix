@@ -1,0 +1,46 @@
+{ pkgs ? import <nixpkgs> {} }:
+
+pkgs.mkShell {
+  nativeBuildInputs = with pkgs; [
+    cmake
+    ninja
+    pkg-config
+  ];
+
+  buildInputs = with pkgs; [
+    # Python 3.13 to match the pyvista parity reference interpreter. Must NOT be
+    # 3.11: VTK's FindPython3 + wrapper-suffix detection use the shell `python3`,
+    # so a 3.11 here poisons the module ABI tag (cpython-311 in a cp313 wheel)
+    # and skips Python wrapping for part of the module set.
+    python313
+    python313Packages.setuptools
+    python313Packages.pip
+
+    gcc
+    tbb
+
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXext
+    xorg.libXfixes
+    xorg.libXrandr
+    xorg.libXrender
+    xorg.libXt
+    xorg.libXinerama
+
+    libGL
+    mesa
+  ];
+
+  shellHook = ''
+    export CMAKE_PREFIX_PATH=${pkgs.lib.makeSearchPath "lib/cmake" [
+      pkgs.tbb
+      pkgs.xorg.libX11
+      pkgs.xorg.libXext
+      pkgs.xorg.libXrandr
+      pkgs.xorg.libXinerama
+      pkgs.mesa
+      pkgs.libGL
+    ]}
+  '';
+}

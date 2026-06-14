@@ -1,0 +1,26 @@
+NAME
+  VTK::TestingCore
+LIBRARY_NAME
+  vtkTestingCore
+DESCRIPTION
+  Core classes for regression and unit testing of VTK.
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::vtksys
+PRIVATE_DEPENDS
+  VTK::FiltersCore
+  VTK::FiltersHyperTree
+TEST_DEPENDS
+  VTK::FiltersCore
+  VTK::FiltersSources
+  VTK::FiltersHyperTree
+  VTK::FiltersParallelDIY2
+  VTK::ImagingCore
+  VTK::IOXML
+  VTK::TestingRendering
+EXCLUDE_WRAP

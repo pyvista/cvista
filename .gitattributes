@@ -1,0 +1,34 @@
+.git*            export-ignore
+.hooks*          export-ignore
+
+*.sh             crlf=input
+newalpha         crlf=input
+newversion       crlf=input
+pre-commit       crlf=input
+
+# Custom attribute to mark sources as using our C code style.
+# The value 16 is used in the Utilities/Scripts/clang-format.bash script to filter
+# all source files that follow our-c-style
+[attr]our-c-style  whitespace=tab-in-indent,-blank-at-eol  format.clang-format=16
+
+*.c              our-c-style
+*.h              our-c-style
+*.cpp            our-c-style
+*.cxx            our-c-style
+*.hxx            our-c-style
+*.txx            our-c-style
+*.mm             our-c-style
+*.glsl           whitespace=tab-in-indent,-blank-at-eol
+*.txt            whitespace=tab-in-indent,-blank-at-eol
+*.cmake          whitespace=tab-in-indent,-blank-at-eol
+
+*.sha512         eol=lf
+
+*.md             whitespace=tab-in-indent conflict-marker-size=30
+
+# Third party code.
+Utilities/KWIML/**  -format.clang-format
+Utilities/KWSys/**  -format.clang-format
+Utilities/MetaIO/** -format.clang-format
+ThirdParty/**       -format.clang-format
+CMake/patches/**    -format.clang-format

@@ -1,0 +1,35 @@
+set(classes
+  vtkBlockSelector
+  vtkConvertSelection
+  vtkExpandMarkedElements
+  vtkExtractBlock
+  vtkExtractBlockUsingDataAssembly
+  vtkExtractCellsByType
+  vtkExtractDataArraysOverTime
+  vtkExtractDataOverTime
+  vtkExtractDataSets
+  vtkExtractExodusGlobalTemporalVariables
+  vtkExtractGeometry
+  vtkExtractGrid
+  vtkExtractLevel
+  vtkExtractParticlesOverTime
+  vtkExtractPolyDataGeometry
+  vtkExtractRectilinearGrid
+  vtkExtractSelectedArraysOverTime
+  vtkExtractSelectedRows
+  vtkExtractSelection
+  vtkExtractTensorComponents
+  vtkExtractTimeSteps
+  vtkExtractUnstructuredGrid
+  vtkExtractVectorComponents
+  vtkFrustumSelector
+  vtkHierarchicalDataExtractDataSets
+  vtkHierarchicalDataExtractLevel
+  vtkLocationSelector
+  vtkProbeSelectedLocations
+  vtkSelector
+  vtkValueSelector)
+
+vtk_module_add_module(VTK::FiltersExtraction
+  CLASSES ${classes})
+vtk_add_test_mangling(VTK::FiltersExtraction)

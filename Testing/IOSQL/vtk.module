@@ -1,0 +1,13 @@
+NAME
+  VTK::TestingIOSQL
+LIBRARY_NAME
+  vtkTestingIOSQL
+DESCRIPTION
+  Facilities for testing SQL database functionality in VTK.
+PRIVATE_DEPENDS
+  VTK::IOSQL
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+EXCLUDE_WRAP

@@ -1,0 +1,30 @@
+NAME
+  VTK::FiltersCellGrid
+LIBRARY_NAME
+  vtkFiltersCellGrid
+DESCRIPTION
+  Filters and cell-types for vtkCellGrid objects
+KIT
+  VTK::Filters
+GROUPS
+  StandAlone
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+  VTK::CommonTransforms
+PRIVATE_DEPENDS
+  VTK::FiltersCore
+  VTK::eigen
+  VTK::token
+TEST_DEPENDS
+  VTK::CommonSystem
+  VTK::IOCellGrid
+  VTK::IOXML
+  VTK::TestingCore
+  VTK::IOExodus
+  VTK::eigen

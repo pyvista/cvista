@@ -1,0 +1,7 @@
+NAME
+  VTK::kissfft
+LIBRARY_NAME
+  vtkkissfft
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY
