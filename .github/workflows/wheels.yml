@@ -18,6 +18,9 @@ concurrency:
 env:
   # TODO(namespace): flip to "fvtk" once branch feat/fvtk-namespace merges.
   FVTK_IMPORT_NAME: vtkmodules
+  # sccache: when the GitHub Actions cache backend has a transient outage,
+  # fall back to running the compiler directly instead of failing the build.
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -42,14 +45,16 @@ jobs:
         run: |
           set -euxo pipefail
           dnf install -y --setopt=install_weak_deps=False \
-            ninja-build \
             libX11-devel libXcursor-devel libXt-devel libXext-devel \
             mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
             mesa-libGLU-devel libglvnd-devel \
             git git-lfs
-          # cmake from pip (manylinux pythons all ship pip); pin a modern one.
+          # cmake + ninja from pip (manylinux pythons all ship pip). pip's ninja
+          # is >=1.11, which supports multiple-output edges in the depslog
+          # (dnf's ninja-build is 1.10 and errors: "multiple outputs aren't
+          # (yet?) supported by depslog" on VTK's wrapping rules).
           "$PYBIN/python" -m pip install --upgrade pip
-          "$PYBIN/python" -m pip install "cmake>=3.22,<4.2" "setuptools<81" wheel auditwheel
+          "$PYBIN/python" -m pip install "cmake>=3.22,<4.2" ninja "setuptools<81" wheel auditwheel
 
       - uses: actions/checkout@v4
 
