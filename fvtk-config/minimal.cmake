@@ -60,6 +60,33 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections" CAC
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--gc-sections" CACHE STRING "" FORCE)
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--gc-sections" CACHE STRING "" FORCE)
 set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections" CACHE STRING "" FORCE)
+
+# Identical Code Folding (gold --icf=all). Folds byte-for-byte identical
+# functions and ships a single copy: VTK's heavy template instantiation and the
+# generated Python-wrapper boilerplate emit a lot of these. Complements
+# --gc-sections above (which drops UNREACHABLE code); ICF drops code that is
+# reached but DUPLICATED. Measured -10% wheel (47.1 -> 42.2 MiB) on top of the
+# other levers. --icf=all (vs --icf=safe) also folds address-taken functions, so
+# it can break code that relies on two functions having distinct addresses;
+# validated parity-green against PyVista's core+plotting suite (differential
+# baseline-vs-ICF run: byte-identical outcomes, 0 regressions). Toggle off with
+# `FVTK_ICF=0 ./build-fvtk.sh` for an A/B baseline or if a function-pointer-
+# identity issue surfaces (gold --icf=safe is the strictly-weaker fallback).
+# Linux/gold only; needs binutils (declared in shell.nix).
+#
+# Read from the environment, NOT a cache option: this is a `-C` initial-cache
+# file, processed before -D args are applied and before project(), so a
+# -DFVTK_ICF=OFF cache var would be too late to gate the append below (and
+# CMAKE_SYSTEM_NAME isn't set yet either). $ENV{} is available now and matches
+# the repo's env-knob idiom (FVTK_STRIP, FAST). Default ON when unset.
+if(NOT DEFINED ENV{FVTK_ICF} OR NOT "$ENV{FVTK_ICF}" STREQUAL "0")
+  set(_fvtk_icf "-fuse-ld=gold -Wl,--icf=all")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${_fvtk_icf}" CACHE STRING "" FORCE)
+  set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${_fvtk_icf}" CACHE STRING "" FORCE)
+  set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${_fvtk_icf}" CACHE STRING "" FORCE)
+  unset(_fvtk_icf)
+endif()
+
 set(VTK_PYTHON_FULL_THREADSAFE ON CACHE BOOL "")
 set(VTK_NO_PYTHON_THREADS OFF CACHE BOOL "")
 

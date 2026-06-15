@@ -28,7 +28,7 @@ a handoff guide for continuing development.
 | | fvtk (trimmed) | stock `vtk` 9.6.2 |
 |---|---|---|
 | Fork point | VTK `v9.6.2` (`f49a1dbafa`) | 9.6.2 |
-| Wheel size (stripped) | **49 MB** (47 MiB) | ~120 MB |
+| Wheel size (stripped) | **44 MB** (42 MiB), ICF on | ~120 MB |
 | Modules shipped | ~84 + vendored deps | ~160 |
 | Compile units (`ninja` steps) | **~6,900** (wrappers further batched by unity) | ~9,120 |
 | Source tree (tracked) | **~140 MB** | ~320 MB |
@@ -103,6 +103,20 @@ most of what remains is genuinely reachable).
 Levers 7 + 8 together take the stripped wheel **65 MB → 49 MB (−24%)** with the PyVista suite
 green (9,731 passed / 8 pre-existing env-fails / 0 introduced).
 
+9. **Identical Code Folding (`FVTK_ICF`, on by default).** `-fuse-ld=gold -Wl,--icf=all` folds
+   functions whose machine code is byte-for-byte identical and ships a single copy. VTK's heavy
+   template instantiation (each instantiation is a separate emitted copy, identical once past the
+   type system) and the generated Python-wrapper boilerplate produce a lot of these. Complements
+   lever 8: `--gc-sections` drops code nothing *reaches*; ICF drops code that is reached but
+   *duplicated* — they stack. `--icf=all` (vs `--icf=safe`) also folds address-taken functions, so
+   it can break code relying on two functions having distinct addresses; VTK's factory/callback
+   machinery stores/compares function pointers, so this was the correctness risk. **Validated
+   parity-green:** a differential PyVista core+plotting run (2,104 tests) gave byte-identical
+   outcomes with vs without ICF (0 regressions), plus the native `smoke-fvtk.py` factory/EGL path.
+   **Measured −10% wheel (47.1 → 42.2 MiB)**; the fold concentrates in `libvtkCommon` (−19.8%).
+   Disable with `FVTK_ICF=0 ./build-fvtk.sh` for an A/B baseline (gold `--icf=safe` is the
+   strictly-weaker fallback). Linux/gold only; needs `binutils` (in `shell.nix`).
+
 ### Wheel-size lever
 
 6. **Symbol strip (`FVTK_STRIP=1`).** `strip --strip-all` on every shipped `.so` removes
@@ -142,6 +156,7 @@ Knobs (environment variables):
 | `PROFILE` | `minimal` | `minimal` (PyVista closure) · `fast`/`linux` (all modules) |
 | `FAST` | `1` | `0` enables LTO (production) |
 | `FVTK_STRIP` | `0` | `1` strips shipped `.so` symbol tables |
+| `FVTK_ICF` | `1` | `0` disables gold ICF (link-time identical-code folding); minimal profile only |
 | `BUILD` | `./build-fvtk` | build directory |
 | `BUILD_JOBS` | `8` | parallel compile jobs |
 | `USE_CCACHE` | `1` | compiler launcher via `ccache` |

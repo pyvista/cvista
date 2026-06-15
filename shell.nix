@@ -5,6 +5,11 @@ pkgs.mkShell {
     cmake
     ninja
     pkg-config
+    # binutils provides ld.gold, required by the FVTK_ICF lever
+    # (-fuse-ld=gold -Wl,--icf=all). The gcc-wrapper already exposes a gold on
+    # PATH, but declaring binutils makes the ICF toolchain an explicit part of
+    # the dev/CI environment rather than an incidental gcc-wrapper detail.
+    binutils
   ];
 
   buildInputs = with pkgs; [
@@ -30,6 +35,11 @@ pkgs.mkShell {
 
     libGL
     mesa
+
+    # Runtime libs the wheel's smoke/parity step needs when importing the built
+    # modules + numpy outside the build (libz for numpy, libstdc++ comes from gcc
+    # above). Harmless for the build itself.
+    zlib
   ];
 
   shellHook = ''
