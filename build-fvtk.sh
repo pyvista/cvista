@@ -26,7 +26,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # CMAKE_PREFIX_PATH. Re-exec inside it (once) so the rendering deps resolve.
 # Set FVTK_IN_NIX_SHELL=1 to skip (already provisioned).
 if [ "${FVTK_IN_NIX_SHELL:-0}" != "1" ]; then
-  exec nix-shell "$REPO/shell.nix" --run "FVTK_IN_NIX_SHELL=1 PROFILE=${PROFILE:-minimal} FAST=${FAST:-1} USE_CCACHE=${USE_CCACHE:-1} bash '${BASH_SOURCE[0]}'"
+  exec nix-shell "$REPO/shell.nix" --run "FVTK_IN_NIX_SHELL=1 PROFILE=${PROFILE:-minimal} FAST=${FAST:-1} USE_CCACHE=${USE_CCACHE:-1} FVTK_ICF=${FVTK_ICF:-1} FVTK_STRIP=${FVTK_STRIP:-0} bash '${BASH_SOURCE[0]}'"
 fi
 
 BUILD="${BUILD:-$REPO/build-fvtk}"
@@ -45,12 +45,25 @@ PROFILE_CFG="$CFG_DIR/${PROFILE}.cmake"
 [ "${PROFILE}" = "fast" ] && [ "${FAST:-1}" = "0" ] && PROFILE_CFG="$CFG_DIR/linux.cmake"
 [ -f "$PROFILE_CFG" ] || { echo "no such profile config: $PROFILE_CFG" >&2; exit 1; }
 
-# Toolchain: the nix gcc-wrapper the known-good ~/source/VTK/build used.
+# Toolchain: the nix gcc-wrapper the known-good ~/source/VTK/build used. The
+# hardcoded store paths are this dev box's realizations; fall back to whatever
+# nix-shell put on PATH (CI runners realize different store paths from the same
+# shell.nix, so the pinned paths won't exist there).
 CC_BIN="${CC:-/nix/store/myvv172x2am72534zgn9wx0qp5amq6a8-gcc-wrapper-14.3.0/bin/gcc}"
 CXX_BIN="${CXX:-/nix/store/myvv172x2am72534zgn9wx0qp5amq6a8-gcc-wrapper-14.3.0/bin/g++}"
+[ -x "$CC_BIN" ]  || CC_BIN="$(command -v gcc)"
+[ -x "$CXX_BIN" ] || CXX_BIN="$(command -v g++)"
 
 # Python 3.13 backing ~/.uvenv313 (the pyvista parity reference interpreter).
+# Derive the prefix from python3.13 on PATH when the pinned store path is absent
+# (CI). $PY313 is used below as bin/include/lib prefix, so resolve it from the
+# interpreter's own prefix (python3.13 -> <prefix>/bin/python3.13).
 PY313=/nix/store/cdaifv92znxy5ai4sawricjl0p5b9sgf-python3-3.13.11
+if [ ! -x "$PY313/bin/python3.13" ]; then
+  _py="$(command -v python3.13 || true)"
+  [ -n "$_py" ] || { echo "no python3.13 on PATH (shell.nix should provide it)" >&2; exit 1; }
+  PY313="$("$_py" -c 'import sys;print(sys.base_prefix)')"
+fi
 
 # CRITICAL: shell.nix puts python3.11 on PATH as `python3`. VTK's Python wrapper
 # build derives the module ABI suffix (EXT_SUFFIX/SOABI) from the FIRST `python3`
