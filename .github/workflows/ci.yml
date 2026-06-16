@@ -92,31 +92,14 @@ jobs:
             /tmp/sv/bin/python /tmp/smoke_min.py
           '
 
-      # Best-effort: full smoke incl. EGL offscreen render via mesa software
-      # rasterizer. Headless GL on a hosted runner is finicky, so this is
-      # informational and does not gate the build (render is validated locally).
-      - name: Smoke — EGL render (best-effort)
-        continue-on-error: true
-        # Bound the step: headless software-EGL on a hosted runner can stall
-        # indefinitely (llvmpipe + surfaceless can hang in a driver call that
-        # ignores SIGTERM). The render is informational (continue-on-error), so
-        # cap it hard rather than let a hung render burn the 6h job budget.
-        # `timeout -s KILL` wraps the WHOLE nix-shell so the killable target is a
-        # direct child (SIGTERM swallowed inside nix-shell wouldn't bound it);
-        # SIGKILL can't be ignored. timeout-minutes is the GitHub-level backstop.
-        timeout-minutes: 7
-        run: |
-          timeout -k 20 -s KILL 240 nix-shell shell.nix --run '
-            LL="$(g++ -print-file-name=libstdc++.so.6)"; LL="$(dirname "$LL")"
-            for p in $buildInputs; do
-              LL="$p/lib:$LL"
-              for r in $(nix-store -q --references "$p" 2>/dev/null); do LL="$r/lib:$LL"; done
-            done
-            export LD_LIBRARY_PATH="$LL:$LD_LIBRARY_PATH"
-            export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe EGL_PLATFORM=surfaceless
-            export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow VTK_EGL_DEVICE_INDEX=0
-            /tmp/sv/bin/python smoke-fvtk.py
-          ' || true
+      # NOTE: a headless EGL offscreen-render smoke (mesa llvmpipe + surfaceless)
+      # used to run here, but on GitHub-hosted runners it reliably HANGS in a GL
+      # driver call that swallows SIGTERM — neither `timeout` (signal is ignored)
+      # nor the step `timeout-minutes` bounded it promptly, so the job sat in a
+      # ~10+ min zombie tail every run for zero signal (the step was already
+      # best-effort / continue-on-error and "validated locally"). It is dropped
+      # from CI on purpose; offscreen render is validated on a real GPU/dev box.
+      # The import+compute smoke above is the actual gate.
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
