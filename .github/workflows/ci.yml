@@ -1,63 +1,64 @@
-# Nix-free per-PR smoke gate.
+# Per-PR gate. Two jobs, both on a plain ubuntu host (no job-level `container:`):
 #
-# Builds the fvtk cp313 manylinux_2_17 wheel and smoke-tests it. The job runs on an
-# ORDINARY ubuntu host (so actions/checkout's modern Node works) and drops into the
-# manylinux2014 container (glibc 2.17, GCC 10.2.1 + gold, el7 yum mesa) only via
-# `docker run` for the build + smoke. Running the build steps inside a job-level
-# `container:` is what previously broke CI: checkout's Node 24 cannot start on
-# glibc 2.17. The container wheel is auditwheel-self-contained, so no nix / no
-# LD_LIBRARY_PATH. LTO off for fast PR feedback (the release wheel + LTO is
-# wheels-cibuildwheel.yml, tag-gated). ccache is host-mounted + cached across PRs.
+#   build    : cibuildwheel builds the cp313 manylinux_2_17 wheel and runs the
+#              in-container offscreen smoke (pyproject [tool.cibuildwheel]
+#              test-command). cibuildwheel handles host-checkout -> build in the
+#              manylinux2014 (glibc 2.17) container -> auditwheel repair, so we
+#              don't hand-roll any docker.
+#   bitexact : install that self-contained wheel on the host (cp313 via
+#              setup-python) alongside stock vtk==9.6.2 and assert byte-for-byte
+#              identical output (maxULP=0). No container — only the build needs
+#              old glibc; the wheel runs anywhere.
 name: CI
 
 on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-  push:
-    tags: ["*"]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-smoke:
-    name: build + smoke (manylinux2014, no nix)
+  build:
+    name: build cp313 wheel (manylinux_2_17)
     runs-on: ubuntu-latest
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # VTK derives its version from full history
+      - name: Build wheel + offscreen smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: cp313-*   # fast PR gate; release matrix is wheels-cibuildwheel.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-wheel-cp313
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  bitexact:
+    name: fvtk == stock VTK 9.6.2 (bit-exact)
+    needs: build
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Restore ccache
-        uses: actions/cache@v4
+      - uses: actions/setup-python@v5
         with:
-          path: ${{ github.workspace }}/.ccache
-          key: fvtk-ccache-m217-${{ github.sha }}
-          restore-keys: fvtk-ccache-m217-
-
-      - name: Build cp313 manylinux_2_17 wheel (LTO off) in container
-        run: |
-          set -euxo pipefail
-          FVTK_LTO=0 \
-          CCACHE_DIR="$CCACHE_DIR" \
-          OUTDIR="$GITHUB_WORKSPACE/wheelhouse" \
-            ci/build-wheels-linux.sh 313
-          ls -la "$GITHUB_WORKSPACE/wheelhouse"/*.whl
-
-      - name: Smoke — import + compute + WebCore + offscreen render in container
-        run: |
-          set -euxo pipefail
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/src:ro \
-            quay.io/pypa/manylinux2014_x86_64 \
-            bash /src/ci/smoke_in_container.sh /src/wheelhouse
-
-      - uses: actions/upload-artifact@v4
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
         with:
-          name: fvtk-wheel-cp313-manylinux217
-          path: wheelhouse/*.whl
-          if-no-files-found: error
+          name: fvtk-wheel-cp313
+          path: dist
+      - name: Bit-exact suite (fvtk vs stock VTK 9.6.2)
+        run: ci/run-bitexact.sh dist python
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitexact-output
+          path: /tmp/bx-out
+          if-no-files-found: ignore

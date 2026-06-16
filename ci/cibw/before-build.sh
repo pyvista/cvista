@@ -7,6 +7,6 @@
 set -euxo pipefail
 python -m pip install --upgrade pip
 python -m pip install "cmake>=3.22,<4.2" "ninja>=1.11" "setuptools<81" wheel
-cmake --version | head -1
+cmake --version | sed -n 1p   # sed reads whole stream; head closes early -> SIGPIPE under pipefail
 ninja --version
 ccache --zero-stats || true
