@@ -46,6 +46,13 @@ jobs:
             fvtk-ccache-${{ runner.os }}-
 
       - name: Build minimal wheel (smoke gate — LTO off for fast feedback)
+        env:
+          # Cap ccache well under GitHub's 10 GB Actions-cache limit. The default
+          # (build-fvtk.sh: CCACHE_MAXSIZE=30G) let the cache grow to ~30 GB,
+          # which actions/cache cannot upload — the post-job "save cache" step
+          # then stalled 25+ min (effectively hanging the run) before failing.
+          # A 4 GB ccache fully covers this single LTO-off build and saves fast.
+          CCACHE_MAXSIZE: 4G
         run: |
           # Per-push/PR gate: validate the build + smoke quickly. LTO is a
           # release lever (see release-wheel-lto job), too slow for every push.
@@ -137,6 +144,11 @@ jobs:
             fvtk-ccache-lto-${{ runner.os }}-
 
       - name: LTO build (no PGO)
+        env:
+          # Cap ccache under GitHub's 10 GB Actions-cache limit so the post-job
+          # cache save doesn't stall (see build-wheel job). 8 GB covers the LTO
+          # build's larger object set.
+          CCACHE_MAXSIZE: 8G
         run: |
           FVTK_LTO=1 FVTK_ICF=1 FVTK_STRIP=1 BUILD="$PWD/build-fvtk-lto" \
             BUILD_JOBS="$(nproc)" ./build-fvtk.sh
