@@ -98,13 +98,15 @@ jobs:
       - name: Smoke — EGL render (best-effort)
         continue-on-error: true
         # Bound the step: headless software-EGL on a hosted runner can stall
-        # indefinitely (llvmpipe + surfaceless can hang on some kernels). The
-        # render is informational (continue-on-error), so cap it rather than let
-        # a hung render burn the 6h job budget. timeout-minutes fails the step on
-        # overrun; the inner `timeout` exits cleanly first so the cap is graceful.
-        timeout-minutes: 6
+        # indefinitely (llvmpipe + surfaceless can hang in a driver call that
+        # ignores SIGTERM). The render is informational (continue-on-error), so
+        # cap it hard rather than let a hung render burn the 6h job budget.
+        # `timeout -s KILL` wraps the WHOLE nix-shell so the killable target is a
+        # direct child (SIGTERM swallowed inside nix-shell wouldn't bound it);
+        # SIGKILL can't be ignored. timeout-minutes is the GitHub-level backstop.
+        timeout-minutes: 7
         run: |
-          nix-shell shell.nix --run '
+          timeout -k 20 -s KILL 240 nix-shell shell.nix --run '
             LL="$(g++ -print-file-name=libstdc++.so.6)"; LL="$(dirname "$LL")"
             for p in $buildInputs; do
               LL="$p/lib:$LL"
@@ -113,8 +115,8 @@ jobs:
             export LD_LIBRARY_PATH="$LL:$LD_LIBRARY_PATH"
             export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe EGL_PLATFORM=surfaceless
             export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow VTK_EGL_DEVICE_INDEX=0
-            timeout 300 /tmp/sv/bin/python smoke-fvtk.py
-          '
+            /tmp/sv/bin/python smoke-fvtk.py
+          ' || true
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
