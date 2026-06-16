@@ -1,17 +1,16 @@
-# DRAFT — nix-free replacement for bitexact.yml. Marked .draft.
+# Bit-exact regression: assert fvtk compute output is BYTE-FOR-BYTE identical to
+# stock VTK 9.6.2 (maxULP=0). Both jobs run on an ORDINARY ubuntu host (so
+# actions/checkout + download-artifact's modern Node works) and use the
+# manylinux2014 container (glibc 2.17) only via `docker run`. Running these steps
+# inside a job-level `container:` is what previously broke CI: checkout's Node 24
+# cannot start on glibc 2.17.
 #
-# Asserts fvtk compute output is BYTE-FOR-BYTE identical to stock VTK 9.6.2.
-# Build the cp313 wheel in the manylinux2014 container (LTO off), then run the
-# bit-exact suite with BOTH backends self-contained:
-#   * stock: pip install vtk==9.6.2 (self-contained manylinux wheel)
-#   * fvtk : the auditwheel-repaired container wheel (self-contained) + the
-#            vtkmodules->fvtk shim
-# NO nix, NO LD_LIBRARY_PATH: both wheels carry their own runtime libs.
+#   build : cp313 manylinux_2_17 wheel via ci/build-wheels-linux.sh (LTO off)
+#   bitexact: stock `pip install vtk==9.6.2` vs the container wheel + the
+#             vtkmodules->fvtk shim. Both wheels self-contained -> no LD_LIBRARY_PATH.
 name: bit-exact regression
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -24,26 +23,13 @@ jobs:
   build-wheel:
     name: build fvtk wheel (manylinux2014, no nix)
     runs-on: ubuntu-latest
-    container:
-      image: quay.io/pypa/manylinux2014_x86_64
     env:
-      PYBIN: /opt/python/cp313-cp313/bin
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: "20G"
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Install build deps
-        run: |
-          set -euxo pipefail
-          yum install -y \
-            mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
-            mesa-libGLU-devel libglvnd-devel \
-            libX11-devel libXcursor-devel libXt-devel libXext-devel ccache git
-          "$PYBIN/python" -m pip install --upgrade pip
-          "$PYBIN/python" -m pip install "cmake>=3.22,<4.2" "ninja>=1.11" "setuptools<81" wheel auditwheel
+
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -52,18 +38,16 @@ jobs:
           restore-keys: |
             fvtk-ccache-bitexact-
             fvtk-ccache-m217-
-      - name: Build wheel (LTO off)
+
+      - name: Build cp313 manylinux_2_17 wheel (LTO off) in container
         run: |
           set -euxo pipefail
-          export PATH="$PYBIN:$PATH"
-          FVTK_LTO=0 cmake -S . -B build -G Ninja -C ci/cmake/linux.cmake \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DPython3_EXECUTABLE="$PYBIN/python" -DPython3_FIND_STRATEGY=LOCATION
-          FVTK_LTO=0 cmake --build build --parallel "$(nproc)"
-          python ci/prune_setup_py.py "$PWD/build"
-          ( cd build && python setup.py bdist_wheel )
-          mkdir -p dist-out
-          auditwheel repair --plat manylinux_2_17_x86_64 -w dist-out build/dist/*.whl
+          FVTK_LTO=0 \
+          CCACHE_DIR="$CCACHE_DIR" \
+          OUTDIR="$GITHUB_WORKSPACE/dist-out" \
+            ci/build-wheels-linux.sh 313
+          ls -la "$GITHUB_WORKSPACE/dist-out"/*.whl
+
       - uses: actions/upload-artifact@v4
         with:
           name: fvtk-wheel-bitexact
@@ -74,60 +58,32 @@ jobs:
     name: fvtk == stock VTK 9.6.2 (bit-exact)
     needs: build-wheel
     runs-on: ubuntu-latest
-    container:
-      image: quay.io/pypa/manylinux2014_x86_64
-    env:
-      PYBIN: /opt/python/cp313-cp313/bin
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           name: fvtk-wheel-bitexact
           path: dist-out
 
-      # Both backends self-contained in the container -> no LD_LIBRARY_PATH.
-      - name: Create stock-VTK venv (vtk==9.6.2, numpy==2.4.6)
+      - name: Run bit-exact suite (fvtk vs stock VTK 9.6.2) in container
         run: |
           set -euxo pipefail
-          "$PYBIN/python" -m venv /tmp/stock
-          /tmp/stock/bin/pip -q install --upgrade pip
-          /tmp/stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
-          /tmp/stock/bin/python -c "import vtk; print('stock VTK', vtk.vtkVersion.GetVTKVersion())"
-
-      - name: Create fvtk venv (wheel + shim + numpy==2.4.6)
-        run: |
-          set -euxo pipefail
-          "$PYBIN/python" -m venv /tmp/fvtk
-          /tmp/fvtk/bin/pip -q install --upgrade pip
-          /tmp/fvtk/bin/pip -q install "numpy==2.4.6"
-          /tmp/fvtk/bin/pip -q install "$(ls dist-out/*.whl)"
-          SP="$(/tmp/fvtk/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')"
-          cp tools/fvtk_shim.py "$SP/_fvtk_shim.py"
-          echo "import _fvtk_shim" > "$SP/_fvtk_shim.pth"
-          /tmp/fvtk/bin/python -c "from vtkmodules.vtkCommonCore import vtkVersion; print('fvtk VTK', vtkVersion.GetVTKVersion())"
-
-      - name: Create runner venv (pytest + numpy==2.4.6)
-        run: |
-          "$PYBIN/python" -m venv /tmp/runner
-          /tmp/runner/bin/pip -q install --upgrade pip "numpy==2.4.6" pytest
-
-      - name: Run bit-exact suite (fvtk vs stock VTK 9.6.2)
-        env:
-          BITEXACT_STOCK_PY: /tmp/stock/bin/python
-          BITEXACT_FVTK_PY: /tmp/fvtk/bin/python
-          BITEXACT_STOCK_LDLP: ""
-          BITEXACT_FVTK_LDLP: ""
-          BITEXACT_OUTDIR: /tmp/bitexact-out
-        run: |
-          cd tests/bitexact
-          /tmp/runner/bin/python -m pytest -v --tb=short
+          mkdir -p "$GITHUB_WORKSPACE/bitexact-out"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src:ro \
+            -v "$GITHUB_WORKSPACE/dist-out":/wheels:ro \
+            -v "$GITHUB_WORKSPACE/bitexact-out":/bx-out \
+            -e BITEXACT_OUTDIR=/bx-out \
+            quay.io/pypa/manylinux2014_x86_64 \
+            bash /src/ci/bitexact_in_container.sh /wheels
 
       - name: Upload diff artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: bitexact-output
-          path: /tmp/bitexact-out
+          path: bitexact-out
           if-no-files-found: ignore
