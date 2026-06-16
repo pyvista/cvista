@@ -88,6 +88,7 @@ try:
         vtkDataSetTriangleFilter,
         vtkGradientFilter,
         vtkShrinkFilter,
+        vtkTableBasedClipDataSet,
         vtkVertexGlyphFilter,
         vtkWarpScalar,
         vtkWarpVector,
@@ -702,6 +703,21 @@ def op_geometry_ugrid(dtype, size):
     return g.GetOutput()
 
 
+def op_tableclip_ugrid(dtype, size):
+    # vtkTableBasedClipDataSet (pyvista's default clip) on a hex UG -> the
+    # ClipTDataSet<vtkUnstructuredGrid> instantiation, whose EvaluateCells /
+    # ExtractCells per-cell GetCellType/GetCellPoints are devirtualized via
+    # if constexpr. The edge-interpolation FP is untouched.
+    p = vtkPlane()
+    p.SetOrigin(size / 2.0, size / 2.0, size / 2.0)
+    p.SetNormal(1, 1, 0)
+    cl = vtkTableBasedClipDataSet()
+    cl.SetInputData(make_hex_ugrid(size, dtype))
+    cl.SetClipFunction(p)
+    cl.Update()
+    return cl.GetOutput()
+
+
 def op_datasetsurface_ugrid(dtype, size):
     # vtkDataSetSurfaceFilter (NOT vtkGeometryFilter — it has its own UG path)
     # directly over a hex UG drives UnstructuredGridExecuteInternal, whose dense
@@ -1145,6 +1161,7 @@ OPS = {
     "geometry_ugrid": dict(fn=op_geometry_ugrid, group="filter", dtypes=["float64"], sizes=[8, 14]),
     "threshold_ugrid": dict(fn=op_threshold_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "datasetsurface_ugrid": dict(fn=op_datasetsurface_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "tableclip_ugrid": dict(fn=op_tableclip_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "contour_wedgepyr": dict(fn=op_contour_wedgepyr, group="filter", dtypes=["float32", "float64"], sizes=[2, 4]),
     "clip_multicomp": dict(fn=op_clip_multicomp, group="filter", dtypes=["float32", "float64"], sizes=[12, 18]),
     "locator_celllocator": dict(fn=op_locator_celllocator, group="common", dtypes=["float64"], sizes=[6, 10]),
