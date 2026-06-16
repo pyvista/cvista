@@ -60,6 +60,12 @@ jobs:
           WHEEL="$(ls "$PWD"/build-fvtk/dist/*.whl)"
           echo "WHEEL=$WHEEL" >> "$GITHUB_ENV"
           ls -la "$WHEEL"
+          # Enforce the cap ON DISK before actions/cache saves it. ccache only
+          # trims lazily during compiles, so after a high-hit-rate build the dir
+          # can still hold an old (pre-cap, ~30 GB) cache. `-c` cleans to MAXSIZE
+          # so the saved cache is small and uploads in seconds, not 25+ min.
+          CCACHE_DIR="$HOME/.cache/fvtk-ccache" nix-shell shell.nix --run \
+            'ccache --max-size=4G && ccache -c && ccache -s | grep -iE "cache size|max" || true'
 
       # Hard gate: the wheel imports and the compute path works on a clean box.
       - name: Smoke — import + compute
@@ -155,6 +161,10 @@ jobs:
           WHEEL="$(ls "$PWD"/build-fvtk-lto/dist/*.whl)"
           echo "WHEEL=$WHEEL" >> "$GITHUB_ENV"
           ls -la "$WHEEL"
+          # Trim ccache to the cap on disk before actions/cache saves it (see the
+          # build-wheel job): keeps the post-job cache-save fast and bounded.
+          CCACHE_DIR="$HOME/.cache/fvtk-ccache" nix-shell shell.nix --run \
+            'ccache --max-size=8G && ccache -c && ccache -s | grep -iE "cache size|max" || true'
 
       - name: Smoke — import + compute (LTO wheel)
         run: |
