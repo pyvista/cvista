@@ -549,6 +549,18 @@ void vtkConnectivityFilter::TraverseAndMark(vtkDataSet* input)
           for (k = 0; k < numCells; k++)
           {
             cellId = this->CellIds->GetId(k);
+            // Skip cells already marked visited: when later popped they are a
+            // no-op (the pop-time `Visited[cellId] < 0` guard rejects them).
+            // Filtering them here removes only future no-ops and leaves the
+            // relative order of the surviving (not-yet-visited) cells in the
+            // wave unchanged, so the first-encounter order of cells/points --
+            // and hence region ids, point numbering and cell ordering -- is
+            // bit-identical. This just avoids the redundant Wave2 push and the
+            // later pop + guard work for cells that are already done.
+            if (this->Visited[cellId] >= 0)
+            {
+              continue;
+            }
             if (this->InScalars)
             {
               int numScalars, ii;

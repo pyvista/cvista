@@ -35,16 +35,29 @@ void vtkContourHelper::Contour(
 {
   if (!this->OutputTriangles && cell->GetCellDimension() == 3)
   {
-    // Retrieve the output triangles of the contour in temporary structures.
-    vtkNew<vtkCellArray> outTriTemp;
-    outTriTemp->AllocateEstimate(this->TrisEstimatedSize, 3);
-    vtkNew<vtkCellData> outTriDataTemp;
+    // Retrieve the output triangles of the contour in reusable scratch
+    // structures. These are members of the helper, so they are allocated once
+    // and merely cleared per call instead of being allocated/freed every cell.
+    // Reset() reuses the underlying storage (no free) and InitTraversal()
+    // rewinds the read cursor; the very first call sizes the array, after which
+    // it grows only if a cell ever needs more room. Output is byte-identical:
+    // the same triangles are produced in the same order and the polygon
+    // extraction below is unchanged.
+    vtkCellArray* outTriTemp = this->OutTriTemp;
+    vtkCellData* outTriDataTemp = this->OutTriDataTemp;
+    outTriTemp->Reset();
+    outTriTemp->InitTraversal();
     outTriDataTemp->Initialize();
 
     cell->Contour(value, cellScalars, this->Locator, this->OutVerts, this->OutLines, outTriTemp,
       this->InPd, this->OutPd, this->InCd, cellId, outTriDataTemp);
 
-    // Add output triangles to the PolygonBuilder in order to merge them into polygons.
+    // Add output triangles to the PolygonBuilder in order to merge them into
+    // polygons. NOTE: this is intentionally a fresh, function-local builder.
+    // vtkPolygonBuilder::Reset() does not clear its internal triangle map
+    // (Tris, used for duplicate detection), so a reused builder would carry
+    // state across cells and change the output. Constructing it fresh keeps
+    // behavior byte-identical to upstream.
     vtkPolygonBuilder polyBuilder;
     polyBuilder.Reset();
 
@@ -67,7 +80,7 @@ void vtkContourHelper::Contour(
     }
 
     // Add constructed polygons to the output.
-    vtkNew<vtkIdListCollection> polyCollection;
+    vtkIdListCollection* polyCollection = this->PolyCollection;
     polyBuilder.GetPolygons(polyCollection);
     for (int polyId = 0; polyId < polyCollection->GetNumberOfItems(); ++polyId)
     {

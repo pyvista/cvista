@@ -21,15 +21,17 @@
 #ifndef vtkContourHelper_h
 #define vtkContourHelper_h
 
+#include "vtkCellArray.h"         // For reusable temp cell array (vtkNew member)
+#include "vtkCellData.h"          // For reusable temp cell data (vtkNew member)
 #include "vtkFiltersCoreModule.h" // For export macro
+#include "vtkIdListCollection.h"  // For reusable polygon collection (vtkNew member)
+#include "vtkNew.h"               // For vtkNew temporaries
 #include "vtkWeakPointer.h"       // For vtkWeakPointer
 #include "vtkWrappingHints.h"     // For VTK_MARSHALAUTO
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkIncrementalPointLocator;
-class vtkCellArray;
 class vtkPointData;
-class vtkCellData;
 class vtkCell;
 class vtkDataArray;
 
@@ -88,6 +90,15 @@ private:
   vtkWeakPointer<vtkCellData> OutCd;
   int TrisEstimatedSize = 0;
   bool OutputTriangles = false;
+
+  // Reusable scratch buffers for the (!OutputTriangles && 3D-cell) merge path.
+  // Hoisted out of Contour() so they are allocated once and only cleared per
+  // call, eliminating per-cell allocation/free churn. Output is unchanged:
+  // identical triangles are inserted in identical order and the polygon
+  // extraction is deterministic.
+  vtkNew<vtkCellArray> OutTriTemp;
+  vtkNew<vtkCellData> OutTriDataTemp;
+  vtkNew<vtkIdListCollection> PolyCollection;
 };
 
 VTK_ABI_NAMESPACE_END

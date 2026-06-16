@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkTubeFilter.h"
 
+#include "vtkAOSDataArrayTemplate.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
+#include "vtkDoubleArray.h"
 #include "vtkFloatArray.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -70,6 +72,47 @@ struct IdPointsEqual
 
   vtkPoints* Points;
 };
+
+// Devirtualized, byte-identical replacements for vtkPoints::InsertPoint and
+// vtkFloatArray::InsertTuple. These call the concrete
+// vtkAOSDataArrayTemplate<T> implementation directly (qualified call, no vtable
+// lookup), but perform exactly the same EnsureAccessToTuple + per-component
+// static_cast write + MaxId update as the virtual path, so output, output
+// order, and final array sizes (including all early-return paths) are
+// unchanged.
+inline void InsertNormal(vtkFloatArray* arr, vtkIdType id, const double* n)
+{
+  arr->vtkAOSDataArrayTemplate<float>::InsertTuple(id, n);
+}
+
+// Devirtualized equivalent of vtkDataArray::InsertTuple2 for a 2-component
+// vtkFloatArray: builds the same double[2] and performs the identical
+// EnsureAccessToTuple + static_cast<float> write as the virtual path.
+inline void InsertTCoord(vtkFloatArray* arr, vtkIdType id, double v0, double v1)
+{
+  const double tuple[2] = { v0, v1 };
+  arr->vtkAOSDataArrayTemplate<float>::InsertTuple(id, tuple);
+}
+
+// Insert a point given as double[3] into newPts, devirtualizing on the
+// concrete buffer type. Falls back to the virtual path for any unexpected type.
+inline void InsertTubePoint(vtkPoints* pts, int dataType, vtkIdType id, const double* p)
+{
+  switch (dataType)
+  {
+    case VTK_FLOAT:
+      static_cast<vtkFloatArray*>(pts->GetData())
+        ->vtkAOSDataArrayTemplate<float>::InsertTuple(id, p);
+      break;
+    case VTK_DOUBLE:
+      static_cast<vtkDoubleArray*>(pts->GetData())
+        ->vtkAOSDataArrayTemplate<double>::InsertTuple(id, p);
+      break;
+    default:
+      pts->InsertPoint(id, p);
+      break;
+  }
+}
 
 }
 
@@ -346,6 +389,7 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
   double sFactor = 1.0;
   double normal[3];
   vtkIdType ptId = offset;
+  const int newPtsType = newPts->GetDataType();
 
   // Use "averaged" segment to create beveled effect.
   // Watch out for first and last points.
@@ -475,8 +519,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
           normal[i] = w[i] * cos((double)k * this->Theta) + nP[i] * sin((double)k * this->Theta);
           s[i] = p[i] + this->Radius * sFactor * normal[i];
         }
-        newPts->InsertPoint(ptId, s);
-        newNormals->InsertTuple(ptId, normal);
+        InsertTubePoint(newPts, newPtsType, ptId, s);
+        InsertNormal(newNormals, ptId, normal);
         outPD->CopyData(pd, pts[j], ptId);
         ptId++;
       } // for each side
@@ -502,11 +546,11 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
             nP[i] * sin((double)(k + 0.5) * this->Theta);
           s[i] = p[i] + this->Radius * sFactor * normal[i];
         }
-        newPts->InsertPoint(ptId, s);
-        newNormals->InsertTuple(ptId, n_right);
+        InsertTubePoint(newPts, newPtsType, ptId, s);
+        InsertNormal(newNormals, ptId, n_right);
         outPD->CopyData(pd, pts[j], ptId);
-        newPts->InsertPoint(ptId + 1, s);
-        newNormals->InsertTuple(ptId + 1, n_left);
+        InsertTubePoint(newPts, newPtsType, ptId + 1, s);
+        InsertNormal(newNormals, ptId + 1, n_left);
         outPD->CopyData(pd, pts[j], ptId + 1);
         ptId += 2;
       } // for each side
@@ -528,8 +572,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
     for (k = 0; k < numCapSides; k += capIncr)
     {
       newPts->GetPoint(offset + k, s);
-      newPts->InsertPoint(ptId, s);
-      newNormals->InsertTuple(ptId, startCapNorm);
+      InsertTubePoint(newPts, newPtsType, ptId, s);
+      InsertNormal(newNormals, ptId, startCapNorm);
       outPD->CopyData(pd, pts[0], ptId);
       ptId++;
     }
@@ -542,8 +586,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
     for (k = 0; k < numCapSides; k += capIncr)
     {
       newPts->GetPoint(endOffset + k, s);
-      newPts->InsertPoint(ptId, s);
-      newNormals->InsertTuple(ptId, endCapNorm);
+      InsertTubePoint(newPts, newPtsType, ptId, s);
+      InsertNormal(newNormals, ptId, endCapNorm);
       outPD->CopyData(pd, pts[npts - 1], ptId);
       ptId++;
     }
@@ -674,7 +718,7 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
       for (k = 0; k < numSides; k++)
       {
         double tcy = static_cast<double>(k) / (numSides - 1);
-        newTCoords->InsertTuple2(offset + i * numSides + k, tc, tcy);
+        InsertTCoord(newTCoords, offset + i * numSides + k, tc, tcy);
       }
     }
   }
@@ -690,7 +734,7 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
       for (k = 0; k < numSides; k++)
       {
         double tcy = static_cast<double>(k) / (numSides - 1);
-        newTCoords->InsertTuple2(offset + i * numSides + k, tc, tcy);
+        InsertTCoord(newTCoords, offset + i * numSides + k, tc, tcy);
       }
 
       xPrev[0] = x[0];
@@ -720,7 +764,7 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
       for (k = 0; k < numSides; k++)
       {
         double tcy = static_cast<double>(k) / (numSides - 1);
-        newTCoords->InsertTuple2(offset + i * numSides + k, tc, tcy);
+        InsertTCoord(newTCoords, offset + i * numSides + k, tc, tcy);
       }
       xPrev[0] = x[0];
       xPrev[1] = x[1];
@@ -737,13 +781,13 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
     // start cap
     for (ik = 0; ik < this->NumberOfSides; ik++)
     {
-      newTCoords->InsertTuple2(startIdx + ik, 0.0, 0.0);
+      InsertTCoord(newTCoords, startIdx + ik, 0.0, 0.0);
     }
 
     // end cap
     for (ik = 0; ik < this->NumberOfSides; ik++)
     {
-      newTCoords->InsertTuple2(startIdx + this->NumberOfSides + ik, tc, 0.0);
+      InsertTCoord(newTCoords, startIdx + this->NumberOfSides + ik, tc, 0.0);
     }
   }
 }
