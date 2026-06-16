@@ -462,6 +462,19 @@ def op_threshold(dtype, size):
     return t.GetOutput()
 
 
+def op_threshold_ugrid(dtype, size):
+    # Threshold a vtkUnstructuredGrid of hexahedra on its radial point scalar.
+    # Unlike op_threshold (vtkImageData), a UG input drives the devirtualized
+    # GetCellType/GetCellPoints fast path in vtkThreshold's EvaluateCellsFunctor.
+    # The mid-band range keeps a partial shell of cells (non-trivial output).
+    t = vtkThreshold()
+    t.SetInputData(make_hex_ugrid(size, dtype))
+    t.SetLowerThreshold(3.0)
+    t.SetUpperThreshold(0.45 * size * size)
+    t.Update()
+    return t.GetOutput()
+
+
 def op_warp(dtype, size):
     w = vtkWarpScalar()
     w.SetInputData(make_grid2d(size, dtype))
@@ -1117,6 +1130,7 @@ OPS = {
     "append": dict(fn=op_append, group="filter", dtypes=["float64"], sizes=[16, 28]),
     "probe": dict(fn=op_probe, group="filter", dtypes=["float32", "float64"], sizes=[10, 16]),
     "geometry_ugrid": dict(fn=op_geometry_ugrid, group="filter", dtypes=["float64"], sizes=[8, 14]),
+    "threshold_ugrid": dict(fn=op_threshold_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "contour_wedgepyr": dict(fn=op_contour_wedgepyr, group="filter", dtypes=["float32", "float64"], sizes=[2, 4]),
     "clip_multicomp": dict(fn=op_clip_multicomp, group="filter", dtypes=["float32", "float64"], sizes=[12, 18]),
     "locator_celllocator": dict(fn=op_locator_celllocator, group="common", dtypes=["float64"], sizes=[6, 10]),
