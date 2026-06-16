@@ -36,23 +36,23 @@ jobs:
           # shell.nix uses <nixpkgs>; pin it to a channel that ships python313.
           nix_path: nixpkgs=channel:nixos-25.05
 
-      # Warm ccache across runs so only the first build pays the full cost.
-      - name: Restore ccache
-        uses: actions/cache@v4
+      # RESTORE-ONLY ccache. The PR gate runs often, and saving this build's
+      # multi-GB ccache back to the GitHub Actions cache reliably stalled the
+      # post-job "save cache" step for 15-30 min (GitHub's cache service chokes
+      # on large uploads) — repeatedly leaving the run hung after the gate had
+      # already passed. So the gate only *restores* a warm cache; it never saves.
+      # The cache is populated by the release-wheel-lto job (runs on tags/manual,
+      # where the save cost is paid rarely). A cold gate just builds slower once.
+      - name: Restore ccache (restore-only — no save, see note)
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/fvtk-ccache
           key: fvtk-ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
+            fvtk-ccache-lto-${{ runner.os }}-
             fvtk-ccache-${{ runner.os }}-
 
       - name: Build minimal wheel (smoke gate — LTO off for fast feedback)
-        env:
-          # Cap ccache well under GitHub's 10 GB Actions-cache limit. The default
-          # (build-fvtk.sh: CCACHE_MAXSIZE=30G) let the cache grow to ~30 GB,
-          # which actions/cache cannot upload — the post-job "save cache" step
-          # then stalled 25+ min (effectively hanging the run) before failing.
-          # A 4 GB ccache fully covers this single LTO-off build and saves fast.
-          CCACHE_MAXSIZE: 4G
         run: |
           # Per-push/PR gate: validate the build + smoke quickly. LTO is a
           # release lever (see release-wheel-lto job), too slow for every push.
@@ -60,12 +60,6 @@ jobs:
           WHEEL="$(ls "$PWD"/build-fvtk/dist/*.whl)"
           echo "WHEEL=$WHEEL" >> "$GITHUB_ENV"
           ls -la "$WHEEL"
-          # Enforce the cap ON DISK before actions/cache saves it. ccache only
-          # trims lazily during compiles, so after a high-hit-rate build the dir
-          # can still hold an old (pre-cap, ~30 GB) cache. `-c` cleans to MAXSIZE
-          # so the saved cache is small and uploads in seconds, not 25+ min.
-          CCACHE_DIR="$HOME/.cache/fvtk-ccache" nix-shell shell.nix --run \
-            'ccache --max-size=4G && ccache -c && ccache -s | grep -iE "cache size|max" || true'
 
       # Hard gate: the wheel imports and the compute path works on a clean box.
       - name: Smoke — import + compute
