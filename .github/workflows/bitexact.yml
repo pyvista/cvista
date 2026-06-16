@@ -17,8 +17,13 @@ name: bit-exact regression
 # loader path — the same LD_LIBRARY_PATH derivation the smoke job in ci.yml uses.
 
 on:
+  # PR-only for feature branches (no push: feat/**): a push to a PR branch
+  # otherwise fires TWO runs -- the push- and pull_request-triggered pair land in
+  # different concurrency groups (refs/heads/... vs refs/pull/N/merge) and never
+  # cancel each other (same rationale as ci.yml, commit c5bb744). push:[main]
+  # stays so the suite re-runs post-merge on main.
   push:
-    branches: [main, "feat/**"]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
