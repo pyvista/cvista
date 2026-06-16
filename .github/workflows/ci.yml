@@ -97,6 +97,12 @@ jobs:
       # informational and does not gate the build (render is validated locally).
       - name: Smoke — EGL render (best-effort)
         continue-on-error: true
+        # Bound the step: headless software-EGL on a hosted runner can stall
+        # indefinitely (llvmpipe + surfaceless can hang on some kernels). The
+        # render is informational (continue-on-error), so cap it rather than let
+        # a hung render burn the 6h job budget. timeout-minutes fails the step on
+        # overrun; the inner `timeout` exits cleanly first so the cap is graceful.
+        timeout-minutes: 6
         run: |
           nix-shell shell.nix --run '
             LL="$(g++ -print-file-name=libstdc++.so.6)"; LL="$(dirname "$LL")"
@@ -107,7 +113,7 @@ jobs:
             export LD_LIBRARY_PATH="$LL:$LD_LIBRARY_PATH"
             export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe EGL_PLATFORM=surfaceless
             export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow VTK_EGL_DEVICE_INDEX=0
-            /tmp/sv/bin/python smoke-fvtk.py
+            timeout 300 /tmp/sv/bin/python smoke-fvtk.py
           '
 
       - name: Upload wheel
