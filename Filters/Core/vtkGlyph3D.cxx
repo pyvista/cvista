@@ -22,6 +22,7 @@
 #include "vtkUnsignedCharArray.h"
 
 #include <algorithm>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkGlyph3D);
@@ -140,7 +141,6 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   double x[3], v[3], vNew[3], s = 0.0, vMag = 0.0, value, tc[3];
   vtkTransform* trans = vtkTransform::New();
   vtkNew<vtkIdList> pointIdList;
-  vtkIdList* cellPts;
   int npts;
   vtkIdList* pts;
   vtkIdType ptIncr, cellIncr, cellId;
@@ -155,6 +155,19 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   vtkNew<vtkIdList> dstPointIdList;
   vtkNew<vtkIdList> srcCellIdList;
   vtkNew<vtkIdList> dstCellIdList;
+
+  // The topology of the current source glyph is identical for every input
+  // point; only the point-id offset (ptIncr) changes. Cache the source-local
+  // cell types and connectivity once per source so the per-input-point loop
+  // does not redundantly re-traverse the source via virtual GetCellPoints()/
+  // GetCellType() calls. This only changes how the (integer) connectivity is
+  // obtained; the values inserted, the cell types, and the insertion order are
+  // identical, so the output is bit-for-bit unchanged.
+  vtkPolyData* cachedSource = nullptr;
+  std::vector<int> cachedCellTypes;
+  std::vector<vtkIdType> cachedCellOffsets; // size = numCachedCells + 1
+  std::vector<vtkIdType> cachedCellConn;    // flattened source-local point ids
+  std::vector<vtkIdType> cellConnScratch;   // reusable per-cell buffer (ids + ptIncr)
 
   vtkDebugMacro(<< "Generating glyphs");
 
@@ -524,17 +537,52 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     // Now begin copying/transforming glyph
     trans->Identity();
 
-    // Copy all topology (transformation independent)
+    // Copy all topology (transformation independent).
+    //
+    // Build/refresh the source-local topology cache when the source changes
+    // (it only changes between input points when IndexMode is enabled). The
+    // cache stores exactly the same cell types and source-local point ids that
+    // GetCellType()/GetCellPoints() would return, flattened for cheap reuse.
+    if (source != cachedSource)
+    {
+      cachedSource = source;
+      vtkIdType numCells = source->GetNumberOfCells();
+      cachedCellTypes.resize(numCells);
+      cachedCellOffsets.resize(numCells + 1);
+      cachedCellConn.clear();
+      vtkIdType maxNpts = 0;
+      vtkIdType off = 0;
+      for (vtkIdType c = 0; c < numCells; ++c)
+      {
+        source->GetCellPoints(c, pointIdList);
+        vtkIdType cnpts = pointIdList->GetNumberOfIds();
+        cachedCellTypes[c] = source->GetCellType(c);
+        cachedCellOffsets[c] = off;
+        for (vtkIdType k = 0; k < cnpts; ++k)
+        {
+          cachedCellConn.push_back(pointIdList->GetId(k));
+        }
+        off += cnpts;
+        if (cnpts > maxNpts)
+        {
+          maxNpts = cnpts;
+        }
+      }
+      cachedCellOffsets[numCells] = off;
+      cellConnScratch.resize(maxNpts);
+    }
+
     for (cellId = 0; cellId < numSourceCells; cellId++)
     {
-      source->GetCellPoints(cellId, pointIdList);
-      cellPts = pointIdList;
-      npts = cellPts->GetNumberOfIds();
-      for (pts->Reset(), i = 0; i < npts; i++)
+      vtkIdType cellBegin = cachedCellOffsets[cellId];
+      npts = static_cast<int>(cachedCellOffsets[cellId + 1] - cellBegin);
+      const vtkIdType* srcIds = cachedCellConn.data() + cellBegin;
+      vtkIdType* dstIds = cellConnScratch.data();
+      for (i = 0; i < npts; i++)
       {
-        pts->InsertId(i, cellPts->GetId(i) + ptIncr);
+        dstIds[i] = srcIds[i] + ptIncr;
       }
-      output->InsertNextCell(source->GetCellType(cellId), pts);
+      output->InsertNextCell(cachedCellTypes[cellId], npts, dstIds);
     }
 
     // translate Source to Input point

@@ -673,9 +673,28 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
   }
   else // smooth normally
   {
-    for (i = 0; i < numPts; i++) // initialize to old coordinates
+    // Initialize to old coordinates. When the input and output point arrays have
+    // the identical concrete AOS type and 3 components, copy the raw memory
+    // directly. This is bit-for-bit identical to the per-point GetPoint/SetPoint
+    // path: that path widens float->double and narrows double->float, which is an
+    // exact round-trip for an existing value (float->double is lossless and the
+    // double->float narrowing returns the original float) and a no-op for
+    // double->double. It only removes the per-point virtual dispatch and the
+    // float<->double conversions; no FP arithmetic is performed in either path.
+    vtkDataArray* inData = inPts->GetData();
+    vtkDataArray* outData = newPts->GetData();
+    if (inData->GetDataType() == outData->GetDataType() &&
+      inData->GetNumberOfComponents() == 3 && outData->GetNumberOfComponents() == 3)
     {
-      newPts->SetPoint(i, inPts->GetPoint(i));
+      memcpy(outData->GetVoidPointer(0), inData->GetVoidPointer(0),
+        static_cast<size_t>(numPts) * 3 * inData->GetDataTypeSize());
+    }
+    else
+    {
+      for (i = 0; i < numPts; i++) // initialize to old coordinates
+      {
+        newPts->SetPoint(i, inPts->GetPoint(i));
+      }
     }
   }
 

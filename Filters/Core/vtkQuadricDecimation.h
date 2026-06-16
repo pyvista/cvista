@@ -359,6 +359,7 @@ protected:
 
   // Temporary variables for performance
   vtkIdList* CollapseCellIds;
+  vtkIdList* ChangedEdges;
   double* TempX;
   double* TempQuad;
   double* TempB;

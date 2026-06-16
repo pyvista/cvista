@@ -227,7 +227,11 @@ void vtkSTComputePointGradient(int i, int j, int k, T* s, int* inExt, vtkIdType 
     }                                                                                              \
     if (ComputeScalars)                                                                            \
     {                                                                                              \
-      newScalars->InsertNextTuple(&value);                                                         \
+      /* newScalars is a concrete single-component vtkFloatArray*. The typed,                      \
+       * non-virtual InsertNextValue avoids the virtual InsertNextTuple(const double*)             \
+       * dispatch and its per-call NumberOfComponents loop. The stored bytes are                   \
+       * identical: both paths do static_cast<float>(value) into the same buffer. */               \
+      newScalars->InsertNextValue(static_cast<float>(value));                                       \
     }                                                                                              \
   } while (false)
 

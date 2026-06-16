@@ -187,6 +187,48 @@ public:
   int Between(double s) const;
   ///@}
 protected:
+  // Inlinable equivalent of `(this->*ThresholdFunction)(s)`. The active
+  // threshold function is resolved once (see ResolveThresholdFunction(), called
+  // from RequestData) into ThresholdFunctionId so the hot per-point evaluation
+  // can branch on a cached int and inline the comparison, instead of paying for
+  // a non-inlinable pointer-to-member-function indirect call millions of times.
+  // The comparison expressions are byte-for-byte the same as in Lower()/Upper()/
+  // Between(), so the result is identical for every input.
+  enum ThresholdFunctionIdType
+  {
+    THRESHOLD_FN_BETWEEN = 0,
+    THRESHOLD_FN_LOWER,
+    THRESHOLD_FN_UPPER
+  };
+  inline int EvaluateThreshold(double s) const
+  {
+    switch (this->ThresholdFunctionId)
+    {
+      case THRESHOLD_FN_LOWER:
+        return (s <= this->LowerThreshold ? 1 : 0);
+      case THRESHOLD_FN_UPPER:
+        return (s >= this->UpperThreshold ? 1 : 0);
+      default: // THRESHOLD_FN_BETWEEN
+        return (s >= this->LowerThreshold && s <= this->UpperThreshold) ? 1 : 0;
+    }
+  }
+  // Sync ThresholdFunctionId with the currently selected ThresholdFunction.
+  void ResolveThresholdFunction()
+  {
+    if (this->ThresholdFunction == &vtkThreshold::Lower)
+    {
+      this->ThresholdFunctionId = THRESHOLD_FN_LOWER;
+    }
+    else if (this->ThresholdFunction == &vtkThreshold::Upper)
+    {
+      this->ThresholdFunctionId = THRESHOLD_FN_UPPER;
+    }
+    else
+    {
+      this->ThresholdFunctionId = THRESHOLD_FN_BETWEEN;
+    }
+  }
+
   vtkThreshold();
   ~vtkThreshold() override;
 
@@ -206,6 +248,9 @@ protected:
   int OutputPointsPrecision = DEFAULT_PRECISION;
 
   int (vtkThreshold::*ThresholdFunction)(double s) const = &vtkThreshold::Between;
+  // Cached id of the active ThresholdFunction; kept in sync by
+  // ResolveThresholdFunction() and consumed by the inlinable EvaluateThreshold().
+  int ThresholdFunctionId = THRESHOLD_FN_BETWEEN;
 
   template <typename TScalarArray>
   struct EvaluateCellsFunctor;

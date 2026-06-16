@@ -2374,11 +2374,17 @@ void vtkDataSetSurfaceFilter::InsertQuadInHash(
     end = &(quad->Next);
     // a has to match in this bin.
     // c should be independent of point order.
-    if (quad->numPts == 4 && c == quad->ptArray[2])
+    // ptArray always points to the storage immediately after the quad header
+    // (see NewFastGeomQuad), so indexing relative to quad is bitwise-identical
+    // to quad->ptArray[i] while avoiding the extra dependent load of the
+    // ptArray member pointer on every node of this hot hash-chain walk.
+    const vtkIdType* pts = reinterpret_cast<const vtkIdType*>(quad) + FSizeDivSizeId;
+    if (quad->numPts == 4 && c == pts[2])
     {
+      const vtkIdType p1 = pts[1];
+      const vtkIdType p3 = pts[3];
       // Check both orders for b and d.
-      if ((b == quad->ptArray[1] && d == quad->ptArray[3]) ||
-        (b == quad->ptArray[3] && d == quad->ptArray[1]))
+      if ((b == p1 && d == p3) || (b == p3 && d == p1))
       {
         // We have a match.
         quad->SourceId = -1;
@@ -2434,8 +2440,16 @@ void vtkDataSetSurfaceFilter::InsertTriInHash(
     // a has to match in this bin.
     if (quad->numPts == 3)
     {
-      if ((b == quad->ptArray[1] && c == quad->ptArray[2]) ||
-        (b == quad->ptArray[2] && c == quad->ptArray[1]))
+      // ptArray always points to the storage located immediately after the
+      // quad header (see NewFastGeomQuad: ptArray = (vtkIdType*)q +
+      // FSizeDivSizeId). Indexing relative to quad therefore yields the
+      // bitwise-identical values to quad->ptArray[i], while avoiding the
+      // extra dependent load of the ptArray member pointer on every node of
+      // this hot hash-chain walk.
+      const vtkIdType* pts = reinterpret_cast<const vtkIdType*>(quad) + FSizeDivSizeId;
+      const vtkIdType p1 = pts[1];
+      const vtkIdType p2 = pts[2];
+      if ((b == p1 && c == p2) || (b == p2 && c == p1))
       {
         // We have a match.
         quad->SourceId = -1;

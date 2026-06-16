@@ -5,6 +5,7 @@
 #include "vtkAbstractCellLinks.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
+#include "vtkCartesianGrid.h"
 #include "vtkCell.h"
 #include "vtkCellData.h"
 #include "vtkCellTypeUtilities.h"
@@ -20,6 +21,7 @@
 #include "vtkSmartPointer.h"
 #include "vtkStaticCellLinks.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
+#include "vtkStructuredData.h"
 #include "vtkStructuredGrid.h"
 #include "vtkUniformGrid.h"
 #include "vtkUnsignedIntArray.h"
@@ -241,6 +243,69 @@ struct Spread
     }
   }
 };
+
+//------------------------------------------------------------------------------
+// Bit-exact, devirtualized replacement for the per-point call
+//   input->GetPointCells(ptId, cellIds)
+// when the input is a structured dataset whose GetPointCells routes to
+// vtkStructuredData::GetPointCells (vtkImageData/vtkUniformGrid/
+// vtkRectilinearGrid via vtkCartesianGrid, and vtkStructuredGrid).
+//
+// This mirrors vtkStructuredData::GetPointCells EXACTLY: the same offset
+// table, the same iteration order, and the same cellId formula. It therefore
+// produces an identical cellIds list (identical values in identical order) for
+// every point. The only differences are (a) the structured dimensions are
+// fetched once by the caller instead of per call, (b) the call is direct
+// rather than through the vtkDataSet virtual table, and (c) ids are written
+// into a pre-sized buffer with the bookkeeping hoisted out of the inner loop,
+// avoiding vtkIdList::Reset()/InsertNextId() capacity churn. The resulting
+// cellIds are consumed by the unchanged outPD->InterpolatePoint(), so the
+// floating-point averaging order is byte-for-byte unchanged.
+inline void StructuredGetPointCells(vtkIdType ptId, vtkIdList* cellIds, const int dim[3])
+{
+  // Match vtkStructuredData::GetPointCells offset table and order exactly.
+  static const int offset[8][3] = { { -1, 0, 0 }, { -1, -1, 0 }, { -1, -1, -1 }, { -1, 0, -1 },
+    { 0, 0, 0 }, { 0, -1, 0 }, { 0, -1, -1 }, { 0, 0, -1 } };
+
+  vtkIdType cellDim[3];
+  for (int i = 0; i < 3; i++)
+  {
+    cellDim[i] = dim[i] - 1;
+    if (cellDim[i] == 0)
+    {
+      cellDim[i] = 1;
+    }
+  }
+
+  const int ptLoc[3] = { static_cast<int>(ptId % dim[0]),
+    static_cast<int>((ptId / dim[0]) % dim[1]),
+    static_cast<int>(ptId / (static_cast<vtkIdType>(dim[0]) * dim[1])) };
+
+  // Pre-size to the maximum (8) and write directly; trim at the end. This
+  // avoids the per-id Reset()/InsertNextId() capacity check while preserving
+  // the exact same sequence of appended ids.
+  cellIds->SetNumberOfIds(8);
+  vtkIdType* ids = cellIds->GetPointer(0);
+  vtkIdType count = 0;
+  for (int j = 0; j < 8; j++)
+  {
+    int cellLoc[3];
+    int i;
+    for (i = 0; i < 3; i++)
+    {
+      cellLoc[i] = ptLoc[i] + offset[j][i];
+      if (cellLoc[i] < 0 || cellLoc[i] >= cellDim[i])
+      {
+        break;
+      }
+    }
+    if (i >= 3) // add cell
+    {
+      ids[count++] = cellLoc[0] + cellLoc[1] * cellDim[0] + cellLoc[2] * cellDim[0] * cellDim[1];
+    }
+  }
+  cellIds->SetNumberOfIds(count);
+}
 
 } // end anonymous namespace
 
@@ -754,6 +819,28 @@ int vtkCellDataToPointData::InterpolatePointData(vtkDataSet* input, vtkDataSet* 
 
   double weights[VTK_MAX_CELLS_PER_POINT];
 
+  // Fast, bit-exact incident-cell traversal for structured inputs. Both
+  // vtkCartesianGrid (vtkImageData/vtkUniformGrid/vtkRectilinearGrid) and
+  // vtkStructuredGrid route their GetPointCells() through the same
+  // vtkStructuredData::GetPointCells(ptId, cellIds, dims). When we recognize
+  // such an input we fetch the structured dimensions once here and replicate
+  // that traversal directly (see StructuredGetPointCells), bypassing the
+  // per-point virtual dispatch and vtkIdList capacity churn. The produced
+  // cellIds are identical (same ids, same order), so the downstream averaging
+  // performed by InterpolatePoint is byte-for-byte unchanged.
+  bool useStructuredFastPath = false;
+  int structuredDims[3] = { 0, 0, 0 };
+  if (auto* cartesianGrid = vtkCartesianGrid::SafeDownCast(input))
+  {
+    cartesianGrid->GetDimensions(structuredDims);
+    useStructuredFastPath = true;
+  }
+  else if (auto* structuredGrid = vtkStructuredGrid::SafeDownCast(input))
+  {
+    structuredGrid->GetDimensions(structuredDims);
+    useStructuredFastPath = true;
+  }
+
   bool abort = false;
   vtkIdType progressInterval = numberOfPoints / 20 + 1;
   for (vtkIdType ptId = 0; ptId < numberOfPoints && !abort; ptId++)
@@ -764,7 +851,14 @@ int vtkCellDataToPointData::InterpolatePointData(vtkDataSet* input, vtkDataSet* 
       abort = this->CheckAbort();
     }
 
-    input->GetPointCells(ptId, cellIds);
+    if (useStructuredFastPath)
+    {
+      StructuredGetPointCells(ptId, cellIds, structuredDims);
+    }
+    else
+    {
+      input->GetPointCells(ptId, cellIds);
+    }
     vtkIdType numCells = cellIds->GetNumberOfIds();
 
     if (numCells > 0 && numCells < VTK_MAX_CELLS_PER_POINT)

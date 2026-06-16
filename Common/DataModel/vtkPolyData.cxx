@@ -8,6 +8,7 @@
 #include "vtkCellLinks.h"
 #include "vtkGarbageCollector.h"
 #include "vtkGenericCell.h"
+#include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkNew.h"
@@ -1234,9 +1235,15 @@ inline void GetCellEdgeNeighborsImpl(
         if (cells1[i] == cells2[j])
         {
           // For degenerate cells, the same cells are linked several times to the degenerate
-          // point. So InsertUniqueId is used to prevent duplicates. This is not impacting
+          // point. So a uniqueness check is used to prevent duplicates. This is not impacting
           // performances compared to InsertNextId, because most of the time, cellIds is empty.
-          cellIds->InsertUniqueId(cells1[i]);
+          // Inlined equivalent of cellIds->InsertUniqueId(cells1[i]): IsId() and InsertNextId()
+          // are inline in vtkIdList.h, so this avoids the out-of-line InsertUniqueId call in the
+          // hot loop while preserving identical iteration/insertion order and de-duplication.
+          if (cellIds->IsId(cells1[i]) < 0)
+          {
+            cellIds->InsertNextId(cells1[i]);
+          }
           break;
         }
       }

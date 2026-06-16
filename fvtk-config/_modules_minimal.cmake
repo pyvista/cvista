@@ -86,6 +86,15 @@ set(VTK_MODULE_ENABLE_VTK_RenderingUI YES CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2 YES CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_RenderingVolume WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ViewsContext2D YES CACHE STRING "")
+# Web modules: pyvista export_html/export_vtksz -> trame-vtk ->
+# vtkmodules.vtkWebCore.vtkWebApplication. WebCore PRIVATE_DEPENDS on
+# WebGLExporter (which DEPENDS IOExport, already YES). Explicit module YES
+# overrides the VTK_GROUP_ENABLE_Web DONT_WANT above. All transitive deps
+# (CommonSystem, IOImage, ParallelCore, Python, nlohmannjson, vtksys,
+# RenderingAnnotation, InteractionWidgets, FiltersCore/General/Geometry,
+# IOCore, IOExport, RenderingCore) are already in the enabled closure.
+set(VTK_MODULE_ENABLE_VTK_WebCore YES CACHE STRING "")
+set(VTK_MODULE_ENABLE_VTK_WebGLExporter YES CACHE STRING "")
 
 # Explicit NO for heavy/dead modules. With deny-by-default most of these would
 # never be scanned, but an explicit NO overrides any stale cached WANT and

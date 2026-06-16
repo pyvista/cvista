@@ -14,6 +14,7 @@
 #include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
+#include "vtkUnsignedCharArray.h"
 
 #include <unordered_map>
 
@@ -267,6 +268,33 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   vtkIdType checkAbortInterval = 0;
   vtkIdType progressCounter = 0;
 
+  // The ghost-point state of the input is invariant during topology
+  // processing, so hoist it out of the per-point inner loops below. When the
+  // input has no ghost points (the common case), every accepted point is a
+  // primary point: vtkCleanPolyData::IsPrimaryPoint() would always return true,
+  // so the CopiedPoints dedup set is never consulted to skip a copy. In that
+  // case we can bypass the per-point HasAnyGhostPoints()/CopiedPoints work
+  // entirely and simply copy the point data, which is bit-identical to the
+  // original behavior. When ghosts are present, the original logic is preserved
+  // exactly (same predicate, same CopiedPoints insert, same CopyData order).
+  const bool hasGhostPoints = input->HasAnyGhostPoints();
+  vtkUnsignedCharArray* const ghostArray =
+    hasGhostPoints ? input->GetGhostArray(vtkDataObject::POINT) : nullptr;
+  auto copyPointData = [&](vtkIdType srcPtIndex, vtkIdType dstPtId) {
+    if (!hasGhostPoints)
+    {
+      // No ghosts: always a primary point, copy unconditionally.
+      outputPD->CopyData(inputPD, srcPtIndex, dstPtId);
+      return;
+    }
+    const bool isPrimary = ghostArray->GetValue(srcPtIndex) == 0;
+    if (isPrimary || this->CopiedPoints.find(dstPtId) == this->CopiedPoints.end())
+    {
+      this->CopiedPoints.insert(dstPtId);
+      outputPD->CopyData(inputPD, srcPtIndex, dstPtId);
+    }
+  };
+
   // Begin to adjust topology.
   //
   // Vertices are renumbered and we remove duplicates
@@ -299,11 +327,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
           else
           {
             this->InsertUniquePoint(globalIdsArray, pts[i], newPts, addedGlobalIdsMap, newx, ptId);
-            if (this->IsPrimaryPoint(input, pts[i]) || !this->IsPointDataAlreadyCopied(ptId))
-            {
-              this->CopiedPoints.insert(ptId);
-              outputPD->CopyData(inputPD, pts[i], ptId);
-            }
+            copyPointData(pts[i], ptId);
           }
           pointMap[pts[i]] = ptId;
         }
@@ -358,11 +382,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
           else
           {
             this->InsertUniquePoint(globalIdsArray, pts[i], newPts, addedGlobalIdsMap, newx, ptId);
-            if (this->IsPrimaryPoint(input, pts[i]) || !this->IsPointDataAlreadyCopied(ptId))
-            {
-              this->CopiedPoints.insert(ptId);
-              outputPD->CopyData(inputPD, pts[i], ptId);
-            }
+            copyPointData(pts[i], ptId);
           }
           pointMap[pts[i]] = ptId;
         }
@@ -441,11 +461,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
           else
           {
             this->InsertUniquePoint(globalIdsArray, pts[i], newPts, addedGlobalIdsMap, newx, ptId);
-            if (this->IsPrimaryPoint(input, pts[i]) || !this->IsPointDataAlreadyCopied(ptId))
-            {
-              this->CopiedPoints.insert(ptId);
-              outputPD->CopyData(inputPD, pts[i], ptId);
-            }
+            copyPointData(pts[i], ptId);
           }
           pointMap[pts[i]] = ptId;
         }
@@ -545,11 +561,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
           else
           {
             this->InsertUniquePoint(globalIdsArray, pts[i], newPts, addedGlobalIdsMap, newx, ptId);
-            if (this->IsPrimaryPoint(input, pts[i]) || !this->IsPointDataAlreadyCopied(ptId))
-            {
-              this->CopiedPoints.insert(ptId);
-              outputPD->CopyData(inputPD, pts[i], ptId);
-            }
+            copyPointData(pts[i], ptId);
           }
           pointMap[pts[i]] = ptId;
         }
