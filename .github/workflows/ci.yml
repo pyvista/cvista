@@ -24,7 +24,7 @@ jobs:
     name: build + smoke (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # VTK records upstream provenance in the root commit; keep full history
           # so version/provenance derivation in setup.py behaves.
@@ -128,7 +128,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 

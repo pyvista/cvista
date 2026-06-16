@@ -80,7 +80,7 @@ jobs:
           ld.gold --version | head -1
           ldd --version | head -1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -162,7 +162,7 @@ jobs:
     env:
       PYBIN: /opt/python/cp${{ matrix.python }}-cp${{ matrix.python }}/bin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install runtime rendering deps + xvfb
         run: |

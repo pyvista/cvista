@@ -50,7 +50,7 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # setup.py derives version/provenance from the VTK root commit.
           fetch-depth: 0
