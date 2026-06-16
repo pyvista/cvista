@@ -16,6 +16,7 @@
 #include "vtkPolyDataNormals.h"
 #include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
+#include "vtkStaticCellLinks.h"
 
 #include <algorithm>
 #include <cmath>
@@ -84,6 +85,11 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
   vtkIdList* Map;
   const double CosAngle;
   vtkSplitSharpEdgesPolyData* Filter;
+  // Resolved once: the input's static cell links, when the input is non-editable
+  // (the common case for this pipeline). Used to inline the hot edge-neighbor
+  // lookup and avoid the per-call dispatch/branch overhead of
+  // vtkPolyData::GetCellEdgeNeighbors. nullptr => fall back to the public API.
+  vtkStaticCellLinks* StaticLinks;
 
   struct CellPointReplacementInformation
   {
@@ -120,11 +126,49 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
     , Map(map)
     , CosAngle(std::cos(vtkMath::RadiansFromDegrees(filter->GetFeatureAngle())))
     , Filter(filter)
+    , StaticLinks(vtkStaticCellLinks::SafeDownCast(input->GetLinks()))
   {
     // initialize batches
     this->PointBatches.Initialize(this->Input->GetNumberOfPoints());
 
     this->CellPointsReplacementInfo.resize(this->Input->GetNumberOfPoints());
+  }
+
+  // Inlined, devirtualized equivalent of
+  //   this->Input->GetCellEdgeNeighbors(cellId, p1, p2, cellIds)
+  // for the (common) non-editable static-cell-links case. The set of edge
+  // neighbors is pure integer bookkeeping (no floating point); this reproduces
+  // vtkPolyData::GetCellEdgeNeighbors' iteration order and InsertUniqueId
+  // de-duplication exactly, so the result list is bit-for-bit identical. It
+  // simply hoists the link pointer/type resolution and the per-call Reset and
+  // BuildLinks null-check out of the hot region-growing loop.
+  inline void GetCellEdgeNeighbors(
+    vtkIdType cellId, vtkIdType p1, vtkIdType p2, vtkIdList* cellIds)
+  {
+    if (!this->StaticLinks)
+    {
+      this->Input->GetCellEdgeNeighbors(cellId, p1, p2, cellIds);
+      return;
+    }
+    cellIds->Reset();
+    const vtkIdType nCells1 = this->StaticLinks->GetNcells(p1);
+    const vtkIdType* cells1 = this->StaticLinks->GetCells(p1);
+    const vtkIdType nCells2 = this->StaticLinks->GetNcells(p2);
+    const vtkIdType* cells2 = this->StaticLinks->GetCells(p2);
+    for (vtkIdType i = 0; i < nCells1; ++i)
+    {
+      if (cells1[i] != cellId)
+      {
+        for (vtkIdType j = 0; j < nCells2; ++j)
+        {
+          if (cells1[i] == cells2[j])
+          {
+            cellIds->InsertUniqueId(cells1[i]);
+            break;
+          }
+        }
+      }
+    }
   }
 
   void Initialize()
@@ -228,7 +272,7 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
               nei = neiPt[edgeId];
               while (cellId >= 0) // while we can grow this region
               {
-                this->Input->GetCellEdgeNeighbors(cellId, pointId, nei, cellIds);
+                this->GetCellEdgeNeighbors(cellId, pointId, nei, cellIds);
                 if (cellIds->GetNumberOfIds() == 1 && visited[(neiCellId = cellIds->GetId(0))] < 0)
                 {
                   thisNormal = cellNormals + 3 * cellId;

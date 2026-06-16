@@ -352,6 +352,7 @@ int vtkQuadricDecimation::RequestData(vtkInformation* vtkNotUsed(request),
   }
   x = new double[3 + this->NumberOfComponents + this->VolumePreservation];
   this->CollapseCellIds = vtkIdList::New();
+  this->ChangedEdges = vtkIdList::New();
   this->TempX = new double[3 + this->NumberOfComponents + this->VolumePreservation];
   this->TempQuad = new double[11 + (4 * this->NumberOfComponents) + this->VolumePreservation];
 
@@ -456,6 +457,7 @@ int vtkQuadricDecimation::RequestData(vtkInformation* vtkNotUsed(request),
     delete[] this->VolumeConstraints;
   delete[] x;
   this->CollapseCellIds->Delete();
+  this->ChangedEdges->Delete();
   delete[] this->TempX;
   delete[] this->TempQuad;
   delete[] this->TempB;
@@ -884,10 +886,11 @@ void vtkQuadricDecimation::FindAffectedEdges(vtkIdType p1Id, vtkIdType p2Id, vtk
   }
 }
 
-// FIXME: memory allocation clean up
 void vtkQuadricDecimation::UpdateEdgeData(vtkIdType pt0Id, vtkIdType pt1Id)
 {
-  vtkIdList* changedEdges = vtkIdList::New();
+  // Reuse a preallocated list to avoid per-collapse heap churn.
+  // FindAffectedEdges() calls Reset() on it before (re)filling.
+  vtkIdList* changedEdges = this->ChangedEdges;
   vtkIdType i, edgeId, edge[2];
   double cost;
 
@@ -964,8 +967,6 @@ void vtkQuadricDecimation::UpdateEdgeData(vtkIdType pt0Id, vtkIdType pt1Id)
       this->TargetPoints->InsertTuple(changedEdges->GetId(i), this->TempX);
     }
   }
-
-  changedEdges->Delete();
 }
 
 //------------------------------------------------------------------------------

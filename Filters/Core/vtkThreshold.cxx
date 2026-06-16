@@ -263,6 +263,10 @@ int vtkThreshold::RequestData(
   this->NumberOfComponents = inScalars->GetNumberOfComponents();
   bool usePointScalars = fieldAssociation == vtkDataObject::FIELD_ASSOCIATION_POINTS;
 
+  // Resolve the active threshold function once so the per-point hot path can
+  // branch on a cached id and inline the comparison (see EvaluateThreshold).
+  this->ResolveThresholdFunction();
+
   auto keptCellsList = vtkSmartPointer<vtkIdList>::New(); // maps old point ids into new
 
   // The result is computed in two steps: EvaluateCellsWorker to select cells &
@@ -368,21 +372,21 @@ int vtkThreshold::EvaluateComponents(TScalarsArray& scalars, vtkIdType id)
         c = this->SelectedComponent < this->NumberOfComponents ? this->SelectedComponent : 0;
         value = static_cast<double>(scalars[id][c]);
       }
-      keepCell = (this->*(this->ThresholdFunction))(value);
+      keepCell = this->EvaluateThreshold(value);
     }
     break;
     case VTK_COMPONENT_MODE_USE_ANY:
       keepCell = 0;
       for (c = 0; (!keepCell) && (c < this->NumberOfComponents); c++)
       {
-        keepCell = (this->*(this->ThresholdFunction))(static_cast<double>(scalars[id][c]));
+        keepCell = this->EvaluateThreshold(static_cast<double>(scalars[id][c]));
       }
       break;
     case VTK_COMPONENT_MODE_USE_ALL:
       keepCell = 1;
       for (c = 0; keepCell && (c < this->NumberOfComponents); c++)
       {
-        keepCell = (this->*(this->ThresholdFunction))(static_cast<double>(scalars[id][c]));
+        keepCell = this->EvaluateThreshold(static_cast<double>(scalars[id][c]));
       }
       break;
   }

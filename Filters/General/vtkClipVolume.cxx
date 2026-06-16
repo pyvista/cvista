@@ -253,6 +253,16 @@ int vtkClipVolume::RequestData(vtkInformation* vtkNotUsed(request),
   tetraIds->Allocate(20);
   cellScalars = vtkFloatArray::New();
   cellScalars->Allocate(8);
+  // The per-voxel scalar gather below always fills exactly the 8 voxel-corner
+  // slots (indices 0..7). Pre-size the array once and obtain a direct pointer
+  // into its storage so the hot loop can write with a plain typed store
+  // instead of the virtual, range-checking vtkDataArray::InsertComponent.
+  // This is bit-exact: InsertComponent(ii,0,s)
+  // stores static_cast<float>(s) at value index ii, which is exactly what the
+  // direct store does; the array layout (1 component, indices 0..7) is
+  // unchanged.
+  cellScalars->SetNumberOfValues(8);
+  float* cellScalarsPtr = cellScalars->GetPointer(0);
   tetraPts = vtkPoints::New();
   tetraPts->Allocate(20);
   vtkGenericCell* cell = vtkGenericCell::New();
@@ -290,7 +300,7 @@ int vtkClipVolume::RequestData(vtkInformation* vtkNotUsed(request),
         for (above = below = 0, ii = 0; ii < 8; ii++)
         {
           s = clipScalars->GetComponent(cellIds->GetId(ii), 0);
-          cellScalars->InsertComponent(ii, 0, s);
+          cellScalarsPtr[ii] = static_cast<float>(s);
           if (s >= value)
           {
             above = 1;
