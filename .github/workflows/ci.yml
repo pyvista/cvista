@@ -4,14 +4,19 @@ name: CI
 # GitHub-hosted Ubuntu runner and smoke-test it. The build uses the same
 # shell.nix toolchain as local dev, so the only host requirement is nix.
 on:
-  push:
-    branches: [main, "feat/**"]
+  # PRs only (not branch pushes): a push to a PR branch otherwise fires TWO runs
+  # -- the push- and pull_request-triggered pair land in different concurrency
+  # groups (refs/heads/... vs refs/pull/N/merge) and so never cancel each other.
+  # Tags still trigger release-wheel-lto; workflow_dispatch stays for manual.
   pull_request:
     branches: [main]
   workflow_dispatch:
+  push:
+    tags: ["*"]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # head_ref for PRs (source branch), ref otherwise; cancel superseded runs.
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
