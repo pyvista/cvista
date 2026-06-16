@@ -1,0 +1,890 @@
+"""Bit-exactness operation registry for the fvtk vs stock-VTK regression suite.
+
+Every operation here is written against the *vtkmodules* API only (no pyvista, no
+``import vtk``). That is the load-bearing property of this suite: the exact same
+source drives two backends —
+
+  * stock VTK 9.6.2   — ``vtkmodules`` resolves to the upstream wheel
+  * fvtk (this fork)  — the ``_fvtk_shim`` redirects ``vtkmodules.*`` -> ``fvtk.*``
+
+so the *only* thing that differs between the two runs is the compiled C++
+backend. Any byte difference in an output array is therefore attributable to
+fvtk's build, not to Python-level nondeterminism.
+
+Determinism rules (so inputs are bit-identical on both sides):
+  * numpy is pinned to the SAME version on both venvs (numpy==2.4.6).
+  * Inputs are built ONLY from deterministic integer/linspace/arange ops and
+    pure-algebra. We deliberately avoid ``np.sin``/``np.cos`` on the inputs,
+    whose last-ULP results can drift across numpy/libm builds, which would
+    masquerade as an fvtk divergence. ``build_inputs_digest()`` hashes every
+    constructed input array so the harness can *prove* the two sides started
+    from identical bytes before blaming the filter.
+
+Each operation is a callable ``fn(dtype, size) -> vtkDataObject | dict``:
+  * returning a vtkDataObject -> captured via ``capture_dataobject``
+  * returning a dict of name->np.ndarray -> captured verbatim (used for the
+    vtkCommon / math / locator ops that don't produce a dataset)
+
+The registry is grouped so the pytest layer can mark the 9 modified filters as a
+hard gate while still exercising broad coverage.
+"""
+from __future__ import annotations
+
+import hashlib
+
+import numpy as np
+
+# --- vtkmodules imports (resolve to stock vtk OR fvtk depending on the venv) ---
+# Guarded so this module imports cleanly on a runner python that has numpy but no
+# VTK (the pytest *driver* only needs the registry metadata — iter_cases,
+# MODIFIED_OPS — to parametrize; the actual op bodies run in the two backend
+# subprocesses via run_ops.py, each of which DOES have its VTK). If an op body is
+# called without VTK present, it fails loudly via _require_vtk().
+try:
+    from vtkmodules.vtkCommonCore import (
+        vtkDoubleArray,
+        vtkFloatArray,
+        vtkIdList,
+        vtkMath,
+        vtkPoints,
+    )
+    from vtkmodules.vtkCommonDataModel import (
+        vtkCellArray,
+        vtkImageData,
+        vtkMergePoints,
+        vtkPlane,
+        vtkPointLocator,
+        vtkPolyData,
+        vtkStaticPointLocator,
+        vtkUnstructuredGrid,
+    )
+    from vtkmodules.vtkFiltersCore import (
+        vtkCellDataToPointData,
+        vtkPointDataToCellData,
+        vtkContourFilter,
+        vtkFeatureEdges,
+        vtkGlyph3D,
+        vtkPolyDataNormals,
+        vtkQuadricDecimation,
+        vtkSmoothPolyDataFilter,
+        vtkStripper,
+        vtkThreshold,
+        vtkTriangleFilter,
+        vtkCleanPolyData,
+        vtkConnectivityFilter,
+        vtkCutter,
+        vtkDecimatePro,
+        vtkElevationFilter,
+        vtkTubeFilter,
+    )
+    from vtkmodules.vtkFiltersGeneral import (
+        vtkClipDataSet,
+        vtkGradientFilter,
+        vtkShrinkFilter,
+        vtkVertexGlyphFilter,
+        vtkWarpScalar,
+        vtkWarpVector,
+    )
+    from vtkmodules.vtkFiltersGeometry import vtkGeometryFilter
+    from vtkmodules.vtkFiltersSources import (
+        vtkArrowSource,
+        vtkConeSource,
+        vtkSphereSource,
+    )
+    from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+
+    _HAVE_VTK = True
+    _VTK_IMPORT_ERROR = None
+except Exception as _e:  # noqa: BLE001
+    _HAVE_VTK = False
+    _VTK_IMPORT_ERROR = _e
+
+
+def _require_vtk():
+    if not _HAVE_VTK:
+        raise RuntimeError(
+            "vtkmodules (stock VTK or fvtk) is not importable in this "
+            f"interpreter: {_VTK_IMPORT_ERROR!r}. Op bodies must run under a "
+            "backend venv via run_ops.py."
+        )
+
+
+# Dtype name -> numpy dtype. Sizes are mesh-resolution knobs interpreted per op.
+DTYPES = {"float32": np.float32, "float64": np.float64}
+
+
+# ---------------------------------------------------------------------------
+# Deterministic input builders. No transcendental ops on the data path.
+# ---------------------------------------------------------------------------
+def _radial_field(n, dtype):
+    """||index - center|| over an n^3 grid, raveled in VTK point order (x fastest).
+
+    Pure integer index arithmetic + a single sqrt -> reproducible to the ULP
+    across numpy builds (sqrt is correctly-rounded per IEEE-754, unlike sin/cos).
+    """
+    idx = np.indices((n, n, n), dtype=np.float64)
+    field = np.sqrt(((idx - (n - 1) / 2.0) ** 2).sum(axis=0))
+    flat = np.ascontiguousarray(field.transpose(2, 1, 0).ravel())
+    return flat.astype(dtype)
+
+
+def _ramp_field_2d(n, dtype):
+    """A smooth-ish bilinear-ish ramp over an n x n grid (no trig)."""
+    gx = np.linspace(-1.0, 1.0, n, dtype=np.float64)
+    xv, yv = np.meshgrid(gx, gx)
+    # quartic bump: deterministic, varied curvature, no libm transcendentals
+    field = (1.0 - xv * xv) * (1.0 - yv * yv) + 0.25 * xv * yv
+    flat = np.ascontiguousarray(field.T.ravel())
+    return flat.astype(dtype)
+
+
+def make_volume(n=24, dtype=np.float64):
+    img = vtkImageData()
+    img.SetDimensions(n, n, n)
+    arr = numpy_to_vtk(_radial_field(n, dtype), deep=1)
+    arr.SetName("v")
+    img.GetPointData().SetScalars(arr)
+    return img
+
+
+def make_grid2d(n=64, dtype=np.float64):
+    img = vtkImageData()
+    img.SetDimensions(n, n, 1)
+    arr = numpy_to_vtk(_ramp_field_2d(n, dtype), deep=1)
+    arr.SetName("s")
+    img.GetPointData().SetScalars(arr)
+    return img
+
+
+def make_sphere(theta=40, phi=40):
+    s = vtkSphereSource()
+    s.SetThetaResolution(theta)
+    s.SetPhiResolution(phi)
+    t = vtkTriangleFilter()
+    t.SetInputConnection(s.GetOutputPort())
+    t.Update()
+    return t.GetOutput()
+
+
+def make_sphere_with_vectors(theta=40, phi=40, dtype=np.float64):
+    """Sphere whose point normals are copied into a 3-component 'vec' array so
+    warp-vector / glyph-by-vector have a deterministic vector field."""
+    s = make_sphere(theta, phi)
+    n = vtkPolyDataNormals()
+    n.SetInputData(s)
+    n.SetComputePointNormals(True)
+    n.Update()
+    out = n.GetOutput()
+    normals = vtk_to_numpy(out.GetPointData().GetNormals()).astype(dtype)
+    va = numpy_to_vtk(np.ascontiguousarray(normals), deep=1)
+    va.SetName("vec")
+    out.GetPointData().AddArray(va)
+    out.GetPointData().SetVectors(va)
+    return out
+
+
+def make_points_array(n=2000, dtype=np.float64):
+    """A deterministic point cloud (lattice-ish, no trig)."""
+    k = int(round(n ** (1.0 / 3.0))) + 1
+    lin = np.linspace(0.0, 1.0, k, dtype=np.float64)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)[:n]
+    return np.ascontiguousarray(pts).astype(dtype)
+
+
+def make_polylines(nlines=6, length=20, dtype=np.float64):
+    """A vtkPolyData of `nlines` open polylines, each `length` points, with a
+    deterministic per-point scalar 's'. Coordinates and scalars use only integer
+    algebra (no trig) so both backends start byte-identical. Used by the tube
+    filter, which interpolates the scalar onto every generated tube vertex."""
+    npts = nlines * length
+    idx = np.arange(npts, dtype=np.int64)
+    li = idx // length  # which polyline
+    pi = idx % length  # position along the polyline
+    coords = np.empty((npts, 3), dtype=dtype)
+    coords[:, 0] = pi.astype(dtype)
+    coords[:, 1] = (li + (pi % 5)).astype(dtype)  # deterministic zigzag
+    coords[:, 2] = (pi % 3).astype(dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd.SetPoints(vp)
+    lines = vtkCellArray()
+    for L in range(nlines):
+        ids = vtkIdList()
+        for p in range(length):
+            ids.InsertNextId(L * length + p)
+        lines.InsertNextCell(ids)
+    pd.SetLines(lines)
+    scal = numpy_to_vtk(np.ascontiguousarray((1.0 + (pi % 4)).astype(dtype)), deep=1)
+    scal.SetName("s")
+    pd.GetPointData().SetScalars(scal)
+    return pd
+
+
+def make_hex_ugrid(n=10, dtype=np.float64):
+    """A vtkUnstructuredGrid of hexahedra on an n*n*n integer lattice, with a
+    deterministic radial point scalar 'v'. 3D cells so a plane cut with
+    GenerateTrianglesOff exercises the vtkContourHelper 3D-cell merge path."""
+    from vtkmodules.vtkCommonDataModel import VTK_HEXAHEDRON
+
+    lin = np.arange(n, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    ug = vtkUnstructuredGrid()
+    ug.SetPoints(vp)
+
+    def pid(i, j, k):
+        return i + n * (j + n * k)
+
+    ncells = (n - 1) ** 3
+    ug.Allocate(ncells)
+    ids = vtkIdList()
+    for k in range(n - 1):
+        for j in range(n - 1):
+            for i in range(n - 1):
+                ids.Reset()
+                for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                    ids.InsertNextId(pid(i + di, j + dj, k))
+                for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                    ids.InsertNextId(pid(i + di, j + dj, k + 1))
+                ug.InsertNextCell(VTK_HEXAHEDRON, ids)
+    # radial point scalar (integer algebra; matches make_volume's spirit, no trig)
+    c = (n - 1) / 2.0
+    field = ((pts[:, 0] - c) ** 2 + (pts[:, 1] - c) ** 2 + (pts[:, 2] - c) ** 2).astype(
+        dtype
+    )
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("v")
+    ug.GetPointData().SetScalars(arr)
+    return ug
+
+
+def build_inputs_digest(dtype=np.float64):
+    """Hash every constructed input array. Used by the harness to PROVE the two
+    backends start from byte-identical inputs before attributing any output
+    difference to the filter. Pure-numpy, backend-independent."""
+    h = hashlib.sha256()
+    for arr in (
+        _radial_field(20, dtype),
+        _ramp_field_2d(48, dtype),
+        make_points_array(1500, dtype),
+    ):
+        h.update(np.ascontiguousarray(arr).tobytes())
+    return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Output capture: pull EVERY array (points, all point/cell data arrays, and
+# topology) out of a vtkDataObject as raw numpy, for byte-exact comparison.
+# ---------------------------------------------------------------------------
+def _field_arrays(fd, tag):
+    out = {}
+    if fd is None:
+        return out
+    for i in range(fd.GetNumberOfArrays()):
+        a = fd.GetArray(i)
+        if a is None:
+            # may be a non-numeric (string) array; skip — not part of compute path
+            continue
+        name = a.GetName() or f"arr{i}"
+        out[f"{tag}:{name}"] = np.ascontiguousarray(vtk_to_numpy(a)).copy()
+    return out
+
+
+def capture_dataobject(obj):
+    """Return {array_name: np.ndarray} for points + all data arrays + topology."""
+    rec = {}
+    if hasattr(obj, "GetPoints") and obj.GetPoints() is not None:
+        rec["points"] = np.ascontiguousarray(
+            vtk_to_numpy(obj.GetPoints().GetData())
+        ).copy()
+    if hasattr(obj, "GetPointData"):
+        rec.update(_field_arrays(obj.GetPointData(), "pd"))
+    if hasattr(obj, "GetCellData"):
+        rec.update(_field_arrays(obj.GetCellData(), "cd"))
+
+    # Topology / connectivity.
+    if isinstance(obj, vtkPolyData):
+        for tag, getter in (
+            ("polys", obj.GetPolys),
+            ("strips", obj.GetStrips),
+            ("lines", obj.GetLines),
+            ("verts", obj.GetVerts),
+        ):
+            ca = getter()
+            if ca is not None and ca.GetNumberOfCells() > 0:
+                rec[f"conn:{tag}"] = np.ascontiguousarray(
+                    vtk_to_numpy(ca.GetConnectivityArray())
+                ).copy()
+                rec[f"off:{tag}"] = np.ascontiguousarray(
+                    vtk_to_numpy(ca.GetOffsetsArray())
+                ).copy()
+    elif isinstance(obj, vtkUnstructuredGrid):
+        ca = obj.GetCells()
+        if ca is not None and ca.GetNumberOfCells() > 0:
+            rec["conn"] = np.ascontiguousarray(
+                vtk_to_numpy(ca.GetConnectivityArray())
+            ).copy()
+            rec["off"] = np.ascontiguousarray(
+                vtk_to_numpy(ca.GetOffsetsArray())
+            ).copy()
+        ct = obj.GetCellTypesArray()
+        if ct is not None:
+            rec["celltypes"] = np.ascontiguousarray(vtk_to_numpy(ct)).copy()
+    return rec
+
+
+def _as_arrays(result):
+    """Normalize an op return value to a {name: ndarray} dict."""
+    if isinstance(result, dict):
+        return {
+            k: np.ascontiguousarray(np.asarray(v)).copy() for k, v in result.items()
+        }
+    return capture_dataobject(result)
+
+
+# ===========================================================================
+# OPERATION DEFINITIONS
+# ===========================================================================
+# Each op: fn(dtype, size) -> vtkDataObject | {name: ndarray}.
+# `size` is a small integer resolution knob; meaning is per-op but monotonic.
+
+# ---- The 9 MODIFIED filters (hard gate) ----
+def op_decimate(dtype, size):
+    d = vtkQuadricDecimation()
+    d.SetInputData(make_sphere(size, size))
+    d.SetTargetReduction(0.5)
+    d.Update()
+    return d.GetOutput()
+
+
+def op_smooth(dtype, size):
+    s = vtkSmoothPolyDataFilter()
+    s.SetInputData(make_sphere(size, size))
+    s.SetNumberOfIterations(40)
+    s.Update()
+    return s.GetOutput()
+
+
+def op_normals(dtype, size):
+    n = vtkPolyDataNormals()
+    n.SetInputData(make_sphere(size, size))
+    n.Update()
+    return n.GetOutput()
+
+
+def op_contour(dtype, size):
+    c = vtkContourFilter()
+    c.SetInputData(make_volume(size, dtype))
+    c.GenerateValues(8, 0.2 * size, 0.45 * size)
+    c.Update()
+    return c.GetOutput()
+
+
+def op_clip(dtype, size):
+    p = vtkPlane()
+    p.SetOrigin(size / 2.0, size / 2.0, size / 2.0)
+    p.SetNormal(1, 0, 0)
+    c = vtkClipDataSet()
+    c.SetInputData(make_volume(size, dtype))
+    c.SetClipFunction(p)
+    c.Update()
+    return c.GetOutput()
+
+
+def op_threshold(dtype, size):
+    t = vtkThreshold()
+    t.SetInputData(make_volume(size, dtype))
+    t.SetLowerThreshold(0.15 * size)
+    t.SetUpperThreshold(0.40 * size)
+    t.Update()
+    return t.GetOutput()
+
+
+def op_warp(dtype, size):
+    w = vtkWarpScalar()
+    w.SetInputData(make_grid2d(size, dtype))
+    w.SetScaleFactor(0.5)
+    w.Update()
+    return w.GetOutput()
+
+
+def op_glyph(dtype, size):
+    a = vtkArrowSource()
+    g = vtkGlyph3D()
+    g.SetInputData(make_sphere(size, size))
+    g.SetSourceConnection(a.GetOutputPort())
+    g.SetScaleFactor(0.1)
+    g.Update()
+    return g.GetOutput()
+
+
+def op_cell2point(dtype, size):
+    vol = make_volume(size, dtype)
+    nc = vol.GetNumberOfCells()
+    ca = numpy_to_vtk(np.linspace(0, 1, nc).astype(dtype), deep=1)
+    ca.SetName("c")
+    vol.GetCellData().SetScalars(ca)
+    f = vtkCellDataToPointData()
+    f.SetInputData(vol)
+    f.Update()
+    return f.GetOutput()
+
+
+# ---- Broader filter coverage (non-gate, but still must be bit-exact) ----
+def op_point2cell(dtype, size):
+    f = vtkPointDataToCellData()
+    f.SetInputData(make_volume(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_elevation(dtype, size):
+    f = vtkElevationFilter()
+    f.SetInputData(make_sphere(size, size))
+    f.SetLowPoint(0, 0, -0.5)
+    f.SetHighPoint(0, 0, 0.5)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_warpvector(dtype, size):
+    w = vtkWarpVector()
+    w.SetInputData(make_sphere_with_vectors(size, size, dtype))
+    w.SetScaleFactor(0.3)
+    w.Update()
+    return w.GetOutput()
+
+
+def op_clean(dtype, size):
+    c = vtkCleanPolyData()
+    c.SetInputData(make_sphere(size, size))
+    c.Update()
+    return c.GetOutput()
+
+
+def op_triangle(dtype, size):
+    s = vtkSphereSource()
+    s.SetThetaResolution(size)
+    s.SetPhiResolution(size)
+    s.Update()
+    t = vtkTriangleFilter()
+    t.SetInputConnection(s.GetOutputPort())
+    t.Update()
+    return t.GetOutput()
+
+
+def op_geometry(dtype, size):
+    g = vtkGeometryFilter()
+    g.SetInputData(make_volume(size, dtype))
+    g.Update()
+    return g.GetOutput()
+
+
+def op_shrink(dtype, size):
+    f = vtkShrinkFilter()
+    f.SetInputData(make_volume(size, dtype))
+    f.SetShrinkFactor(0.8)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_connectivity(dtype, size):
+    c = vtkConnectivityFilter()
+    c.SetInputData(make_volume(size, dtype))
+    c.SetExtractionModeToAllRegions()
+    c.Update()
+    return c.GetOutput()
+
+
+def op_featureedges(dtype, size):
+    f = vtkFeatureEdges()
+    f.SetInputData(make_sphere(size, size))
+    f.SetFeatureAngle(20.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_stripper(dtype, size):
+    f = vtkStripper()
+    f.SetInputData(make_sphere(size, size))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_vertexglyph(dtype, size):
+    f = vtkVertexGlyphFilter()
+    f.SetInputData(make_sphere(size, size))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_decimatepro(dtype, size):
+    d = vtkDecimatePro()
+    d.SetInputData(make_sphere(size, size))
+    d.SetTargetReduction(0.6)
+    d.Update()
+    return d.GetOutput()
+
+
+def op_cone_triangulate(dtype, size):
+    c = vtkConeSource()
+    c.SetResolution(size)
+    c.Update()
+    t = vtkTriangleFilter()
+    t.SetInputConnection(c.GetOutputPort())
+    t.Update()
+    return t.GetOutput()
+
+
+def op_tube(dtype, size):
+    # `size` -> polyline length; a few lines so the per-vertex point-data copy
+    # path (the optimized InsertTuple loop) runs over many generated vertices.
+    t = vtkTubeFilter()
+    t.SetInputData(make_polylines(nlines=6, length=size, dtype=dtype))
+    t.SetNumberOfSides(8)
+    t.SetRadius(0.2)
+    t.SetVaryRadiusToVaryRadiusByScalar()
+    t.SetCapping(1)
+    t.Update()
+    return t.GetOutput()
+
+
+def op_gradient(dtype, size):
+    g = vtkGradientFilter()
+    g.SetInputData(make_volume(size, dtype))
+    g.Update()
+    return g.GetOutput()
+
+
+def op_cutter(dtype, size):
+    # Unstructured hex grid + plane cut with triangle generation OFF -> drives
+    # UnstructuredGridCutter -> vtkContourHelper::Contour 3D-cell merge path
+    # (the scratch-buffer-reuse optimization).
+    p = vtkPlane()
+    c = (size - 1) / 2.0
+    p.SetOrigin(c, c, c)
+    p.SetNormal(1, 1, 0)
+    cut = vtkCutter()
+    cut.SetInputData(make_hex_ugrid(size, dtype))
+    cut.SetCutFunction(p)
+    cut.GenerateTrianglesOff()
+    cut.SetValue(0, 0.0)
+    cut.Update()
+    return cut.GetOutput()
+
+
+# ---- vtkCommon operations (explicitly requested) ----
+def op_common_dataarray(dtype, size):
+    """vtkDataArray / vtkAOSDataArrayTemplate round-trip + tuple/component ops."""
+    n = max(16, size * size)
+    base = np.ascontiguousarray(
+        np.arange(n * 3, dtype=dtype).reshape(n, 3) * dtype(1.5)
+    )
+    if dtype == np.float64:
+        da = vtkDoubleArray()
+    else:
+        da = vtkFloatArray()
+    da.SetNumberOfComponents(3)
+    da.SetNumberOfTuples(n)
+    for i in range(n):
+        da.SetTuple3(i, float(base[i, 0]), float(base[i, 1]), float(base[i, 2]))
+    rt = vtk_to_numpy(da).copy()
+    # range per component via VTK
+    ranges = []
+    for c in range(3):
+        r = [0.0, 0.0]
+        da.GetRange(r, c)
+        ranges.extend(r)
+    return {"roundtrip": rt, "ranges": np.asarray(ranges, dtype=np.float64)}
+
+
+def op_common_points(dtype, size):
+    """vtkPoints insertion + bounds (the bounds are computed in C++)."""
+    pts = make_points_array(max(64, size * size), dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    b = [0.0] * 6
+    vp.GetBounds(b)
+    return {"data": vtk_to_numpy(vp.GetData()).copy(), "bounds": np.asarray(b)}
+
+
+def op_common_polydata_links(dtype, size):
+    """BuildLinks + GetPointCells / GetCellPoints / GetCellEdgeNeighbors.
+
+    Walks the topology adjacency that fvtk's data-model compiles, capturing the
+    full neighbor structure as integer arrays for byte comparison."""
+    poly = make_sphere(size, size)
+    poly.BuildLinks()
+    npts = poly.GetNumberOfPoints()
+    ncells = poly.GetNumberOfCells()
+
+    pc_counts = np.empty(npts, dtype=np.int64)
+    pc_flat = []
+    ids = vtkIdList()
+    for p in range(npts):
+        poly.GetPointCells(p, ids)
+        k = ids.GetNumberOfIds()
+        pc_counts[p] = k
+        for j in range(k):
+            pc_flat.append(ids.GetId(j))
+
+    cp_counts = np.empty(ncells, dtype=np.int64)
+    cp_flat = []
+    for c in range(ncells):
+        poly.GetCellPoints(c, ids)
+        k = ids.GetNumberOfIds()
+        cp_counts[c] = k
+        for j in range(k):
+            cp_flat.append(ids.GetId(j))
+
+    # Edge neighbors for the first edge of each cell.
+    en_flat = []
+    nb = vtkIdList()
+    for c in range(ncells):
+        poly.GetCellPoints(c, ids)
+        if ids.GetNumberOfIds() >= 2:
+            p0, p1 = ids.GetId(0), ids.GetId(1)
+            poly.GetCellEdgeNeighbors(c, p0, p1, nb)
+            en_flat.append(nb.GetNumberOfIds())
+            for j in range(nb.GetNumberOfIds()):
+                en_flat.append(nb.GetId(j))
+
+    return {
+        "pc_counts": pc_counts,
+        "pc_flat": np.asarray(pc_flat, dtype=np.int64),
+        "cp_counts": cp_counts,
+        "cp_flat": np.asarray(cp_flat, dtype=np.int64),
+        "edge_neighbors": np.asarray(en_flat, dtype=np.int64),
+    }
+
+
+def op_common_ugrid_build(dtype, size):
+    """Construct a vtkUnstructuredGrid by hand from a deterministic point set
+    and tetra cells, BuildLinks, and read back topology."""
+    n = max(4, size)
+    lin = np.linspace(0.0, 1.0, n, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    ug = vtkUnstructuredGrid()
+    ug.SetPoints(vp)
+    # tetra fan over consecutive quadruples
+    from vtkmodules.vtkCommonDataModel import VTK_TETRA
+
+    npoints = pts.shape[0]
+    ug.Allocate(npoints)
+    ids = vtkIdList()
+    i = 0
+    while i + 3 < npoints:
+        ids.Reset()
+        for k in range(4):
+            ids.InsertNextId(i + k)
+        ug.InsertNextCell(VTK_TETRA, ids)
+        i += 3
+    ug.BuildLinks()
+    out = capture_dataobject(ug)
+    # also read back via GetCellPoints
+    cp = []
+    for c in range(ug.GetNumberOfCells()):
+        ug.GetCellPoints(c, ids)
+        for j in range(ids.GetNumberOfIds()):
+            cp.append(ids.GetId(j))
+    out["cellpoints"] = np.asarray(cp, dtype=np.int64)
+    return out
+
+
+def op_common_cellarray(dtype, size):
+    """vtkCellArray build + offset/connectivity readback."""
+    ca = vtkCellArray()
+    ids = vtkIdList()
+    npoly = max(8, size * 4)
+    rng = np.arange(npoly * 3, dtype=np.int64)
+    for t in range(npoly):
+        ids.Reset()
+        ids.InsertNextId(int(rng[3 * t]))
+        ids.InsertNextId(int(rng[3 * t + 1]))
+        ids.InsertNextId(int(rng[3 * t + 2]))
+        ca.InsertNextCell(ids)
+    return {
+        "conn": np.ascontiguousarray(
+            vtk_to_numpy(ca.GetConnectivityArray())
+        ).copy(),
+        "off": np.ascontiguousarray(vtk_to_numpy(ca.GetOffsetsArray())).copy(),
+    }
+
+
+def op_common_math(dtype, size):
+    """vtkMath kernels: cross/dot/norm/determinant/solve over deterministic
+    inputs. These are pure C++ scalar kernels — a sharp bit-exactness probe."""
+    n = max(32, size * size)
+    a = np.ascontiguousarray((np.arange(n * 3) % 17 - 8).astype(np.float64).reshape(n, 3))
+    b = np.ascontiguousarray((np.arange(n * 3) % 13 - 6).astype(np.float64).reshape(n, 3))
+    cross = np.empty((n, 3))
+    dots = np.empty(n)
+    norms = np.empty(n)
+    for i in range(n):
+        c = [0.0, 0.0, 0.0]
+        vtkMath.Cross(list(a[i]), list(b[i]), c)
+        cross[i] = c
+        dots[i] = vtkMath.Dot(list(a[i]), list(b[i]))
+        norms[i] = vtkMath.Norm(list(a[i]))
+    # 3x3 determinant on a deterministic matrix family
+    dets = np.empty(n)
+    for i in range(n):
+        m0 = list(a[i])
+        m1 = list(b[i])
+        m2 = [a[i, 0] + b[i, 0], a[i, 1] - b[i, 1], a[i, 2] + 1.0]
+        dets[i] = vtkMath.Determinant3x3(m0, m1, m2)
+    return {
+        "cross": np.ascontiguousarray(cross),
+        "dot": dots,
+        "norm": norms,
+        "det": dets,
+    }
+
+
+def _locator_query(loc_cls, dtype, size):
+    pts = make_points_array(max(200, size * size * size), dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+    loc = loc_cls()
+    loc.SetDataSet(pd)
+    loc.BuildLocator()
+
+    # Deterministic query points (lattice within the bounds).
+    q = make_points_array(64, np.float64) * 0.97 + 0.001
+    closest = np.empty(q.shape[0], dtype=np.int64)
+    for i in range(q.shape[0]):
+        closest[i] = loc.FindClosestPoint(list(q[i]))
+
+    # FindPointsWithinRadius for a subset.
+    within_counts = np.empty(16, dtype=np.int64)
+    within_flat = []
+    res = vtkIdList()
+    for i in range(16):
+        loc.FindPointsWithinRadius(0.2, list(q[i]), res)
+        within_counts[i] = res.GetNumberOfIds()
+        for j in range(res.GetNumberOfIds()):
+            within_flat.append(res.GetId(j))
+    return {
+        "closest": closest,
+        "within_counts": within_counts,
+        "within_flat": np.asarray(within_flat, dtype=np.int64),
+    }
+
+
+def op_locator_pointlocator(dtype, size):
+    return _locator_query(vtkPointLocator, dtype, size)
+
+
+def op_locator_staticpointlocator(dtype, size):
+    return _locator_query(vtkStaticPointLocator, dtype, size)
+
+
+def op_locator_mergepoints(dtype, size):
+    """vtkMergePoints InsertUniquePoint over a set with deliberate duplicates."""
+    pts = make_points_array(max(100, size * size), dtype)
+    pts = np.concatenate([pts, pts[: len(pts) // 2]], axis=0)  # add duplicates
+    vp = vtkPoints()
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+    mp = vtkMergePoints()
+    b = [
+        float(pts[:, 0].min()),
+        float(pts[:, 0].max()),
+        float(pts[:, 1].min()),
+        float(pts[:, 1].max()),
+        float(pts[:, 2].min()),
+        float(pts[:, 2].max()),
+    ]
+    mp.InitPointInsertion(vp, b)
+    assigned = np.empty(pts.shape[0], dtype=np.int64)
+    for i in range(pts.shape[0]):
+        # IsInsertedPoint returns the existing id, or -1 if new. The
+        # bit-exactness probe is that fvtk and stock agree on every dedup verdict
+        # and on the resulting merged point coordinates.
+        pid = mp.IsInsertedPoint(list(pts[i]))
+        if pid < 0:
+            pid = mp.InsertNextPoint(list(pts[i]))
+        assigned[i] = pid
+    return {
+        "assigned": assigned,
+        "merged_pts": vtk_to_numpy(vp.GetData()).copy(),
+    }
+
+
+# ===========================================================================
+# REGISTRY
+# ===========================================================================
+# group: "modified" -> hard gate; others -> broad coverage.
+# dtypes: which dtype variants to run. sizes: resolution knobs.
+
+OPS = {
+    # --- 9 modified filters (HARD GATE) ---
+    "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
+    "smooth": dict(fn=op_smooth, group="modified", dtypes=["float64"], sizes=[24, 48]),
+    "normals": dict(fn=op_normals, group="modified", dtypes=["float64"], sizes=[24, 48]),
+    "contour": dict(fn=op_contour, group="modified", dtypes=["float32", "float64"], sizes=[20, 32]),
+    "clip": dict(fn=op_clip, group="modified", dtypes=["float32", "float64"], sizes=[18, 28]),
+    "threshold": dict(fn=op_threshold, group="modified", dtypes=["float32", "float64"], sizes=[20, 32]),
+    "warp": dict(fn=op_warp, group="modified", dtypes=["float32", "float64"], sizes=[48, 96]),
+    "glyph": dict(fn=op_glyph, group="modified", dtypes=["float64"], sizes=[20, 32]),
+    "cell2point": dict(fn=op_cell2point, group="modified", dtypes=["float32", "float64"], sizes=[20, 32]),
+    # --- broader filter coverage ---
+    "point2cell": dict(fn=op_point2cell, group="filter", dtypes=["float32", "float64"], sizes=[20, 28]),
+    "elevation": dict(fn=op_elevation, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "warpvector": dict(fn=op_warpvector, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "clean": dict(fn=op_clean, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "triangle": dict(fn=op_triangle, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "geometry": dict(fn=op_geometry, group="filter", dtypes=["float64"], sizes=[18, 28]),
+    "shrink": dict(fn=op_shrink, group="filter", dtypes=["float64"], sizes=[16, 24]),
+    "connectivity": dict(fn=op_connectivity, group="filter", dtypes=["float64"], sizes=[16, 24]),
+    "featureedges": dict(fn=op_featureedges, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "stripper": dict(fn=op_stripper, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "vertexglyph": dict(fn=op_vertexglyph, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "decimatepro": dict(fn=op_decimatepro, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "cone": dict(fn=op_cone_triangulate, group="filter", dtypes=["float64"], sizes=[12, 30]),
+    "tube": dict(fn=op_tube, group="filter", dtypes=["float32", "float64"], sizes=[16, 32]),
+    "gradient": dict(fn=op_gradient, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "cutter": dict(fn=op_cutter, group="filter", dtypes=["float64"], sizes=[8, 12]),
+    # --- vtkCommon ops (explicitly requested) ---
+    "common_dataarray": dict(fn=op_common_dataarray, group="common", dtypes=["float32", "float64"], sizes=[8, 16]),
+    "common_points": dict(fn=op_common_points, group="common", dtypes=["float32", "float64"], sizes=[8, 16]),
+    "common_polydata_links": dict(fn=op_common_polydata_links, group="common", dtypes=["float64"], sizes=[16, 28]),
+    "common_ugrid_build": dict(fn=op_common_ugrid_build, group="common", dtypes=["float64"], sizes=[5, 8]),
+    "common_cellarray": dict(fn=op_common_cellarray, group="common", dtypes=["float64"], sizes=[8, 32]),
+    "common_math": dict(fn=op_common_math, group="common", dtypes=["float64"], sizes=[8, 16]),
+    "locator_pointlocator": dict(fn=op_locator_pointlocator, group="common", dtypes=["float64"], sizes=[6, 9]),
+    "locator_staticpointlocator": dict(fn=op_locator_staticpointlocator, group="common", dtypes=["float64"], sizes=[6, 9]),
+    "locator_mergepoints": dict(fn=op_locator_mergepoints, group="common", dtypes=["float64"], sizes=[10, 16]),
+}
+
+MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
+
+
+def iter_cases():
+    """Yield (op_name, dtype_name, size) for every parametrized case."""
+    for name, spec in OPS.items():
+        for dt in spec["dtypes"]:
+            for sz in spec["sizes"]:
+                yield name, dt, sz
+
+
+def run_case(op_name, dtype_name, size):
+    """Run one case and return {array_name: ndarray}."""
+    _require_vtk()
+    spec = OPS[op_name]
+    dtype = DTYPES[dtype_name]
+    result = spec["fn"](dtype, size)
+    return _as_arrays(result)
