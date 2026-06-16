@@ -71,9 +71,12 @@ docker run --rm \
       mesa-libGLU-devel libglvnd-devel \
       libX11-devel libXcursor-devel libXt-devel libXext-devel \
       ccache git
-    gcc --version | head -1
-    ld.gold --version | head -1
-    ldd --version | head -1
+    # NB: `| sed -n 1p` (reads whole stream), NOT `| head -1` (closes the pipe
+    # after line 1) — under `set -o pipefail` the early close races a SIGPIPE
+    # onto gcc/ld/ldd and aborts the build with exit 141 (seen on slow runners).
+    gcc --version | sed -n 1p
+    ld.gold --version | sed -n 1p
+    ldd --version | sed -n 1p
 
     # ccache persisted on the host mount, shared across every cp leg + re-runs.
     export CCACHE_DIR=/ccache
