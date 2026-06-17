@@ -13,6 +13,86 @@ original blocker inventory and roadmap follow it unchanged for reference.
 
 ## Increment status log (newest first)
 
+### Increment 4 (close the residual 3 TUs + full generator/runtime port) — abi3 wheel COMPILES, IMPORTS, and is BIT-EXACT
+
+The three residual TUs (`vtkPythonUtil.cxx`, `PyVTKObject.cxx`,
+`PyVTKSpecialObject.cxx`) now compile under `Py_LIMITED_API`, the **entire**
+generated wrapper set compiles + links + **imports** as heap types, and the
+numeric bit-exact suite + abi3-aware parity gate are **green** against the abi3
+build. Everything stays `#if defined(Py_LIMITED_API)`-guarded; the default build
+is unchanged.
+
+**Runtime (`Wrapping/PythonCore`).**
+- `PyVTKClass_Add` / `PyVTKSpecialType_Add`: abi3 overloads taking
+  `(PyType_Spec*, base)` → `PyType_FromSpec(WithBases)` heap type; method /
+  `__vtkname__` / override / getset dict population via the `SetDictItem`
+  accessor. **Closes the inc-2 `tp_dict`-population residual.**
+- `vtkPythonUtil`: stable-ABI `Py_HashPointer` reproduction (bit-exact rotate +
+  `-1→-2` sentinel — keeps `hash(vtkVariant(vtkObject))` byte-identical);
+  `GetTypeName` rebuilds `"<module>.<qualname>"` (heap `PyType_GetName` drops the
+  module that the default `tp_name` carries) into a **process-lifetime cache** so
+  the returned `const char*` stays valid like `tp_name`; `FindGetSetDescriptor`
+  rewritten to a `(type,name)→PyGetSetDef*` **registry** instead of reading the
+  opaque `PyGetSetDescrObject`/`PyDescrObject` structs; the `Py_*REF`/`Py_TYPE`
+  typed-pointer casts. **Fixes a latent inc-2 typo** (`#ifdef PY_LIMITED_API` →
+  `Py_LIMITED_API`) that had silently disabled the limited-API `GetTypeName`
+  branch.
+- `PyVTKObject`: instance `__dict__` carried on **vtkObjectBase only**
+  (`PyVTKObject_BaseGetSet`) and inherited through the MRO — a heap subclass may
+  not re-declare an inherited `__dict__` descriptor (it fails `PyType_FromSpec`
+  with "attribute '__dict__' of 'type' objects is not writable"), so the generator
+  emits the `__dict__`-carrying getset in vtkObjectBase's spec and the plain
+  `PyVTKObject_GetSet` for every subclass. `tp_init`/`Py_INCREF`/`tp_name` routed
+  through the accessors.
+- `PyVTKReference`: `Py_TPFLAGS_BASETYPE` on the `reference` spec so
+  number/string/tuple subtypes can derive from it via `FromSpecWithBases`.
+- `PyVTKEnum_New`: `PyLong_Type.tp_new` via the stable slot accessor.
+- `vtkPythonTypeAccess.h`: `MergeIntoTypeDict` helper (constants/enums temp dict →
+  type via `SetDictItem`).
+
+**Generator (`Wrapping/Tools`).**
+- class `ClassNew`: abi3 branch resolves the base first, calls the spec+base
+  `PyVTKClass_Add`, merges constants/enums via `MergeIntoTypeDict`, drops
+  `PyType_Ready`; vtkObjectBase's spec getset references `PyVTKObject_BaseGetSet`.
+- special-type emitter: emits a `PyType_Spec` (+ `Py_sq_*` / hash / richcompare /
+  str slots + `Py_TPFLAGS_BASETYPE`) and an abi3 `TypeNew`; guards the static
+  `PySequenceMethods`.
+- enum emitter: `PyType_Spec` subclassing `&PyLong_Type` (basicsize 0 inherits);
+  abi3 `AddEnumType` builds via `FromSpec` + merges members; `#define` pointer
+  shim so `&Py%s_Type` stays byte-identical in form.
+- number-protocol: `Py_nb_rshift` slot macro (the only non-null `nb_` entry);
+  guards the static `PyNumberMethods`.
+- wrapper preamble includes `vtkPythonTypeAccess.h`.
+
+**Wheel plumbing.** `CMake/vtkModuleWrapPython.cmake`: under `FVTK_ABI3` the
+wrapper modules get the stable-ABI `.abi3.so` suffix (forward-compatible loader
+name) instead of `.cpython-3XX-<plat>.so`. A retag helper produces the final
+`cp311-abi3-<plat>` wheel filename + WHEEL tag.
+
+**Flag-divergence map (abi3 vs stock 9.6.2), proven on the executor.**
+- Wrapped vtkObject-derived classes (`vtkObject`, `vtkDoubleArray`, …): diverge
+  **only on HEAPTYPE (→1) / IMMUTABLETYPE (→0)**. Stock already carries BASETYPE,
+  so BASETYPE does **not** move — exactly the mandate's permitted divergence.
+- `reference` + special **base** types (e.g. `vtkTuple`): additionally gain
+  **BASETYPE**. Stock's static helpers are subclassed via direct `tp_base`
+  assignment without the flag; the limited API requires it on a heap base. The
+  MRO/behaviour is identical — an intrinsic static→heap artifact in the same class
+  as HEAPTYPE. Leaf types (e.g. `number_reference`, `vtkQuaterniond`) keep the
+  two-bit signature.
+
+**Validation (executor, cp313 limited API, `Py_LIMITED_API=0x030b0000`, isolated
+tree `~/tmp/abi3-final-afc6`).**
+- Full abi3 build: `ninja all` exit 0, clean link, 85 wrapper modules.
+- Import: `fvtk.vtkCommonCore / vtkCommonDataModel / vtkCommonMath` import as heap
+  types; numpy zero-copy buffer **shared + byte-identical**, `vtkVariant` hash,
+  special-type subclassing (`vtkQuaterniond` MRO), enums, and instance `__dict__`
+  all work.
+- **Bit-exact + parity gate (`BITEXACT_ABI3=1`): 122 passed / 0 failed** — every
+  numeric case maxULP=0 vs stock VTK 9.6.2; `test_wrapper_behavior_parity`
+  confirms ONLY the heap flag bits diverge (numpy zero-copy / mro / isinstance /
+  repr / weakref / instance-dict identical); `test_abi3_heaptypes_in_effect`
+  confirms every probed type is a heap type.
+
 ### Increment 3 (generator port START + the matrix-payoff MEASUREMENT) — spec-emission LANDED; runtime-side seam pinned; numbers measured
 
 Two halves: (a) port the wrapper generator's central type-emission routine to
