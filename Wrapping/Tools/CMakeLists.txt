@@ -122,7 +122,15 @@ if (NOT TARGET WrapPython)
     WrapPythonInit)
 endif ()
 
-if (NOT TARGET WrapJava)
+# fvtk build-cost trim: the Java/JavaScript/SerDes wrapper-generator executables
+# are DEVELOPMENT tools that are only ever invoked when their respective wrapping
+# is enabled. The fvtk wheel is Python-only (VTK_WRAP_PYTHON=YES; VTK_WRAP_JAVA,
+# VTK_WRAP_JAVASCRIPT and VTK_WRAP_SERIALIZATION are all OFF), so these tools are
+# pure dead weight — compiled into bin/ on every build and never run, their output
+# never ships. Gate each behind its wrap flag (default-OFF here) so the Python-only
+# build skips them. Stock VTK / other consumers that flip the flag on still get them.
+# These guards are additive to the upstream `if (NOT TARGET ...)` re-entrancy guard.
+if (VTK_WRAP_JAVA AND NOT TARGET WrapJava)
   vtk_module_add_executable(ParseJava
     DEVELOPMENT
     BASENAME vtkParseJava
@@ -144,7 +152,7 @@ if (NOT TARGET WrapJava)
     WrapJava)
 endif ()
 
-if (NOT TARGET WrapSerDes)
+if (VTK_WRAP_SERIALIZATION AND NOT TARGET WrapSerDes)
   vtk_module_add_executable(WrapSerDes
     DEVELOPMENT
     BASENAME vtkWrapSerDes
@@ -178,7 +186,7 @@ if (NOT TARGET WrapSerDes)
     WrapSerDes)
 endif ()
 
-if (NOT TARGET WrapJavaScript)
+if (VTK_WRAP_JAVASCRIPT AND NOT TARGET WrapJavaScript)
   vtk_module_add_executable(WrapJavaScript
     DEVELOPMENT
     BASENAME vtkWrapJavaScript
