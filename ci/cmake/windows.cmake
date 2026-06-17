@@ -14,6 +14,15 @@
 #      the non-FORCE render cache entries in minimal.cmake.
 set(FVTK_FORCE_MSVC ON CACHE BOOL "fvtk: take the MSVC toolchain-lever path")
 
+# Pin the compiler to MSVC cl.exe. The GitHub windows runner also ships a mingw
+# GCC (C:\mingw64\bin\cc.exe) earlier on PATH, which cmake's Ninja generator will
+# otherwise auto-select — and it then chokes on the MSVC-only /GL /Gy /Gw flags
+# the msvc toolchain path emits ("compiler is broken"). The workflow runs vcvars
+# (ilammy/msvc-dev-cmd) so cl.exe is on PATH; name it explicitly so cmake uses it
+# instead of the mingw cc.
+set(CMAKE_C_COMPILER   "cl" CACHE STRING "")
+set(CMAKE_CXX_COMPILER "cl" CACHE STRING "")
+
 # --- rendering backend: native Win32 WGL (no EGL/OSMesa/X) --------------------
 set(VTK_USE_COCOA OFF CACHE BOOL "")
 set(VTK_USE_X OFF CACHE BOOL "")

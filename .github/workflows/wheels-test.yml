@@ -53,7 +53,9 @@ jobs:
           # two unproven OSes (linux is already green on the main CI gate). On
           # workflow_dispatch, honour the selector (default: all three).
           sel="${{ github.event.inputs.os }}"
-          if [ -z "$sel" ]; then sel="macos-windows"; fi
+          # PR-trigger default: windows only (macos-arm64 is already proven green;
+          # linux is on the main CI gate). Saves CI minutes while iterating Windows.
+          if [ -z "$sel" ]; then sel="windows"; fi
           case "$sel" in
             macos)         echo 'os=["macos-14"]' >> "$GITHUB_OUTPUT" ;;
             windows)       echo 'os=["windows-latest"]' >> "$GITHUB_OUTPUT" ;;
@@ -74,6 +76,17 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # VTK derives version/provenance from full history
+
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for the whole job. The Ninja
+      # generator does NOT auto-run vcvars, so without this cmake auto-selects the
+      # mingw GCC that ships on the windows runner (C:\mingw64\bin\cc.exe) and then
+      # chokes on the MSVC-only flags (/GL /Gy /Gw) the msvc toolchain path emits.
+      # With vcvars active, cmake+Ninja pick cl.exe and the /GL+/LTCG levers apply.
+      - name: Set up MSVC (vcvars) for the Ninja build
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Build cp313 wheel + per-OS import/compute smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
