@@ -165,7 +165,18 @@ macro(vtkArrayDispatch_default_array_setup)
   # the full ~14-type dispatch list.
   set(_fvtk_disp_types "${vtk_numeric_types}")
   if (NOT "$ENV{FVTK_DISPATCH_MINIMAL}" STREQUAL "0")
-    set(_fvtk_disp_types "float;double;int;unsigned char;long long;vtkIdType")
+    # ~4 types PyVista hits on the fast path: double + float (the bulk of
+    # numpy_to_vtk geometry/scalars), vtkIdType (connectivity / id arrays), and
+    # unsigned char (RGBA color arrays). vtkIdType is 64-bit signed, so int64
+    # arrays still dispatch through it (vtkTypeList::Unique folds the duplicate).
+    # int (int32) and the remaining narrow integer types drop OFF the fast path
+    # and route through the virtual vtkDataArray fallback — fully correct
+    # (bit-exact, same mechanism the SOA-off lever relies on), only a runtime
+    # speed trade for int32/narrow-int workloads. This is the maximal compile-time
+    # cut: every Dispatch* worker is instantiated across this list, and
+    # Dispatch2/Dispatch3 multiply it N^2/N^3, so 14 -> 4 collapses the
+    # cross-filter template fan-out hard. FVTK_DISPATCH_MINIMAL=0 restores stock.
+    set(_fvtk_disp_types "double;float;vtkIdType;unsigned char")
   endif ()
 
   # Set up regular arrays
