@@ -4,6 +4,7 @@
 #include "vtkPythonUtil.h"
 #include "vtkABINamespace.h"
 #include "vtkPythonOverload.h"
+#include "vtkPythonTypeAccess.h"
 
 #include "PyVTKMethodDescriptor.h"
 
@@ -20,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -36,7 +38,23 @@
 #endif
 
 // Py_HashPointer added in 3.13 and _Py_HashPointer deprecated in 3.14.
-#if PY_VERSION_HEX >= 0x030D0000
+#if defined(Py_LIMITED_API)
+// Neither Py_HashPointer nor _Py_HashPointer is in the stable ABI (the former is
+// a regular-API 3.13 addition). Reproduce CPython's pointer-hash exactly so the
+// observable hash() of a Python vtkVariant wrapping a vtkObject stays bit-exact
+// with the default build: _Py_HashPointerRaw rotates the address right by 4
+// bits, then Py_HashPointer maps the sentinel -1 to -2.
+VTK_ABI_NAMESPACE_BEGIN
+static inline Py_hash_t vtkPythonHashPointer(const void* ptr)
+{
+  uintptr_t x = reinterpret_cast<uintptr_t>(ptr);
+  x = (x >> 4) | (x << (8 * sizeof(uintptr_t) - 4));
+  Py_hash_t h = static_cast<Py_hash_t>(x);
+  return (h == -1) ? -2 : h;
+}
+VTK_ABI_NAMESPACE_END
+#define PY_HASHPOINTER vtkPythonHashPointer
+#elif PY_VERSION_HEX >= 0x030D0000
 #define PY_HASHPOINTER Py_HashPointer
 #else
 #define PY_HASHPOINTER _Py_HashPointer
@@ -246,7 +264,11 @@ void vtkPythonUtil::Initialize()
   // create the singleton
   vtkPythonUtilCreateIfNeeded();
   // finalize our custom MethodDescriptor type
+#if defined(Py_LIMITED_API)
+  PyVTKMethodDescriptor_BuildType();
+#else
   PyType_Ready(&PyVTKMethodDescriptor_Type);
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -336,7 +358,8 @@ void vtkPythonUtil::RemoveObjectFromMap(PyObject* obj)
     vtkWeakPointerBase wptr;
 
     // check for customized class or dict
-    if (pobj->vtk_class->py_type != Py_TYPE(pobj) || PyDict_Size(pobj->vtk_dict))
+    if (pobj->vtk_class->py_type != Py_TYPE(reinterpret_cast<PyObject*>(pobj)) ||
+      PyDict_Size(pobj->vtk_dict))
     {
       wptr = pobj->vtk_ptr;
     }
@@ -368,9 +391,9 @@ void vtkPythonUtil::RemoveObjectFromMap(PyObject* obj)
       // Add this new ghost to the map
       PyVTKObjectGhost& g = (*vtkPythonMap->GhostMap)[pobj->vtk_ptr];
       g.vtk_ptr = wptr;
-      g.vtk_class = Py_TYPE(pobj);
+      g.vtk_class = Py_TYPE(reinterpret_cast<PyObject*>(pobj));
       g.vtk_dict = pobj->vtk_dict;
-      Py_INCREF(g.vtk_class);
+      Py_INCREF(reinterpret_cast<PyObject*>(g.vtk_class));
       Py_INCREF(g.vtk_dict);
 
       // Delete attrs of erased objects.  Must be done at the end.
@@ -528,9 +551,52 @@ const char* vtkPythonUtil::StripModuleFromObject(PyObject* ob)
 //------------------------------------------------------------------------------
 const char* vtkPythonUtil::GetTypeName(PyTypeObject* pytype)
 {
-#ifdef PY_LIMITED_API
-  vtkSmartPyObject tname = PyType_GetName(pytype);
-  return PyUnicode_AsUTF8AndSize(tname, nullptr);
+#if defined(Py_LIMITED_API)
+  // Under the limited API tp_name is unreadable; PyType_GetName returns a *new*
+  // str reference whose UTF-8 buffer dies with it. Many callers keep the
+  // returned const char* across subsequent calls (and the default build's
+  // tp_name is a stable, interpreter-lifetime pointer), so cache the decoded
+  // name per-type in a process-lifetime table and hand back its c_str(). A
+  // type's __qualname__/tp_name does not change after creation, so the first
+  // observation is authoritative and the pointer stays valid like tp_name.
+  static std::unordered_map<PyTypeObject*, std::string>* nameCache =
+    new std::unordered_map<PyTypeObject*, std::string>();
+  auto it = nameCache->find(pytype);
+  if (it != nameCache->end())
+  {
+    return it->second.c_str();
+  }
+  // The default build's tp_name is the FULL dotted name ("fvtk.vtkObject"),
+  // which PyVTKObject_Repr and error messages embed verbatim. For a heap type
+  // PyType_GetName returns only the leaf ("vtkObject") and the module lives in
+  // __module__, so reconstruct "<module>.<qualname>" to stay byte-identical with
+  // the static tp_name. Builtin bases (e.g. PyLong) have no fvtk module; if
+  // __module__ is "builtins" or absent, fall back to the bare qualname.
+  std::string s;
+  PyObject* qname = PyType_GetQualName(pytype);
+  PyObject* mod = PyObject_GetAttrString(reinterpret_cast<PyObject*>(pytype), "__module__");
+  if (!mod)
+  {
+    PyErr_Clear();
+  }
+  const char* qn = qname ? PyUnicode_AsUTF8AndSize(qname, nullptr) : nullptr;
+  const char* md = (mod && PyUnicode_Check(mod)) ? PyUnicode_AsUTF8AndSize(mod, nullptr) : nullptr;
+  if (md && md[0] != '\0' && strcmp(md, "builtins") != 0)
+  {
+    s = md;
+    s += '.';
+    if (qn)
+    {
+      s += qn;
+    }
+  }
+  else if (qn)
+  {
+    s = qn;
+  }
+  Py_XDECREF(qname);
+  Py_XDECREF(mod);
+  return (*nameCache)[pytype] = std::move(s), (*nameCache)[pytype].c_str();
 #else
   return pytype->tp_name;
 #endif
@@ -599,21 +665,11 @@ PyVTKClass* vtkPythonUtil::FindNearestBaseClass(vtkObjectBase* ptr)
 
     if (ptr->IsA(pyclass->vtk_name))
     {
-      PyTypeObject* base =
-#if PY_VERSION_HEX >= 0x030A0000
-        (PyTypeObject*)PyType_GetSlot(pyclass->py_type, Py_tp_base)
-#else
-        pyclass->py_type->tp_base
-#endif
-        ;
+      PyTypeObject* base = vtkPythonType_GetBase(pyclass->py_type);
       // count the hierarchy depth for this class
       for (depth = 0; base != nullptr; depth++)
       {
-#if PY_VERSION_HEX >= 0x030A0000
-        base = (PyTypeObject*)PyType_GetSlot(base, Py_tp_base);
-#else
-        base = base->tp_base;
-#endif
+        base = vtkPythonType_GetBase(base);
       }
       // we want the class that is furthest from vtkObjectBase.
       // The ClassMap is an unordered_map, so iteration order is not
@@ -971,13 +1027,7 @@ PyTypeObject* vtkPythonUtil::FindBaseTypeObject(const char* name)
     // in case of override, drill down to get the original (non-override) type,
     // that's what we need to use for the base class of other wrapped classes
     for (PyTypeObject* pytype = info->py_type; pytype != nullptr;
-         pytype =
-#if PY_VERSION_HEX >= 0x030A0000
-           (PyTypeObject*)PyType_GetSlot(pytype, Py_tp_base)
-#else
-           pytype->tp_base
-#endif
-    )
+         pytype = vtkPythonType_GetBase(pytype))
     {
       if (strcmp(vtkPythonUtil::StripModuleFromType(pytype), name) == 0)
       {
@@ -1244,14 +1294,55 @@ void vtkPythonVoidFuncArgDelete(void* arg)
   }
 }
 
+#if defined(Py_LIMITED_API)
+//------------------------------------------------------------------------------
+// abi3 getset registry. The default build recovers the backing PyGetSetDef* of a
+// getset descriptor by casting the descriptor object and reading its private
+// d_getset/d_type fields (PyGetSetDescrObject is not in the stable ABI). Under
+// the limited API we instead record every PyGetSetDef* fvtk installs on a type,
+// keyed by (type, attribute name), at the moment the descriptor is created, and
+// look it up here. This reproduces FindGetSetDescriptor's exact result (the same
+// PyGetSetDef pointer) without touching any opaque CPython struct.
+static std::map<std::pair<PyTypeObject*, std::string>, PyGetSetDef*>& vtkPythonGetSetRegistry()
+{
+  static std::map<std::pair<PyTypeObject*, std::string>, PyGetSetDef*>* reg =
+    new std::map<std::pair<PyTypeObject*, std::string>, PyGetSetDef*>();
+  return *reg;
+}
+
+void vtkPythonUtil::RegisterGetSetDescriptor(PyTypeObject* pytype, const char* name, PyGetSetDef* gs)
+{
+  vtkPythonGetSetRegistry()[std::make_pair(pytype, std::string(name))] = gs;
+}
+#endif
+
 //------------------------------------------------------------------------------
 PyGetSetDef* vtkPythonUtil::FindGetSetDescriptor(PyTypeObject* pytype, PyObject* key)
 {
+#if defined(Py_LIMITED_API)
+  // Resolve the key to a UTF-8 name and consult the abi3 registry, walking the
+  // base chain exactly as the default-build dict walk does.
+  const char* name = PyUnicode_AsUTF8AndSize(key, nullptr);
+  if (name != nullptr)
+  {
+    auto& reg = vtkPythonGetSetRegistry();
+    for (PyTypeObject* t = pytype; t != nullptr; t = vtkPythonType_GetBase(t))
+    {
+      auto it = reg.find(std::make_pair(t, std::string(name)));
+      if (it != reg.end() && it->second != nullptr)
+      {
+        return it->second;
+      }
+    }
+  }
+  return nullptr;
+#else
   // Check if tp_dict is present
-  if (pytype->tp_dict != nullptr && PyDict_Check(pytype->tp_dict))
+  PyObject* tpdict = vtkPythonType_GetDict(pytype);
+  if (tpdict != nullptr && PyDict_Check(tpdict))
   {
     // Check if the attribute is in the dictionary
-    PyObject* attr = PyDict_GetItem(pytype->tp_dict, key);
+    PyObject* attr = PyDict_GetItem(tpdict, key);
     if (attr != nullptr)
     {
       PyDescrObject* descr = (PyDescrObject*)attr;
@@ -1266,11 +1357,13 @@ PyGetSetDef* vtkPythonUtil::FindGetSetDescriptor(PyTypeObject* pytype, PyObject*
     }
   }
   // Recursively check in base types
-  if (pytype->tp_base != nullptr)
+  PyTypeObject* base = vtkPythonType_GetBase(pytype);
+  if (base != nullptr)
   {
-    return vtkPythonUtil::FindGetSetDescriptor(pytype->tp_base, key);
+    return vtkPythonUtil::FindGetSetDescriptor(base, key);
   }
   // No matching getset descriptor found
   return nullptr;
+#endif
 }
 VTK_ABI_NAMESPACE_END

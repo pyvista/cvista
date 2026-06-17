@@ -181,6 +181,11 @@ setup(
         'fvtk': [
             # Linux modules.
             '*-linux-gnu.so',
+            # Stable-ABI (abi3) modules — FVTK_ABI3 names wrappers vtkXxx.abi3.so
+            # (no per-version SOABI postfix) so one wheel loads on all CPython >=
+            # the Py_LIMITED_API floor. The version-tagged glob above does not
+            # match these, so include them explicitly.
+            '*.abi3.so',
             # Unix shared libraries.
             'lib*.so*',
             # macOS modules.

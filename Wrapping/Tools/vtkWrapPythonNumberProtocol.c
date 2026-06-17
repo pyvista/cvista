@@ -72,6 +72,16 @@ int vtkWrapPython_GenerateNumberProtocolDefintions(FILE* fp, const ClassInfo* cl
     "}\n\n",
     classInfo->Name);
 
+  /* abi3: PyNumberMethods is opaque under the limited API. The only non-null
+   * entry is nb_rshift (the ">>" pipeline operator), so emit it as a PyType_Spec
+   * slot row macro that the class spec splices into its Py..._Slots table; the
+   * static PyNumberMethods below is compiled only in the default build. */
+  fprintf(fp,
+    "#if defined(Py_LIMITED_API)\n"
+    "#define Py%s_NumberSlots { Py_nb_rshift, (void*)Py%s_RShift },\n"
+    "#else\n",
+    classInfo->Name, classInfo->Name);
+
   fprintf(fp,
     "static PyNumberMethods Py%s_AsNumber = {\n"
     "  nullptr, // nb_add\n"
@@ -110,7 +120,8 @@ int vtkWrapPython_GenerateNumberProtocolDefintions(FILE* fp, const ClassInfo* cl
     "  nullptr, // nb_index\n"
     "  nullptr, // nb_matrix_multiply\n"
     "  nullptr, // nb_inplace_matrix_multiply\n"
-    "};\n\n",
+    "};\n"
+    "#endif // Py_LIMITED_API\n\n",
     classInfo->Name, classInfo->Name);
 
   return 1;

@@ -18,10 +18,15 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 /tmp/stock/bin/pip -q install --upgrade pip
 /tmp/stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
 
-# fvtk wheel + vtkmodules->fvtk redirect shim
+# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR may hold BOTH the static
+# cp311 wheel and the cp312-abi3 wheel (the two-wheel matrix); let pip pick the
+# one whose tag is compatible with this python instead of globbing both (which
+# would try to install the incompatible one and fail). --find-links points pip at
+# the local dir to resolve `fvtk` (tag-compatible pick) while PyPI stays available
+# for fvtk's own declared deps (matplotlib/numpy/...) — so NO --no-index.
 "$BASE_PY" -m venv /tmp/fvtk
 /tmp/fvtk/bin/pip -q install --upgrade pip "numpy==2.4.6"
-/tmp/fvtk/bin/pip -q install "$WHEELDIR"/*.whl
+/tmp/fvtk/bin/pip -q install --find-links "$WHEELDIR" fvtk
 SP=$(/tmp/fvtk/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 cp "$SRC/tools/fvtk_shim.py" "$SP/_fvtk_shim.py"
 echo "import _fvtk_shim" > "$SP/_fvtk_shim.pth"
@@ -31,7 +36,12 @@ echo "import _fvtk_shim" > "$SP/_fvtk_shim.pth"
 /tmp/runner/bin/pip -q install --upgrade pip "numpy==2.4.6" pytest
 
 cd "$SRC/tests/bitexact"
+# BITEXACT_ABI3 selects the parity mode: the shipped wheel is abi3 (heap types),
+# so the gate defaults to abi3-aware (tolerates ONLY the type __flags__ HEAPTYPE/
+# IMMUTABLETYPE divergence). Export BITEXACT_ABI3=0 before this script to validate
+# a legacy static-type wheel (strict byte-for-byte parity incl. __flags__).
 BITEXACT_STOCK_PY=/tmp/stock/bin/python \
 BITEXACT_FVTK_PY=/tmp/fvtk/bin/python \
+BITEXACT_ABI3="${BITEXACT_ABI3:-1}" \
 BITEXACT_OUTDIR="${BITEXACT_OUTDIR:-/tmp/bx-out}" \
 /tmp/runner/bin/python -m pytest -v --tb=short -p no:cacheprovider

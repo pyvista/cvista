@@ -334,12 +334,127 @@ static void vtkWrapPython_GenerateObjectNew(
       data->Name);
   }
 
+  /* the classname-key argument shared by both build variants */
+  name = vtkWrapPython_GetSuperClass(data, hinfo, &supermodule);
+
+  /* check if any constants need to be added to the class dict */
+  for (i = 0; i < data->NumberOfConstants; i++)
+  {
+    if (data->Constants[i]->Access == VTK_ACCESS_PUBLIC)
+    {
+      has_constants = 1;
+      break;
+    }
+  }
+
+  /* check if any enums need to be added to the class dict */
+  for (i = 0; i < data->NumberOfEnums; i++)
+  {
+    if (data->Enums[i]->Access == VTK_ACCESS_PUBLIC)
+    {
+      has_enums = 1;
+      break;
+    }
+  }
+
   fprintf(fp,
     "PyObject *Py%s_ClassNew()\n"
-    "{\n"
+    "{\n",
+    classname);
+
+  /* ---------- abi3 (Py_LIMITED_API) path ---------- *
+   * The type cannot be a static PyTypeObject; resolve the base first, then build
+   * the heap type from the generated spec via PyVTKClass_Add(spec, base, ...).
+   * Constants/enums are gathered into a standalone dict and merged through the
+   * SetDictItem accessor (a heap type's dict is not directly writable). */
+  fprintf(fp, "#if defined(Py_LIMITED_API)\n");
+
+  /* idempotency: hand back the already-registered type if present */
+  if (strcmp(data->Name, classname) == 0)
+  {
+    fprintf(fp,
+      "  if (PyTypeObject *existing = vtkPythonUtil::FindClassTypeObject(\"%s\"))\n"
+      "  {\n"
+      "    return (PyObject *)existing;\n"
+      "  }\n",
+      classname);
+  }
+  else
+  {
+    fprintf(fp,
+      "  if (PyTypeObject *existing = "
+      "vtkPythonUtil::FindClassTypeObject(typeid(%s).name()))\n"
+      "  {\n"
+      "    return (PyObject *)existing;\n"
+      "  }\n",
+      data->Name);
+  }
+
+  /* resolve the base type (created/looked up first) */
+  fprintf(fp, "  PyTypeObject *base = nullptr;\n");
+  if (name)
+  {
+    vtkWrapText_PythonName(name, superclassname);
+    if (!supermodule) /* superclass is in the same module */
+    {
+      fprintf(fp, "  base = (PyTypeObject *)Py%s_ClassNew();\n", superclassname);
+    }
+    else if (strcmp(name, superclassname) == 0)
+    {
+      fprintf(fp, "  base = vtkPythonUtil::FindBaseTypeObject(\"%s\");\n", superclassname);
+    }
+    else /* templated superclass */
+    {
+      fprintf(fp, "  base = vtkPythonUtil::FindBaseTypeObject(typeid(%s).name());\n", name);
+    }
+  }
+
+  fprintf(fp, "  PyTypeObject *pytype = PyVTKClass_Add(\n    &Py%s_Spec, base, Py%s_Methods,\n",
+    classname, classname);
+  if (strcmp(data->Name, classname) == 0)
+  {
+    fprintf(fp, "    \"%s\",\n", classname);
+  }
+  else
+  {
+    fprintf(fp, "    typeid(%s).name(),\n", data->Name);
+  }
+  fprintf(fp, (class_has_new ? "    &Py%s_StaticNew);\n\n" : "    nullptr);\n\n"), classname);
+
+  if (has_constants || has_enums)
+  {
+    fprintf(fp,
+      "  PyObject *d = PyDict_New();\n"
+      "  PyObject *o;\n"
+      "\n");
+  }
+  if (has_enums)
+  {
+    vtkWrapPython_AddPublicEnumTypes(fp, "  ", "d", "o", data);
+  }
+  if (has_constants)
+  {
+    vtkWrapPython_AddPublicConstants(fp, "  ", "d", "o", data);
+  }
+  if (has_constants || has_enums)
+  {
+    fprintf(fp,
+      "  vtkPythonType_MergeIntoTypeDict(pytype, d);\n"
+      "  Py_DECREF(d);\n"
+      "\n");
+  }
+  fprintf(fp,
+    "  PyVTKClass_AddCombinedGetSetDefinitions(pytype, Py%s_GetSets);\n"
+    "  return (PyObject *)pytype;\n",
+    classname);
+
+  /* ---------- default (static type) path ---------- */
+  fprintf(fp, "#else\n");
+
+  fprintf(fp,
     "  PyTypeObject *pytype = PyVTKClass_Add(\n"
     "    &Py%s_Type, Py%s_Methods,\n",
-    classname, classname, classname);
+    classname, classname);
 
   if (strcmp(data->Name, classname) == 0)
   {
@@ -368,7 +483,6 @@ static void vtkWrapPython_GenerateObjectNew(
     "  }\n\n");
 
   /* find the first superclass that is a VTK class, create it first */
-  name = vtkWrapPython_GetSuperClass(data, hinfo, &supermodule);
   if (name)
   {
     vtkWrapText_PythonName(name, superclassname);
@@ -389,26 +503,6 @@ static void vtkWrapPython_GenerateObjectNew(
         fprintf(fp, "  pytype->tp_base = vtkPythonUtil::FindBaseTypeObject(typeid(%s).name());\n\n",
           name);
       }
-    }
-  }
-
-  /* check if any constants need to be added to the class dict */
-  for (i = 0; i < data->NumberOfConstants; i++)
-  {
-    if (data->Constants[i]->Access == VTK_ACCESS_PUBLIC)
-    {
-      has_constants = 1;
-      break;
-    }
-  }
-
-  /* check if any enums need to be added to the class dict */
-  for (i = 0; i < data->NumberOfEnums; i++)
-  {
-    if (data->Enums[i]->Access == VTK_ACCESS_PUBLIC)
-    {
-      has_enums = 1;
-      break;
     }
   }
 
@@ -435,9 +529,95 @@ static void vtkWrapPython_GenerateObjectNew(
   fprintf(fp,
     "  PyVTKClass_AddCombinedGetSetDefinitions(pytype, Py%s_GetSets);\n"
     "  PyType_Ready(pytype);\n"
-    "  return (PyObject *)pytype;\n"
-    "}\n\n",
+    "  return (PyObject *)pytype;\n",
     classname);
+
+  fprintf(fp, "#endif // Py_LIMITED_API\n}\n\n");
+}
+
+/* -------------------------------------------------------------------- */
+/* write out the type object as a PyType_Spec for the limited API (abi3).
+ *
+ * Under Py_LIMITED_API a static PyTypeObject cannot be defined; the type must be
+ * built at runtime with PyType_FromSpec (a heap type). This emits the equivalent
+ * PyType_Slot[] + PyType_Spec, mirroring the static fields below:
+ *   - tp_as_buffer        -> Py_bf_getbuffer / Py_bf_releasebuffer slots
+ *                            (PyVTKObject_AsBuffer_GetBuffer/ReleaseBuffer have
+ *                             external linkage under abi3)
+ *   - tp_dictoffset/      -> Py_tp_members synthetic __dictoffset__/
+ *     tp_weaklistoffset      __weaklistoffset__ members (the limited-API-safe way
+ *                            to express the per-instance dict/weakref layout)
+ *   - tp_base             -> set at runtime in Py%s_ClassNew (Py_tp_base can't
+ *                            carry a cross-module pointer resolved by FindBase...)
+ * The flags add Py_TPFLAGS_BASETYPE|HAVE_GC just like the static form. */
+static void vtkWrapPython_GenerateObjectSpec(
+  FILE* fp, const char* module, const char* classname, const int hasNumberProtocol)
+{
+  fprintf(fp,
+    "static PyMemberDef Py%s_SpecMembers[] = {\n"
+    "  { \"__dictoffset__\", Py_T_PYSSIZET, offsetof(PyVTKObject, vtk_dict), Py_READONLY, nullptr },\n"
+    "  { \"__weaklistoffset__\", Py_T_PYSSIZET, offsetof(PyVTKObject, vtk_weakreflist), Py_READONLY, nullptr },\n"
+    "  { nullptr, 0, 0, 0, nullptr }\n"
+    "};\n\n",
+    classname);
+
+  fprintf(fp,
+    "static PyType_Slot Py%s_Slots[] = {\n"
+    "  { Py_tp_dealloc, (void*)PyVTKObject_Delete },\n"
+    "  { Py_tp_repr, (void*)PyVTKObject_Repr },\n"
+    "  { Py_tp_str, (void*)PyVTKObject_String },\n"
+    "  { Py_tp_getattro, (void*)PyObject_GenericGetAttr },\n"
+    "  { Py_tp_setattro, (void*)PyObject_GenericSetAttr },\n"
+    "  { Py_bf_getbuffer, (void*)PyVTKObject_AsBuffer_GetBuffer },\n"
+    "  { Py_bf_releasebuffer, (void*)PyVTKObject_AsBuffer_ReleaseBuffer },\n"
+    "  { Py_tp_doc, (void*)Py%s_Doc },\n"
+    "  { Py_tp_traverse, (void*)PyVTKObject_Traverse },\n",
+    classname, classname);
+  /* vtkObjectBase carries the "__dict__" descriptor (PyVTKObject_BaseGetSet);
+   * every subclass uses PyVTKObject_GetSet (no "__dict__") and inherits it. Under
+   * the limited API a heap subclass cannot re-declare an inherited "__dict__". */
+  fprintf(fp, "  { Py_tp_getset, (void*)%s },\n",
+    (strcmp(classname, "vtkObjectBase") == 0 ? "PyVTKObject_BaseGetSet" : "PyVTKObject_GetSet"));
+  fprintf(fp,
+    "  { Py_tp_members, (void*)Py%s_SpecMembers },\n"
+    "  { Py_tp_init, (void*)PyVTKObject_Init },\n"
+    "  { Py_tp_new, (void*)PyVTKObject_New },\n"
+    "  { Py_tp_free, (void*)PyObject_GC_Del },\n",
+    classname);
+
+  if (hasNumberProtocol)
+  {
+    /* the number protocol is itself decomposed into Py_nb_* slots by the
+     * abi3 branch of vtkWrapPython_GenerateNumberProtocol; reference them via a
+     * helper macro the generated AsNumber block expands to under Py_LIMITED_API */
+    fprintf(fp, "  Py%s_NumberSlots // expands to the Py_nb_* rows, comma-terminated\n", classname);
+  }
+  if (strcmp(classname, "vtkAlgorithm") == 0)
+  {
+    fprintf(fp, "  { Py_tp_call, (void*)PyvtkAlgorithm_Call },\n");
+  }
+  if (strcmp(classname, "vtkCollection") == 0)
+  {
+    fprintf(fp, "  { Py_tp_iter, (void*)PyvtkCollection_Iter },\n");
+  }
+  else if (strcmp(classname, "vtkCollectionIterator") == 0)
+  {
+    fprintf(fp,
+      "  { Py_tp_iter, (void*)PyvtkCollectionIterator_Iter },\n"
+      "  { Py_tp_iternext, (void*)PyvtkCollectionIterator_Next },\n");
+  }
+  fprintf(fp,
+    "  { 0, nullptr }\n"
+    "};\n\n");
+
+  fprintf(fp,
+    "static PyType_Spec Py%s_Spec = {\n"
+    "  PYTHON_PACKAGE_SCOPE \"%s.%s\",\n"
+    "  sizeof(PyVTKObject), 0,\n"
+    "  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE,\n"
+    "  Py%s_Slots\n"
+    "};\n\n",
+    classname, module, classname, classname);
 }
 
 /* -------------------------------------------------------------------- */
@@ -445,6 +625,12 @@ static void vtkWrapPython_GenerateObjectNew(
 void vtkWrapPython_GenerateObjectType(
   FILE* fp, const char* module, const char* classname, const int hasNumberProtocol)
 {
+  /* abi3: emit the PyType_Spec form; the static PyTypeObject below is compiled
+   * only in the default (non-limited) build. */
+  fprintf(fp, "#if defined(Py_LIMITED_API)\n");
+  vtkWrapPython_GenerateObjectSpec(fp, module, classname, hasNumberProtocol);
+  fprintf(fp, "#else\n");
+
   /* Generate the TypeObject */
   fprintf(fp,
     "#ifdef VTK_PYTHON_NEEDS_DEPRECATION_WARNING_SUPPRESSION\n"
@@ -546,6 +732,9 @@ void vtkWrapPython_GenerateObjectType(
     "  VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED\n"
     "};\n"
     "\n");
+
+  /* close the #if defined(Py_LIMITED_API) ... #else ... started above */
+  fprintf(fp, "#endif // Py_LIMITED_API\n\n");
 }
 
 /* -------------------------------------------------------------------- */

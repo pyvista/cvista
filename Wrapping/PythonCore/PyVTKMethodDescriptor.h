@@ -17,7 +17,12 @@
 #include "vtkSystemIncludes.h"
 #include "vtkWrappingPythonCoreModule.h" // For export macro
 
+#if defined(Py_LIMITED_API)
+extern PyTypeObject* PyVTKMethodDescriptor_TypePtr;
+#define PyVTKMethodDescriptor_Type (*PyVTKMethodDescriptor_TypePtr)
+#else
 extern PyTypeObject PyVTKMethodDescriptor_Type;
+#endif
 
 #define PyVTKMethodDescriptor_Check(obj) (Py_TYPE(obj) == &PyVTKMethodDescriptor_Type)
 
@@ -25,6 +30,11 @@ extern "C"
 {
   // Create a new method descriptor from a PyMethodDef.
   PyObject* PyVTKMethodDescriptor_New(PyTypeObject* cls, PyMethodDef* meth);
+
+#if defined(Py_LIMITED_API)
+  // abi3: build the heap type (idempotent). 0 on success, -1 on failure.
+  int PyVTKMethodDescriptor_BuildType();
+#endif
 }
 
 #endif

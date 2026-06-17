@@ -3,6 +3,7 @@
 
 #include "PyVTKMethodDescriptor.h"
 #include "vtkABINamespace.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 
 #include <structmember.h> // a python header
@@ -14,10 +15,45 @@
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
 #endif
 
+#if defined(Py_LIMITED_API)
+// Under the limited API, CPython's PyDescrObject / PyMethodDescrObject structs
+// and the PyDescr_TYPE/PyDescr_NAME accessors are not exposed (descrobject.h is
+// excluded from the stable ABI). The custom VTK method descriptor doesn't need
+// to *be* a CPython method descriptor — it only needs an object with d_type /
+// d_name / d_method fields, a getattro of PyObject_GenericGetAttr, and members
+// exposing __objclass__ / __name__. So define a self-contained, ABI-stable
+// layout that reproduces exactly those observable facts. PyObject_HEAD is part
+// of the stable ABI; offsetof on a user struct is plain C.
+struct PyMethodDescrObject
+{
+  PyObject_HEAD
+  PyTypeObject* d_type;  // __objclass__
+  PyObject* d_name;      // __name__ (interned)
+  PyMethodDef* d_method; // the wrapped method
+};
+struct PyDescrObject
+{
+  PyObject_HEAD
+  PyTypeObject* d_type;
+  PyObject* d_name;
+};
+#undef PyDescr_TYPE
+#undef PyDescr_NAME
+#define PyDescr_TYPE(x) (((PyMethodDescrObject*)(x))->d_type)
+#define PyDescr_NAME(x) (((PyMethodDescrObject*)(x))->d_name)
+// The limited API spells the member type/flags Py_T_OBJECT_EX / Py_READONLY.
+#ifndef T_OBJECT
+#define T_OBJECT Py_T_OBJECT_EX
+#endif
+#ifndef READONLY
+#define READONLY Py_READONLY
+#endif
+#else
 // Required for Python 2.5 through Python 2.7
 #ifndef PyDescr_TYPE
 #define PyDescr_TYPE(x) (((PyDescrObject*)(x))->d_type)
 #define PyDescr_NAME(x) (((PyDescrObject*)(x))->d_name)
+#endif
 #endif
 
 //------------------------------------------------------------------------------
@@ -25,12 +61,16 @@
 
 PyObject* PyVTKMethodDescriptor_New(PyTypeObject* pytype, PyMethodDef* meth)
 {
+#if defined(Py_LIMITED_API)
+  // abi3: ensure the heap type exists before allocating from it.
+  PyVTKMethodDescriptor_BuildType();
+#endif
   PyMethodDescrObject* descr =
     (PyMethodDescrObject*)PyType_GenericAlloc(&PyVTKMethodDescriptor_Type, 0);
 
   if (descr)
   {
-    Py_XINCREF(pytype);
+    Py_XINCREF((PyObject*)pytype);
     PyDescr_TYPE(descr) = pytype;
     PyDescr_NAME(descr) = PyUnicode_InternFromString(meth->ml_name);
     descr->d_method = meth;
@@ -52,7 +92,7 @@ static void PyVTKMethodDescriptor_Delete(PyObject* ob)
 {
   PyMethodDescrObject* descr = (PyMethodDescrObject*)ob;
   PyObject_GC_UnTrack(descr);
-  Py_XDECREF(PyDescr_TYPE(descr));
+  Py_XDECREF((PyObject*)PyDescr_TYPE(descr));
   Py_XDECREF(PyDescr_NAME(descr));
   PyObject_GC_Del(descr);
 }
@@ -67,7 +107,7 @@ static PyObject* PyVTKMethodDescriptor_Repr(PyObject* ob)
 static int PyVTKMethodDescriptor_Traverse(PyObject* ob, visitproc visit, void* arg)
 {
   PyMethodDescrObject* descr = (PyMethodDescrObject*)ob;
-  Py_VISIT(PyDescr_TYPE(descr));
+  Py_VISIT((PyObject*)PyDescr_TYPE(descr));
   return 0;
 }
 
@@ -145,6 +185,7 @@ static PyMemberDef PyVTKMethodDescriptor_Members[] = {
 #endif
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 // clang-format off
 PyTypeObject PyVTKMethodDescriptor_Type = {
   PyVarObject_HEAD_INIT(&PyType_Type, 0)
@@ -201,3 +242,34 @@ PyTypeObject PyVTKMethodDescriptor_Type = {
   nullptr,                                 // tp_weaklist
   VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED };
 // clang-format on
+#else // Py_LIMITED_API: heap type via PyType_FromSpec
+
+static PyType_Slot PyVTKMethodDescriptor_Slots[] = {
+  { Py_tp_dealloc, (void*)PyVTKMethodDescriptor_Delete },
+  { Py_tp_repr, (void*)PyVTKMethodDescriptor_Repr },
+  { Py_tp_call, (void*)PyVTKMethodDescriptor_Call },
+  { Py_tp_getattro, (void*)PyObject_GenericGetAttr },
+  { Py_tp_traverse, (void*)PyVTKMethodDescriptor_Traverse },
+  { Py_tp_members, (void*)PyVTKMethodDescriptor_Members },
+  { Py_tp_getset, (void*)PyVTKMethodDescriptor_GetSet },
+  { Py_tp_descr_get, (void*)PyVTKMethodDescriptor_Get },
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKMethodDescriptor_Spec = {
+  "fvtk.vtkCommonCore.method_descriptor", sizeof(PyMethodDescrObject), 0,
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC, PyVTKMethodDescriptor_Slots
+};
+
+// Backing pointer for the `#define PyVTKMethodDescriptor_Type (*ptr)` shim.
+PyTypeObject* PyVTKMethodDescriptor_TypePtr = nullptr;
+
+int PyVTKMethodDescriptor_BuildType()
+{
+  if (PyVTKMethodDescriptor_TypePtr)
+  {
+    return 0;
+  }
+  PyVTKMethodDescriptor_TypePtr = vtkPythonType_FromSpec(&PyVTKMethodDescriptor_Spec);
+  return PyVTKMethodDescriptor_TypePtr ? 0 : -1;
+}
+#endif // Py_LIMITED_API

@@ -25,9 +25,10 @@
  * small because not many operators or special features are wrapped */
 typedef struct
 {
-  int has_print;    /* there is "<<" stream operator */
-  int has_compare;  /* there are comparison operators e.g. "<" */
-  int has_sequence; /* the [] operator takes a single integer */
+  int has_print;        /* there is "<<" stream operator */
+  int has_compare;      /* there are comparison operators e.g. "<" */
+  int has_sequence;     /* the [] operator takes a single integer */
+  int has_sequence_set; /* the [] operator is also assignable (sq_ass_item) */
 } SpecialTypeInfo;
 
 /* -------------------------------------------------------------------- */
@@ -447,6 +448,7 @@ static void vtkWrapPython_SequenceProtocol(FILE* fp, const char* classname, Clas
 
     if (setItemFunc)
     {
+      info->has_sequence_set = 1;
       fprintf(fp,
         "static int Py%s_SequenceSetItem(\n"
         "  PyObject *self, Py_ssize_t i, PyObject *arg1)\n"
@@ -493,7 +495,11 @@ static void vtkWrapPython_SequenceProtocol(FILE* fp, const char* classname, Clas
         "}\n\n");
     }
 
+    /* abi3: PySequenceMethods is opaque; the limited-API build wires the
+     * sequence protocol via Py_sq_* spec slots (emitted in the type spec), so
+     * this static struct is compiled only in the default build. */
     fprintf(fp,
+      "#if !defined(Py_LIMITED_API)\n"
       "static PySequenceMethods Py%s_AsSequence = {\n"
       "  Py%s_SequenceSize, // sq_length\n"
       "  nullptr, // sq_concat\n"
@@ -516,7 +522,8 @@ static void vtkWrapPython_SequenceProtocol(FILE* fp, const char* classname, Clas
       "  nullptr, // sq_contains\n"
       "  nullptr, // sq_inplace_concat\n"
       "  nullptr, // sq_inplace_repeat\n"
-      "};\n\n");
+      "};\n"
+      "#endif // Py_LIMITED_API\n\n");
   }
 }
 
@@ -581,6 +588,7 @@ static void vtkWrapPython_SpecialTypeProtocols(FILE* fp, const char* classname, 
   info->has_print = 0;
   info->has_compare = 0;
   info->has_sequence = 0;
+  info->has_sequence_set = 0;
 
   vtkWrapPython_NewDeleteProtocol(fp, classname, data, hinfo);
   vtkWrapPython_PrintProtocol(fp, classname, data, finfo, info);
@@ -659,6 +667,64 @@ void vtkWrapPython_GenerateSpecialType(FILE* fp, const char* module, const char*
 
   /* generate all functions and protocols needed for the type */
   vtkWrapPython_SpecialTypeProtocols(fp, classname, data, finfo, hinfo, &info);
+
+  /* abi3: emit a PyType_Spec mirroring the static special-type fields below; the
+   * heap type is built at runtime by the abi3 branch of Py%s_TypeNew. A
+   * file-scope pointer + deref macro keep every "&Py%s_Type" use-site
+   * byte-identical in form (&(*ptr) == ptr). */
+  fprintf(fp, "#if defined(Py_LIMITED_API)\n");
+  fprintf(fp,
+    "static PyType_Slot Py%s_Slots[] = {\n"
+    "  { Py_tp_dealloc, (void*)Py%s_Delete },\n"
+    "  { Py_tp_repr, (void*)PyVTKSpecialObject_Repr },\n"
+    "  { Py_tp_hash, (void*)Py%s_Hash },\n"
+    "  { Py_tp_getattro, (void*)PyObject_GenericGetAttr },\n"
+    "  { Py_tp_doc, (void*)Py%s_Doc },\n"
+    "  { Py_tp_new, (void*)Py%s_New },\n"
+    "  { Py_tp_free, (void*)PyObject_Del },\n",
+    classname, classname, classname, classname, classname);
+  if (info.has_print)
+  {
+    fprintf(fp, "  { Py_tp_str, (void*)Py%s_String },\n", classname);
+  }
+  else if (info.has_sequence)
+  {
+    fprintf(fp, "  { Py_tp_str, (void*)PyVTKSpecialObject_SequenceString },\n");
+  }
+  if (info.has_compare)
+  {
+    fprintf(fp, "  { Py_tp_richcompare, (void*)Py%s_RichCompare },\n", classname);
+  }
+  if (info.has_sequence)
+  {
+    fprintf(fp,
+      "  { Py_sq_length, (void*)Py%s_SequenceSize },\n"
+      "  { Py_sq_item, (void*)Py%s_SequenceItem },\n",
+      classname, classname);
+    if (info.has_sequence_set)
+    {
+      fprintf(fp, "  { Py_sq_ass_item, (void*)Py%s_SequenceSetItem },\n", classname);
+    }
+  }
+  fprintf(fp,
+    "  { 0, nullptr }\n"
+    "};\n\n"
+    "static PyType_Spec Py%s_Spec = {\n"
+    "  PYTHON_PACKAGE_SCOPE \"%s.%s\",\n"
+    "  sizeof(PyVTKSpecialObject), 0,\n"
+    /* Py_TPFLAGS_BASETYPE: required so special types that are subclassed (e.g.
+     * vtkQuaternion deriving from vtkTuple) can be used as a base by
+     * PyType_FromSpecWithBases. Stock's static special types are subclassed via
+     * direct tp_base assignment without the flag; under abi3 the heap-type base
+     * must carry it. MRO/behavior is identical; only the BASETYPE flag bit
+     * differs (an intrinsic static->heap artifact, like HEAPTYPE). */
+    "  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,\n"
+    "  Py%s_Slots\n"
+    "};\n"
+    "static PyTypeObject* Py%s_TypePtr = nullptr;\n"
+    "#define Py%s_Type (*Py%s_TypePtr)\n"
+    "#else\n",
+    classname, module, classname, classname, classname, classname, classname);
 
   /* Generate the TypeObject */
   fprintf(fp,
@@ -763,6 +829,7 @@ void vtkWrapPython_GenerateSpecialType(FILE* fp, const char* module, const char*
   fprintf(fp,
     "  VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED\n"
     "};\n"
+    "#endif // Py_LIMITED_API\n"
     "\n");
 
   /* need a check function for some protocols */
@@ -813,12 +880,96 @@ void vtkWrapPython_GenerateSpecialType(FILE* fp, const char* module, const char*
       supername, supername, supername);
   }
 
+  /* check whether the class has any constants as members */
+  for (i = 0; i < data->NumberOfConstants; i++)
+  {
+    if (data->Constants[i]->Access == VTK_ACCESS_PUBLIC)
+    {
+      has_constants = 1;
+    }
+  }
+
   /* the method for adding the VTK extras to the type,
    * the unused "const char *" arg is the module name */
   fprintf(fp,
     "PyObject *Py%s_TypeNew()\n"
     "{\n",
     classname);
+
+  /* ---------- abi3 (Py_LIMITED_API) path ---------- *
+   * Resolve the base first, then build the heap type from the spec via
+   * PyVTKSpecialType_Add(spec, base, ...). Constants/enums merged via SetDictItem. */
+  fprintf(fp, "#if defined(Py_LIMITED_API)\n");
+  fprintf(fp,
+    "  if (PyTypeObject *existing = "
+    "vtkPythonUtil::FindSpecialTypeObject(vtkPythonUtil::StripModule(Py%s_Spec.name)))\n"
+    "  {\n"
+    "    return (PyObject *)existing;\n"
+    "  }\n"
+    "  PyTypeObject *base = nullptr;\n",
+    classname);
+  if (has_superclass)
+  {
+    if (!supermodule)
+    {
+      fprintf(fp, "  base = (PyTypeObject *)Py%s_TypeNew();\n", supername);
+    }
+    else
+    {
+      fprintf(fp, "  base = vtkPythonUtil::FindSpecialTypeObject(\"%s\");\n", supername);
+    }
+  }
+  if (has_copycons)
+  {
+    fprintf(fp,
+      "  PyTypeObject *pytype = PyVTKSpecialType_Add(\n"
+      "    &Py%s_Spec, base,\n"
+      "    Py%s_Methods,\n"
+      "    Py%s_GetSets,\n"
+      "    Py%s_%*.*s_Methods,\n"
+      "    &Py%s_CCopy);\n"
+      "\n",
+      classname, classname, classname, classname, (int)n, (int)n, constructor, classname);
+  }
+  else if (constructor)
+  {
+    fprintf(fp,
+      "  PyTypeObject *pytype = PyVTKSpecialType_Add(\n"
+      "    &Py%s_Spec, base,\n"
+      "    Py%s_Methods,\n"
+      "    Py%s_GetSets,\n"
+      "    Py%s_%*.*s_Methods,\n"
+      "    nullptr);\n"
+      "\n",
+      classname, classname, classname, classname, (int)n, (int)n, constructor);
+  }
+  else
+  {
+    fprintf(fp,
+      "  PyTypeObject *pytype = PyVTKSpecialType_Add(\n"
+      "    &Py%s_Spec, base,\n"
+      "    Py%s_Methods,\n"
+      "    Py%s_GetSets,\n"
+      "    nullptr,\n"
+      "    nullptr);\n"
+      "\n",
+      classname, classname, classname);
+  }
+  if (has_constants)
+  {
+    fprintf(fp,
+      "  PyObject *d = PyDict_New();\n"
+      "  PyObject *o;\n\n");
+    vtkWrapPython_AddPublicEnumTypes(fp, "  ", "d", "o", data);
+    vtkWrapPython_AddPublicConstants(fp, "  ", "d", "o", data);
+    fprintf(fp,
+      "  vtkPythonType_MergeIntoTypeDict(pytype, d);\n"
+      "  Py_DECREF(d);\n\n");
+  }
+  fprintf(fp, "  return (PyObject *)pytype;\n");
+
+  /* ---------- default (static type) path ---------- */
+  fprintf(fp, "#else\n");
 
   if (has_copycons)
   {
@@ -880,15 +1031,6 @@ void vtkWrapPython_GenerateSpecialType(FILE* fp, const char* module, const char*
     }
   }
 
-  /* check whether the class has any constants as members */
-  for (i = 0; i < data->NumberOfConstants; i++)
-  {
-    if (data->Constants[i]->Access == VTK_ACCESS_PUBLIC)
-    {
-      has_constants = 1;
-    }
-  }
-
   if (has_constants)
   {
     fprintf(fp,
@@ -904,8 +1046,9 @@ void vtkWrapPython_GenerateSpecialType(FILE* fp, const char* module, const char*
 
   fprintf(fp,
     "  PyType_Ready(pytype);\n"
-    "  return (PyObject *)pytype;\n"
-    "}\n\n");
+    "  return (PyObject *)pytype;\n");
+
+  fprintf(fp, "#endif // Py_LIMITED_API\n}\n\n");
 }
 
 // NOLINTEND(bugprone-unsafe-functions)

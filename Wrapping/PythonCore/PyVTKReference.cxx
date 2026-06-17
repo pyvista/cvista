@@ -10,6 +10,7 @@
 
 #include "PyVTKReference.h"
 #include "vtkABINamespace.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 
 // Silence warning like
@@ -223,14 +224,21 @@ static PyObject* PyVTKReference_Trunc(PyObject* self, PyObject* args)
   {
     PyObject* attr = PyUnicode_InternFromString("__trunc__");
     PyObject* ob = PyVTKReference_GetValue(self);
-    PyObject* meth = _PyType_Lookup(Py_TYPE(ob), attr);
+    PyObject* meth = vtkPythonType_LookupMethod(Py_TYPE(ob), attr);
     if (meth == nullptr)
     {
       PyErr_Format(PyExc_TypeError, "type %.100s doesn't define __trunc__ method",
         vtkPythonUtil::GetTypeNameForObject(ob));
       return nullptr;
     }
+#if defined(Py_LIMITED_API)
+    // abi3 LookupMethod returns a new ref (vs _PyType_Lookup's borrow); release it.
+    PyObject* res = PyObject_CallFunction(meth, "O", ob);
+    Py_DECREF(meth);
+    return res;
+#else
     return PyObject_CallFunction(meth, "O", ob);
+#endif
   }
 
   return nullptr;
@@ -244,18 +252,26 @@ static PyObject* PyVTKReference_Round(PyObject* self, PyObject* args)
   {
     PyObject* attr = PyUnicode_InternFromString("__round__");
     PyObject* ob = PyVTKReference_GetValue(self);
-    PyObject* meth = _PyType_Lookup(Py_TYPE(ob), attr);
+    PyObject* meth = vtkPythonType_LookupMethod(Py_TYPE(ob), attr);
     if (meth == nullptr)
     {
       PyErr_Format(PyExc_TypeError, "type %.100s doesn't define __round__ method",
         vtkPythonUtil::GetTypeNameForObject(ob));
       return nullptr;
     }
+#if defined(Py_LIMITED_API)
+    // abi3 LookupMethod returns a new ref (vs _PyType_Lookup's borrow); release it.
+    PyObject* res = (opn ? PyObject_CallFunction(meth, "OO", ob, opn)
+                         : PyObject_CallFunction(meth, "O", ob));
+    Py_DECREF(meth);
+    return res;
+#else
     if (opn)
     {
       return PyObject_CallFunction(meth, "OO", ob, opn);
     }
     return PyObject_CallFunction(meth, "O", ob);
+#endif
   }
 
   return nullptr;
@@ -358,7 +374,7 @@ static PyMethodDef PyVTKReference_Methods[] = { { "get", PyVTKReference_Get, MET
     {                                                                                              \
       ob->value = obn;                                                                             \
       Py_DECREF(ob1);                                                                              \
-      Py_INCREF(ob);                                                                               \
+      Py_INCREF((PyObject*)ob);                                                                     \
       return (PyObject*)ob;                                                                        \
     }                                                                                              \
     return nullptr;                                                                                \
@@ -375,7 +391,7 @@ static PyMethodDef PyVTKReference_Methods[] = { { "get", PyVTKReference_Get, MET
     {                                                                                              \
       ob->value = obn;                                                                             \
       Py_DECREF(ob1);                                                                              \
-      Py_INCREF(ob);                                                                               \
+      Py_INCREF((PyObject*)ob);                                                                     \
       return (PyObject*)ob;                                                                        \
     }                                                                                              \
     return 0;                                                                                      \
@@ -418,7 +434,7 @@ static PyMethodDef PyVTKReference_Methods[] = { { "get", PyVTKReference_Get, MET
     {                                                                                              \
       ob->value = obn;                                                                             \
       Py_DECREF(ob1);                                                                              \
-      Py_INCREF(ob);                                                                               \
+      Py_INCREF((PyObject*)ob);                                                                     \
       return (PyObject*)ob;                                                                        \
     }                                                                                              \
     return nullptr;                                                                                \
@@ -472,6 +488,7 @@ REFOBJECT_INPLACEFUNC(Number, TrueDivide)
 REFOBJECT_UNARYFUNC(Number, Index)
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 static PyNumberMethods PyVTKReference_AsNumber = {
   PyVTKReference_Add,                // nb_add
   PyVTKReference_Subtract,           // nb_subtract
@@ -554,6 +571,7 @@ static PyNumberMethods PyVTKStringReference_AsNumber = {
   nullptr, // nb_inplace_matrix_multiply
 #endif
 };
+#endif // !Py_LIMITED_API (number method tables)
 
 //------------------------------------------------------------------------------
 // Sequence protocol
@@ -565,6 +583,7 @@ REFOBJECT_INDEXFUNC(Sequence, GetItem)
 REFOBJECT_INTFUNC2(Sequence, Contains)
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 static PySequenceMethods PyVTKReference_AsSequence = {
   PyVTKReference_Size,     // sq_length
   PyVTKReference_Concat,   // sq_concat
@@ -577,6 +596,7 @@ static PySequenceMethods PyVTKReference_AsSequence = {
   nullptr,                 // sq_inplace_concat
   nullptr,                 // sq_inplace_repeat
 };
+#endif
 
 //------------------------------------------------------------------------------
 // Mapping protocol
@@ -588,11 +608,13 @@ static PyObject* PyVTKReference_GetMapItem(PyObject* ob, PyObject* key)
 }
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 static PyMappingMethods PyVTKReference_AsMapping = {
   PyVTKReference_Size,       // mp_length
   PyVTKReference_GetMapItem, // mp_subscript
   nullptr,                   // mp_ass_subscript
 };
+#endif
 
 //------------------------------------------------------------------------------
 // Buffer protocol
@@ -609,10 +631,12 @@ static void PyVTKReference_ReleaseBuffer(PyObject*, Py_buffer* view)
   PyBuffer_Release(view);
 }
 
+#if !defined(Py_LIMITED_API)
 static PyBufferProcs PyVTKReference_AsBuffer = {
   PyVTKReference_GetBuffer,    // bf_getbuffer
   PyVTKReference_ReleaseBuffer // bf_releasebuffer
 };
+#endif
 
 //------------------------------------------------------------------------------
 // Object protocol
@@ -730,6 +754,7 @@ static PyObject* PyVTKReference_New(PyTypeObject*, PyObject* args, PyObject* kwd
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
+#if !defined(Py_LIMITED_API)
 // clang-format off
 //------------------------------------------------------------------------------
 PyTypeObject PyVTKReference_Type = {
@@ -943,3 +968,162 @@ PyTypeObject PyVTKTupleReference_Type = {
   nullptr,                             // tp_weaklist
   VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED };
 // clang-format on
+#else // Py_LIMITED_API: heap types via PyType_FromSpec
+
+//------------------------------------------------------------------------------
+// abi3 number-protocol slots. The static PyNumberMethods/PySequenceMethods/
+// PyMappingMethods/PyBufferProcs tables above cannot exist under the limited
+// API (those structs are opaque); the same non-null entries are expressed as
+// individual Py_nb_*/Py_sq_*/Py_mp_*/Py_bf_* PyType_Slot rows. Ordering inside
+// the spec is immaterial — PyType_FromSpec dispatches by slot id.
+
+// Common (non-number) slots shared by all four reference types.
+#define VTK_REF_COMMON_SLOTS                                                                        \
+  { Py_tp_dealloc, (void*)PyVTKReference_Delete },                                                  \
+  { Py_tp_repr, (void*)PyVTKReference_Repr },                                                       \
+  { Py_tp_hash, (void*)PyObject_HashNotImplemented },                                               \
+  { Py_tp_str, (void*)PyVTKReference_Str },                                                         \
+  { Py_tp_getattro, (void*)PyVTKReference_GetAttr },                                                \
+  { Py_tp_doc, (void*)const_cast<char*>(PyVTKReference_Doc) },                                      \
+  { Py_tp_richcompare, (void*)PyVTKReference_RichCompare },                                         \
+  { Py_tp_methods, (void*)PyVTKReference_Methods },                                                 \
+  { Py_tp_new, (void*)PyVTKReference_New },                                                         \
+  { Py_tp_free, (void*)PyObject_Del }
+
+// reference (base) — no number/sequence/mapping/buffer.
+static PyType_Slot PyVTKReference_Slots[] = {
+  VTK_REF_COMMON_SLOTS,
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKReference_Spec = {
+  "fvtk.vtkCommonCore.reference", sizeof(PyVTKReference), 0,
+  // Py_TPFLAGS_BASETYPE is required so number/string/tuple_reference can subclass
+  // `reference` via PyType_FromSpecWithBases (the limited API enforces the
+  // BASETYPE flag on a base, unlike static types where direct tp_base assignment
+  // bypasses the check). Stock's static `reference` is subclassed the same way in
+  // C without carrying the flag, so the MRO is identical; only the BASETYPE flag
+  // bit appears under abi3 — an intrinsic static->heap artifact in the same class
+  // as HEAPTYPE/IMMUTABLETYPE, tracked by the parity gate.
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, PyVTKReference_Slots
+};
+
+// number_reference — adds the full number protocol; base = reference.
+static PyType_Slot PyVTKNumberReference_Slots[] = {
+  VTK_REF_COMMON_SLOTS,
+  { Py_nb_add, (void*)PyVTKReference_Add },
+  { Py_nb_subtract, (void*)PyVTKReference_Subtract },
+  { Py_nb_multiply, (void*)PyVTKReference_Multiply },
+  { Py_nb_remainder, (void*)PyVTKReference_Remainder },
+  { Py_nb_divmod, (void*)PyVTKReference_Divmod },
+  { Py_nb_power, (void*)PyVTKReference_Power },
+  { Py_nb_negative, (void*)PyVTKReference_Negative },
+  { Py_nb_positive, (void*)PyVTKReference_Positive },
+  { Py_nb_absolute, (void*)PyVTKReference_Absolute },
+  { Py_nb_bool, (void*)PyVTKReference_NonZero },
+  { Py_nb_invert, (void*)PyVTKReference_Invert },
+  { Py_nb_lshift, (void*)PyVTKReference_Lshift },
+  { Py_nb_rshift, (void*)PyVTKReference_Rshift },
+  { Py_nb_and, (void*)PyVTKReference_And },
+  { Py_nb_xor, (void*)PyVTKReference_Xor },
+  { Py_nb_or, (void*)PyVTKReference_Or },
+  { Py_nb_int, (void*)PyVTKReference_Long },
+  { Py_nb_float, (void*)PyVTKReference_Float },
+  { Py_nb_inplace_add, (void*)PyVTKReference_InPlaceAdd },
+  { Py_nb_inplace_subtract, (void*)PyVTKReference_InPlaceSubtract },
+  { Py_nb_inplace_multiply, (void*)PyVTKReference_InPlaceMultiply },
+  { Py_nb_inplace_remainder, (void*)PyVTKReference_InPlaceRemainder },
+  { Py_nb_inplace_power, (void*)PyVTKReference_InPlacePower },
+  { Py_nb_inplace_lshift, (void*)PyVTKReference_InPlaceLshift },
+  { Py_nb_inplace_rshift, (void*)PyVTKReference_InPlaceRshift },
+  { Py_nb_inplace_and, (void*)PyVTKReference_InPlaceAnd },
+  { Py_nb_inplace_xor, (void*)PyVTKReference_InPlaceXor },
+  { Py_nb_inplace_or, (void*)PyVTKReference_InPlaceOr },
+  { Py_nb_floor_divide, (void*)PyVTKReference_FloorDivide },
+  { Py_nb_true_divide, (void*)PyVTKReference_TrueDivide },
+  { Py_nb_inplace_floor_divide, (void*)PyVTKReference_InPlaceFloorDivide },
+  { Py_nb_inplace_true_divide, (void*)PyVTKReference_InPlaceTrueDivide },
+  { Py_nb_index, (void*)PyVTKReference_Index },
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKNumberReference_Spec = {
+  "fvtk.vtkCommonCore.number_reference", sizeof(PyVTKReference), 0,
+  Py_TPFLAGS_DEFAULT, PyVTKNumberReference_Slots
+};
+
+// string_reference — remainder-only number, plus sequence/mapping/buffer/iter.
+static PyType_Slot PyVTKStringReference_Slots[] = {
+  VTK_REF_COMMON_SLOTS,
+  { Py_nb_remainder, (void*)PyVTKReference_Remainder },
+  // sequence (PyVTKReference_AsSequence)
+  { Py_sq_length, (void*)PyVTKReference_Size },
+  { Py_sq_concat, (void*)PyVTKReference_Concat },
+  { Py_sq_repeat, (void*)PyVTKReference_Repeat },
+  { Py_sq_item, (void*)PyVTKReference_GetItem },
+  { Py_sq_contains, (void*)PyVTKReference_Contains },
+  // mapping (PyVTKReference_AsMapping)
+  { Py_mp_length, (void*)PyVTKReference_Size },
+  { Py_mp_subscript, (void*)PyVTKReference_GetMapItem },
+  // buffer (PyVTKReference_AsBuffer)
+  { Py_bf_getbuffer, (void*)PyVTKReference_GetBuffer },
+  { Py_bf_releasebuffer, (void*)PyVTKReference_ReleaseBuffer },
+  // iter
+  { Py_tp_iter, (void*)PyVTKReference_GetIter },
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKStringReference_Spec = {
+  "fvtk.vtkCommonCore.string_reference", sizeof(PyVTKReference), 0,
+  Py_TPFLAGS_DEFAULT, PyVTKStringReference_Slots
+};
+
+// tuple_reference — sequence/mapping/iter, no number/buffer.
+static PyType_Slot PyVTKTupleReference_Slots[] = {
+  VTK_REF_COMMON_SLOTS,
+  { Py_sq_length, (void*)PyVTKReference_Size },
+  { Py_sq_concat, (void*)PyVTKReference_Concat },
+  { Py_sq_repeat, (void*)PyVTKReference_Repeat },
+  { Py_sq_item, (void*)PyVTKReference_GetItem },
+  { Py_sq_contains, (void*)PyVTKReference_Contains },
+  { Py_mp_length, (void*)PyVTKReference_Size },
+  { Py_mp_subscript, (void*)PyVTKReference_GetMapItem },
+  { Py_tp_iter, (void*)PyVTKReference_GetIter },
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKTupleReference_Spec = {
+  "fvtk.vtkCommonCore.tuple_reference", sizeof(PyVTKReference), 0,
+  Py_TPFLAGS_DEFAULT, PyVTKTupleReference_Slots
+};
+
+// Backing pointers for the `#define PyVTKXxx_Type (*ptr)` shim in the header.
+PyTypeObject* PyVTKReference_TypePtr = nullptr;
+PyTypeObject* PyVTKNumberReference_TypePtr = nullptr;
+PyTypeObject* PyVTKStringReference_TypePtr = nullptr;
+PyTypeObject* PyVTKTupleReference_TypePtr = nullptr;
+
+// Build the four heap types, wiring the subclass bases (number/string/tuple
+// derive from reference). Idempotent. Returns 0 on success, -1 on failure.
+int PyVTKReference_BuildTypes()
+{
+  if (PyVTKReference_TypePtr)
+  {
+    return 0;
+  }
+  PyVTKReference_TypePtr = vtkPythonType_FromSpec(&PyVTKReference_Spec);
+  if (!PyVTKReference_TypePtr)
+  {
+    return -1;
+  }
+  PyObject* base = (PyObject*)PyVTKReference_TypePtr;
+  PyVTKNumberReference_TypePtr =
+    (PyTypeObject*)PyType_FromSpecWithBases(&PyVTKNumberReference_Spec, base);
+  PyVTKStringReference_TypePtr =
+    (PyTypeObject*)PyType_FromSpecWithBases(&PyVTKStringReference_Spec, base);
+  PyVTKTupleReference_TypePtr =
+    (PyTypeObject*)PyType_FromSpecWithBases(&PyVTKTupleReference_Spec, base);
+  if (!PyVTKNumberReference_TypePtr || !PyVTKStringReference_TypePtr ||
+    !PyVTKTupleReference_TypePtr)
+  {
+    return -1;
+  }
+  return 0;
+}
+#endif // Py_LIMITED_API

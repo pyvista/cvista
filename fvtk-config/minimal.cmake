@@ -26,6 +26,36 @@ include("${CMAKE_CURRENT_LIST_DIR}/_nocompile_classes.cmake")
 set(FVTK_WRAP_UNITY ON CACHE BOOL "fvtk: batch Python wrappers into unity TUs")
 set(FVTK_WRAP_UNITY_CHUNK 32 CACHE STRING "fvtk: wrappers per unity TU")
 
+# --- Lever: Python stable-ABI (abi3 / Py_LIMITED_API) — DEFAULT ON ------------
+# When ON (the default), the Python wrapper TUs (generated *Python.cxx +
+# WrappingPythonCore) are compiled with Py_LIMITED_API set to FVTK_ABI3_VERSION
+# so that ONE wheel (cp312-abi3) is import-compatible across all CPython >= the
+# floor, instead of a per-minor cp312..cp314 matrix. The wrapper runtime +
+# generator are fully ported to PyType_FromSpec heap types behind FVTK_ABI3; the
+# resulting wheel is bit-exact with stock VTK 9.6.2 (maxULP=0, numpy zero-copy
+# shared+byte-identical) EXCEPT for the unavoidable type __flags__ divergence
+# (HEAPTYPE=1/IMMUTABLETYPE=0 — every limited-API type is a heap type; there is
+# no limited-API way to make a static type). See docs/abi3-feasibility.md.
+#
+# A plain local build (or any single -C minimal.cmake configure) is therefore an
+# abi3 build by default. The shipped matrix is a TWO-WHEEL scheme: the cibuildwheel
+# backend (ci/cibw/fvtk_backend.py) FORCES FVTK_ABI3 OFF on the cp311 leg (3.11
+# cannot be a stable-ABI floor — see below) so 3.11 ships as a normal static wheel,
+# and keeps it ON for cp312+ to ship the single cp312-abi3 wheel.
+#
+# ESCAPE HATCH: configure with -DFVTK_ABI3=OFF (or FVTK_ABI3=0 in the wheel
+# backend env) to build the legacy per-version static-type wheel (strict
+# byte-for-byte parity incl. __flags__), tagged cp3XX-cp3XX as before.
+option(FVTK_ABI3 "fvtk: compile Python wrappers against the CPython stable ABI (Py_LIMITED_API). Default ON (3.12+); the cibuildwheel backend forces OFF on cp311 (static wheel). See docs/abi3-feasibility.md" ON)
+# 0x030c0000 == CPython 3.12 — the limited-API floor. The resulting abi3 wheel is
+# tagged cp312-abi3 and loads on CPython 3.12+. (3.11 is NOT a valid abi3 floor:
+# PyMemberDef and the Py_T_*/Py_READONLY member constants the heap-type wrappers
+# emit only entered the stable ABI in 3.12 — gh-93274 — so a 3.11 floor does not
+# compile against the genuine 3.11 limited-API headers; 3.11 is served by the
+# static cp311 wheel instead.) Raise it (e.g. 0x030d0000 for a 3.13 floor) to gate
+# on newer limited-API features if ever needed.
+set(FVTK_ABI3_VERSION "0x030c0000" CACHE STRING "fvtk: Py_LIMITED_API value when FVTK_ABI3 is ON (0x030c0000 = CPython 3.12 floor)")
+
 # --- build hygiene -----------------------------------------------------------
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "")
 set(VTK_BUILD_TESTING OFF CACHE BOOL "")

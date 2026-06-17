@@ -272,6 +272,16 @@ public:
    */
   static PyGetSetDef* FindGetSetDescriptor(PyTypeObject* pytype, PyObject* key);
 
+#if defined(Py_LIMITED_API)
+  /**
+   * abi3 only: record the PyGetSetDef backing a getset descriptor installed on a
+   * type, so FindGetSetDescriptor can recover it without reading the opaque
+   * CPython descriptor struct. No-op equivalent does not exist in the default
+   * build (which reads d_getset directly).
+   */
+  static void RegisterGetSetDescriptor(PyTypeObject* pytype, const char* name, PyGetSetDef* gs);
+#endif
+
 private:
   vtkPythonUtil();
   ~vtkPythonUtil();

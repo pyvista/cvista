@@ -1,20 +1,29 @@
-# Per-PR gate. Two jobs, both on a plain ubuntu host (no job-level `container:`):
+# Per-PR gate. Three jobs, all on a plain ubuntu host (no job-level `container:`):
 #
-#   build    : cibuildwheel builds the cp313 manylinux_2_17 wheel and runs the
-#              in-container offscreen smoke (pyproject [tool.cibuildwheel]
-#              test-command). cibuildwheel handles host-checkout -> build in the
-#              manylinux2014 (glibc 2.17) container -> auditwheel repair, so we
-#              don't hand-roll any docker.
-#   bitexact : install that self-contained wheel on the host (cp313 via
+#   build    : cibuildwheel builds the TWO-wheel matrix in the manylinux2014
+#              (glibc 2.17) container and runs the in-container offscreen smoke
+#              (pyproject [tool.cibuildwheel] test-command). The backend emits a
+#              STATIC cp311 wheel for the cp311 leg and a single cp312-abi3 wheel
+#              for cp312+ (cibuildwheel's abi3 dedup reuses it for cp313/cp314),
+#              so exactly two wheels land. cibuildwheel handles host-checkout ->
+#              build in the container -> auditwheel repair, so we don't hand-roll
+#              any docker.
+#   bitexact : install the matching wheel on the host (per-python via
 #              setup-python) alongside stock vtk==9.6.2 and assert byte-for-byte
 #              identical output (maxULP=0). No container — only the build needs
-#              old glibc; the wheel runs anywhere.
+#              old glibc; the wheels run anywhere. Matrixed over Python:
+#                - 3.11 installs the STATIC cp311 wheel -> STRICT parity
+#                  (BITEXACT_ABI3=0): static types, byte-identical __flags__.
+#                - 3.12/3.13 install the cp312-abi3 wheel -> ABI3-AWARE parity
+#                  (BITEXACT_ABI3=1): only type __flags__ HEAPTYPE/IMMUTABLETYPE
+#                  diverges; numpy zero-copy preserved.
 #   renderexact : same idea but for the RENDERING pipeline (tests/renderexact).
 #              Renders the scenes offscreen via vtkEGLRenderWindow under stock vtk
 #              and fvtk through the SAME host Mesa software GL (llvmpipe) and asserts
 #              pixel-for-pixel identical RGBA + Z framebuffers. A sibling of bitexact
 #              (reuses the build artifact) so its apt Mesa install / EGL flakes can
-#              never perturb the numeric gate.
+#              never perturb the numeric gate. Run on 3.11 (static) and 3.13 (abi3)
+#              to cover both wheels; render output is wheel-format-independent.
 name: CI
 
 on:
@@ -28,63 +37,109 @@ concurrency:
 
 jobs:
   build:
-    name: build cp313 wheel (manylinux_2_17)
+    name: build ${{ matrix.leg }} (manylinux_2_17)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Two parallel legs instead of one sequential cibuildwheel run:
+      #   * cp311 static  — FVTK_ABI3 forced OFF, per-version cp311-cp311 wheel.
+      #   * cp312-abi3    — ONE Py_LIMITED_API 0x030c0000 wheel; cibuildwheel's
+      #     abi3 dedup means cp313/cp314 reuse + TEST it (no rebuild).
+      # Each leg uploads its own artifact; the test jobs merge both via the
+      # fvtk-wheels-* pattern and pip --find-links picks the tag-compatible wheel.
+      matrix:
+        include:
+          - leg: "cp311 static"
+            cibw_build: "cp311-*"
+            artifact: cp311
+          - leg: "cp312-abi3"
+            cibw_build: "cp312-* cp313-* cp314-*"
+            artifact: cp312abi3
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # VTK derives its version from full history
-      - name: Build wheel + offscreen smoke (cibuildwheel)
+      - name: Build wheels + offscreen smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
-          CIBW_BUILD: cp313-*   # fast PR gate; release matrix is wheels-cibuildwheel.yml
+          CIBW_BUILD: ${{ matrix.cibw_build }}
           # PR builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
           # fvtk-config/minimal.cmake). cibuildwheel forwards CIBW_ENVIRONMENT
-          # into the per-leg build env. Releases (wheels-cibuildwheel.yml) leave
+          # into each per-leg build env. Releases (wheels-cibuildwheel.yml) leave
           # FVTK_LTO unset -> default ON, so shipped wheels stay LTO-optimized.
           CIBW_ENVIRONMENT: FVTK_LTO=0
       - uses: actions/upload-artifact@v4
         with:
-          name: fvtk-wheel-cp313
+          name: fvtk-wheels-${{ matrix.artifact }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
   bitexact:
-    name: fvtk == stock VTK 9.6.2 (bit-exact)
+    name: fvtk == stock VTK 9.6.2 (bit-exact, py${{ matrix.python }})
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 3.11 -> static cp311 wheel -> STRICT parity (incl. __flags__).
+          - python: "3.11"
+            abi3: "0"
+          # 3.12/3.13 -> cp312-abi3 wheel -> abi3-aware parity (__flags__ only).
+          - python: "3.12"
+            abi3: "1"
+          - python: "3.13"
+            abi3: "1"
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - uses: actions/download-artifact@v4
         with:
-          name: fvtk-wheel-cp313
+          # both build legs upload fvtk-wheels-*; merge into one dir so
+          # pip --find-links can pick the tag-compatible wheel for this python.
+          pattern: fvtk-wheels-*
+          merge-multiple: true
           path: dist
       - name: Bit-exact suite (fvtk vs stock VTK 9.6.2)
+        # pip installs the wheel whose tag matches this python: the static
+        # cp311 wheel on 3.11, the cp312-abi3 wheel on 3.12/3.13. BITEXACT_ABI3
+        # selects the parity mode to match: STRICT (0) for the static cp311
+        # wheel, ABI3-AWARE (1) for the abi3 wheel. Keeping them in lockstep is
+        # what stops the abi3 tolerance leaking into the static check (and the
+        # strict mode failing the abi3 wheel).
+        env:
+          BITEXACT_ABI3: ${{ matrix.abi3 }}
         run: ci/run-bitexact.sh dist python
       - name: Upload diff artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: bitexact-output
+          name: bitexact-output-py${{ matrix.python }}
           path: /tmp/bx-out
           if-no-files-found: ignore
 
   renderexact:
-    name: fvtk == stock VTK 9.6.2 (pixel-exact render, software EGL)
+    name: fvtk == stock VTK 9.6.2 (pixel-exact render, py${{ matrix.python }})
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cover both wheel formats: 3.11 (static) and 3.13 (abi3). Render output
+        # is wheel-format-independent (the GL command stream is identical), so a
+        # single python per format is sufficient.
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - name: Install Mesa software GL/EGL (llvmpipe)
         run: |
           sudo apt-get update
@@ -92,7 +147,8 @@ jobs:
             libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
       - uses: actions/download-artifact@v4
         with:
-          name: fvtk-wheel-cp313
+          pattern: fvtk-wheels-*
+          merge-multiple: true
           path: dist
       - name: Pixel-exact render suite (fvtk vs stock VTK 9.6.2, software EGL)
         run: ci/run-renderexact.sh dist python
@@ -100,6 +156,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: renderexact-output
+          name: renderexact-output-py${{ matrix.python }}
           path: /tmp/rx-out
           if-no-files-found: ignore

@@ -24,7 +24,7 @@ name = "fvtk"
 # is overwritten by the wheel the backend actually produces.
 version = "9.6.2"
 description = "fvtk — trimmed PyVista-parity hard-fork of VTK 9.6.2 (vtkmodules renamed to top-level fvtk)"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
 # ===========================================================================
 # cibuildwheel — Linux manylinux_2_17 (glibc 2.17), the same platform tag as the
@@ -32,13 +32,36 @@ requires-python = ">=3.9"
 # ===========================================================================
 [tool.cibuildwheel]
 build-frontend = "pip"
-# cp39..cp313 on CPython only (VTK has no PyPy/free-threading wrappers here).
-build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+# TWO-WHEEL matrix. The backend (ci/cibw/fvtk_backend.py) decides per leg from the
+# build python's version:
+#   * cp311  -> STATIC per-version wheel (FVTK_ABI3 forced OFF; cp311-cp311 tag).
+#   * cp312+ -> ONE abi3 wheel tagged cp312-abi3 (Py_LIMITED_API 0x030c0000),
+#               installs+imports on CPython 3.12+ incl. future minors.
+# 3.11 cannot be a stable-ABI floor (PyMemberDef + the Py_T_*/Py_READONLY member
+# constants the heap-type wrappers emit only entered the stable ABI in 3.12,
+# gh-93274), so it ships as a normal static wheel instead of being dropped.
+# We list all four cp legs; cibuildwheel's abi3 dedup means cp313/cp314 do NOT
+# rebuild — they reuse and TEST the cp312-abi3 wheel — so the matrix yields
+# exactly TWO builds (cp311 static + cp312 abi3) and two wheels. Set FVTK_ABI3=0
+# to force the legacy per-version static wheel on every leg.
+build = "cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "FVTK_IMPORT_NAME=fvtk xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
 # auditwheel repair runs by default; stamp the 2_17 tag explicitly to match the
 # raw-docker recipe (manylinux2014 == manylinux_2_17_x86_64).
 repair-wheel-command = "auditwheel repair --plat manylinux_2_17_x86_64 -w {dest_dir} {wheel}"
+# NOTE on abi3audit: cibuildwheel >=4.0 auto-runs `abi3audit --strict` on
+# abi3-tagged wheels and FAILS the build on any non-abi3 symbol. fvtk's cp312-abi3
+# modules export the wrapper runtime's OWN cross-module symbols (PyVTKObject_New,
+# PyVTKEnum_Add, ...) shared between fvtk's own .so files — abi3audit reports these
+# as "violations" even though it also confirms the wheel is baseline-3.12-compatible
+# (is_abi3_baseline_compatible=true, computed=3.12). They are NOT CPython limited-API
+# violations (the wheel genuinely loads on 3.12+, verified by the bitexact/render
+# gates). The pinned cibuildwheel here is 3.1.4, which does NOT run abi3audit at all,
+# so nothing to override. If/when bumping to cibuildwheel >=4.0, set the audit to
+# non-strict via the env knob CIBW_AUDIT_COMMAND="abi3audit --report {wheel}" (the
+# `audit-command` pyproject key does not exist in 3.1.4 and 3.1.4 rejects unknown
+# keys, so it must NOT be added here until the cibuildwheel pin is >=4.0).
 
 [tool.cibuildwheel.linux]
 # manylinux2014 == glibc 2.17 == devtoolset-10 GCC 10.2.1 + gold 2.35 on PATH.

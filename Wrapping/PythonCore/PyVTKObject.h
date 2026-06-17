@@ -68,13 +68,44 @@ struct PyVTKGetSet
 VTK_ABI_NAMESPACE_END
 
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyGetSetDef PyVTKObject_GetSet[];
+#if defined(Py_LIMITED_API)
+// abi3 only: the getset table for vtkObjectBase's spec — same as PyVTKObject_GetSet
+// plus the "__dict__" descriptor, which under the limited API can only be declared
+// on the root type and is inherited by subclasses (see PyVTKObject.cxx).
+extern VTKWRAPPINGPYTHONCORE_EXPORT PyGetSetDef PyVTKObject_BaseGetSet[];
+#endif
+#if !defined(Py_LIMITED_API)
+// PyBufferProcs is not exposed by the limited API; under abi3 the buffer
+// protocol is wired through the Py_bf_getbuffer / Py_bf_releasebuffer type-spec
+// slots instead (see PyVTKObject.cxx and the generator's PyType_Spec emission).
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyBufferProcs PyVTKObject_AsBuffer;
-
+#else
+// abi3: the buffer slot functions have external linkage so a generated
+// PyType_Spec can reference them directly as Py_bf_getbuffer/Py_bf_releasebuffer.
 extern "C"
 {
   VTKWRAPPINGPYTHONCORE_EXPORT
+  int PyVTKObject_AsBuffer_GetBuffer(PyObject* obj, Py_buffer* view, int flags);
+  VTKWRAPPINGPYTHONCORE_EXPORT
+  void PyVTKObject_AsBuffer_ReleaseBuffer(PyObject* obj, Py_buffer* view);
+}
+#endif
+
+extern "C"
+{
+#if defined(Py_LIMITED_API)
+  // abi3: the type cannot be a static PyTypeObject, so the generator passes the
+  // PyType_Spec plus the runtime-resolved base; the type is built here with
+  // PyType_FromSpec (a heap type) and its method dict populated via the
+  // SetDictItem accessor. See PyVTKObject.cxx for the contract.
+  VTKWRAPPINGPYTHONCORE_EXPORT
+  PyTypeObject* PyVTKClass_Add(PyType_Spec* spec, PyTypeObject* base, PyMethodDef* methods,
+    const char* classname, vtknewfunc constructor);
+#else
+  VTKWRAPPINGPYTHONCORE_EXPORT
   PyTypeObject* PyVTKClass_Add(
     PyTypeObject* pytype, PyMethodDef* methods, const char* classname, vtknewfunc constructor);
+#endif
 
   VTKWRAPPINGPYTHONCORE_EXPORT
   void PyVTKClass_AddCombinedGetSetDefinitions(PyTypeObject* pytype, PyGetSetDef* getsets);
