@@ -92,7 +92,7 @@ static void PyVTKMethodDescriptor_Delete(PyObject* ob)
 {
   PyMethodDescrObject* descr = (PyMethodDescrObject*)ob;
   PyObject_GC_UnTrack(descr);
-  Py_XDECREF(PyDescr_TYPE(descr));
+  Py_XDECREF((PyObject*)PyDescr_TYPE(descr));
   Py_XDECREF(PyDescr_NAME(descr));
   PyObject_GC_Del(descr);
 }
@@ -107,7 +107,7 @@ static PyObject* PyVTKMethodDescriptor_Repr(PyObject* ob)
 static int PyVTKMethodDescriptor_Traverse(PyObject* ob, visitproc visit, void* arg)
 {
   PyMethodDescrObject* descr = (PyMethodDescrObject*)ob;
-  Py_VISIT(PyDescr_TYPE(descr));
+  Py_VISIT((PyObject*)PyDescr_TYPE(descr));
   return 0;
 }
 
