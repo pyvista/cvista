@@ -15,6 +15,7 @@
 #include "vtkABINamespace.h"
 #include "vtkAOSDataArrayTemplate.h"
 #include "vtkObject.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 #include "vtkStringScanner.h"
 
@@ -476,22 +477,12 @@ int vtkPythonOverload::CheckArg(PyObject* arg, const char* format, const char* n
           if (Py_TYPE(arg) != pytype)
           {
             // Check superclasses
-            PyTypeObject* basetype =
-#if PY_VERSION_HEX >= 0x030A0000
-              (PyTypeObject*)PyType_GetSlot(Py_TYPE(arg), Py_tp_base)
-#else
-              Py_TYPE(arg)->tp_base
-#endif
-              ;
+            PyTypeObject* basetype = vtkPythonType_GetBase(Py_TYPE(arg));
             penalty = VTK_PYTHON_GOOD_MATCH;
             while (basetype && basetype != pytype)
             {
               penalty++;
-#if PY_VERSION_HEX >= 0x030A0000
-              basetype = (PyTypeObject*)PyType_GetSlot(basetype, Py_tp_base);
-#else
-              basetype = basetype->tp_base;
-#endif
+              basetype = vtkPythonType_GetBase(basetype);
             }
             if (!basetype)
             {
@@ -522,22 +513,12 @@ int vtkPythonOverload::CheckArg(PyObject* arg, const char* format, const char* n
         if (Py_TYPE(arg) != pytype)
         {
           // Check superclasses
-          PyTypeObject* basetype =
-#if PY_VERSION_HEX >= 0x030A0000
-            (PyTypeObject*)PyType_GetSlot(Py_TYPE(arg), Py_tp_base)
-#else
-            Py_TYPE(arg)->tp_base
-#endif
-            ;
+          PyTypeObject* basetype = vtkPythonType_GetBase(Py_TYPE(arg));
           penalty = VTK_PYTHON_GOOD_MATCH;
           while (basetype && basetype != pytype)
           {
             penalty++;
-#if PY_VERSION_HEX >= 0x030A0000
-            basetype = (PyTypeObject*)PyType_GetSlot(basetype, Py_tp_base);
-#else
-            basetype = basetype->tp_base;
-#endif
+            basetype = vtkPythonType_GetBase(basetype);
           }
           if (!basetype)
           {
@@ -573,22 +554,12 @@ int vtkPythonOverload::CheckArg(PyObject* arg, const char* format, const char* n
         if (Py_TYPE(arg) != pytype)
         {
           // Check superclasses
-          PyTypeObject* basetype =
-#if PY_VERSION_HEX >= 0x030A0000
-            (PyTypeObject*)PyType_GetSlot(Py_TYPE(arg), Py_tp_base)
-#else
-            Py_TYPE(arg)->tp_base
-#endif
-            ;
+          PyTypeObject* basetype = vtkPythonType_GetBase(Py_TYPE(arg));
           penalty = VTK_PYTHON_GOOD_MATCH;
           while (basetype && basetype != pytype)
           {
             penalty++;
-#if PY_VERSION_HEX >= 0x030A0000
-            basetype = (PyTypeObject*)PyType_GetSlot(basetype, Py_tp_base);
-#else
-            basetype = basetype->tp_base;
-#endif
+            basetype = vtkPythonType_GetBase(basetype);
           }
           if (!basetype)
           {

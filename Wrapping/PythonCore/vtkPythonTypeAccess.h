@@ -60,6 +60,20 @@ static inline PyTypeObject* vtkPythonType_GetBase(PyTypeObject* tp)
 }
 
 //------------------------------------------------------------------------------
+// Read a type's tp_str (its __str__ slot function), as a function pointer.
+// Same byte-identical/limited-API split as GetBase: PyType_GetSlot on the
+// cp311+ matrix (the form the runtime already used), legacy field read only on
+// the never-compiled <3.10 fallback.
+static inline reprfunc vtkPythonType_GetStr(PyTypeObject* tp)
+{
+#if VTK_ABI3_LIMITED || PY_VERSION_HEX >= 0x030A0000
+  return reinterpret_cast<reprfunc>(PyType_GetSlot(tp, Py_tp_str));
+#else
+  return tp->tp_str;
+#endif
+}
+
+//------------------------------------------------------------------------------
 // Read a type's tp_dict (its attribute dictionary). Borrowed ref under the
 // default build; PyType_GetDict (3.12+) returns a *new* reference, so the
 // limited-API branch is only valid where the caller treats the result as

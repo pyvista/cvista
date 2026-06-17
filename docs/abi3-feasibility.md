@@ -17,6 +17,73 @@ Validation context: executor host, warm ninja tree at `~/tmp/fvtk`, numeric
 bit-exact suite (`tests/bitexact/`, 124 cases) vs stock VTK 9.6.2 + a new
 wrapper-behavior parity gate (`test_wrapper_parity.py`).
 
+### Increment 2 — finish B2 accessor migration in the runtime + locate the heap-type parity wall — LANDED (hygiene) / WALL DOCUMENTED
+
+Two parts: (1) a safe, independently-valuable continuation of the Increment-1
+accessor migration, and (2) the empirical pin-down of the parity wall that
+gates the *next* step (the static→heap PyType_FromSpec conversion). Per the
+mandate ("if a divergence is unavoidable, STOP, document it precisely, and
+leave increments 0–1 in place"), the heap-type conversion is deliberately NOT
+landed; the proven wall below is why.
+
+- **Hygiene that landed.** Migrated the remaining direct-`tp_*` read ladders in
+  the runtime to the accessor layer:
+  - `vtkPythonOverload.cxx` — **six** copies of the `tp_base` superclass-walk
+    version ladder (3 init + 3 loop, across the 'V'/'W'/'&' arg-matching arms)
+    collapsed to `vtkPythonType_GetBase()`.
+  - `PyVTKSpecialObject.cxx` (`PyVTKSpecialObject_Repr`) — the `tp_base`/`tp_str`
+    base-walk-to-find-`__str__` ladder collapsed; added a
+    `vtkPythonType_GetStr()` accessor (same byte-identical/limited split).
+  - Net `-40`ish lines of duplicated `#if PY_VERSION_HEX >= 0x030A0000 … #else …`
+    boilerplate; further shrinks the B2 surface. Byte-identical default-build
+    codegen (cp311+ already emitted `PyType_GetSlot` at all these sites).
+  - Parity gate extended to probe the `reference` (mutable proxy) runtime helper
+    type — `__flags__` (heaptype/immutabletype), mro, repr, set/get round-trip —
+    so the upcoming heap-type change is observable here.
+- **Validation.** Executor full build clean (vtkCommonCore relinked). **125
+  passed / 0 failed** (124 numeric + parity gate, now incl. the `reference`
+  facts). `reference_flag_heaptype=false`, `reference_flag_immutabletype=true`
+  vs stock — i.e. still a STATIC type, matching stock 9.6.2 exactly.
+
+- **THE PARITY WALL (evidence-backed, gates Increment 3 product-flip).**
+  `PyType_FromSpec` — the *only* limited-API way to create a type — **always**
+  produces a heap type. Compiled and ran the exact construct against the real
+  CPython 3.13 limited-API headers/runtime on the executor:
+
+  ```c
+  #define Py_LIMITED_API 0x030b0000
+  #include <Python.h>
+  static PyType_Slot slots[]={{0,0}};
+  static PyType_Spec spec={"probe.Thing",0,0,Py_TPFLAGS_DEFAULT,slots};
+  // PyType_FromSpec(&spec) -> __flags__ :  HEAPTYPE=1  IMMUTABLETYPE=0
+  ```
+
+  Stock VTK 9.6.2's wrapped classes and runtime helper types are **static** —
+  `HEAPTYPE=0  IMMUTABLETYPE=1` (confirmed by the parity gate for vtkObjectBase,
+  vtkObject, vtkDoubleArray, vtkPoints, vtkPolyData, and `reference`). So under
+  any abi3 (`Py_LIMITED_API`) build, **every** wrapped type's
+  `type(x).__flags__` necessarily differs from stock in the HEAPTYPE (1<<9) and
+  IMMUTABLETYPE (1<<8) bits. There is no limited-API mechanism to produce a
+  static type; this is intrinsic, not a fixable shim gap.
+
+  **Consequence for the bit-exact mandate:** the abi3 *wheel* cannot be
+  byte-for-byte on `__flags__`. Everything else the parity gate checks (mro,
+  isinstance, identity, repr shape, the numpy zero-copy buffer protocol,
+  weakref, instance `__dict__`) is reproducible under heap types; only the two
+  flag bits are not. Whether that single divergence is acceptable is a
+  **product decision** (does any fvtk consumer branch on `__flags__` /
+  `Py_TPFLAGS_HEAPTYPE`?), not a coding one — which is exactly why the
+  heap-type conversion is held here behind that decision rather than shipped.
+
+- **What this means for the ladder.** Increments 0–2 are all bit-exact and
+  independently valuable *today* (CI trim; B2 accessor hygiene; the parity
+  gate + the wall pinned with evidence). The static→heap port (former
+  "Increment 2/3") is **ready to implement behind `FVTK_ABI3`** — the accessor
+  layer + parity gate are the scaffolding for it — but is gated on accepting
+  the `__flags__` divergence. The accessor `Py_LIMITED_API` branches and the
+  parity gate are in place so that, the day that decision is made, the heap
+  port is a contained change with an instrument already watching it.
+
 ### Increment 1 — `tp_*` accessor shim layer (API hygiene, no-op today) — LANDED
 
 - **What landed.** New header `Wrapping/PythonCore/vtkPythonTypeAccess.h` with

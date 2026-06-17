@@ -112,6 +112,28 @@ def _probe():
     # --- override() machinery (PyVTKClass_override, exercises tp_dict) ----
     facts["has_override_method"] = hasattr(vtkObjectBase, "override")
 
+    # --- runtime helper types (the Increment-2 PyType_FromSpec targets) ---
+    # These internal types (reference/mutable proxy, namespaces) are defined as
+    # static PyTypeObjects in Wrapping/PythonCore. Converting them to heap types
+    # for abi3 would flip __flags__ HEAPTYPE on; probe them so that divergence is
+    # caught here, not silently shipped.
+    try:
+        import vtkmodules.util as _vutil  # noqa
+    except Exception:  # noqa
+        pass
+    try:
+        from vtkmodules.vtkCommonCore import reference as _ref
+        r = _ref(0)
+        facts["reference_flag_heaptype"] = bool(type(r).__flags__ & HEAPTYPE)
+        facts["reference_flag_immutabletype"] = bool(type(r).__flags__ & IMMUTABLETYPE)
+        facts["reference_typename"] = type(r).__name__
+        r.set(7)
+        facts["reference_set_get"] = int(r.get())
+        facts["reference_repr"] = re.sub(r"\b(?:fvtk|vtkmodules)\.", "PKG.", repr(type(r)))
+        facts["reference_mro"] = [c.__name__ for c in type(r).__mro__]
+    except Exception as e:  # noqa
+        facts["reference_probe"] = f"ERR:{type(e).__name__}:{e}"
+
     return facts
 
 

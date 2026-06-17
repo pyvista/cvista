@@ -20,6 +20,7 @@
 #include "PyVTKSpecialObject.h"
 #include "PyVTKMethodDescriptor.h"
 #include "vtkABINamespace.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 
 #include <sstream>
@@ -53,35 +54,18 @@ PyObject* PyVTKSpecialObject_Repr(PyObject* self)
   PyTypeObject* type = Py_TYPE(self);
   const char* name = vtkPythonUtil::GetTypeName(type);
 
-#if PY_VERSION_HEX >= 0x030A0000
-  while (PyType_GetSlot(type, Py_tp_base) && !PyType_GetSlot(type, Py_tp_str))
+  while (vtkPythonType_GetBase(type) && !vtkPythonType_GetStr(type))
   {
-    type = (PyTypeObject*)PyType_GetSlot(type, Py_tp_base);
+    type = vtkPythonType_GetBase(type);
   }
-#else
-  while (type->tp_base && !type->tp_str)
-  {
-    type = type->tp_base;
-  }
-#endif
 
   // use str() if available
   PyObject* s = nullptr;
-#if PY_VERSION_HEX >= 0x030A0000
-  reprfunc type_str = (reprfunc)PyType_GetSlot(type, Py_tp_str);
-  reprfunc base_type_str = (reprfunc)PyType_GetSlot(&PyBaseObject_Type, Py_tp_str);
+  reprfunc type_str = vtkPythonType_GetStr(type);
+  reprfunc base_type_str = vtkPythonType_GetStr(&PyBaseObject_Type);
   if (type_str && type_str != base_type_str)
-#else
-  if (type->tp_str && type->tp_str != (&PyBaseObject_Type)->tp_str)
-#endif
   {
-    PyObject* t =
-#if PY_VERSION_HEX >= 0x030A0000
-      type_str(self)
-#else
-      type->tp_str(self)
-#endif
-      ;
+    PyObject* t = type_str(self);
     if (t == nullptr)
     {
       Py_XDECREF(s);
