@@ -524,17 +524,12 @@ int PyVTKObject_SetPropertyMulti(PyObject* op, PyObject* value, void* methods)
 //------------------------------------------------------------------------------
 // This defines any special attributes of wrapped VTK objects.
 
-#if !defined(Py_LIMITED_API)
-// Only used by the default build's explicit "__dict__" getset entry; under abi3
-// the synthetic __dictoffset__ member supplies an equivalent descriptor, so this
-// is omitted to avoid an unused-function diagnostic.
 static PyObject* PyVTKObject_GetDict(PyObject* op, void*)
 {
   PyVTKObject* self = (PyVTKObject*)op;
   Py_INCREF(self->vtk_dict);
   return self->vtk_dict;
 }
-#endif
 
 static PyObject* PyVTKObject_GetThis(PyObject* op, void*)
 {
@@ -568,18 +563,24 @@ static PyObject* PyVTKObject_GetThis(PyObject* op, void*)
 
 PyGetSetDef PyVTKObject_GetSet[] = {
 #if !defined(Py_LIMITED_API)
-  // Default build: a custom "__dict__" getset returns the per-instance dict.
-  // Under abi3 the heap type's synthetic "__dictoffset__" member (emitted into
-  // the PyType_Spec) makes CPython auto-provide an equivalent "__dict__"
-  // descriptor on the base class; re-declaring our own "__dict__" getset on every
-  // wrapped class then collides with the inherited one ("attribute '__dict__' of
-  // 'type' objects is not writable") and PyType_FromSpec fails. So omit it under
-  // abi3 — the dictoffset-derived descriptor returns the same self->vtk_dict.
+  // Default build: every wrapped class's static type carries the custom "__dict__"
+  // getset. Under abi3 a heap subclass may not re-declare an inherited "__dict__"
+  // descriptor (PyType_FromSpec rejects it), so "__dict__" is carried ONLY by
+  // vtkObjectBase's spec getset (PyVTKObject_BaseGetSet) and inherited downward.
   { pystr("__dict__"), PyVTKObject_GetDict, nullptr,
     pystr("Dictionary of attributes set by user."), nullptr },
 #endif
   { pystr("__this__"), PyVTKObject_GetThis, nullptr, pystr("Pointer to the C++ object."), nullptr },
   { nullptr, nullptr, nullptr, nullptr, nullptr } };
+
+#if defined(Py_LIMITED_API)
+// abi3: vtkObjectBase's spec uses this getset (adds "__dict__"); subclasses use
+// PyVTKObject_GetSet (no "__dict__") and inherit the descriptor through the MRO.
+PyGetSetDef PyVTKObject_BaseGetSet[] = { { pystr("__dict__"), PyVTKObject_GetDict, nullptr,
+                                           pystr("Dictionary of attributes set by user."), nullptr },
+  { pystr("__this__"), PyVTKObject_GetThis, nullptr, pystr("Pointer to the C++ object."), nullptr },
+  { nullptr, nullptr, nullptr, nullptr, nullptr } };
+#endif
 
 //------------------------------------------------------------------------------
 // The following methods and struct define the "buffer" protocol

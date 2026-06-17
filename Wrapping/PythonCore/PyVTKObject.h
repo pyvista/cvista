@@ -68,6 +68,12 @@ struct PyVTKGetSet
 VTK_ABI_NAMESPACE_END
 
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyGetSetDef PyVTKObject_GetSet[];
+#if defined(Py_LIMITED_API)
+// abi3 only: the getset table for vtkObjectBase's spec — same as PyVTKObject_GetSet
+// plus the "__dict__" descriptor, which under the limited API can only be declared
+// on the root type and is inherited by subclasses (see PyVTKObject.cxx).
+extern VTKWRAPPINGPYTHONCORE_EXPORT PyGetSetDef PyVTKObject_BaseGetSet[];
+#endif
 #if !defined(Py_LIMITED_API)
 // PyBufferProcs is not exposed by the limited API; under abi3 the buffer
 // protocol is wired through the Py_bf_getbuffer / Py_bf_releasebuffer type-spec

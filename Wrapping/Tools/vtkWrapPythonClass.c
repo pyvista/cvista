@@ -571,13 +571,19 @@ static void vtkWrapPython_GenerateObjectSpec(
     "  { Py_bf_getbuffer, (void*)PyVTKObject_AsBuffer_GetBuffer },\n"
     "  { Py_bf_releasebuffer, (void*)PyVTKObject_AsBuffer_ReleaseBuffer },\n"
     "  { Py_tp_doc, (void*)Py%s_Doc },\n"
-    "  { Py_tp_traverse, (void*)PyVTKObject_Traverse },\n"
-    "  { Py_tp_getset, (void*)PyVTKObject_GetSet },\n"
+    "  { Py_tp_traverse, (void*)PyVTKObject_Traverse },\n",
+    classname, classname);
+  /* vtkObjectBase carries the "__dict__" descriptor (PyVTKObject_BaseGetSet);
+   * every subclass uses PyVTKObject_GetSet (no "__dict__") and inherits it. Under
+   * the limited API a heap subclass cannot re-declare an inherited "__dict__". */
+  fprintf(fp, "  { Py_tp_getset, (void*)%s },\n",
+    (strcmp(classname, "vtkObjectBase") == 0 ? "PyVTKObject_BaseGetSet" : "PyVTKObject_GetSet"));
+  fprintf(fp,
     "  { Py_tp_members, (void*)Py%s_SpecMembers },\n"
     "  { Py_tp_init, (void*)PyVTKObject_Init },\n"
     "  { Py_tp_new, (void*)PyVTKObject_New },\n"
     "  { Py_tp_free, (void*)PyObject_GC_Del },\n",
-    classname, classname, classname);
+    classname);
 
   if (hasNumberProtocol)
   {

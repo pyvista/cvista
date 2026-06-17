@@ -42,11 +42,16 @@ def _probe():
     # bits that distinguish heap vs static so a regression is loud.
     HEAPTYPE = 1 << 9
     IMMUTABLETYPE = 1 << 8
+    BASETYPE = 1 << 10
     for cls in (vtkObjectBase, vtkObject, vtkDoubleArray, vtkPoints, vtkPolyData):
         name = cls.__name__
         facts[f"mro::{name}"] = [c.__name__ for c in cls.__mro__]
         facts[f"flag_heaptype::{name}"] = bool(cls.__flags__ & HEAPTYPE)
         facts[f"flag_immutabletype::{name}"] = bool(cls.__flags__ & IMMUTABLETYPE)
+        # BASETYPE is set on stock wrapped vtkObject-derived classes already (they
+        # are subclassable), so under abi3 it must NOT diverge for these — captured
+        # so a regression that drops it is loud.
+        facts[f"flag_basetype::{name}"] = bool(cls.__flags__ & BASETYPE)
         facts[f"qualname::{name}"] = cls.__qualname__
         facts[f"module::{name}"] = getattr(cls, "__module__", None)
 
@@ -126,6 +131,11 @@ def _probe():
         r = _ref(0)
         facts["reference_flag_heaptype"] = bool(type(r).__flags__ & HEAPTYPE)
         facts["reference_flag_immutabletype"] = bool(type(r).__flags__ & IMMUTABLETYPE)
+        # The `reference` proxy is a BASE for the number/string/tuple reference
+        # subtypes. Stock's static `reference` is subclassed without the BASETYPE
+        # flag; the limited API requires it on a heap base, so under abi3 this bit
+        # ALSO flips (intrinsic static->heap artifact). Probed + allowed below.
+        facts["reference_flag_basetype"] = bool(type(r).__flags__ & BASETYPE)
         facts["reference_typename"] = type(r).__name__
         r.set(7)
         facts["reference_set_get"] = int(r.get())
@@ -163,13 +173,22 @@ def _is_abi3():
 
 
 def _expected_flag_divergence(key, stock_val, fvtk_val):
-    """Under abi3, a flag_heaptype::*/flag_immutabletype::*/reference_flag_* key is
-    allowed to differ iff it differs in exactly the heap-vs-static direction:
-    stock heaptype False -> fvtk True, stock immutabletype True -> fvtk False."""
+    """Under abi3, a type-flag key is allowed to differ iff it differs in exactly
+    the heap-vs-static direction:
+      - heaptype:       stock False -> fvtk True   (every heap type)
+      - immutabletype:  stock True  -> fvtk False  (every heap type)
+      - basetype:       stock False -> fvtk True   ONLY for the `reference` helper
+                        (and special base types): stock subclasses static types
+                        without the flag; the limited API requires it on a heap
+                        base. Wrapped vtkObject-derived classes already carry
+                        BASETYPE on stock, so flag_basetype::<class> must NOT
+                        diverge and is not whitelisted here."""
     if "flag_heaptype" in key:
         return stock_val is False and fvtk_val is True
     if "flag_immutabletype" in key:
         return stock_val is True and fvtk_val is False
+    if key == "reference_flag_basetype":
+        return stock_val is False and fvtk_val is True
     return False
 
 
