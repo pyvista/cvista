@@ -89,24 +89,21 @@ most of what remains is genuinely reachable).
    the win holds at high core counts (drop the chunk size for bigger CI runners). Unlike
    C++-source unity, generated wrappers have no anonymous-namespace symbol collisions.
 
-6. **Split array-instantiation TUs (`FVTK_SPLIT_BULK_INSTANTIATE`, on by default).** Stock VTK
-   concatenates ~17 template-instantiation sources (`vtkAOSDataArrayTemplate`, the implicit
-   backends, the generated `vtkType*Array` specializations, etc.) **per numeric type** into one
-   `vtkArrayBulkInstantiate_<type>.cxx` (14 of them, one per type in `vtk_numeric_types`). At
-   `-O3` each of those bundled TUs is a ~140 s monster, and with only ~14 of them they serialize
-   badly on a few-core CI runner — the long pole of the whole build. The bundling was a
-   process-spawn optimization that backfires when the per-TU `-O3` cost dwarfs spawn cost.
-   `FVTK_SPLIT_BULK_INSTANTIATE` compiles the ~235 component `.cxx` (which already exist on disk;
-   the bulk file merely `#include`s them) **directly**, turning the 14 huge TUs into many small
-   ones that fill every core evenly. The object code is **byte-identical** (same explicit
-   instantiations, same flags, just emitted into separate `.o`), so it is ABI- and
-   bit-exact-neutral — it only changes build scheduling. Hooks in `Common/Core/CMakeLists.txt`
-   + `Common/Core/vtkTypeArrays.cmake` (the two generation sites that fed the bulk TU);
-   `FVTK_SPLIT_BULK_INSTANTIATE=OFF` restores the stock single-bulk-TU-per-type layout.
-   **Measured** (CommonCore array-instantiation TUs, `-j4 -O3` no-LTO): wall **361 s → 161 s
-   (−55 %, 2.24×)** and total CPU **1210 s → 627 s (−48 %)** — split wins on *both* because GCC's
-   per-TU `-O3` cost is super-linear in TU size, so many small TUs are cheaper in aggregate than
-   a few huge ones.
+6. **Split array-instantiation TUs (`FVTK_SPLIT_BULK_INSTANTIATE`, opt-in — default OFF, measured
+   slower).** Stock VTK concatenates ~17 template-instantiation sources per numeric type into one
+   `vtkArrayBulkInstantiate_<type>.cxx` (14 of them). `FVTK_SPLIT_BULK_INSTANTIATE=ON` compiles the
+   ~312 component `.cxx` **directly** instead (byte-identical object code; ABI- and
+   bit-exact-neutral, only build scheduling changes). The hypothesis was that 14 monster TUs
+   serialize badly and many small TUs fill cores better. **It does not hold:** each split TU
+   independently re-parses the heavy array template headers (`vtkDataArrayPrivate.txx` + the
+   backend templates) the bulk TU parsed once per type, so the front-end cost is paid ~17× more
+   and that extra work is not recovered by parallelism. **Measured** (CommonCore array TUs,
+   manylinux2014 GCC 10.2.1): `-j4` bulk **248 s** vs split **340 s** (split **+37 %**); `-j16`
+   bulk **67 s** vs split **90 s** (split **+34 %**). Both the 4-core CI target and a 16-core box
+   favor the bulk path, so the lever ships **OFF**. It is kept as an opt-in (and builds clean on
+   GCC < 11 — the split TUs carry `VTK_DEPRECATION_LEVEL=0`, matching what the bulk wrapper did, so
+   the deprecated implicit-array headers' `class EXPORT [[deprecated]] …` parses) for the unusual
+   very-high-core case where the bulk path's 14-TU width becomes the ceiling.
 
 7. **Module source unity (`FVTK_SOURCE_UNITY`, on by default).** The wrapper-unity lever (#5)
    batched the *generated* `*Python.cxx`; this is its analogue for the **module C++ source**
@@ -181,15 +178,29 @@ green (9,731 passed / 8 pre-existing env-fails / 0 introduced).
     wheel** at zero runtime cost (cold code). `FVTK_WRAP_OPTSIZE=0` to disable.
 
 11. **Array-dispatch value-type trim (`FVTK_DISPATCH_MINIMAL`, on by default).** VTK's default
-    `vtkArrayDispatch` typelist is ~14 value types; PyVista's `numpy_to_vtk` only ever yields
-    float/double/int/uint8/int64. A hook in `Common/Core/vtkCreateArrayDispatchArrayList.cmake`
-    trims the AOS + StructuredPoint dispatch lists to those 6, so `Dispatch`/`Dispatch2`/`Dispatch3`
-    instantiate far fewer workers in the Filters/Common kits. **Correctness-preserving:** an
-    excluded value type still works via the virtual `vtkDataArray` fallback (same mechanism as the
-    SOA-off lever) — only the fast path is dropped, never a result. `FVTK_DISPATCH_MINIMAL=0`
-    restores the full list. (Note: this trims the *dispatch* typelist only — the per-type array
-    *classes* and their bulk instantiations stay, because CommonCore's own array machinery
-    references the SOA/implicit backends regardless of the dispatch switches.)
+    `vtkArrayDispatch` typelist is ~14 value types; PyVista's `numpy_to_vtk` overwhelmingly yields
+    double/float, plus `vtkIdType` (ids/connectivity) and uint8 (RGBA colors). A hook in
+    `Common/Core/vtkCreateArrayDispatchArrayList.cmake` trims the AOS + StructuredPoint dispatch
+    lists to those **4** (`double;float;vtkIdType;unsigned char`; `vtkIdType` is 64-bit signed so
+    int64 still dispatches through it), so `Dispatch`/`Dispatch2`/`Dispatch3` instantiate far fewer
+    workers across every dispatched filter TU in the Filters/Common kits — and because Dispatch2/3
+    multiply the list N²/N³, 14 → 4 collapses the cross-filter fan-out hard. **Bit-exact
+    (maxULP=0):** an excluded value type (int32, narrow ints) still works via the virtual
+    `vtkDataArray` fallback (same mechanism as the SOA-off lever) — only the typed fast path is
+    dropped, never a result; the only cost is *runtime* speed for int32/narrow-int workloads.
+    `FVTK_DISPATCH_MINIMAL=0` restores the full list. (This trims the *dispatch* typelist only — the
+    per-type array *classes* and their bulk instantiations stay, because CommonCore's own array
+    machinery references the SOA/implicit backends regardless of the dispatch switches.)
+
+11b. **Drop dead implicit-array families (`FVTK_DROP_DEAD_ARRAYS`, on by default).** The
+    `vtkStridedArray` and `vtkStdFunctionArray` implicit families are never constructed by PyVista,
+    and their dispatch options default OFF (already absent from the dispatch typelist). This drops
+    their per-numeric-type instantiation TUs (`vtkStridedArrayInstantiate_*`,
+    `vtkStdFunctionArrayInstantiate_*`, `vtkStridedImplicitBackendInstantiate_*`) and generated
+    fixed-size specialization classes from the build. The template headers stay in place (header-only,
+    zero cost), so it is a pure instantiation drop, trivially reversible via `FVTK_DROP_DEAD_ARRAYS=0`.
+    Unlike SOA/ScaledSOA (load-bearing), these two have no reference from any kept CommonCore
+    machinery, so the cut is link-safe.
 
 Levers 9–11 plus a strip-coverage fix (the kit `libvtkCommon.so` was shipping unstripped — its
 26 MB `.symtab` is now removed via a wheel re-strip+repack) take the stripped wheel **49 → 38 MiB**.
