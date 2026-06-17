@@ -15,7 +15,108 @@ original blocker inventory and roadmap follow it unchanged for reference.
 
 Validation context: executor host, warm ninja tree at `~/tmp/fvtk`, numeric
 bit-exact suite (`tests/bitexact/`, 124 cases) vs stock VTK 9.6.2 + a new
-wrapper-behavior parity gate (`test_wrapper_parity.py`).
+wrapper-behavior parity gate (`test_wrapper_parity.py`). The abi3 leg is built
+in an ISOLATED tree (`~/tmp/abi3-acd-afc6`, `-DFVTK_ABI3=ON`, minimal profile,
+cp313) so it never disturbs the shared default-build tree other agents validate
+against; the default leg is built there too (`build-default/`, FVTK_ABI3 OFF) to
+confirm byte-identity.
+
+### Increment 2 (heap-type crossing) — runtime type-definitions PORTED + buffer slots + abi3-aware gate — LANDED; runtime non-type tail DOCUMENTED
+
+Decision taken (per the product go-ahead): cross the static→heap wall behind
+`FVTK_ABI3`, accepting the single `__flags__` (HEAPTYPE=1/IMMUTABLETYPE=0)
+divergence proven in the prior entry, keeping everything else bit-exact.
+
+**What landed (compiles clean both legs; default byte-identical).**
+- **All 7 hand-written runtime `PyTypeObject`s converted to `PyType_FromSpec`
+  heap types behind `#if defined(Py_LIMITED_API)`**, default static defs kept
+  verbatim in the `#else`:
+  - `PyVTKReference_Type` + `PyVTKNumberReference_Type` +
+    `PyVTKStringReference_Type` + `PyVTKTupleReference_Type` — incl. the full
+    number protocol decomposed from the (limited-API-opaque) `PyNumberMethods`
+    table into individual `Py_nb_*` slots, sequence→`Py_sq_*`, mapping→`Py_mp_*`,
+    and the **buffer protocol via `Py_bf_getbuffer`/`Py_bf_releasebuffer`
+    slots**; the three subclasses wired to the `reference` base via
+    `PyType_FromSpecWithBases`. Built by `PyVTKReference_BuildTypes()` from
+    `PyVTKAddFile_PyVTKExtras` (replacing the `PyType_Ready` calls under abi3).
+  - `PyVTKNamespace_Type`, `PyVTKTemplate_Type` (PyModule subclasses) — spec with
+    `Py_tp_base = &PyModule_Type`; their `_New` chains to the base
+    `tp_new`/`tp_init` through new limited-API-safe accessors
+    (`vtkPythonType_GetNew/GetInit`) under abi3, default path untouched.
+  - `PyVTKMethodDescriptor_Type` — spec incl. `Py_tp_members`. CPython's internal
+    `PyMethodDescrObject`/`PyDescrObject` structs and `PyDescr_TYPE/NAME` accessors
+    are NOT in the limited API, so under abi3 a self-contained ABI-stable struct
+    (PyObject_HEAD + d_type + d_name + d_method) reproduces the exact observable
+    facts (`__objclass__`/`__name__`/`__doc__`, call, descriptor-get, repr);
+    `T_OBJECT`/`READONLY` mapped to `Py_T_OBJECT_EX`/`Py_READONLY`. Built from
+    `vtkPythonUtil::Initialize()` under abi3.
+  - The `#define PyVTKXxx_Type (*PyVTKXxx_TypePtr)` header shim keeps every
+    existing `&PyVTKXxx_Type` / `Py_TYPE(o)==&PyVTKXxx_Type` use-site
+    byte-identical in the default build and correct (→ the pointer) under abi3.
+- **`tp_*` write-side (B2-write) accessor layer.** `vtkPythonTypeAccess.h` gained
+  `vtkPythonType_GetNew/GetInit/GetDealloc` (read) and
+  `vtkPythonType_SetDictItem/DelDictItem` (write) — the latter route the runtime's
+  type-dict mutations through `PyObject_SetAttrString`/`DelAttrString` on the
+  (mutable) heap type under abi3, the identical `PyDict_SetItemString(tp->tp_dict,…)`
+  in the default build. **Also FIXED a latent bug in the inc-1 scaffolding**:
+  `vtkPythonType_GetDict`'s limited-API branch called `PyType_GetDict`, which is
+  NOT in the limited API (it is a regular-API 3.12 addition) — re-routed to a
+  `__dict__` getattr (mappingproxy) so the shim actually compiles under abi3.
+- **Buffer functions exported under abi3.** `PyVTKObject_AsBuffer_GetBuffer/
+  ReleaseBuffer` get external linkage (and header decls) under abi3 so the
+  generator's `PyType_Spec` (Increment 3) can wire them as `Py_bf_*` slots; the
+  static `PyBufferProcs PyVTKObject_AsBuffer` and its header `extern` are guarded
+  out (the struct is opaque under the limited API). Default build unchanged.
+- **The parity gate is now abi3-aware.** `compare_parity()` accepts the
+  HEAPTYPE/IMMUTABLETYPE flip *only* in the heap-vs-static direction when
+  `BITEXACT_ABI3=1`, and reports EVERY other divergence (including a flag flipping
+  the wrong way) as a failure. A new positive test `test_abi3_heaptypes_in_effect`
+  asserts under abi3 that every probed wrapped/reference type ACTUALLY became a
+  heap type (catches a silent non-conversion). Self-tested; the default
+  (static-build) gate still passes 1/1 against the proven default backends.
+
+**Validation.**
+- DEFAULT leg (FVTK_ABI3 OFF) in the isolated tree: `WrappingPythonCore` rebuilds
+  clean, all 13 TUs compile; parity gate passes against the shared proven
+  backends (1 passed / abi3-positive test correctly skipped). Default codegen
+  unchanged — every edit is either `Py_LIMITED_API`-guarded or a new inline that
+  expands to the exact prior field access.
+- ABI3 leg (FVTK_ABI3 ON, cp313 limited API): the 7 ported type-definitions and
+  the buffer/dict accessor layer compile; the `PyBufferProcs`/`PyType_GetDict`
+  blocker classes are eliminated (per-file error set dropped from 11 files to 6).
+
+**STOP / documented residual — the runtime NON-type-definition tail.** A fully
+importing abi3 `WrappingPythonCore` is NOT yet reachable: beyond the type
+*definitions* (now done), the surrounding runtime code carries limited-API
+incompatibilities that are the feasibility doc's "Phase 1 runtime port" and have
+been pinned with compiler evidence on the cp313 limited-API build:
+- **`Py_INCREF`/`Py_DECREF`/`Py_VISIT` on typed struct pointers** (`PyVTKReference*`,
+  `PyVTKObject*`, `PyTypeObject*`): under the limited API these are inline funcs
+  taking `PyObject*`, so each call needs an explicit `(PyObject*)` cast. Pervasive
+  (dozens of sites across every runtime TU) but purely mechanical and bit-exact
+  (no-op cast in the default build). ~30 sites.
+- **Private/unstable APIs with no limited-API equivalent:** `_PyType_Lookup`
+  (PyVTKReference `__trunc__`/`__round__` lookup — replaceable by an attr lookup
+  with subtly different semantics), `Py_HashPointer` (vtkPythonUtil VariantHash).
+- **CPython-internal struct layout dependencies:** `vtkPythonUtil::
+  FindGetSetDescriptor` reads `PyGetSetDescrObject`/`PyDescrObject` fields and
+  `PyLong_Type` directly; these structs are opaque under the limited API. This one
+  needs a behavioral redesign (it walks built-in getset descriptors), not a cast.
+- **The central wrapping path `PyVTKClass_Add` lazy-populates a generated type's
+  `tp_dict`** (`pytype->tp_dict = PyDict_New()` + raw inserts) with an idempotency
+  guard of `tp_dict != nullptr`. Under abi3 heap types always own a dict and the
+  slot is unwritable; the clean fix is to have the **generator emit the method
+  dict via `Py_tp_methods`/`Py_tp_getset` spec slots** rather than post-hoc raw
+  `tp_dict` writes — i.e. this belongs WITH the Increment-3 generator port, not
+  the runtime, and is co-designed there. The `__override__` set/del sites are
+  already routed through the new `SetDictItem`/`DelDictItem` accessors.
+
+Net: the parity-risk *core* of crossing the wall — turning the hand-written types
+into heap types while proving (gate) that only `__flags__` moves — is landed and
+instrumented. The remaining runtime tail is mechanical casts + a handful of
+private-API/internal-struct sites; it is bounded and enumerated above, and the
+`tp_dict`-population piece is deliberately deferred to ride with the generator
+port where it has a clean (`Py_tp_methods`-slot) form.
 
 ### Increment 2 — finish B2 accessor migration in the runtime + locate the heap-type parity wall — LANDED (hygiene) / WALL DOCUMENTED
 

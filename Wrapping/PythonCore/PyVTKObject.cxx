@@ -76,7 +76,7 @@ static PyObject* PyVTKClass_override(PyObject* cls, PyObject* type)
       PyVTKClass* thecls = vtkPythonUtil::FindClass(clsName.c_str());
       thecls->py_type = newtypeobj;
       // Store override in dict of old type, to keep a reference to it
-      PyDict_SetItemString(typeobj->tp_dict, "__override__", type);
+      vtkPythonType_SetDictItem(typeobj, "__override__", type);
     }
     else
     {
@@ -92,7 +92,7 @@ static PyObject* PyVTKClass_override(PyObject* cls, PyObject* type)
     PyVTKClass* thecls = vtkPythonUtil::FindClass(clsName.c_str());
     thecls->py_type = typeobj;
     // Delete the __override__ attribute if it exists
-    if (PyDict_DelItemString(typeobj->tp_dict, "__override__") == -1)
+    if (vtkPythonType_DelDictItem(typeobj, "__override__") == -1)
     {
       // Clear the KeyError that occurs if __override__ doesn't exist
       PyErr_Clear();
@@ -542,7 +542,15 @@ static const char* pythonTypeFormat(int t)
 }
 
 //------------------------------------------------------------------------------
+// Under abi3 these have external linkage so the generator's PyType_Spec can wire
+// them into the Py_bf_getbuffer / Py_bf_releasebuffer slots (the limited API has
+// no PyBufferProcs struct). Under the default build they stay file-static and
+// are attached via the static PyBufferProcs table below, byte-for-byte as before.
+#if defined(Py_LIMITED_API)
+int PyVTKObject_AsBuffer_GetBuffer(PyObject* obj, Py_buffer* view, int flags)
+#else
 static int PyVTKObject_AsBuffer_GetBuffer(PyObject* obj, Py_buffer* view, int flags)
+#endif
 {
   PyVTKObject* self = (PyVTKObject*)obj;
   vtkDataArray* da = vtkDataArray::SafeDownCast(self->vtk_ptr);
@@ -623,7 +631,11 @@ static int PyVTKObject_AsBuffer_GetBuffer(PyObject* obj, Py_buffer* view, int fl
 }
 
 //------------------------------------------------------------------------------
+#if defined(Py_LIMITED_API)
+void PyVTKObject_AsBuffer_ReleaseBuffer(PyObject* obj, Py_buffer* view)
+#else
 static void PyVTKObject_AsBuffer_ReleaseBuffer(PyObject* obj, Py_buffer* view)
+#endif
 {
   // nothing to do, the caller will decref the obj
   (void)obj;
@@ -631,10 +643,12 @@ static void PyVTKObject_AsBuffer_ReleaseBuffer(PyObject* obj, Py_buffer* view)
 }
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 PyBufferProcs PyVTKObject_AsBuffer = {
   PyVTKObject_AsBuffer_GetBuffer,    // bf_getbuffer
   PyVTKObject_AsBuffer_ReleaseBuffer // bf_releasebuffer
 };
+#endif
 
 //------------------------------------------------------------------------------
 PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtkObjectBase* ptr)

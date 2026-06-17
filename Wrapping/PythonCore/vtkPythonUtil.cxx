@@ -247,7 +247,11 @@ void vtkPythonUtil::Initialize()
   // create the singleton
   vtkPythonUtilCreateIfNeeded();
   // finalize our custom MethodDescriptor type
+#if defined(Py_LIMITED_API)
+  PyVTKMethodDescriptor_BuildType();
+#else
   PyType_Ready(&PyVTKMethodDescriptor_Type);
+#endif
 }
 
 //------------------------------------------------------------------------------

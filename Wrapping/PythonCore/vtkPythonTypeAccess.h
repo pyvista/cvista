@@ -84,11 +84,99 @@ static inline reprfunc vtkPythonType_GetStr(PyTypeObject* tp)
 static inline PyObject* vtkPythonType_GetDict(PyTypeObject* tp)
 {
 #if VTK_ABI3_LIMITED
-  return PyType_GetDict(tp);
+  // PyType_GetDict is NOT part of the limited API (it is a regular-API addition
+  // in 3.12). Under abi3 the type's attribute namespace is reached through the
+  // object protocol: getattr "__dict__" returns a mappingproxy that wraps the
+  // real tp_dict. Callers that only do read lookups (PyMapping_GetItemString /
+  // membership) work against the proxy identically. The proxy is a *new* ref;
+  // current fvtk readers use the result transiently (immediately look an item up
+  // and drop it), so this matches the borrowed-slot lifetime in practice.
+  return PyObject_GetAttrString(reinterpret_cast<PyObject*>(tp), "__dict__");
 #else
   return tp->tp_dict;
 #endif
 }
+
+//------------------------------------------------------------------------------
+// Set name->value in a type's attribute namespace. Under the default build this
+// is a raw tp_dict insertion (what the runtime historically did); under abi3 the
+// type is a (mutable) heap type and the limited-API-safe equivalent is a setattr
+// through the type object, which lands in the same tp_dict and triggers the same
+// type-modified bookkeeping. Returns 0 on success, -1 on error.
+static inline int vtkPythonType_SetDictItem(PyTypeObject* tp, const char* name, PyObject* value)
+{
+#if VTK_ABI3_LIMITED
+  return PyObject_SetAttrString(reinterpret_cast<PyObject*>(tp), name, value);
+#else
+  return PyDict_SetItemString(tp->tp_dict, name, value);
+#endif
+}
+
+//------------------------------------------------------------------------------
+// Delete name from a type's attribute namespace (no error if absent under the
+// default build path's existing semantics handled by the caller). Returns 0 on
+// success, -1 with an exception set if the attribute did not exist.
+static inline int vtkPythonType_DelDictItem(PyTypeObject* tp, const char* name)
+{
+#if VTK_ABI3_LIMITED
+  return PyObject_DelAttrString(reinterpret_cast<PyObject*>(tp), name);
+#else
+  return PyDict_DelItemString(tp->tp_dict, name);
+#endif
+}
+
+
+//------------------------------------------------------------------------------
+// Read a type's tp_new (its allocator/constructor slot), as a function pointer.
+// Used by the PyModule-subclass runtime types (namespace/template) that chain to
+// their base's tp_new/tp_init. Same byte-identical/limited split as GetBase.
+static inline newfunc vtkPythonType_GetNew(PyTypeObject* tp)
+{
+#if VTK_ABI3_LIMITED || PY_VERSION_HEX >= 0x030A0000
+  return reinterpret_cast<newfunc>(PyType_GetSlot(tp, Py_tp_new));
+#else
+  return tp->tp_new;
+#endif
+}
+
+//------------------------------------------------------------------------------
+// Read a type's tp_init slot, as a function pointer.
+static inline initproc vtkPythonType_GetInit(PyTypeObject* tp)
+{
+#if VTK_ABI3_LIMITED || PY_VERSION_HEX >= 0x030A0000
+  return reinterpret_cast<initproc>(PyType_GetSlot(tp, Py_tp_init));
+#else
+  return tp->tp_init;
+#endif
+}
+
+//------------------------------------------------------------------------------
+// Read a type's tp_dealloc slot, as a function pointer.
+static inline destructor vtkPythonType_GetDealloc(PyTypeObject* tp)
+{
+#if VTK_ABI3_LIMITED || PY_VERSION_HEX >= 0x030A0000
+  return reinterpret_cast<destructor>(PyType_GetSlot(tp, Py_tp_dealloc));
+#else
+  return tp->tp_dealloc;
+#endif
+}
+
+#if VTK_ABI3_LIMITED
+//------------------------------------------------------------------------------
+// abi3 heap-type construction helper. Under Py_LIMITED_API the only way to make
+// a type is PyType_FromSpec, which yields a *heap* type. This wraps the common
+// build-and-ready sequence: call PyType_FromSpec, then (if a base tuple is
+// needed for multiple/explicit bases) PyType_FromModuleAndSpec is avoided —
+// fvtk's runtime types each have a single base expressed via the Py_tp_base
+// slot inside the spec, so plain PyType_FromSpec suffices. The returned object
+// is a *new* strong reference (the static-type world held these as file-scope
+// globals with effectively static lifetime; under abi3 we leak one ref per
+// runtime type at module init, matching that "lives forever" semantics).
+static inline PyTypeObject* vtkPythonType_FromSpec(PyType_Spec* spec)
+{
+  return reinterpret_cast<PyTypeObject*>(PyType_FromSpec(spec));
+}
+#endif
 
 VTK_ABI_NAMESPACE_END
 

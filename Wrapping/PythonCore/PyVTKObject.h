@@ -68,7 +68,22 @@ struct PyVTKGetSet
 VTK_ABI_NAMESPACE_END
 
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyGetSetDef PyVTKObject_GetSet[];
+#if !defined(Py_LIMITED_API)
+// PyBufferProcs is not exposed by the limited API; under abi3 the buffer
+// protocol is wired through the Py_bf_getbuffer / Py_bf_releasebuffer type-spec
+// slots instead (see PyVTKObject.cxx and the generator's PyType_Spec emission).
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyBufferProcs PyVTKObject_AsBuffer;
+#else
+// abi3: the buffer slot functions have external linkage so a generated
+// PyType_Spec can reference them directly as Py_bf_getbuffer/Py_bf_releasebuffer.
+extern "C"
+{
+  VTKWRAPPINGPYTHONCORE_EXPORT
+  int PyVTKObject_AsBuffer_GetBuffer(PyObject* obj, Py_buffer* view, int flags);
+  VTKWRAPPINGPYTHONCORE_EXPORT
+  void PyVTKObject_AsBuffer_ReleaseBuffer(PyObject* obj, Py_buffer* view);
+}
+#endif
 
 extern "C"
 {

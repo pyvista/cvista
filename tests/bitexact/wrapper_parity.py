@@ -150,12 +150,43 @@ def main():
     return 0
 
 
+# Keys whose value legitimately diverges between a static-type stock build and an
+# abi3 heap-type fvtk build, and ONLY those keys. Under Py_LIMITED_API every type
+# is necessarily a heap type (PyType_FromSpec is the only way to create one), so
+# Py_TPFLAGS_HEAPTYPE (1<<9) flips on and IMMUTABLETYPE (1<<8) flips off on every
+# wrapped class and on the reference helper types. This is the single permitted
+# divergence of the abi3 wheel; the gate asserts it is EXPECTED (heaptype True /
+# immutabletype False on fvtk vs the opposite on stock) and that NOTHING ELSE
+# differs. See docs/abi3-feasibility.md.
+def _is_abi3():
+    return os.environ.get("BITEXACT_ABI3", "") not in ("", "0", "false", "False")
+
+
+def _expected_flag_divergence(key, stock_val, fvtk_val):
+    """Under abi3, a flag_heaptype::*/flag_immutabletype::*/reference_flag_* key is
+    allowed to differ iff it differs in exactly the heap-vs-static direction:
+    stock heaptype False -> fvtk True, stock immutabletype True -> fvtk False."""
+    if "flag_heaptype" in key:
+        return stock_val is False and fvtk_val is True
+    if "flag_immutabletype" in key:
+        return stock_val is True and fvtk_val is False
+    return False
+
+
 def compare_parity(stock_dir, fvtk_dir):
-    """Return list of (key, stock_value, fvtk_value) mismatches. Empty == parity."""
+    """Return list of (key, stock_value, fvtk_value) mismatches. Empty == parity.
+
+    In the default (static-type) build EVERY checked fact must match stock byte
+    for byte (modulo the intentional package rename, already normalized). In the
+    abi3 build (BITEXACT_ABI3=1) the two type-flag bits are EXPECTED to flip to
+    the heap-type values and are accepted *only* in that exact direction; any
+    other divergence — including a flag flipping the wrong way, or a wrapped type
+    NOT becoming a heap type — is still reported as a mismatch."""
     with open(os.path.join(stock_dir, "parity.json")) as f:
         s = json.load(f)
     with open(os.path.join(fvtk_dir, "parity.json")) as f:
         v = json.load(f)
+    abi3 = _is_abi3()
     mismatches = []
     for k in sorted(set(s) | set(v)):
         # vtkmodules module name differs intentionally (fvtk renames the package);
@@ -163,8 +194,13 @@ def compare_parity(stock_dir, fvtk_dir):
         # by design, so skip the module:: facts from the equality gate.
         if k.startswith("module::"):
             continue
-        if s.get(k, "<missing>") != v.get(k, "<missing>"):
-            mismatches.append((k, s.get(k, "<missing>"), v.get(k, "<missing>")))
+        sv = s.get(k, "<missing>")
+        fv = v.get(k, "<missing>")
+        if sv == fv:
+            continue
+        if abi3 and _expected_flag_divergence(k, sv, fv):
+            continue  # the one permitted abi3 divergence, in the permitted direction
+        mismatches.append((k, sv, fv))
     return mismatches
 
 

@@ -8,6 +8,7 @@
 
 #include "PyVTKNamespace.h"
 #include "vtkABINamespace.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 
 // Silence warning like
@@ -45,6 +46,7 @@ static void PyVTKNamespace_Delete(PyObject* op)
 #endif
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 // clang-format off
 PyTypeObject PyVTKNamespace_Type = {
   PyVarObject_HEAD_INIT(&PyType_Type, 0)
@@ -98,6 +100,31 @@ PyTypeObject PyVTKNamespace_Type = {
   nullptr,            // tp_weaklist
   VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED };
 // clang-format on
+#else // Py_LIMITED_API: heap type via PyType_FromSpec
+
+static PyType_Slot PyVTKNamespace_Slots[] = {
+  { Py_tp_dealloc, (void*)PyVTKNamespace_Delete },
+  { Py_tp_doc, (void*)const_cast<char*>(PyVTKNamespace_Doc) },
+  { Py_tp_base, (void*)&PyModule_Type },
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKNamespace_Spec = {
+  "fvtk.vtkCommonCore.namespace", 0, 0, Py_TPFLAGS_DEFAULT, PyVTKNamespace_Slots
+};
+
+// Backing pointer for the `#define PyVTKNamespace_Type (*ptr)` shim.
+PyTypeObject* PyVTKNamespace_TypePtr = nullptr;
+
+static int PyVTKNamespace_BuildType()
+{
+  if (PyVTKNamespace_TypePtr)
+  {
+    return 0;
+  }
+  PyVTKNamespace_TypePtr = vtkPythonType_FromSpec(&PyVTKNamespace_Spec);
+  return PyVTKNamespace_TypePtr ? 0 : -1;
+}
+#endif // Py_LIMITED_API
 
 //------------------------------------------------------------------------------
 PyObject* PyVTKNamespace_New(const char* name)
@@ -110,6 +137,21 @@ PyObject* PyVTKNamespace_New(const char* name)
   }
   else
   {
+#if defined(Py_LIMITED_API)
+    // abi3: build the heap type (idempotent), then chain to PyModule_Type's
+    // tp_new/tp_init through the limited-API-safe slot accessors.
+    PyVTKNamespace_BuildType();
+    PyTypeObject* nstype = &PyVTKNamespace_Type;
+    PyTypeObject* base = vtkPythonType_GetBase(nstype);
+    PyObject* empty = PyTuple_New(0);
+    self = vtkPythonType_GetNew(base)(nstype, empty, nullptr);
+    Py_DECREF(empty);
+    PyObject* pyname = PyUnicode_FromString(name);
+    PyObject* args = PyTuple_Pack(1, pyname);
+    Py_DECREF(pyname);
+    vtkPythonType_GetInit(base)(self, args, nullptr);
+    Py_DECREF(args);
+#else
     // make sure python has readied the type object
     PyType_Ready(&PyVTKNamespace_Type);
     // call the superclass new function
@@ -122,6 +164,7 @@ PyObject* PyVTKNamespace_New(const char* name)
     Py_DECREF(pyname);
     PyVTKNamespace_Type.tp_base->tp_init(self, args, nullptr);
     Py_DECREF(args);
+#endif
     // remember the object for later reference
     vtkPythonUtil::AddNamespaceToMap(self);
   }

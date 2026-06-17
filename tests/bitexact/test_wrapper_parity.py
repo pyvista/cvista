@@ -50,7 +50,7 @@ def _run_probe(py, ldlp, outdir, label):
 
 
 @pytest.fixture(scope="session")
-def parity_mismatches(tmp_path_factory):
+def parity_dirs(tmp_path_factory):
     base = os.environ.get("BITEXACT_OUTDIR") or str(
         tmp_path_factory.mktemp("parity")
     )
@@ -60,7 +60,12 @@ def parity_mismatches(tmp_path_factory):
                os.environ.get("BITEXACT_STOCK_LDLP", ""), stock_dir, "STOCK")
     _run_probe(os.environ.get("BITEXACT_FVTK_PY"),
                os.environ.get("BITEXACT_FVTK_LDLP", ""), fvtk_dir, "FVTK")
-    return _wp.compare_parity(stock_dir, fvtk_dir)
+    return stock_dir, fvtk_dir
+
+
+@pytest.fixture(scope="session")
+def parity_mismatches(parity_dirs):
+    return _wp.compare_parity(*parity_dirs)
 
 
 def test_wrapper_behavior_parity(parity_mismatches):
@@ -68,3 +73,21 @@ def test_wrapper_behavior_parity(parity_mismatches):
         "wrapper-behavior parity broken vs stock VTK:\n"
         + "\n".join(f"  {k}: stock={s!r} fvtk={f!r}" for k, s, f in parity_mismatches)
     )
+
+
+@pytest.mark.skipif(not _wp._is_abi3(), reason="abi3 build not under test (BITEXACT_ABI3 unset)")
+def test_abi3_heaptypes_in_effect(parity_dirs):
+    """Under abi3 the port must ACTUALLY be in effect: every probed wrapped type
+    and the reference helper type must report Py_TPFLAGS_HEAPTYPE set (and
+    IMMUTABLETYPE cleared) on the fvtk side. If any stays a static type the heap
+    conversion silently didn't happen for it — fail loudly. This is the positive
+    counterpart to compare_parity's tolerance of the flag flip."""
+    import json
+    with open(os.path.join(parity_dirs[1], "parity.json")) as f:
+        fv = json.load(f)
+    heap_keys = [k for k in fv if "flag_heaptype" in k]
+    assert heap_keys, "probe produced no flag_heaptype facts"
+    not_heap = [k for k in heap_keys if fv[k] is not True]
+    assert not_heap == [], f"abi3 build: these types are NOT heap types: {not_heap}"
+    immut = [k for k in fv if "flag_immutabletype" in k and fv[k] is not False]
+    assert immut == [], f"abi3 build: these types are still IMMUTABLETYPE: {immut}"

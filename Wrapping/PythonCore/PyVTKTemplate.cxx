@@ -11,6 +11,7 @@
 
 #include "PyVTKTemplate.h"
 #include "vtkABINamespace.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 #include "vtkStringScanner.h"
 
@@ -222,11 +223,13 @@ static PyObject* PyVTKTemplate_GetItem(PyObject* ob, PyObject* key)
 }
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 static PyMappingMethods PyVTKTemplate_AsMapping = {
   PyVTKTemplate_Size,    // mp_length
   PyVTKTemplate_GetItem, // mp_subscript
   nullptr,               // mp_ass_subscript
 };
+#endif
 
 //------------------------------------------------------------------------------
 static PyObject* PyVTKTemplate_Repr(PyObject* self)
@@ -249,6 +252,7 @@ static PyObject* PyVTKTemplate_Call(PyObject*, PyObject*, PyObject*)
 #endif
 
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 // clang-format off
 PyTypeObject PyVTKTemplate_Type = {
   PyVarObject_HEAD_INIT(&PyType_Type, 0)
@@ -302,6 +306,36 @@ PyTypeObject PyVTKTemplate_Type = {
   nullptr,                  // tp_weaklist
   VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED };
 // clang-format on
+#else // Py_LIMITED_API: heap type via PyType_FromSpec
+
+static PyType_Slot PyVTKTemplate_Slots[] = {
+  { Py_tp_repr, (void*)PyVTKTemplate_Repr },
+  { Py_mp_length, (void*)PyVTKTemplate_Size },
+  { Py_mp_subscript, (void*)PyVTKTemplate_GetItem },
+  { Py_tp_call, (void*)PyVTKTemplate_Call },
+  { Py_tp_getattro, (void*)PyObject_GenericGetAttr },
+  { Py_tp_doc, (void*)const_cast<char*>(PyVTKTemplate_Doc) },
+  { Py_tp_methods, (void*)PyVTKTemplate_Methods },
+  { Py_tp_base, (void*)&PyModule_Type },
+  { 0, nullptr }
+};
+static PyType_Spec PyVTKTemplate_Spec = {
+  "fvtk.vtkCommonCore.template", 0, 0, Py_TPFLAGS_DEFAULT, PyVTKTemplate_Slots
+};
+
+// Backing pointer for the `#define PyVTKTemplate_Type (*ptr)` shim.
+PyTypeObject* PyVTKTemplate_TypePtr = nullptr;
+
+static int PyVTKTemplate_BuildType()
+{
+  if (PyVTKTemplate_TypePtr)
+  {
+    return 0;
+  }
+  PyVTKTemplate_TypePtr = vtkPythonType_FromSpec(&PyVTKTemplate_Spec);
+  return PyVTKTemplate_TypePtr ? 0 : -1;
+}
+#endif // Py_LIMITED_API
 
 //------------------------------------------------------------------------------
 // Generate mangled name from the given template args
@@ -764,6 +798,23 @@ PyObject* PyVTKTemplate_KeyFromName(PyObject* self, PyObject* arg)
 //------------------------------------------------------------------------------
 PyObject* PyVTKTemplate_New(const char* name, const char* docstring)
 {
+#if defined(Py_LIMITED_API)
+  // abi3: build the heap type (idempotent), then chain to PyModule_Type's
+  // tp_new/tp_init through the limited-API-safe slot accessors.
+  PyVTKTemplate_BuildType();
+  PyTypeObject* tmpltype = &PyVTKTemplate_Type;
+  PyTypeObject* base = vtkPythonType_GetBase(tmpltype);
+  PyObject* empty = PyTuple_New(0);
+  PyObject* self = vtkPythonType_GetNew(base)(tmpltype, empty, nullptr);
+  Py_DECREF(empty);
+  PyObject* pyname = PyUnicode_FromString(name);
+  PyObject* pydoc = PyUnicode_FromString(docstring);
+  PyObject* args = PyTuple_Pack(2, pyname, pydoc);
+  Py_DECREF(pyname);
+  Py_DECREF(pydoc);
+  vtkPythonType_GetInit(base)(self, args, nullptr);
+  Py_DECREF(args);
+#else
   // make sure python has readied the type object
   PyType_Ready(&PyVTKTemplate_Type);
   // call the superclass new function
@@ -778,6 +829,7 @@ PyObject* PyVTKTemplate_New(const char* name, const char* docstring)
   Py_DECREF(pydoc);
   PyVTKTemplate_Type.tp_base->tp_init(self, args, nullptr);
   Py_DECREF(args);
+#endif
 
   return self;
 }
