@@ -40,18 +40,23 @@
 
 // ---------------------------------------------------------------------------
 // PyMemberDef + Py_T_*/Py_READONLY stable-ABI compatibility (limited-API floor
-// below 3.12) — KEEPS the cp311 floor.
+// below 3.12).
 //
 // The abi3 wrapper port carries each wrapped type's per-instance dict/weakref
 // layout in a PyType_Spec via a Py_tp_members slot of synthetic
 // "__dictoffset__"/"__weaklistoffset__" PyMemberDef entries (Py_T_PYSSIZET /
 // Py_READONLY), and PyVTKMethodDescriptor uses a Py_T_OBJECT_EX member. CPython
-// only promoted the *Py_-prefixed* member type/flag constants into the headers'
-// default surface in 3.12 (gh-93274). At a 3.11 limited-API floor
-// (Py_LIMITED_API == 0x030b0000, the fvtk default) <Python.h> alone exposes
-// neither `struct PyMemberDef` nor the Py_-prefixed constants, so the generated
-// *Python.cxx and the runtime fail to compile ("PyMemberDef has incomplete type"
-// / "Py_T_PYSSIZET not declared").
+// only promoted `struct PyMemberDef` and the Py_-prefixed member type/flag
+// constants into the *stable ABI* in 3.12 (gh-93274). At a sub-3.12 limited-API
+// floor (Py_LIMITED_API < 0x030c0000) the headers do not expose them, so the
+// generated *Python.cxx and the runtime would fail to compile ("PyMemberDef has
+// incomplete type" / "Py_T_PYSSIZET not declared").
+//
+// fvtk's abi3 floor is 3.12 (FVTK_ABI3_VERSION == 0x030c0000), so in the SHIPPED
+// build this shim is INERT — the guard below (< 0x030c0000) is never entered, and
+// 3.11 ships as a static, non-limited-API wheel (not an abi3 floor). It is
+// retained only as a belt-and-suspenders for anyone lowering FVTK_ABI3_VERSION
+// below 0x030c0000.
 //
 // The canonical source is <structmember.h>, which 3.11 SHIPS (with full include
 // guard Py_STRUCTMEMBER_H) and which provides `struct PyMemberDef` and the legacy

@@ -38,10 +38,13 @@ export VTK_EGL_DEVICE_INDEX="${VTK_EGL_DEVICE_INDEX:-0}"
 /tmp/rx-stock/bin/pip -q install --upgrade pip
 /tmp/rx-stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
 
-# fvtk wheel + vtkmodules->fvtk redirect shim
+# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR may hold BOTH the static
+# cp311 wheel and the cp312-abi3 wheel (the two-wheel matrix); let pip pick the
+# tag-compatible one for this python rather than globbing both (which would try
+# the incompatible one and fail).
 "$BASE_PY" -m venv /tmp/rx-fvtk
 /tmp/rx-fvtk/bin/pip -q install --upgrade pip "numpy==2.4.6"
-/tmp/rx-fvtk/bin/pip -q install "$WHEELDIR"/*.whl
+/tmp/rx-fvtk/bin/pip -q install --no-index --find-links "$WHEELDIR" fvtk
 SP=$(/tmp/rx-fvtk/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 cp "$SRC/tools/fvtk_shim.py" "$SP/_fvtk_shim.py"
 echo "import _fvtk_shim" > "$SP/_fvtk_shim.pth"

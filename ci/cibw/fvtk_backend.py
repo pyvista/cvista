@@ -37,24 +37,43 @@ import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Stable-ABI (abi3) is ON by default (matches fvtk-config/minimal.cmake's
-# FVTK_ABI3 default). The wrapper TUs compile against the CPython limited API and
-# the wheel is tagged cp311-abi3 (loads on CPython 3.11+). Set FVTK_ABI3=0 in the
-# environment to build the legacy per-version static-type wheel instead.
-ABI3_FLOOR_TAG = "cp311"  # mirrors FVTK_ABI3_VERSION 0x030b0000 in minimal.cmake
+# TWO-WHEEL scheme (PR #16). The abi3 stable-ABI floor is CPython 3.12
+# (Py_LIMITED_API 0x030c0000): PyMemberDef + the Py_T_*/Py_READONLY member
+# constants the heap-type wrappers emit only entered the stable ABI in 3.12
+# (gh-93274), so 3.11 cannot be a stable-ABI target. The matrix is therefore:
+#   * cp311  -> a STATIC per-version wheel (FVTK_ABI3 forced OFF, normal
+#               cp311-cp311 tag). 3.11 IS supported, just not via abi3.
+#   * cp312+ -> ONE abi3 wheel tagged cp312-abi3 (loads on CPython 3.12+).
+#               cibuildwheel's abi3 dedup reuses it for cp313/cp314, so the
+#               cp312-* cp313-* cp314-* legs yield a single build+wheel.
+# The decision is made PER LEG from the running build python's version (below),
+# NOT from a global on/off — that is what lets the same backend emit a static
+# cp311 wheel and an abi3 cp312 wheel in one cibuildwheel matrix run.
+#
+# Escape hatch: FVTK_ABI3=0 in the env forces the legacy static-type wheel for
+# ANY leg (incl. cp312+), restoring strict byte-for-byte parity incl. __flags__.
+ABI3_FLOOR_TAG = "cp312"  # mirrors FVTK_ABI3_VERSION 0x030c0000 in minimal.cmake
+ABI3_FLOOR_VERSION = (3, 12)  # mirrors 0x030c0000
 
 
 def _abi3_enabled() -> bool:
-    return os.environ.get("FVTK_ABI3", "1") != "0"
+    """Whether THIS leg should build the abi3 (stable-ABI) wheel.
+
+    True iff the build python is >= the abi3 floor (3.12) AND the FVTK_ABI3
+    escape hatch is not set to 0. On a 3.11 leg this is False, so 3.11 builds a
+    normal static per-version wheel (the stable ABI has no PyMemberDef < 3.12)."""
+    if os.environ.get("FVTK_ABI3", "1") == "0":
+        return False
+    return sys.version_info[:2] >= ABI3_FLOOR_VERSION
 
 
 def _build_dir() -> str:
-    # Per-python build tree: the generated wrappers + setup.py are ABI-specific,
-    # so cp312 and cp313 must NOT share a configured tree. They DO share the
-    # python-independent C++ kit objects via ccache (CMAKE_*_COMPILER_LAUNCHER),
-    # so only the first leg pays the full C++ cost. Key the dir by the ABI tag.
-    # Under abi3 the wrappers are version-independent, so one shared "abi3" tree
-    # serves every CPython leg (we only build cp311, but keep it explicit).
+    # Per-python build tree: the generated wrappers + setup.py are ABI-specific.
+    # All legs share the python-independent C++ kit objects via ccache
+    # (CMAKE_*_COMPILER_LAUNCHER), so only the first leg pays the full C++ cost.
+    # The abi3 legs (cp312+) share ONE "abi3" tree (the wrappers are version-
+    # independent under Py_LIMITED_API); the static cp311 leg gets its own
+    # SOABI-keyed tree so its per-version wrappers don't clobber the abi3 ones.
     base = os.environ.get("FVTK_BUILD_DIR", os.path.join(REPO, "build-cibw"))
     if _abi3_enabled():
         return f"{base}-abi3"
@@ -131,13 +150,13 @@ def _bdist_wheel(build: str) -> str:
 
 
 def _retag_abi3(wheel: str) -> str:
-    """Rewrite a version-tagged wheel (e.g. ...-cp311-cp311-linux_x86_64.whl) into
-    the stable-ABI form ...-cp311-abi3-linux_x86_64.whl: the generated build-tree
+    """Rewrite a version-tagged wheel (e.g. ...-cp312-cp312-linux_x86_64.whl) into
+    the stable-ABI form ...-cp312-abi3-linux_x86_64.whl: the generated build-tree
     setup.py has no notion of Py_LIMITED_API, so it tags the wheel with the build
     python's version even though the modules are abi3 (vtkXxx.abi3.so). We flip the
-    python tag to the floor (cp311), the ABI tag to abi3, rewrite the WHEEL `Tag:`
+    python tag to the floor (cp312), the ABI tag to abi3, rewrite the WHEEL `Tag:`
     line + the RECORD entry for it, and rename the file so the result installs on
-    CPython 3.11+. Bit-exact: only the wheel METADATA tag changes, not any module.
+    CPython 3.12+. Bit-exact: only the wheel METADATA tag changes, not any module.
     """
     name = os.path.basename(wheel)
     m = re.match(r"^(?P<base>.+)-(?P<py>[^-]+)-(?P<abi>[^-]+)-(?P<plat>[^-]+)\.whl$", name)

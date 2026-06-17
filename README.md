@@ -13,11 +13,14 @@ The project has two phases:
    clobbering it. Behavior is identical to stock VTK — the emitted C++ and Python wrappers
    are the same code, only the package name differs — so PyVista runs unchanged against it
    once taught to import `fvtk` (see [Namespace](#namespace--coexists-with-stock-vtk)).
-   The shipped wheel is a single **stable-ABI `cp311-abi3`** wheel (installs on CPython 3.11+,
-   no per-minor matrix); it is bit-exact with stock VTK 9.6.2 with one documented exception —
-   wrapped types are heap types, so `type(x).__flags__` differs in the `HEAPTYPE`/`IMMUTABLETYPE`
-   bits (see the [abi3 lever](#packaging-lever)). `FVTK_ABI3=0` rebuilds the legacy static wheels.
-   Smaller wheel, faster build.
+   fvtk ships **two wheels**: a normal **static `cp311`** wheel for Python 3.11, and a single
+   **stable-ABI `cp312-abi3`** wheel for Python 3.12+ (installs on CPython 3.12/3.13/3.14+, no
+   per-minor matrix). 3.11 cannot be a stable-ABI target (`PyMemberDef` entered the limited API
+   only in 3.12), so it gets the static wheel; both are bit-exact with stock VTK 9.6.2 — the abi3
+   wheel with one documented exception, wrapped types are heap types so `type(x).__flags__` differs
+   in the `HEAPTYPE`/`IMMUTABLETYPE` bits (see the [abi3 lever](#packaging-lever)); the static cp311
+   wheel matches byte-for-byte including `__flags__`. `FVTK_ABI3=0` rebuilds the legacy static wheels
+   for every version. Smaller wheel, faster build.
 2. **Next — swap-for-faster.** Individual VTK components are progressively replaced with
    faster implementations and dead code is stripped, so fvtk diverges from upstream over
    time. The trim is the baseline; the divergence is the point.
@@ -38,7 +41,7 @@ a handoff guide for continuing development.
 | Compile units (`ninja` steps) | **~6,900** (wrappers further batched by unity) | ~9,120 |
 | Source tree (tracked) | **~140 MB** | ~320 MB |
 | Import package / dist name | **`fvtk`** / **`fvtk`** | `vtkmodules` / `vtk` |
-| Wheel format | **single `cp311-abi3`** (stable ABI; installs on CPython 3.11+, no per-minor matrix) · `FVTK_ABI3=0` rebuilds the legacy `cp3XX-cp3XX` static wheels | per-minor `cp3XX-cp3XX` |
+| Wheel format | **`cp311` static + single `cp312-abi3`** (3.11 static wheel; 3.12+ one stable-ABI wheel, no per-minor matrix) · `FVTK_ABI3=0` rebuilds the legacy `cp3XX-cp3XX` static wheels | per-minor `cp3XX-cp3XX` |
 | Functional validation | **green** — native `import fvtk` smoke (kits, numpy roundtrip, EGL render) + bit-exact to stock VTK 9.6.2 (`maxULP=0`, numpy zero-copy shared+byte-identical) EXCEPT the one documented abi3 `type.__flags__` HEAPTYPE divergence | reference |
 
 ---
@@ -223,15 +226,20 @@ Levers 12–14 are validated parity-green: differential PyVista core+plotting (*
 
 ### Packaging lever
 
-15. **Stable ABI / abi3 (`FVTK_ABI3`, DEFAULT ON).** The Python wrapper runtime and the
-    wrapper code generator are ported to `PyType_FromSpec` heap types behind `Py_LIMITED_API`,
-    so the wrappers compile against the CPython **limited API** (floor `cp311` =
-    `Py_LIMITED_API 0x030b0000`) and the build emits a **single `cp311-abi3` wheel** that
-    installs and imports on **CPython 3.11+** — including future minors with **no rebuild**.
-    This collapses the per-minor `cp311 cp312 cp313 cp314` wheel matrix to one leg: the
-    wrappers (≈85 modules / ~1,664 generated TUs) are compiled **once** instead of four times,
-    saving **~75 % of the wrapper-compile cost** (≈983 → ≈246 CPU-s on the measured matrix),
-    plus zero-cost support for every future CPython minor.
+15. **Stable ABI / abi3 (`FVTK_ABI3`, DEFAULT ON; the cibuildwheel backend forces it OFF on
+    cp311).** The Python wrapper runtime and the wrapper code generator are ported to
+    `PyType_FromSpec` heap types behind `Py_LIMITED_API`, so the wrappers compile against the
+    CPython **limited API** (floor `cp312` = `Py_LIMITED_API 0x030c0000`) and the build emits a
+    **single `cp312-abi3` wheel** that installs and imports on **CPython 3.12+** — including
+    future minors with **no rebuild**. The floor is **3.12, not 3.11**: `PyMemberDef` and the
+    `Py_T_*`/`Py_READONLY` member constants the heap-type wrappers emit only entered the stable
+    ABI in 3.12 ([gh-93274](https://github.com/python/cpython/issues/93274)), so 3.11 cannot be a
+    stable-ABI target. **fvtk therefore ships TWO wheels:** a normal **static `cp311`** wheel
+    (built with `FVTK_ABI3=0` on the cp311 leg) for Python 3.11, and the single **`cp312-abi3`**
+    wheel for 3.12+. This collapses the per-minor `cp312 cp313 cp314` part of the matrix to one
+    leg: the wrappers (≈85 modules / ~1,664 generated TUs) compile **once** for 3.12+ instead of
+    per minor (cibuildwheel's abi3 dedup reuses the wheel for cp313/cp314 — exactly two builds:
+    cp311 static + cp312 abi3), plus zero-cost support for every future CPython minor.
 
     **Bit-exactness.** The abi3 wheel is byte-for-byte identical to stock VTK 9.6.2 on every
     numeric and behavioral fact — `maxULP=0` across the bitexact suite, **numpy zero-copy
@@ -243,10 +251,13 @@ Levers 12–14 are validated parity-green: differential PyVista core+plotting (*
     stable ABI, not a fixable shim gap; the wrapper-parity gate **expects** exactly this flip
     (and the `reference` helper's `BASETYPE` bit) and flags any other divergence.
 
+    The **static cp311 wheel** is strict byte-for-byte parity *including* `__flags__` (it is a
+    normal static-type build); only the abi3 wheel carries the `__flags__` divergence above.
+
     **Escape hatch.** Build with `-DFVTK_ABI3=OFF` (or `FVTK_ABI3=0` in the wheel backend env)
     to produce the **legacy per-version static-type wheels** (`cp3XX-cp3XX`, strict
-    byte-for-byte parity *including* `__flags__`); restore the `cp311-* cp312-* cp313-* cp314-*`
-    matrix in `pyproject.toml` to ship them. See `docs/abi3-feasibility.md`.
+    byte-for-byte parity *including* `__flags__`) for **every** version (not just 3.11). The
+    shipped matrix already builds cp311 this way. See `docs/abi3-feasibility.md`.
 
 ### Wheel-size lever
 

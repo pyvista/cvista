@@ -1,19 +1,73 @@
 # fvtk Python stable-ABI (abi3 / `Py_LIMITED_API`) feasibility
 
-Status: **ENABLED BY DEFAULT.** The increment ladder (below) is complete and the
-product decision was taken: abi3 is the **default shipped wheel format** — a
-single `cp311-abi3` wheel that installs on CPython 3.11+, bit-exact with stock
-VTK 9.6.2 except for the one documented `type.__flags__` HEAPTYPE/IMMUTABLETYPE
-divergence (every limited-API type is a heap type). `FVTK_ABI3=0` rebuilds the
-legacy per-version static-type wheels. See **Increment 5** at the top of the
-status log; the original blocker inventory and roadmap follow unchanged for
-reference.
+Status: **ENABLED BY DEFAULT (two-wheel scheme).** The increment ladder (below)
+is complete and the final product decision was taken: fvtk ships **TWO wheels** —
+a normal **static `cp311`** wheel for Python 3.11, and a single **`cp312-abi3`**
+stable-ABI wheel for Python 3.12+ (covers 3.12/3.13/3.14/future). The abi3 floor
+is **3.12, not 3.11**: `PyMemberDef` and the `Py_T_*`/`Py_READONLY` member
+constants the heap-type wrappers emit only entered the stable ABI in 3.12
+([gh-93274](https://github.com/python/cpython/issues/93274)), so 3.11 cannot be a
+stable-ABI target and is served by the static wheel instead. The abi3 wheel is
+bit-exact with stock VTK 9.6.2 except for the one documented `type.__flags__`
+HEAPTYPE/IMMUTABLETYPE divergence (every limited-API type is a heap type); the
+static cp311 wheel is byte-for-byte incl. `__flags__`. `FVTK_ABI3=0` rebuilds the
+legacy per-version static-type wheels for every version. See **Increment 6** at
+the top of the status log for the two-wheel reconciliation; Increment 5 (the
+earlier single-`cp311-abi3` attempt at a 3.11 floor) is retained for history but
+**superseded** — the 3.11 limited-API floor it describes does not compile against
+genuine 3.11 headers (the PyMemberDef gap), which is exactly why the floor moved
+to 3.12 and 3.11 became a static wheel.
 
 ---
 
 ## Increment status log (newest first)
 
-### Increment 5 (PRODUCT FLIP) — abi3 is the DEFAULT shipped wheel format — ENABLED BY DEFAULT
+### Increment 6 (FINAL) — TWO-WHEEL scheme: static cp311 + cp312-abi3 — 3.12 floor
+
+Increment 5 shipped a single `cp311-abi3` wheel at a **3.11 limited-API floor**
+(`Py_LIMITED_API 0x030b0000`). That floor is **invalid**: CPython only promoted
+`struct PyMemberDef` and the `Py_T_*`/`Py_READONLY` member type/flag constants
+into the stable ABI in **3.12** (gh-93274). The heap-type wrappers emit
+`Py_tp_members` slot tables (synthetic `__dictoffset__`/`__weaklistoffset__`) and
+`PyVTKMethodDescriptor`'s `Py_T_OBJECT_EX` member, so against genuine 3.11
+limited-API headers they fail to compile (`PyMemberDef has incomplete type`,
+`Py_T_PYSSIZET not declared`). Increment 5's executor validation used **cp313**
+headers, which define these unconditionally even at floor 3.11, masking the gap;
+manylinux **cp311** then failed the compile in CI.
+
+**Resolution — the floor is 3.12 and 3.11 ships static.** Rather than carry a
+fragile sub-3.12 compat shim, the abi3 floor moved to **3.12** (`0x030c0000`) and
+**3.11 ships as a normal static per-version wheel** (no stable ABI). So 3.11 is
+still supported — just not via abi3. The matrix is now two wheels.
+
+**What changed (vs Increment 5).**
+- `fvtk-config/minimal.cmake`: `FVTK_ABI3_VERSION` floor `0x030b0000` (3.11) →
+  **`0x030c0000` (3.12)**. `FVTK_ABI3` stays default ON (a plain build is abi3);
+  the cibuildwheel backend forces it OFF only on the cp311 leg.
+- `ci/cibw/fvtk_backend.py`: `_abi3_enabled()` is now **per-leg version-aware** —
+  True iff the build python is ≥ 3.12 (and `FVTK_ABI3` ≠ 0). So the cp311 leg
+  builds a STATIC `cp311-cp311` wheel and cp312+ builds the `cp312-abi3` wheel,
+  in one cibuildwheel matrix run. `ABI3_FLOOR_TAG`/`_VERSION` = `cp312`/`(3,12)`.
+- `pyproject.toml`: `[tool.cibuildwheel].build` single `cp312-*` →
+  **`cp311-* cp312-* cp313-* cp314-*`**; `requires-python` `>=3.12` → **`>=3.11`**.
+  cibuildwheel's abi3 dedup reuses the `cp312-abi3` wheel for cp313/cp314, so the
+  matrix yields exactly **two builds** (cp311 static + cp312 abi3) and two wheels.
+- `.github/workflows/ci.yml`: the `bitexact` job is matrixed over Python —
+  **3.11 → static wheel under STRICT parity** (`BITEXACT_ABI3=0`, byte-identical
+  `__flags__`), **3.12/3.13 → cp312-abi3 wheel under ABI3-AWARE parity**
+  (`BITEXACT_ABI3=1`). `renderexact` runs on 3.11 (static) and 3.13 (abi3). The
+  install step uses `pip install --no-index --find-links <dir> fvtk` so pip picks
+  the tag-compatible wheel from the two-wheel artifact dir.
+- A `<3.12` compat shim (`Wrapping/PythonCore/vtkPythonTypeAccess.h`, commit
+  `5f9093c`) was added during the abandoned 3.11-floor attempt; it is **inert at
+  the 3.12 floor** (`#if Py_LIMITED_API < 0x030c0000` guard) and on the static
+  cp311 leg (non-limited build), so it is harmless and retained.
+
+**Validation.** See the "3.12-faithful validation" entry below (both wheels built
+in manylinux2014 and run through the full bitexact suite at the genuine 3.12
+floor).
+
+### Increment 5 (SUPERSEDED by Increment 6) — single cp311-abi3 wheel at a 3.11 floor — DOES NOT COMPILE at the genuine 3.11 limited-API floor
 
 The `__flags__`-divergence product decision (pinned in Increment 2's parity-wall
 entry) was taken: **enable abi3 by default.** The single documented divergence —

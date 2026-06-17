@@ -32,15 +32,19 @@ requires-python = ">=3.11"
 # ===========================================================================
 [tool.cibuildwheel]
 build-frontend = "pip"
-# SINGLE abi3 leg. FVTK_ABI3 is ON by default, so the wrapper TUs compile against
-# the CPython limited API (floor cp311 = Py_LIMITED_API 0x030b0000) and produce a
-# single stable-ABI wheel tagged cp311-abi3 that installs+imports on CPython 3.11+
-# (incl. future minors, no rebuild). We therefore build ONLY on cp311: the wheel
-# the backend emits is already abi3-tagged, so adding cp312/cp313/cp314 legs would
-# just recompile the same wrappers and produce duplicate abi3 wheels. To rebuild
-# the legacy per-version static-type wheels, set FVTK_ABI3=0 and restore the
-# cp311-* cp312-* cp313-* cp314-* matrix.
-build = "cp311-*"
+# TWO-WHEEL matrix. The backend (ci/cibw/fvtk_backend.py) decides per leg from the
+# build python's version:
+#   * cp311  -> STATIC per-version wheel (FVTK_ABI3 forced OFF; cp311-cp311 tag).
+#   * cp312+ -> ONE abi3 wheel tagged cp312-abi3 (Py_LIMITED_API 0x030c0000),
+#               installs+imports on CPython 3.12+ incl. future minors.
+# 3.11 cannot be a stable-ABI floor (PyMemberDef + the Py_T_*/Py_READONLY member
+# constants the heap-type wrappers emit only entered the stable ABI in 3.12,
+# gh-93274), so it ships as a normal static wheel instead of being dropped.
+# We list all four cp legs; cibuildwheel's abi3 dedup means cp313/cp314 do NOT
+# rebuild — they reuse and TEST the cp312-abi3 wheel — so the matrix yields
+# exactly TWO builds (cp311 static + cp312 abi3) and two wheels. Set FVTK_ABI3=0
+# to force the legacy per-version static wheel on every leg.
+build = "cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "FVTK_IMPORT_NAME=fvtk xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
 # auditwheel repair runs by default; stamp the 2_17 tag explicitly to match the
