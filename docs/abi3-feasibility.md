@@ -153,9 +153,16 @@ divergence proven in the prior entry, keeping everything else bit-exact.
   backends (1 passed / abi3-positive test correctly skipped). Default codegen
   unchanged — every edit is either `Py_LIMITED_API`-guarded or a new inline that
   expands to the exact prior field access.
-- ABI3 leg (FVTK_ABI3 ON, cp313 limited API): the 7 ported type-definitions and
-  the buffer/dict accessor layer compile; the `PyBufferProcs`/`PyType_GetDict`
-  blocker classes are eliminated (per-file error set dropped from 11 files to 6).
+- ABI3 leg (FVTK_ABI3 ON, cp313 limited API): **all five hand-written
+  runtime type-definition TUs now compile cleanly** — `PyVTKReference`,
+  `PyVTKNamespace`, `PyVTKTemplate`, `PyVTKMethodDescriptor`, `PyVTKExtras`
+  (the latter builds the four reference heap types). The residual abi3 errors are
+  isolated to exactly three TUs — `vtkPythonUtil.cxx` (11), `PyVTKObject.cxx`
+  (10), `PyVTKSpecialObject.cxx` (4) — and are entirely the generator-emitted-type
+  *population* path (`PyVTKClass_Add`/`PyVTKSpecialType_Add` `tp_dict` writes,
+  inc3-coupled), plus `tp_name`-as-`const char*`, `Py_HashPointer`, and
+  `FindGetSetDescriptor`'s internal-struct reads. The `PyBufferProcs`/
+  `PyType_GetDict`/`_PyType_Lookup` blocker classes are eliminated.
 
 **STOP / documented residual — the runtime NON-type-definition tail.** A fully
 importing abi3 `WrappingPythonCore` is NOT yet reachable: beyond the type
