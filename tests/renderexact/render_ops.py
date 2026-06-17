@@ -33,7 +33,9 @@ import numpy as np
 
 # --- vtkmodules imports (resolve to stock vtk OR fvtk depending on the venv) ---
 from vtkmodules.vtkCommonCore import vtkFloatArray, vtkPoints, vtkLookupTable
-from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
+from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray, vtkImageData
+from vtkmodules.vtkRenderingCore import vtkTexture
+from vtkmodules.vtkFiltersTexture import vtkTextureMapToSphere
 from vtkmodules.vtkFiltersSources import (
     vtkConeSource,
     vtkSphereSource,
@@ -244,8 +246,43 @@ def scene_edges():
     return ren, _new_window(ren)
 
 
+def scene_textured():
+    """A textured sphere -- exercises the mapper's texture binding/uniform path
+    (HaveTextures / GetTextures), which the other scenes do not touch."""
+    s = vtkSphereSource()
+    s.SetThetaResolution(40)
+    s.SetPhiResolution(40)
+    tmap = vtkTextureMapToSphere()
+    tmap.SetInputConnection(s.GetOutputPort())
+    tmap.PreventSeamOn()
+    # Deterministic 16x16 RGB checker texture (pure integer algebra, no trig).
+    img = vtkImageData()
+    img.SetDimensions(16, 16, 1)
+    img.AllocateScalars(3, 3)  # VTK_UNSIGNED_CHAR=3, 3 components
+    sc = img.GetPointData().GetScalars()
+    idx = 0
+    for j in range(16):
+        for i in range(16):
+            on = ((i // 2) + (j // 2)) % 2
+            sc.SetTuple3(idx, 230 if on else 40, 120, 60 if on else 200)
+            idx += 1
+    tex = vtkTexture()
+    tex.SetInputData(img)
+    tex.InterpolateOff()
+    m = vtkPolyDataMapper()
+    m.SetInputConnection(tmap.GetOutputPort())
+    a = vtkActor()
+    a.SetMapper(m)
+    a.SetTexture(tex)
+    ren = _renderer()
+    ren.AddActor(a)
+    _fixed_camera(ren, dist=3.2)
+    return ren, _new_window(ren)
+
+
 SCENES = {
     "sphere_shaded": scene_sphere_shaded,
+    "textured": scene_textured,
     "cone_shaded": scene_cone_shaded,
     "scalars_lut": scene_scalars_lut,
     "points_glyph": scene_points_glyph,
