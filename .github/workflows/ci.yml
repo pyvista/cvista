@@ -37,22 +37,40 @@ concurrency:
 
 jobs:
   build:
-    name: build wheels (cp311 static + cp312-abi3, manylinux_2_17)
+    name: build ${{ matrix.leg }} (manylinux_2_17)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Two parallel legs instead of one sequential cibuildwheel run:
+      #   * cp311 static  — FVTK_ABI3 forced OFF, per-version cp311-cp311 wheel.
+      #   * cp312-abi3    — ONE Py_LIMITED_API 0x030c0000 wheel; cibuildwheel's
+      #     abi3 dedup means cp313/cp314 reuse + TEST it (no rebuild).
+      # Each leg uploads its own artifact; the test jobs merge both via the
+      # fvtk-wheels-* pattern and pip --find-links picks the tag-compatible wheel.
+      matrix:
+        include:
+          - leg: "cp311 static"
+            cibw_build: "cp311-*"
+            artifact: cp311
+          - leg: "cp312-abi3"
+            cibw_build: "cp312-* cp313-* cp314-*"
+            artifact: cp312abi3
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # VTK derives its version from full history
       - name: Build wheels + offscreen smoke (cibuildwheel)
-        # The backend forces FVTK_ABI3 OFF on cp311 (static wheel) and ON for
-        # cp312+ (cp312-abi3). cibuildwheel's abi3 dedup means cp313/cp314 reuse
-        # and TEST the cp312-abi3 wheel, so this matrix produces TWO wheels.
         uses: pypa/cibuildwheel@v3.1.4
         env:
-          CIBW_BUILD: cp311-* cp312-* cp313-* cp314-*
+          CIBW_BUILD: ${{ matrix.cibw_build }}
+          # PR builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
+          # fvtk-config/minimal.cmake). cibuildwheel forwards CIBW_ENVIRONMENT
+          # into each per-leg build env. Releases (wheels-cibuildwheel.yml) leave
+          # FVTK_LTO unset -> default ON, so shipped wheels stay LTO-optimized.
+          CIBW_ENVIRONMENT: FVTK_LTO=0
       - uses: actions/upload-artifact@v4
         with:
-          name: fvtk-wheels
+          name: fvtk-wheels-${{ matrix.artifact }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
@@ -81,7 +99,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: actions/download-artifact@v4
         with:
-          name: fvtk-wheels
+          # both build legs upload fvtk-wheels-*; merge into one dir so
+          # pip --find-links can pick the tag-compatible wheel for this python.
+          pattern: fvtk-wheels-*
+          merge-multiple: true
           path: dist
       - name: Bit-exact suite (fvtk vs stock VTK 9.6.2)
         # pip installs the wheel whose tag matches this python: the static
@@ -126,7 +147,8 @@ jobs:
             libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
       - uses: actions/download-artifact@v4
         with:
-          name: fvtk-wheels
+          pattern: fvtk-wheels-*
+          merge-multiple: true
           path: dist
       - name: Pixel-exact render suite (fvtk vs stock VTK 9.6.2, software EGL)
         run: ci/run-renderexact.sh dist python
