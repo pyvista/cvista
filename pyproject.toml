@@ -113,7 +113,15 @@ CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
 before-build = "pip install delvewheel \"cmake>=3.22,<4.2\" \"ninja>=1.11\" \"setuptools<81\" wheel"
-repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel}"
+# fvtk builds with VTK_ENABLE_KITS=ON: every DLL a .pyd imports (kit DLLs like
+# vtkRendering / vtkFilters, standalone module DLLs like vtkChartsCore, and the
+# vendored third-party DLLs) is a real file in the build tree's bin/ dir, but
+# VTK's Windows wheel layout does NOT copy them beside the .pyds (it leaves that
+# to delvewheel). That bin/ dir is not on PATH when delvewheel runs, so a plain
+# `delvewheel repair` fails with "Unable to find library: vtkchartscore-...dll".
+# repair_windows.py globs the per-leg build-cibw*/bin dirs and feeds them to
+# delvewheel via --add-path so every needed DLL resolves in one pass.
+repair-wheel-command = "python {project}/ci/cibw/repair_windows.py {project} {dest_dir} {wheel}"
 # Windows ships the native Win32 WGL backend with no headless display on CI, so
 # the global xvfb offscreen-render smoke is Linux-only. Use the minimal
 # import+compute smoke (no render, no xvfb) instead.
