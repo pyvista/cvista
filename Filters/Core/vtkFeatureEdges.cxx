@@ -15,6 +15,7 @@
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
 #include "vtkPolygon.h"
+#include "vtkStaticCellLinks.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkTriangleStrip.h"
 #include "vtkUnsignedCharArray.h"
@@ -28,6 +29,44 @@ namespace
 {
 constexpr unsigned char CELL_NOT_VISIBLE =
   vtkDataSetAttributes::HIDDENCELL | vtkDataSetAttributes::DUPLICATECELL;
+
+// Inlined, devirtualized equivalent of
+//   mesh->GetCellEdgeNeighbors(cellId, p1, p2, cellIds)
+// for the (common) non-editable static-cell-links case. The set of edge
+// neighbors is pure integer topology bookkeeping (no floating point); this
+// reproduces vtkPolyData::GetCellEdgeNeighbors' iteration order and unique-id
+// de-duplication exactly, so the returned id list is bit-for-bit identical. It
+// hoists the link pointer/type resolution and the per-call BuildLinks
+// null-check out of the hot per-edge loop. nullptr StaticLinks => caller uses
+// the public API (editable mesh); identical results either way.
+inline void GetCellEdgeNeighborsHoisted(vtkStaticCellLinks* staticLinks, vtkPolyData* mesh,
+  vtkIdType cellId, vtkIdType p1, vtkIdType p2, vtkIdList* cellIds)
+{
+  if (!staticLinks)
+  {
+    mesh->GetCellEdgeNeighbors(cellId, p1, p2, cellIds);
+    return;
+  }
+  cellIds->Reset();
+  const vtkIdType nCells1 = staticLinks->GetNcells(p1);
+  const vtkIdType* cells1 = staticLinks->GetCells(p1);
+  const vtkIdType nCells2 = staticLinks->GetNcells(p2);
+  const vtkIdType* cells2 = staticLinks->GetCells(p2);
+  for (vtkIdType i = 0; i < nCells1; ++i)
+  {
+    if (cells1[i] != cellId)
+    {
+      for (vtkIdType j = 0; j < nCells2; ++j)
+      {
+        if (cells1[i] == cells2[j])
+        {
+          cellIds->InsertUniqueId(cells1[i]);
+          break;
+        }
+      }
+    }
+  }
+}
 } // anonymous namespace
 
 //------------------------------------------------------------------------------
@@ -210,6 +249,10 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
     Mesh->SetPolys(newPolys);
   }
   Mesh->BuildLinks();
+  // Resolve the static cell links once (non-editable mesh => static links).
+  // Used to hoist the per-call link dispatch out of the hot per-edge loop
+  // below; bit-exact (integer topology only).
+  vtkStaticCellLinks* staticLinks = vtkStaticCellLinks::SafeDownCast(Mesh->GetLinks());
 
   // Allocate storage for lines/points (arbitrary allocation sizes)
   //
@@ -363,7 +406,7 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
       p1 = pts[i];
       p2 = pts[(i + 1) % npts];
 
-      Mesh->GetCellEdgeNeighbors(newCellId, p1, p2, neighbors);
+      GetCellEdgeNeighborsHoisted(staticLinks, Mesh, newCellId, p1, p2, neighbors);
       numNei = neighbors->GetNumberOfIds();
 
       vtkIdType numNeiWithoutGhosts = numNei;
