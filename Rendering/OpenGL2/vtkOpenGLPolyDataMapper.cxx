@@ -466,7 +466,12 @@ std::string vtkOpenGLPolyDataMapper::GetTextureCoordinateName(const char* tname)
 //------------------------------------------------------------------------------
 bool vtkOpenGLPolyDataMapper::HaveTextures(vtkActor* actor)
 {
-  return (this->GetNumberOfTextures(actor) > 0);
+  // Cheap presence check: avoid building (and discarding) the full texinfo
+  // vector -- which copies every texture-name std::string out of the property
+  // map -- just to ask whether the count is > 0. Equivalent to
+  // GetNumberOfTextures(actor) > 0 but with no heap allocation.
+  return this->ColorTextureMap || actor->GetTexture() ||
+    !actor->GetProperty()->GetAllTextures().empty();
 }
 
 typedef std::pair<vtkTexture*, std::string> texinfo;
@@ -474,7 +479,18 @@ typedef std::pair<vtkTexture*, std::string> texinfo;
 //------------------------------------------------------------------------------
 unsigned int vtkOpenGLPolyDataMapper::GetNumberOfTextures(vtkActor* actor)
 {
-  return static_cast<unsigned int>(this->GetTextures(actor).size());
+  // Count without copying the texture names into a temporary vector.
+  unsigned int n = 0;
+  if (this->ColorTextureMap)
+  {
+    ++n;
+  }
+  if (actor->GetTexture())
+  {
+    ++n;
+  }
+  n += static_cast<unsigned int>(actor->GetProperty()->GetAllTextures().size());
+  return n;
 }
 
 //------------------------------------------------------------------------------
