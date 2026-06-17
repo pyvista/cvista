@@ -79,6 +79,30 @@ inline void vtkLinearTransformNormal(T1 mat[4][4], T2 in[3], T3 out[3])
 }
 
 //------------------------------------------------------------------------------
+// fvtk SIMD: the contiguous 4x4 matrix*point inner loop, hoisted into a
+// dedicated free function so it can carry the target_clones("default","avx2")
+// function-multi-versioning attribute. GCC emits a baseline (SSE2) .default
+// clone + an .avx2 clone + an IFUNC resolver (runtime CPUID dispatch) so a
+// single portable wheel (no -march bump) runs wide SIMD where available. This
+// is the prime compute-bound vertical kernel (9 mul + 9 add per point,
+// contiguous in/out, no gather/reduction). BIT-EXACTNESS of the avx2 clone
+// requires the TU be compiled with -ffp-contract=off (set via
+// set_source_files_properties in CMakeLists): the matrix*point expression is
+// the canonical a*b+c FMA shape and FMA contraction would diverge from stock
+// VTK by 1 ULP on adversarial data. target_clones controls ISA only; the
+// off-contract flag governs all clones. The fvtk-prefixed name keeps the
+// symbol distinct for objdump verification.
+template <class TIn, class TOut, class T>
+__attribute__((target_clones("default", "avx2"))) void fvtkLinearTransformPointRange(
+  T matrix[4][4], const TIn* pin, TOut* pout, vtkIdType count)
+{
+  for (vtkIdType i = 0; i < count; ++i, pin += 3, pout += 3)
+  {
+    vtkLinearTransformPoint(matrix, pin, pout);
+  }
+}
+
+//------------------------------------------------------------------------------
 struct vtkLinearTransformPointsWorker
 {
   template <class TArrayIn, class TArrayOut, class T>
@@ -91,10 +115,9 @@ struct vtkLinearTransformPointsWorker
       {
         auto pin = inArray->GetPointer(3 * ptId);
         auto pout = outArray->GetPointer(3 * (outBeginTuple + ptId));
-        for (; ptId < endPtId; ++ptId, pin += 3, pout += 3)
-        {
-          vtkLinearTransformPoint(matrix, pin, pout);
-        }
+        // fvtk: dispatch the contiguous range to the AVX2/SSE2 multi-versioned
+        // kernel (see fvtkLinearTransformPointRange above).
+        fvtkLinearTransformPointRange(matrix, pin, pout, endPtId - ptId);
       });
   }
 };
