@@ -40,6 +40,9 @@
 name: CI
 
 on:
+  # Runs on merges to main too, so each main build refreshes the per-leg ccache
+  # seed that PR builds restore (the "cold≈warm" lever). PR builds restore the
+  # most recent seed via restore-keys; this push build saves a new one.
   push:
     branches: [main]
   pull_request:
@@ -58,29 +61,54 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # VTK derives its version from full history
-      # No host ccache mount here: on Linux cibuildwheel keeps ONE container alive
-      # for the whole cp matrix, so the in-container /ccache (pyproject linux env)
-      # already shares the python-independent C++ across the abi3 dedup WITHIN the
-      # run. Combined with the constant build dir + CCACHE_BASEDIR fix in
-      # ci/cibw/fvtk_backend.py, that is where the cross-leg-ccache win lands.
+
+      # --- ccache cross-RUN SEED (the cold≈warm lever) ------------------------
+      # The single Linux abi3 leg keeps ONE container alive for the whole cp
+      # matrix, so the in-container /ccache (pyproject linux env) already shares
+      # the python-independent C++ across the abi3 dedup WITHIN a run. THIS step
+      # adds cross-RUN persistence: restore a per-leg ccache seeded by the most
+      # recent push-to-main build (`restore-keys` prefix match). The C++ kit
+      # objects are python-independent and byte-stable across commits that don't
+      # touch them, so a PR's "cold" build restores the seed and recompiles only
+      # its changed TUs (+ the non-cacheable codegen/link floor). `key` is unique
+      # per run (github.run_id) so every run SAVES a fresh seed at job end; on
+      # push-to-main that becomes the new seed PRs restore. Branch scoping: a PR
+      # can read caches from its base branch (main) and its own branch, so the
+      # seed naturally comes from main.
+      - name: Make ccache dir world-writable (container build user differs)
+        run: mkdir -p /tmp/fvtk-cibw-ccache && chmod 0777 /tmp/fvtk-cibw-ccache
+      - name: Restore ccache seed (cross-run)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/fvtk-cibw-ccache
+          key: fvtk-ccache-linux-cp312abi3-${{ github.run_id }}
+          restore-keys: |
+            fvtk-ccache-linux-cp312abi3-
+
       - name: Build wheel + offscreen smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
           # Single abi3 wheel: cp312-* cp313-* cp314-* all dedup to ONE cp312-abi3
           # build (pyproject `build` selector already restricts to cp312+).
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
-          # PR/push builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
-          # fvtk-config/minimal.cmake). -O3 stays ON: Release is the default build
-          # type and no FVTK_O1 knob exists — every leg compiles at -O3, the
-          # bit-exact contract is proven at -O3 by the bitexact job below. The
-          # release matrix (wheels-cibuildwheel.yml) leaves FVTK_LTO unset -> LTO on.
-          # FVTK_SOURCE_UNITY=1 turns on per-module source UNITY_BUILD (amortizes the
-          # shared header parse; byte-identical objects). It is GCC<12-gated in
-          # CMake/vtkModule.cmake; on the manylinux_2_28 (GCC 14.2.1) image that gate
-          # now PASSES, so source-unity is ACTIVE — together with the GCC<12-gated
-          # wrapper-unity (FVTK_WRAP_UNITY, default ON) and the array-TU split.
-          # Bit-exact regardless.
-          CIBW_ENVIRONMENT: FVTK_LTO=0 FVTK_SOURCE_UNITY=1
+          # PR/push builds are LTO-OFF + -O2 for a fast/cheap BIT-EXACT gate:
+          #   FVTK_LTO=0      drops -flto (changes inlining, not FP values).
+          #   FVTK_GATE_O2=1  drops the per-TU optimizer from -O3 to -O2 (faster
+          #                   codegen; bit-exact — no -ffast-math, so IEEE FP is
+          #                   identical at -O2 and -O3). Release builds
+          #                   (wheels-cibuildwheel.yml) leave both unset -> -O3 +
+          #                   LTO, so shipped wheels stay fully optimized.
+          #   FVTK_SOURCE_UNITY=1  per-module source UNITY_BUILD (byte-identical
+          #                   objects; GCC>=12-gated, active on this 2_28 image),
+          #                   together with the GCC<12-gated wrapper-unity
+          #                   (FVTK_WRAP_UNITY, default ON) and the array-TU split.
+          CIBW_ENVIRONMENT: FVTK_LTO=0 FVTK_GATE_O2=1 FVTK_SOURCE_UNITY=1
+          # Mount the restored host ccache dir into the build container so ccache
+          # actually reads/writes the persisted seed (CCACHE_DIR=/ccache is set in
+          # pyproject [tool.cibuildwheel.linux.environment]). Without this mount
+          # the in-container /ccache is discarded at container exit and the seed is
+          # never consulted.
+          CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/fvtk-cibw-ccache:/ccache"
       - uses: actions/upload-artifact@v4
         with:
           name: fvtk-wheels-linux-cp312abi3

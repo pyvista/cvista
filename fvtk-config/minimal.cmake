@@ -73,6 +73,31 @@ set(FVTK_ABI3_VERSION "0x030c0000" CACHE STRING "fvtk: Py_LIMITED_API value when
 
 # --- build hygiene -----------------------------------------------------------
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "")
+
+# --- Lever: -O2 for the PR gate only (FVTK_GATE_O2=1) ------------------------
+# The shipped (release) wheel is -O3 (CMake's GNU Release default = "-O3 -DNDEBUG"):
+# the -O3 mandate stands for tags/releases. But the PR gate does NOT ship; it only
+# proves bit-exactness + builds fast. -O2 produces materially faster *codegen* than
+# -O3 (it skips -O3's expensive extra passes: aggressive loop unrolling, function
+# cloning/IPA-CP at -O3 levels, deeper inlining, vectorizer cost-model churn) while
+# remaining BIT-EXACT: without -ffast-math, both -O2 and -O3 honour strict IEEE FP,
+# and GCC does NOT reassociate FP / vectorize FP reductions unless -fassociative-math
+# (-ffast-math) is set, so the numeric results are identical at maxULP=0. This is the
+# SAME safety logic as the existing LTO-off PR gate (LTO changes inlining, not FP
+# values). Distinct from -O1 (which the maintainer was wary of): -O2 is the standard
+# fully-optimized level, just without -O3's most expensive/least-portable passes.
+#
+# Gate-only: enabled via the env knob FVTK_GATE_O2=1 (set in the PR-gate
+# CIBW_ENVIRONMENT alongside FVTK_LTO=0). Release builds leave it unset -> -O3.
+# We override the *_RELEASE flags (not CMAKE_CXX_FLAGS): the per-config Release
+# flags are appended AFTER CMAKE_CXX_FLAGS on the command line, so an -O2 added to
+# CMAKE_CXX_FLAGS would be overridden by Release's -O3 — the override below makes
+# -O2 the effective level.
+if ("$ENV{FVTK_GATE_O2}" STREQUAL "1")
+  set(CMAKE_C_FLAGS_RELEASE   "-O2 -DNDEBUG" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "" FORCE)
+endif ()
+
 set(VTK_BUILD_TESTING OFF CACHE BOOL "")
 set(VTK_BUILD_DOCUMENTATION OFF CACHE BOOL "")
 set(VTK_BUILD_EXAMPLES OFF CACHE BOOL "")
