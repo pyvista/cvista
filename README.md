@@ -133,9 +133,18 @@ most of what remains is genuinely reachable).
    wall **239 s → 194 s (−18.8 %)**, TU count **3,614 → 2,186 (−40 %)** — the full-wheel delta is
    smaller because the `CommonCore` `-O3` array-instantiation cluster (lever #6's domain, excluded
    from unity) is a serial long pole identical in both legs that dilutes the *total*; the per-TU
-   parse-amortization win is the −44 % subset figure. **GCC<12-gated** (see #5): inert on the
-   current manylinux2014 (GCC 10.2.1) CI container; bump the cibuildwheel image to manylinux_2_28
-   (GCC 12+) to activate it — and the wrapper-unity lever #5 — in CI.
+   parse-amortization win is the −44 % subset figure. **GCC<12-gated** (see #5): was inert on the
+   old manylinux2014 (GCC 10.2.1) CI image; the cibuildwheel Linux image is now **manylinux_2_28
+   (AlmaLinux 8, GCC 14.2.1)**, on which this lever — and the wrapper-unity lever #5 and the
+   array-TU split #6 — are all ACTIVE. **Measured full-wheel cold build** (cp311 static, no-LTO,
+   cold ccache, in the actual containers): the manylinux_2_28 stacked config (unity + split +
+   dispatch-trim) vs the old manylinux2014/GCC-10 main config (unity inert): **at `-j4`** (the CI
+   parallelism) **633 s vs 831 s = −23.8 %**; **at `-j32`** **163 s vs 193 s = −15.5 %** (smaller
+   at high core count — the wrapper-codegen serial steps and the bulk-array long pole the split
+   removes both matter more when cores are scarce, so the −24 % @ `-j4` is the CI-relevant figure).
+   Total compiled TU count **6,946 → 4,247 (−39 %)**. Both byte-for-byte bit-exact (bitexact
+   159/159 maxULP=0 + renderexact 11/11 pixel-exact vs stock VTK 9.6.2 + a PyVista
+   filter/read/render smoke). Tradeoff: glibc floor rises 2.17 → 2.28.
 
 ### Binary-size levers (compiled C++)
 
