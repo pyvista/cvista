@@ -24,6 +24,8 @@
 #include "vtkSMPTools.h"
 #include "vtkSmartPointer.h"
 
+#include <algorithm> // std::min for fvtk SIMD batch bounds
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkWarpVector);
 
@@ -79,6 +81,35 @@ int vtkWarpVector::RequestDataObject(
 namespace
 { // anonymous
 
+// fvtk SIMD: the per-point warp kernel xo = xi + sf*v over a contiguous
+// [ptId, endPtId) range, hoisted out of the abort-checked loop into a dedicated
+// free function carrying target_clones("default","avx2"). The per-element
+// CheckAbort/GetAbortOutput branches (virtual calls) blocked vectorization, so
+// the abort check is moved to a coarse outer batch (see operator() below) and
+// this clean inner kernel multi-versions to a baseline (SSE2) clone + an .avx2
+// clone + IFUNC resolver — single portable wheel, no -march bump. BIT-EXACT:
+// xi + sf*v is the canonical a*b+c FMA shape; the TU is compiled with
+// -ffp-contract=off (set_source_files_properties in CMakeLists) so no clone
+// contracts to vfmadd, holding maxULP=0 vs stock VTK. NB: warp is
+// bandwidth-bound (2 read + 1 write per ~2 FLOP) so the SIMD win is real only
+// cache-resident; the FMV stays portable/bit-exact either way.
+template <typename IptsRange, typename OptsRange, typename VecsRange>
+__attribute__((target_clones("default", "avx2"))) void fvtkWarpVectorRange(
+  const IptsRange& ipts, OptsRange& opts, const VecsRange& vecs, double sf, vtkIdType begin,
+  vtkIdType end)
+{
+  for (vtkIdType ptId = begin; ptId < end; ++ptId)
+  {
+    const auto xi = ipts[ptId];
+    auto xo = opts[ptId];
+    const auto v = vecs[ptId];
+
+    xo[0] = xi[0] + sf * v[0];
+    xo[1] = xi[1] + sf * v[1];
+    xo[2] = xi[2] + sf * v[2];
+  }
+}
+
 struct WarpWorker
 {
   template <typename InPT, typename OutPT, typename VT>
@@ -102,7 +133,14 @@ struct WarpWorker
           [&](vtkIdType ptId, vtkIdType endPtId)
           {
             bool isFirst = vtkSMPTools::GetSingleThread();
-            for (; ptId < endPtId; ++ptId)
+            // fvtk: process in batches so the per-point abort branch is lifted
+            // out of the vectorizable kernel (fvtkWarpVectorRange, AVX2/SSE2
+            // multi-versioned). The output is identical to a per-point check:
+            // CheckAbort only sets a flag; GetAbortOutput breaks the chunk loop
+            // at a batch boundary, and on abort the (undefined) tail is
+            // discarded exactly as before.
+            constexpr vtkIdType kBatch = 4096;
+            for (vtkIdType base = ptId; base < endPtId; base += kBatch)
             {
               if (isFirst)
               {
@@ -112,13 +150,8 @@ struct WarpWorker
               {
                 break;
               }
-              const auto xi = ipts[ptId];
-              auto xo = opts[ptId];
-              const auto v = vecs[ptId];
-
-              xo[0] = xi[0] + sf * v[0];
-              xo[1] = xi[1] + sf * v[1];
-              xo[2] = xi[2] + sf * v[2];
+              const vtkIdType batchEnd = std::min(base + kBatch, endPtId);
+              fvtkWarpVectorRange(ipts, opts, vecs, sf, base, batchEnd);
             }
           }); // lambda
       });
