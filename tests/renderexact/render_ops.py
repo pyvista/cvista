@@ -280,9 +280,92 @@ def scene_textured():
     return ren, _new_window(ren)
 
 
+def _checker_texture(c0, c1):
+    """Deterministic 16x16 RGB checker texture (pure integer algebra, no trig)."""
+    img = vtkImageData()
+    img.SetDimensions(16, 16, 1)
+    img.AllocateScalars(3, 3)  # VTK_UNSIGNED_CHAR=3, 3 components
+    sc = img.GetPointData().GetScalars()
+    idx = 0
+    for j in range(16):
+        for i in range(16):
+            on = ((i // 2) + (j // 2)) % 2
+            r, g, b = c1 if on else c0
+            sc.SetTuple3(idx, r, g, b)
+            idx += 1
+    tex = vtkTexture()
+    tex.SetInputData(img)
+    tex.InterpolateOff()
+    return tex
+
+
+def scene_multi_textured():
+    """Several actors of mixed kind (two textured spheres + one scalar-colored
+    sphere) drawn into one renderer. Multiple textured actors per frame amplify
+    the per-actor, per-frame texture-binding path (GetTextures -> texinfo vector
+    + uniform-name lookups) far more than a single textured sphere does, so a
+    regression in that path (e.g. a stale/dropped texture set) shows up here."""
+    ren = _renderer()
+    # Two textured spheres at offset positions, distinct deterministic checkers.
+    for k, (cx, c0, c1) in enumerate(
+        [
+            (-1.1, (40, 120, 200), (230, 120, 60)),
+            (1.1, (30, 200, 90), (210, 60, 160)),
+        ]
+    ):
+        s = vtkSphereSource()
+        s.SetThetaResolution(32)
+        s.SetPhiResolution(32)
+        s.SetRadius(0.8)
+        s.SetCenter(cx, 0.0, 0.0)
+        tmap = vtkTextureMapToSphere()
+        tmap.SetInputConnection(s.GetOutputPort())
+        tmap.PreventSeamOn()
+        m = vtkPolyDataMapper()
+        m.SetInputConnection(tmap.GetOutputPort())
+        a = vtkActor()
+        a.SetMapper(m)
+        a.SetTexture(_checker_texture(c0, c1))
+        ren.AddActor(a)
+    # One scalar-colored sphere through a LUT (the ColorTextureMap path -> adds
+    # the implicit "colortexture" entry to the texture set on that actor).
+    s = vtkSphereSource()
+    s.SetThetaResolution(32)
+    s.SetPhiResolution(32)
+    s.SetRadius(0.7)
+    s.SetCenter(0.0, 1.1, 0.0)
+    s.Update()
+    pd = s.GetOutput()
+    n = pd.GetNumberOfPoints()
+    sc = vtkFloatArray()
+    sc.SetName("scal")
+    sc.SetNumberOfTuples(n)
+    pts = pd.GetPoints()
+    for i in range(n):
+        sc.SetValue(i, float(pts.GetPoint(i)[1]))
+    pd.GetPointData().SetScalars(sc)
+    lut = vtkLookupTable()
+    lut.SetNumberOfColors(256)
+    lut.SetHueRange(0.0, 0.667)
+    lut.SetTableRange(0.0, 2.0)
+    lut.Build()
+    m = vtkPolyDataMapper()
+    m.SetInputData(pd)
+    m.SetLookupTable(lut)
+    m.SetScalarRange(0.0, 2.0)
+    m.SetScalarModeToUsePointData()
+    m.SetColorModeToMapScalars()
+    a = vtkActor()
+    a.SetMapper(m)
+    ren.AddActor(a)
+    _fixed_camera(ren, dist=4.6)
+    return ren, _new_window(ren)
+
+
 SCENES = {
     "sphere_shaded": scene_sphere_shaded,
     "textured": scene_textured,
+    "multi_textured": scene_multi_textured,
     "cone_shaded": scene_cone_shaded,
     "scalars_lut": scene_scalars_lut,
     "points_glyph": scene_points_glyph,
