@@ -21,11 +21,12 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR may hold BOTH the static
 # cp311 wheel and the cp312-abi3 wheel (the two-wheel matrix); let pip pick the
 # one whose tag is compatible with this python instead of globbing both (which
-# would try to install the incompatible one and fail). --no-index +
-# --find-links resolves `fvtk` against the local dir by tag compatibility.
+# would try to install the incompatible one and fail). --find-links points pip at
+# the local dir to resolve `fvtk` (tag-compatible pick) while PyPI stays available
+# for fvtk's own declared deps (matplotlib/numpy/...) — so NO --no-index.
 "$BASE_PY" -m venv /tmp/fvtk
 /tmp/fvtk/bin/pip -q install --upgrade pip "numpy==2.4.6"
-/tmp/fvtk/bin/pip -q install --no-index --find-links "$WHEELDIR" fvtk
+/tmp/fvtk/bin/pip -q install --find-links "$WHEELDIR" fvtk
 SP=$(/tmp/fvtk/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 cp "$SRC/tools/fvtk_shim.py" "$SP/_fvtk_shim.py"
 echo "import _fvtk_shim" > "$SP/_fvtk_shim.pth"
