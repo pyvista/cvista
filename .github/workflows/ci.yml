@@ -100,6 +100,10 @@ jobs:
 
   build-other-os:
     name: build ${{ matrix.os }}
+    # macOS/Windows are heavy (~45-50 min Windows). Run them only on main
+    # (post-merge) and manual dispatch — NOT on every PR. PRs gate on the fast
+    # Linux build + bitexact/render jobs below.
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
