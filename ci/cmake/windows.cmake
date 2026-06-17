@@ -41,20 +41,28 @@ set(VTK_MODULE_ENABLE_VTK_GUISupportMFC NO CACHE STRING "")
 
 include("${CMAKE_CURRENT_LIST_DIR}/../../fvtk-config/minimal.cmake")
 
-# --- MSVC link-closure fix: restore SceneGraph node leaves -------------------
-# vtkRendererNode (kept/compiled) #includes and references vtkCameraNode +
-# vtkLightNode, but Lever B (_nocompile_classes.cmake) drops those two from the
-# build ENTIRELY. On the GNU/gold Linux link this slips through (gc-sections/LTO
-# elide the unreferenced ::New paths), but MSVC's linker correctly fails with
-#   vtkRendererNode.cxx.obj: LNK2001 unresolved external vtkLightNode::New
-#   vtkRendererNode.cxx.obj: LNK2001 unresolved external vtkCameraNode::New
-# Re-add the two referenced leaves to the compiled set on the MSVC build ONLY
-# (scoped here, after the include, so the proven Linux/macOS builds are byte-
-# unchanged). This mirrors the precedent in _nocompile_classes.cmake's header,
-# where factory-override classes were restored once their ::New surfaced.
+# --- MSVC link-closure fix: restore classes referenced by kept code ----------
+# Lever B (_nocompile_classes.cmake) drops some classes from the build ENTIRELY,
+# but a handful are still referenced (::New / ::SafeDownCast) by COMPILED classes:
+#   vtkCameraNode, vtkLightNode               <- vtkRendererNode.cxx (SceneGraph)
+#   vtkDiscretizableColorTransferFunction     <- vtkWebGLWidget.cxx (WebGLExporter)
+# On the GNU/gold Linux link these slip through (gc-sections/LTO elide the dead
+# paths), but MSVC's linker correctly fails (LNK2001 unresolved external). The
+# referencing classes were found by scanning every kept .cxx for ::New /
+# ::SafeDownCast / ::ExtendedNew of a nocompiled class (SerDesHelper refs ignored:
+# VTK_WRAP_SERIALIZATION is OFF so those .cxx aren't built). Re-add the referenced
+# leaves to the compiled set on the MSVC build ONLY (scoped here, after the
+# include, so the proven Linux/macOS builds are byte-unchanged). They remain in
+# _nowrap_classes.cmake -> C++ compiled but no Python wrapper. Mirrors the
+# precedent in _nocompile_classes.cmake's header (factory-override classes
+# restored once their ::New surfaced).
+#
 # _nocompile_classes.cmake sets FVTK_NOCOMPILE_CLASSES as a CACHE INTERNAL var,
 # and vtkModule.cmake reads the CACHE value — so REMOVE_ITEM on the plain var is
 # not enough; re-FORCE the trimmed list back into the cache.
-list(REMOVE_ITEM FVTK_NOCOMPILE_CLASSES vtkCameraNode vtkLightNode)
+list(REMOVE_ITEM FVTK_NOCOMPILE_CLASSES
+  vtkCameraNode
+  vtkLightNode
+  vtkDiscretizableColorTransferFunction)
 set(FVTK_NOCOMPILE_CLASSES "${FVTK_NOCOMPILE_CLASSES}"
     CACHE INTERNAL "fvtk: classes dropped from the C++ build (pyvista-unused orphans)" FORCE)
