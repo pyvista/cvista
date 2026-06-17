@@ -184,6 +184,30 @@ static inline PyObject* vtkPythonType_LookupMethod(PyTypeObject* tp, PyObject* n
 #endif
 }
 
+//------------------------------------------------------------------------------
+// Copy every (key, value) from a plain dict into a type's attribute namespace.
+// The generator populates constants/enum-members into a temporary dict using the
+// existing emitters (which call PyDict_SetItemString on a PyObject* dict); under
+// the default build that dict IS the type's tp_dict, but a heap type's dict is
+// not directly writable, so under abi3 the generator builds a standalone dict and
+// this routes each entry through SetDictItem. Returns 0 on success, -1 on error.
+static inline int vtkPythonType_MergeIntoTypeDict(PyTypeObject* tp, PyObject* src)
+{
+  int rc = 0;
+  Py_ssize_t pos = 0;
+  PyObject *key, *value;
+  while (PyDict_Next(src, &pos, &key, &value))
+  {
+    const char* name = PyUnicode_AsUTF8AndSize(key, nullptr);
+    if (name == nullptr || vtkPythonType_SetDictItem(tp, name, value) != 0)
+    {
+      rc = -1;
+      break;
+    }
+  }
+  return rc;
+}
+
 #if VTK_ABI3_LIMITED
 //------------------------------------------------------------------------------
 // abi3 heap-type construction helper. Under Py_LIMITED_API the only way to make

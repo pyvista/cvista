@@ -351,6 +351,10 @@ int VTK_PARSE_MAIN(int argc, char* argv[])
   fprintf(fp,
     "#include \"vtkPythonArgs.h\"\n"
     "#include \"vtkPythonOverload.h\"\n"
+    /* abi3: the generated type-add code uses the PyType_FromSpec heap-type
+     * accessors (SetDictItem / MergeIntoTypeDict). Harmless in the default
+     * build (the header is guarded and the accessors are inline no-ops). */
+    "#include \"vtkPythonTypeAccess.h\"\n"
     "#include <cstddef>\n"
     "#include <sstream>\n");
 

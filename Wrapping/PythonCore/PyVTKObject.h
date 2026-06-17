@@ -87,9 +87,19 @@ extern "C"
 
 extern "C"
 {
+#if defined(Py_LIMITED_API)
+  // abi3: the type cannot be a static PyTypeObject, so the generator passes the
+  // PyType_Spec plus the runtime-resolved base; the type is built here with
+  // PyType_FromSpec (a heap type) and its method dict populated via the
+  // SetDictItem accessor. See PyVTKObject.cxx for the contract.
+  VTKWRAPPINGPYTHONCORE_EXPORT
+  PyTypeObject* PyVTKClass_Add(PyType_Spec* spec, PyTypeObject* base, PyMethodDef* methods,
+    const char* classname, vtknewfunc constructor);
+#else
   VTKWRAPPINGPYTHONCORE_EXPORT
   PyTypeObject* PyVTKClass_Add(
     PyTypeObject* pytype, PyMethodDef* methods, const char* classname, vtknewfunc constructor);
+#endif
 
   VTKWRAPPINGPYTHONCORE_EXPORT
   void PyVTKClass_AddCombinedGetSetDefinitions(PyTypeObject* pytype, PyGetSetDef* getsets);

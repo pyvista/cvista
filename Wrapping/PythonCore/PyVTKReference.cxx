@@ -997,7 +997,14 @@ static PyType_Slot PyVTKReference_Slots[] = {
 };
 static PyType_Spec PyVTKReference_Spec = {
   "fvtk.vtkCommonCore.reference", sizeof(PyVTKReference), 0,
-  Py_TPFLAGS_DEFAULT, PyVTKReference_Slots
+  // Py_TPFLAGS_BASETYPE is required so number/string/tuple_reference can subclass
+  // `reference` via PyType_FromSpecWithBases (the limited API enforces the
+  // BASETYPE flag on a base, unlike static types where direct tp_base assignment
+  // bypasses the check). Stock's static `reference` is subclassed the same way in
+  // C without carrying the flag, so the MRO is identical; only the BASETYPE flag
+  // bit appears under abi3 — an intrinsic static->heap artifact in the same class
+  // as HEAPTYPE/IMMUTABLETYPE, tracked by the parity gate.
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, PyVTKReference_Slots
 };
 
 // number_reference — adds the full number protocol; base = reference.

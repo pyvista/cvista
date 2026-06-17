@@ -334,12 +334,127 @@ static void vtkWrapPython_GenerateObjectNew(
       data->Name);
   }
 
+  /* the classname-key argument shared by both build variants */
+  name = vtkWrapPython_GetSuperClass(data, hinfo, &supermodule);
+
+  /* check if any constants need to be added to the class dict */
+  for (i = 0; i < data->NumberOfConstants; i++)
+  {
+    if (data->Constants[i]->Access == VTK_ACCESS_PUBLIC)
+    {
+      has_constants = 1;
+      break;
+    }
+  }
+
+  /* check if any enums need to be added to the class dict */
+  for (i = 0; i < data->NumberOfEnums; i++)
+  {
+    if (data->Enums[i]->Access == VTK_ACCESS_PUBLIC)
+    {
+      has_enums = 1;
+      break;
+    }
+  }
+
   fprintf(fp,
     "PyObject *Py%s_ClassNew()\n"
-    "{\n"
+    "{\n",
+    classname);
+
+  /* ---------- abi3 (Py_LIMITED_API) path ---------- *
+   * The type cannot be a static PyTypeObject; resolve the base first, then build
+   * the heap type from the generated spec via PyVTKClass_Add(spec, base, ...).
+   * Constants/enums are gathered into a standalone dict and merged through the
+   * SetDictItem accessor (a heap type's dict is not directly writable). */
+  fprintf(fp, "#if defined(Py_LIMITED_API)\n");
+
+  /* idempotency: hand back the already-registered type if present */
+  if (strcmp(data->Name, classname) == 0)
+  {
+    fprintf(fp,
+      "  if (PyTypeObject *existing = vtkPythonUtil::FindClassTypeObject(\"%s\"))\n"
+      "  {\n"
+      "    return (PyObject *)existing;\n"
+      "  }\n",
+      classname);
+  }
+  else
+  {
+    fprintf(fp,
+      "  if (PyTypeObject *existing = "
+      "vtkPythonUtil::FindClassTypeObject(typeid(%s).name()))\n"
+      "  {\n"
+      "    return (PyObject *)existing;\n"
+      "  }\n",
+      data->Name);
+  }
+
+  /* resolve the base type (created/looked up first) */
+  fprintf(fp, "  PyTypeObject *base = nullptr;\n");
+  if (name)
+  {
+    vtkWrapText_PythonName(name, superclassname);
+    if (!supermodule) /* superclass is in the same module */
+    {
+      fprintf(fp, "  base = (PyTypeObject *)Py%s_ClassNew();\n", superclassname);
+    }
+    else if (strcmp(name, superclassname) == 0)
+    {
+      fprintf(fp, "  base = vtkPythonUtil::FindBaseTypeObject(\"%s\");\n", superclassname);
+    }
+    else /* templated superclass */
+    {
+      fprintf(fp, "  base = vtkPythonUtil::FindBaseTypeObject(typeid(%s).name());\n", name);
+    }
+  }
+
+  fprintf(fp, "  PyTypeObject *pytype = PyVTKClass_Add(\n    &Py%s_Spec, base, Py%s_Methods,\n",
+    classname, classname);
+  if (strcmp(data->Name, classname) == 0)
+  {
+    fprintf(fp, "    \"%s\",\n", classname);
+  }
+  else
+  {
+    fprintf(fp, "    typeid(%s).name(),\n", data->Name);
+  }
+  fprintf(fp, (class_has_new ? "    &Py%s_StaticNew);\n\n" : "    nullptr);\n\n"), classname);
+
+  if (has_constants || has_enums)
+  {
+    fprintf(fp,
+      "  PyObject *d = PyDict_New();\n"
+      "  PyObject *o;\n"
+      "\n");
+  }
+  if (has_enums)
+  {
+    vtkWrapPython_AddPublicEnumTypes(fp, "  ", "d", "o", data);
+  }
+  if (has_constants)
+  {
+    vtkWrapPython_AddPublicConstants(fp, "  ", "d", "o", data);
+  }
+  if (has_constants || has_enums)
+  {
+    fprintf(fp,
+      "  vtkPythonType_MergeIntoTypeDict(pytype, d);\n"
+      "  Py_DECREF(d);\n"
+      "\n");
+  }
+  fprintf(fp,
+    "  PyVTKClass_AddCombinedGetSetDefinitions(pytype, Py%s_GetSets);\n"
+    "  return (PyObject *)pytype;\n",
+    classname);
+
+  /* ---------- default (static type) path ---------- */
+  fprintf(fp, "#else\n");
+
+  fprintf(fp,
     "  PyTypeObject *pytype = PyVTKClass_Add(\n"
     "    &Py%s_Type, Py%s_Methods,\n",
-    classname, classname, classname);
+    classname, classname);
 
   if (strcmp(data->Name, classname) == 0)
   {
@@ -368,7 +483,6 @@ static void vtkWrapPython_GenerateObjectNew(
     "  }\n\n");
 
   /* find the first superclass that is a VTK class, create it first */
-  name = vtkWrapPython_GetSuperClass(data, hinfo, &supermodule);
   if (name)
   {
     vtkWrapText_PythonName(name, superclassname);
@@ -389,26 +503,6 @@ static void vtkWrapPython_GenerateObjectNew(
         fprintf(fp, "  pytype->tp_base = vtkPythonUtil::FindBaseTypeObject(typeid(%s).name());\n\n",
           name);
       }
-    }
-  }
-
-  /* check if any constants need to be added to the class dict */
-  for (i = 0; i < data->NumberOfConstants; i++)
-  {
-    if (data->Constants[i]->Access == VTK_ACCESS_PUBLIC)
-    {
-      has_constants = 1;
-      break;
-    }
-  }
-
-  /* check if any enums need to be added to the class dict */
-  for (i = 0; i < data->NumberOfEnums; i++)
-  {
-    if (data->Enums[i]->Access == VTK_ACCESS_PUBLIC)
-    {
-      has_enums = 1;
-      break;
     }
   }
 
@@ -435,9 +529,10 @@ static void vtkWrapPython_GenerateObjectNew(
   fprintf(fp,
     "  PyVTKClass_AddCombinedGetSetDefinitions(pytype, Py%s_GetSets);\n"
     "  PyType_Ready(pytype);\n"
-    "  return (PyObject *)pytype;\n"
-    "}\n\n",
+    "  return (PyObject *)pytype;\n",
     classname);
+
+  fprintf(fp, "#endif // Py_LIMITED_API\n}\n\n");
 }
 
 /* -------------------------------------------------------------------- */
