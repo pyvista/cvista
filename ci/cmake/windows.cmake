@@ -52,4 +52,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/../../fvtk-config/minimal.cmake")
 # (scoped here, after the include, so the proven Linux/macOS builds are byte-
 # unchanged). This mirrors the precedent in _nocompile_classes.cmake's header,
 # where factory-override classes were restored once their ::New surfaced.
+# _nocompile_classes.cmake sets FVTK_NOCOMPILE_CLASSES as a CACHE INTERNAL var,
+# and vtkModule.cmake reads the CACHE value — so REMOVE_ITEM on the plain var is
+# not enough; re-FORCE the trimmed list back into the cache.
 list(REMOVE_ITEM FVTK_NOCOMPILE_CLASSES vtkCameraNode vtkLightNode)
+set(FVTK_NOCOMPILE_CLASSES "${FVTK_NOCOMPILE_CLASSES}"
+    CACHE INTERNAL "fvtk: classes dropped from the C++ build (pyvista-unused orphans)" FORCE)
