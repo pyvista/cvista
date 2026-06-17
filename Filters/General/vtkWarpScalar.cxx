@@ -25,6 +25,7 @@
 #include "vtkUnstructuredGrid.h"
 #include "vtkWeakPointer.h"
 
+#include "vtkFVTKSMPDefaults.h"
 #include "vtkNew.h"
 #include "vtkSMPTools.h"
 #include "vtkSmartPointer.h"
@@ -121,6 +122,12 @@ struct ScaleWorker
 
     // We use THRESHOLD to test if the data size is small enough
     // to execute the functor serially.
+    // fvtk: this For writes opts[ptId] = f(ipts[ptId]) into pre-sized output
+    // slots, so it is bit-exact under any thread count -> opt into the fvtk
+    // default-on multithreading (capped at 4, overridable via VTK SMP APIs).
+    fvtk::RunSafeFilterParallel(
+      [&]()
+      {
     vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
       [&](vtkIdType ptId, vtkIdType endPtId)
       {
@@ -169,6 +176,7 @@ struct ScaleWorker
           xo[2] = xi[2] + sf * s * n[2];
         }
       }); // lambda
+      });
   }
 };
 
