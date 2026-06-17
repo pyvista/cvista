@@ -362,6 +362,85 @@ def scene_multi_textured():
     return ren, _new_window(ren)
 
 
+def _translucent_sphere(cx, cy, cz, color, opacity, res=32):
+    """A single semi-transparent sphere actor at a fixed center."""
+    s = vtkSphereSource()
+    s.SetThetaResolution(res)
+    s.SetPhiResolution(res)
+    s.SetRadius(1.0)
+    s.SetCenter(cx, cy, cz)
+    m = vtkPolyDataMapper()
+    m.SetInputConnection(s.GetOutputPort())
+    a = vtkActor()
+    a.SetMapper(m)
+    a.GetProperty().SetColor(*color)
+    a.GetProperty().SetOpacity(opacity)
+    return a
+
+
+def scene_depth_peeling():
+    """Multiple overlapping semi-transparent spheres -> order-independent
+    transparency via depth peeling.
+
+    This is the transparency-pass analogue of the opaque scenes: with
+    ``UseDepthPeeling`` on and several mutually overlapping translucent actors,
+    the renderer drives ``vtkDualDepthPeelingPass`` (the default when the GL
+    driver supports it) / ``vtkDepthPeelingPass`` through several peel layers
+    plus the per-layer FBO/texture ping-pong, occlusion queries and blend
+    compositing. The pixel output depends EXACTLY on the peel-layer count and
+    per-layer blending, so this scene is the bit-exact gate for any CPU-side
+    optimization of those passes.
+
+    Determinism: fixed camera, fixed peel cap + zero occlusion ratio (so the
+    layer count is a pure function of the geometry, not a runtime ratio), no
+    MSAA. The three spheres overlap pairwise along the view direction, so the
+    peeler must resolve several translucent layers per pixel.
+    """
+    ren = _renderer()
+    # Three overlapping translucent spheres of distinct color/opacity. The
+    # offsets are small relative to the unit radius so they interpenetrate,
+    # forcing multiple peel layers along most camera rays.
+    ren.AddActor(_translucent_sphere(-0.5, 0.0, 0.0, (0.90, 0.20, 0.20), 0.45))
+    ren.AddActor(_translucent_sphere(0.5, 0.0, 0.0, (0.20, 0.85, 0.30), 0.45))
+    ren.AddActor(_translucent_sphere(0.0, 0.0, 0.6, (0.25, 0.40, 0.95), 0.45))
+
+    ren.SetUseDepthPeeling(1)
+    ren.SetMaximumNumberOfPeels(8)
+    ren.SetOcclusionRatio(0.0)  # peel until layers exhausted (deterministic)
+
+    _fixed_camera(ren, dist=3.4)
+    return ren, _new_window(ren)
+
+
+def scene_depth_peeling_dense():
+    """A denser translucent stack: a 3x3 grid of overlapping translucent
+    spheres seen edge-on, exercising a higher peel-layer count and more
+    intermediate-peel blend passes than ``scene_depth_peeling``."""
+    ren = _renderer()
+    colors = [
+        (0.90, 0.30, 0.30),
+        (0.30, 0.80, 0.40),
+        (0.35, 0.45, 0.95),
+    ]
+    k = 0
+    for ix in range(3):
+        for iy in range(3):
+            cx = (ix - 1) * 0.7
+            cy = (iy - 1) * 0.7
+            cz = ((ix + iy) % 3 - 1) * 0.5
+            ren.AddActor(
+                _translucent_sphere(cx, cy, cz, colors[k % 3], 0.40, res=24)
+            )
+            k += 1
+
+    ren.SetUseDepthPeeling(1)
+    ren.SetMaximumNumberOfPeels(12)
+    ren.SetOcclusionRatio(0.0)
+
+    _fixed_camera(ren, dist=4.2)
+    return ren, _new_window(ren)
+
+
 SCENES = {
     "sphere_shaded": scene_sphere_shaded,
     "textured": scene_textured,
@@ -371,6 +450,8 @@ SCENES = {
     "points_glyph": scene_points_glyph,
     "tube_lines": scene_tube_lines,
     "edges": scene_edges,
+    "depth_peeling": scene_depth_peeling,
+    "depth_peeling_dense": scene_depth_peeling_dense,
 }
 
 
