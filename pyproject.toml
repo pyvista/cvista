@@ -84,13 +84,37 @@ before-build = "{project}/ci/cibw/before-build.sh"
 # ccache shared across EVERY cp leg: cibuildwheel keeps ONE container alive for
 # the whole linux matrix, so an in-container CCACHE_DIR persists across legs
 # automatically. This is the crux — VTK's C++ is python-independent, so legs 2..N
-# hit the cache and only recompile the per-python wrappers. (/output is a
+# hit the cache and only recompile the per-python wrappers. For that to actually
+# happen the C++ compile commands must be byte-identical across legs, which is why
+# fvtk_backend keys each WHEEL by ONE constant build dir (build-cibw-abi3 shared by
+# cp312/313/314, build-cibw-cp311 for the static leg) rather than a per-SOABI one:
+# the build path is embedded in every TU's -I generated-header flags, so a name
+# that varied within a wheel's legs would change the cache key and miss on the C++.
+# (/output is a
 # cibuildwheel-managed in-container dir that survives the matrix; we use a plain
 # /tmp path the build user owns to avoid host-mount uid/permission friction.)
 CCACHE_DIR = "/ccache"
 CCACHE_MAXSIZE = "30G"
 CMAKE_C_COMPILER_LAUNCHER = "ccache"
 CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
+# Cross-leg cache robustness. The backend now uses ONE constant build tree
+# (fvtk_backend._build_dir), so the C++ object compile commands are byte-identical
+# across legs and ccache hits. These three harden that against the remaining ways a
+# path/time can leak into a TU and bust an otherwise-identical object:
+#   CCACHE_BASEDIR   — rewrite absolute paths under the repo to relative in the
+#                      hash, so a build run from a different checkout dir still hits.
+#   CCACHE_SLOPPINESS=time_macros — VTK bakes __DATE__/__TIME__ into a few banner
+#                      TUs; without this every rebuild misses on them. (locale +
+#                      pch_defines are the standard safe companions.)
+# NOHASHDIR is intentionally NOT set: with a constant build dir the directory is
+# already identical across legs, and NOHASHDIR would weaken debug-path correctness
+# for no extra hit.
+# NOTE: cibuildwheel does NOT expand the {project} token inside environment values
+# (only in before-build/test-command), so this literal "{project}" reaches the
+# build env unexpanded. fvtk_backend._fix_ccache_basedir() resolves it to the real
+# checkout root (REPO) before invoking cmake, so ccache sees a valid absolute path.
+CCACHE_BASEDIR = "{project}"
+CCACHE_SLOPPINESS = "time_macros,locale,pch_defines"
 FVTK_BUILD_JOBS = "16"
 
 # OPTIONAL cross-RUN persistence: mount a host dir at /ccache. NOT enabled by

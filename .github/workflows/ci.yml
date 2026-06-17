@@ -1,14 +1,25 @@
-# Per-PR gate. Three jobs, all on a plain ubuntu host (no job-level `container:`):
+# CI gate — runs on every PR to main AND on every push to main. Five build legs
+# across three OSes, plus the two Linux-only numeric gates:
 #
-#   build    : cibuildwheel builds the TWO-wheel matrix in the manylinux2014
+#   build (linux)   : cibuildwheel builds the TWO-wheel matrix in the manylinux2014
 #              (glibc 2.17) container and runs the in-container offscreen smoke
 #              (pyproject [tool.cibuildwheel] test-command). The backend emits a
 #              STATIC cp311 wheel for the cp311 leg and a single cp312-abi3 wheel
 #              for cp312+ (cibuildwheel's abi3 dedup reuses it for cp313/cp314),
 #              so exactly two wheels land. cibuildwheel handles host-checkout ->
 #              build in the container -> auditwheel repair, so we don't hand-roll
-#              any docker.
-#   bitexact : install the matching wheel on the host (per-python via
+#              any docker. Two parallel legs (cp311 static | cp312-abi3); each
+#              uploads its own fvtk-wheels-linux-<artifact>.
+#   build (macos/windows) : one job per OS (the build-other-os matrix), each running
+#              the FULL cp matrix through cibuildwheel on a native runner. The
+#              backend emits the same two-wheel abi3 split internally per OS. These
+#              legs build the wheels + run the in-cibuildwheel smoke (the per-OS
+#              pyproject test-command — import+compute on macOS, render where
+#              available); per-OS ccache (keyed fvtk-cibw-ccache-<os>) shares the
+#              python-independent C++ across the cp matrix and across runs. Each OS
+#              uploads fvtk-wheels-<os>. macOS/Windows wheels run stock-vtk-free, so
+#              the NUMERIC gates below stay Linux-only.
+#   bitexact : install the matching LINUX wheel on the host (per-python via
 #              setup-python) alongside stock vtk==9.6.2 and assert byte-for-byte
 #              identical output (maxULP=0). No container — only the build needs
 #              old glibc; the wheels run anywhere. Matrixed over Python:
@@ -17,16 +28,20 @@
 #                - 3.12/3.13 install the cp312-abi3 wheel -> ABI3-AWARE parity
 #                  (BITEXACT_ABI3=1): only type __flags__ HEAPTYPE/IMMUTABLETYPE
 #                  diverges; numpy zero-copy preserved.
+#              stock vtk==9.6.2 only ships Linux wheels, so this gate is Linux-only.
 #   renderexact : same idea but for the RENDERING pipeline (tests/renderexact).
 #              Renders the scenes offscreen via vtkEGLRenderWindow under stock vtk
 #              and fvtk through the SAME host Mesa software GL (llvmpipe) and asserts
 #              pixel-for-pixel identical RGBA + Z framebuffers. A sibling of bitexact
-#              (reuses the build artifact) so its apt Mesa install / EGL flakes can
-#              never perturb the numeric gate. Run on 3.11 (static) and 3.13 (abi3)
-#              to cover both wheels; render output is wheel-format-independent.
+#              (reuses the Linux build artifact) so its apt Mesa install / EGL flakes
+#              can never perturb the numeric gate. Run on 3.11 (static) and 3.13
+#              (abi3) to cover both wheels; render output is wheel-format-independent.
+#              Linux-only for the same stock-vtk reason.
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -45,8 +60,10 @@ jobs:
       #   * cp311 static  — FVTK_ABI3 forced OFF, per-version cp311-cp311 wheel.
       #   * cp312-abi3    — ONE Py_LIMITED_API 0x030c0000 wheel; cibuildwheel's
       #     abi3 dedup means cp313/cp314 reuse + TEST it (no rebuild).
-      # Each leg uploads its own artifact; the test jobs merge both via the
-      # fvtk-wheels-* pattern and pip --find-links picks the tag-compatible wheel.
+      # Each leg uploads its own fvtk-wheels-linux-* artifact; the numeric gates
+      # merge both via that pattern and pip --find-links picks the tag-compatible
+      # wheel. (The macOS/Windows legs upload fvtk-wheels-<os>, a DISJOINT prefix,
+      # so they never land in the Linux numeric-gate download.)
       matrix:
         include:
           - leg: "cp311 static"
@@ -59,18 +76,74 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # VTK derives its version from full history
+      # No host ccache mount here: on Linux cibuildwheel keeps ONE container alive
+      # for the whole cp matrix, so the in-container /ccache (pyproject linux env)
+      # already shares the python-independent C++ across BOTH legs WITHIN the run.
+      # Combined with this PR's constant build dir + CCACHE_BASEDIR fix, that is
+      # where the cross-leg-ccache win lands. (Cross-RUN persistence is the
+      # commented optional /ccache host-mount in pyproject; not enabled by default.)
       - name: Build wheels + offscreen smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
-          # PR builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
-          # fvtk-config/minimal.cmake). cibuildwheel forwards CIBW_ENVIRONMENT
-          # into each per-leg build env. Releases (wheels-cibuildwheel.yml) leave
-          # FVTK_LTO unset -> default ON, so shipped wheels stay LTO-optimized.
+          # PR/push builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
+          # fvtk-config/minimal.cmake). -O3 stays ON: Release is the default build
+          # type and no FVTK_O1 knob exists — every leg compiles at -O3, the
+          # bit-exact contract is proven at -O3 by the bitexact job below. The
+          # release matrix (wheels-cibuildwheel.yml) leaves FVTK_LTO unset -> LTO on.
           CIBW_ENVIRONMENT: FVTK_LTO=0
       - uses: actions/upload-artifact@v4
         with:
-          name: fvtk-wheels-${{ matrix.artifact }}
+          name: fvtk-wheels-linux-${{ matrix.artifact }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-other-os:
+    name: build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # One job per non-Linux OS. Each runs the full cp matrix through
+      # cibuildwheel; the backend emits the same two-wheel abi3 split internally
+      # (a static cp311 wheel + one cp312-abi3 wheel) per OS. All config (archs,
+      # init-cache, repair tool, per-OS test-command smoke) lives in
+      # pyproject.toml [tool.cibuildwheel.macos|windows]. These legs prove the
+      # wheels BUILD + import on their native platform; the numeric/pixel gates
+      # stay Linux-only (stock vtk==9.6.2 is Linux-only).
+      matrix:
+        os: [macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Per-OS cross-run ccache (Linux/macOS). The cross-leg-ccache + constant
+      # build dir from this PR make the python-independent C++ a cache hit across
+      # the whole cp matrix within a run; this persists it across runs too.
+      - name: Restore ccache (cross-run)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/fvtk-cibw-ccache
+          key: fvtk-cibw-ccache-${{ matrix.os }}-${{ github.sha }}
+          restore-keys: fvtk-cibw-ccache-${{ matrix.os }}-
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for the whole job. The Ninja
+      # generator does NOT auto-run vcvars, so without this cmake auto-selects the
+      # mingw GCC that ships on the windows runner (C:\mingw64\bin\cc.exe) — or
+      # finds no cl at all — and fails ("CMAKE_C_COMPILER: cl is not a full path").
+      # ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so cl must be on PATH.
+      - name: Set up MSVC (vcvars) for the Ninja build
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build wheels + smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        # No env here: per-OS config (archs, FVTK_CMAKE_INIT, ccache launcher,
+        # test-command) is all in pyproject [tool.cibuildwheel.<os>]. The shipped
+        # macOS/Windows wheels stay fully optimized (no FVTK_LTO=0 override).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
@@ -99,9 +172,11 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: actions/download-artifact@v4
         with:
-          # both build legs upload fvtk-wheels-*; merge into one dir so
-          # pip --find-links can pick the tag-compatible wheel for this python.
-          pattern: fvtk-wheels-*
+          # ONLY the Linux build legs (fvtk-wheels-linux-*); merge into one dir so
+          # pip --find-links can pick the tag-compatible wheel for this python. The
+          # macOS/Windows artifacts (fvtk-wheels-macos-14 / -windows-latest) are a
+          # DISJOINT prefix, so they never reach this Linux gate.
+          pattern: fvtk-wheels-linux-*
           merge-multiple: true
           path: dist
       - name: Bit-exact suite (fvtk vs stock VTK 9.6.2)
@@ -147,7 +222,7 @@ jobs:
             libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
       - uses: actions/download-artifact@v4
         with:
-          pattern: fvtk-wheels-*
+          pattern: fvtk-wheels-linux-*
           merge-multiple: true
           path: dist
       - name: Pixel-exact render suite (fvtk vs stock VTK 9.6.2, software EGL)
