@@ -163,10 +163,16 @@ to this worktree; nothing here pushes, opens PRs, or triggers CI.
   *byte-for-byte VTK 9.6.2 parity*, that risk is the dominant concern, not the
   C-API mechanics.
 
-**Recommendation: do NOT pursue full abi3 now.** Pursue path (c)/(b) — keep the
-per-version wrappers, and treat abi3 as a longer-horizon project gated on a
-parity-risk decision. See "Recommended roadmap". The `FVTK_ABI3` lever added
-here exists to keep the porting worklist measurable.
+**Original recommendation (superseded by the ladder above):** "do NOT pursue
+full abi3 now." That still holds for the *final product flip* (an abi3 wheel
+can't be byte-for-byte on `type(x).__flags__` — see the **parity wall** in
+Increment 2's status entry, now pinned with executor evidence). What changed is
+the *approach*: rather than defer wholesale, the work is being landed as the
+bit-exact, independently-valuable **increment ladder** at the top of this doc
+(0: CI trim; 1: accessor shim + parity gate; 2: finish B2 hygiene + locate the
+wall). Each is a net win on its own; the heap-type port that crosses the wall
+is the only piece held, gated on the `__flags__`-divergence product decision.
+The `FVTK_ABI3` lever keeps the remaining worklist measurable.
 
 ---
 
