@@ -67,7 +67,13 @@ jobs:
           # fvtk-config/minimal.cmake). cibuildwheel forwards CIBW_ENVIRONMENT
           # into each per-leg build env. Releases (wheels-cibuildwheel.yml) leave
           # FVTK_LTO unset -> default ON, so shipped wheels stay LTO-optimized.
-          CIBW_ENVIRONMENT: FVTK_LTO=0
+          # FVTK_SOURCE_UNITY=1 turns on per-module source UNITY_BUILD (amortizes
+          # the shared header parse; byte-identical objects). It is GCC<12-gated in
+          # CMake/vtkModule.cmake, so it is INERT on the current manylinux2014
+          # (GCC 10.2.1) container and active once that image is bumped to
+          # manylinux_2_28 (GCC 12+), which also re-activates the GCC<12-gated
+          # wrapper-unity lever. Harmless to leave set now; bit-exact regardless.
+          CIBW_ENVIRONMENT: FVTK_LTO=0 FVTK_SOURCE_UNITY=1
       - uses: actions/upload-artifact@v4
         with:
           name: fvtk-wheels-${{ matrix.artifact }}

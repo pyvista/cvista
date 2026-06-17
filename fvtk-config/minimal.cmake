@@ -26,6 +26,21 @@ include("${CMAKE_CURRENT_LIST_DIR}/_nocompile_classes.cmake")
 set(FVTK_WRAP_UNITY ON CACHE BOOL "fvtk: batch Python wrappers into unity TUs")
 set(FVTK_WRAP_UNITY_CHUNK 32 CACHE STRING "fvtk: wrappers per unity TU")
 
+# --- source-unity: batch each module's *source* .cxx into CMake UNITY_BUILD TUs -
+# The 2,511 module source TUs each re-parse the same heavy VTK/STL header stack;
+# UNITY_BUILD concatenates several into one TU to amortize that parse (the dominant
+# cold-compile cost). Object code is byte-identical -> bit-exact-safe. The hook
+# (CMake/vtkModule.cmake, after target_sources) is gated by the env knob
+# FVTK_SOURCE_UNITY (default ON here; FVTK_SOURCE_UNITY=0 disables). It excludes
+# vtkCommonCore (owned by the array-instantiation TU split, PR #27) plus any
+# module listed in FVTK_SOURCE_UNITY_EXCLUDE that does not batch clean. The env
+# knob is read at hook time; we default it ON for the production build by exporting
+# it from build-fvtk.sh, but ALSO record the intended default + the exclude list
+# here so a direct `-C minimal.cmake` configure that sets FVTK_SOURCE_UNITY=1 in
+# its env behaves identically.
+include("${CMAKE_CURRENT_LIST_DIR}/_source_unity_exclude.cmake")
+set(FVTK_SOURCE_UNITY_BATCH 8 CACHE STRING "fvtk: module source .cxx per unity TU")
+
 # --- Lever: Python stable-ABI (abi3 / Py_LIMITED_API) — DEFAULT ON ------------
 # When ON (the default), the Python wrapper TUs (generated *Python.cxx +
 # WrappingPythonCore) are compiled with Py_LIMITED_API set to FVTK_ABI3_VERSION

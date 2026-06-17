@@ -4359,6 +4359,113 @@ function (vtk_module_add_module name)
     target_sources("${_vtk_add_module_real_target}"
       PRIVATE
         ${_vtk_add_module_SOURCES})
+
+    # === fvtk BUILD-TIME lever: per-module source UNITY_BUILD ==================
+    # The module SOURCE .cxx (2,511 across the closure) each re-parse the same
+    # heavy VTK header stack (vtkSetGet.h / vtkObjectFactory.h / vtkDataObject.h
+    # / the dataset headers + STL). That repeated front-end parse is the dominant
+    # cold-compile cost per TU; CMake's UNITY_BUILD concatenates several .cxx into
+    # one TU so the shared parse is amortized once per batch. Object code is
+    # byte-IDENTICAL (same source, just compiled together) -> bit-exact-safe; the
+    # only risk is COMPILE breakage (anon-namespace / static / macro collisions
+    # between batched TUs), handled by a per-module deny-list below + CMake's own
+    # SKIP_UNITY_BUILD_INCLUSION on individual files.
+    #
+    # Gated by env FVTK_SOURCE_UNITY (matches the FVTK_* env-knob idiom; read as
+    # ENV so it works from the -C init-cache pass). Default OFF unless the env is
+    # explicitly "1"/"ON". Batch size via FVTK_SOURCE_UNITY_BATCH (default 8 — big
+    # enough to amortize the parse, small enough to keep the work splittable across
+    # -j cores and to bound any single-TU memory blowup).
+    #
+    # EXCLUSIONS:
+    #  * CommonCore — owned by the array-instantiation TU SPLIT (PR #27,
+    #    FVTK_SPLIT_BULK_INSTANTIATE): it deliberately fans the per-type array
+    #    instantiations OUT into many small parallel TUs; unity-batching them back
+    #    together would UNDO that split. Leave CommonCore entirely to the split.
+    #  * Any module named in FVTK_SOURCE_UNITY_EXCLUDE (fvtk-config) that does not
+    #    compile clean under batching.
+    set(_fvtk_su_enable OFF)
+    if (NOT _vtk_add_module_HEADER_ONLY AND
+        ("$ENV{FVTK_SOURCE_UNITY}" STREQUAL "1" OR "$ENV{FVTK_SOURCE_UNITY}" STREQUAL "ON"))
+      set(_fvtk_su_enable ON)
+      # GCC<12 GUARD (same posture as the wrapper-unity lever): the empirical
+      # source-unity skip-list in fvtk-config/_source_unity_exclude.cmake was
+      # derived on GCC 14. Older GCC (notably devtoolset-10 GCC 10.2.1 in the
+      # manylinux2014 wheel container) can surface ADDITIONAL batch breakers
+      # (different eager-instantiation / macro-context behavior), which would turn
+      # a CI build RED on a compiler we have not validated the skip-list against.
+      # So disable source-unity on GCC<12 — the lever then only activates on the
+      # modern-GCC builds whose breaker set it was tuned for (local dev/release on
+      # GCC>=12, and CI once the manylinux image is bumped to manylinux_2_28 =
+      # GCC 12+, which also re-activates the GCC<12-gated wrapper-unity lever).
+      if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+          CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12")
+        set(_fvtk_su_enable OFF)
+      endif ()
+    endif ()
+    if (_fvtk_su_enable)
+      set(_fvtk_su_batch "$ENV{FVTK_SOURCE_UNITY_BATCH}")
+      if (NOT _fvtk_su_batch OR _fvtk_su_batch LESS 2)
+        set(_fvtk_su_batch 8)
+      endif ()
+      set(_fvtk_su_skip OFF)
+      # ThirdParty vendored libs (zlib/kissfft/verdict/...) are C/C++ with
+      # per-file static structs, file-local macros and anonymous types that are
+      # classic unity-batch breakers; they are also NOT the fvtk compile-time
+      # lever (vendored, rarely rebuilt, often ccache-cold-once) — never batch.
+      if (_vtk_add_module_third_party)
+        set(_fvtk_su_skip ON)
+      endif ()
+      if (_vtk_add_module_library_name STREQUAL "vtkCommonCore")
+        set(_fvtk_su_skip ON)
+      endif ()
+      # WrappingPythonCore is the hand-written Python<->C++ runtime (PyVTKObject /
+      # vtkPythonUtil / PyVTKSpecialObject ...). Under abi3 it is delicate
+      # Py_LIMITED_API + static PyType_FromSpec machinery whose per-file static
+      # init + macro context must not be reordered/merged; batching it crashes the
+      # module-init path (vtkPythonUtil::AddModule -> PyObject_CallObject SIGSEGV).
+      # Never unity-batch the wrapper runtime.
+      if (_vtk_add_module_library_name STREQUAL "vtkWrappingPythonCore")
+        set(_fvtk_su_skip ON)
+      endif ()
+      if (DEFINED FVTK_SOURCE_UNITY_EXCLUDE AND
+          _vtk_add_module_library_name IN_LIST FVTK_SOURCE_UNITY_EXCLUDE)
+        set(_fvtk_su_skip ON)
+      endif ()
+      if (NOT _fvtk_su_skip)
+        set_target_properties("${_vtk_add_module_real_target}" PROPERTIES
+          UNITY_BUILD            ON
+          UNITY_BUILD_MODE       BATCH
+          UNITY_BUILD_BATCH_SIZE "${_fvtk_su_batch}")
+        # Per-FILE exclusions: keep the module batched but pull the few unity-
+        # incompatible .cxx out into their own standalone TUs (they still compile,
+        # just don't share a batch). Two classes:
+        #  (1) Generated per-type template-instantiation TUs (*Instantiate*.cxx):
+        #      each `#define`s ValueType/ArrayType to its type and instantiates, so
+        #      concatenating them leaks the macro into the next file's
+        #      vtkGenericDataArray.h ("expected ',' before numeric constant") and
+        #      redefines the .txx members. Same hazard the CommonCore array split
+        #      (PR #27) addresses; mirror it for the other modules' instantiation TUs.
+        #  (2) Hand-written breakers in FVTK_SOURCE_UNITY_SKIP_FILES (fvtk-config):
+        #      file-local anonymous-namespace globals / static consts / typedefs
+        #      that collide by name across batched cell/reader/mapper TUs
+        #      (vtkTriangle's `edges`, vtkWedge's `faces`, VTK_DIVERGED, ...).
+        foreach (_fvtk_su_src IN LISTS _vtk_add_module_SOURCES)
+          get_filename_component(_fvtk_su_base "${_fvtk_su_src}" NAME)
+          if (_fvtk_su_base MATCHES "Instantiate" OR
+              (DEFINED FVTK_SOURCE_UNITY_SKIP_FILES AND
+               _fvtk_su_base IN_LIST FVTK_SOURCE_UNITY_SKIP_FILES))
+            set_source_files_properties("${_fvtk_su_src}" PROPERTIES
+              SKIP_UNITY_BUILD_INCLUSION ON)
+          endif ()
+        endforeach ()
+        unset(_fvtk_su_src)
+        unset(_fvtk_su_base)
+      endif ()
+      unset(_fvtk_su_batch)
+      unset(_fvtk_su_skip)
+    endif ()
+    unset(_fvtk_su_enable)
     _vtk_module_add_file_set("${_vtk_add_module_real_target}"
       NAME  vtk_module_private_templates
       FILES ${_vtk_add_module_PRIVATE_TEMPLATES})
