@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# ci/build-wheels-linux.sh — build fvtk manylinux_2_17_x86_64 wheel(s) LOCALLY
-# via a raw `docker run` inside quay.io/pypa/manylinux2014_x86_64.
+# ci/build-wheels-linux.sh — build fvtk manylinux_2_28_x86_64 wheel(s) LOCALLY
+# via a raw `docker run` inside quay.io/pypa/manylinux_2_28_x86_64.
 #
-# This is the NIX-FREE local mirror of .github/workflows/wheels-manylinux217.yml:
-# the proven release recipe (glibc 2.17, devtoolset-10 GCC 10.2.1 + gold, el7 yum
-# mesa, configure with ci/cmake/linux.cmake, cmake --build, generated build-tree
-# `setup.py bdist_wheel`, then `auditwheel repair --plat manylinux_2_17_x86_64`).
+# This is the NIX-FREE local mirror of the cibuildwheel release recipe:
+# glibc 2.28, AlmaLinux 8.10, system GCC 14.2.1 + gold (the GCC>=12 toolchain
+# activates the unity + array-split build-time levers), AlmaLinux 8 dnf mesa,
+# configure with ci/cmake/linux.cmake, cmake --build, generated build-tree
+# `setup.py bdist_wheel`, then `auditwheel repair --plat manylinux_2_28_x86_64`.
 #
 # Unlike the local nix build (build-fvtk.sh), the container wheel is fully
 # auditwheel-self-contained: no nix runtime libs, no LD_LIBRARY_PATH dance.
@@ -17,7 +18,9 @@
 #   ci/build-wheels-linux.sh 39 310 311 312 313   # full release matrix
 #
 # Env knobs:
-#   IMAGE      manylinux image (default quay.io/pypa/manylinux2014_x86_64)
+#   IMAGE      manylinux image (default quay.io/pypa/manylinux_2_28_x86_64)
+#   FVTK_SOURCE_UNITY  1 (default) per-module source UNITY_BUILD (needs GCC>=12;
+#                      active on the 2_28/GCC-14 image)
 #   BUILD_JOBS parallel compile jobs (default: nproc)
 #   CCACHE_DIR host ccache dir, mounted into the container so the python-
 #              INDEPENDENT C++ kits are shared across the cp matrix AND across
@@ -31,24 +34,26 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${IMAGE:-quay.io/pypa/manylinux2014_x86_64}"
+IMAGE="${IMAGE:-quay.io/pypa/manylinux_2_28_x86_64}"
 BUILD_JOBS="${BUILD_JOBS:-$(nproc)}"
 CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/fvtk-ccache-manylinux}"
 OUTDIR="${OUTDIR:-$REPO/wheelhouse}"
 FVTK_LTO="${FVTK_LTO:-1}"
+FVTK_SOURCE_UNITY="${FVTK_SOURCE_UNITY:-1}"
 
 PYVERS=("$@")
 [ "${#PYVERS[@]}" -gt 0 ] || PYVERS=("313")
 
 mkdir -p "$CCACHE_DIR" "$OUTDIR"
 
-echo "=== fvtk manylinux2014 local docker build ==="
-echo "  image     : $IMAGE"
-echo "  pythons   : ${PYVERS[*]}"
-echo "  jobs      : $BUILD_JOBS"
-echo "  ccache    : $CCACHE_DIR (mounted -> /ccache)"
-echo "  outdir    : $OUTDIR"
-echo "  FVTK_LTO  : $FVTK_LTO"
+echo "=== fvtk manylinux_2_28 local docker build ==="
+echo "  image            : $IMAGE"
+echo "  pythons          : ${PYVERS[*]}"
+echo "  jobs             : $BUILD_JOBS"
+echo "  ccache           : $CCACHE_DIR (mounted -> /ccache)"
+echo "  outdir           : $OUTDIR"
+echo "  FVTK_LTO         : $FVTK_LTO"
+echo "  FVTK_SOURCE_UNITY: $FVTK_SOURCE_UNITY"
 echo
 
 # The whole recipe runs as a single bash script inside the container. The repo is
@@ -61,12 +66,13 @@ docker run --rm \
   -e PYVERS="${PYVERS[*]}" \
   -e BUILD_JOBS="$BUILD_JOBS" \
   -e FVTK_LTO="$FVTK_LTO" \
+  -e FVTK_SOURCE_UNITY="$FVTK_SOURCE_UNITY" \
   "$IMAGE" \
   bash -euxo pipefail -c '
-    # ---- toolchain + el7 rendering deps (system mesa = GL backend) ----------
-    # devtoolset-10 (GCC 10.2.1) + gold 2.35 + LTO plugin are already on PATH in
-    # the manylinux2014 image. ccache from EPEL.
-    yum install -y \
+    # ---- toolchain + AlmaLinux 8 rendering deps (system mesa = GL backend) ---
+    # System GCC 14.2.1 + gold + LTO plugin are already on PATH in the
+    # manylinux_2_28 image. All package names match the el7 set (dnf, no EPEL).
+    dnf install -y \
       mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
       mesa-libGLU-devel libglvnd-devel \
       libX11-devel libXcursor-devel libXt-devel libXext-devel \
@@ -105,14 +111,16 @@ docker run --rm \
       # are python-version-specific). But the ccache shares the python-independent
       # C++ kit objects across legs, so only the first leg pays the full C++ cost.
       rm -rf "$BUILD"
-      FVTK_LTO="$FVTK_LTO" cmake -S /work -B "$BUILD" -G Ninja \
+      FVTK_LTO="$FVTK_LTO" FVTK_SOURCE_UNITY="$FVTK_SOURCE_UNITY" \
+        cmake -S /work -B "$BUILD" -G Ninja \
         -C ci/cmake/linux.cmake \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DPython3_EXECUTABLE="$PYBIN/python" \
         -DPython3_FIND_STRATEGY=LOCATION
 
-      FVTK_LTO="$FVTK_LTO" cmake --build "$BUILD" --parallel "$BUILD_JOBS"
+      FVTK_LTO="$FVTK_LTO" FVTK_SOURCE_UNITY="$FVTK_SOURCE_UNITY" \
+        cmake --build "$BUILD" --parallel "$BUILD_JOBS"
       ccache --show-stats | grep -Ei "hit|miss|cache size" || true
 
       # Wheel: prune dead UI subpackages, bdist_wheel from the build tree, repair.
@@ -120,9 +128,9 @@ docker run --rm \
       ( cd "$BUILD" && python setup.py bdist_wheel )
       ls -la "$BUILD"/dist/*.whl
       auditwheel show "$BUILD"/dist/*.whl
-      auditwheel repair --plat manylinux_2_17_x86_64 -w /out "$BUILD"/dist/*.whl
-      if ! ls /out/*cp${V}*manylinux_2_17_x86_64*.whl >/dev/null 2>&1; then
-        echo "ERROR: cp${V} repaired wheel is not tagged manylinux_2_17_x86_64" >&2
+      auditwheel repair --plat manylinux_2_28_x86_64 -w /out "$BUILD"/dist/*.whl
+      if ! ls /out/*cp${V}*manylinux_2_28_x86_64*.whl >/dev/null 2>&1; then
+        echo "ERROR: cp${V} repaired wheel is not tagged manylinux_2_28_x86_64" >&2
         exit 1
       fi
       [ -n "$FIRST_PY" ] || FIRST_PY="$V"
