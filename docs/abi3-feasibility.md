@@ -167,9 +167,13 @@ been pinned with compiler evidence on the cp313 limited-API build:
   taking `PyObject*`, so each call needs an explicit `(PyObject*)` cast. Pervasive
   (dozens of sites across every runtime TU) but purely mechanical and bit-exact
   (no-op cast in the default build). ~30 sites.
-- **Private/unstable APIs with no limited-API equivalent:** `_PyType_Lookup`
-  (PyVTKReference `__trunc__`/`__round__` lookup — replaceable by an attr lookup
-  with subtly different semantics), `Py_HashPointer` (vtkPythonUtil VariantHash).
+- **Private/unstable APIs:** `_PyType_Lookup` — RESOLVED via a new
+  `vtkPythonType_LookupMethod` accessor (default build keeps the exact
+  `_PyType_Lookup` borrow; abi3 falls back to a getattr on the type with the
+  new-ref decref handled at the two call sites). With it, **`PyVTKReference.cxx`
+  now compiles fully under abi3** (all four reference heap types + their
+  number/sequence/mapping/buffer protocols). Still open: `Py_HashPointer`
+  (vtkPythonUtil VariantHash — has a stable replacement, not yet applied).
 - **CPython-internal struct layout dependencies:** `vtkPythonUtil::
   FindGetSetDescriptor` reads `PyGetSetDescrObject`/`PyDescrObject` fields and
   `PyLong_Type` directly; these structs are opaque under the limited API. This one

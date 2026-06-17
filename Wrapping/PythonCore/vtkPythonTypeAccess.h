@@ -161,6 +161,29 @@ static inline destructor vtkPythonType_GetDealloc(PyTypeObject* tp)
 #endif
 }
 
+//------------------------------------------------------------------------------
+// Look up `name` in a type's MRO without triggering descriptor binding, the way
+// the private _PyType_Lookup does (borrowed ref / NULL, no exception set on
+// miss). Used for fetching numeric dunder slots (__trunc__/__round__) off a
+// built-in type. Default build keeps the exact _PyType_Lookup call; abi3 (no
+// private API) falls back to a getattr on the type object — for the built-in
+// numeric types these dunders resolve to the same callable taking the instance.
+// NOTE the abi3 branch returns a NEW reference and may set an exception on miss;
+// the two call sites clear it / decref appropriately under abi3.
+static inline PyObject* vtkPythonType_LookupMethod(PyTypeObject* tp, PyObject* name)
+{
+#if VTK_ABI3_LIMITED
+  PyObject* m = PyObject_GetAttr(reinterpret_cast<PyObject*>(tp), name);
+  if (!m)
+  {
+    PyErr_Clear();
+  }
+  return m;
+#else
+  return _PyType_Lookup(tp, name);
+#endif
+}
+
 #if VTK_ABI3_LIMITED
 //------------------------------------------------------------------------------
 // abi3 heap-type construction helper. Under Py_LIMITED_API the only way to make

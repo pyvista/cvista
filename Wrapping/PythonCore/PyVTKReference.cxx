@@ -224,14 +224,21 @@ static PyObject* PyVTKReference_Trunc(PyObject* self, PyObject* args)
   {
     PyObject* attr = PyUnicode_InternFromString("__trunc__");
     PyObject* ob = PyVTKReference_GetValue(self);
-    PyObject* meth = _PyType_Lookup(Py_TYPE(ob), attr);
+    PyObject* meth = vtkPythonType_LookupMethod(Py_TYPE(ob), attr);
     if (meth == nullptr)
     {
       PyErr_Format(PyExc_TypeError, "type %.100s doesn't define __trunc__ method",
         vtkPythonUtil::GetTypeNameForObject(ob));
       return nullptr;
     }
+#if defined(Py_LIMITED_API)
+    // abi3 LookupMethod returns a new ref (vs _PyType_Lookup's borrow); release it.
+    PyObject* res = PyObject_CallFunction(meth, "O", ob);
+    Py_DECREF(meth);
+    return res;
+#else
     return PyObject_CallFunction(meth, "O", ob);
+#endif
   }
 
   return nullptr;
@@ -245,18 +252,26 @@ static PyObject* PyVTKReference_Round(PyObject* self, PyObject* args)
   {
     PyObject* attr = PyUnicode_InternFromString("__round__");
     PyObject* ob = PyVTKReference_GetValue(self);
-    PyObject* meth = _PyType_Lookup(Py_TYPE(ob), attr);
+    PyObject* meth = vtkPythonType_LookupMethod(Py_TYPE(ob), attr);
     if (meth == nullptr)
     {
       PyErr_Format(PyExc_TypeError, "type %.100s doesn't define __round__ method",
         vtkPythonUtil::GetTypeNameForObject(ob));
       return nullptr;
     }
+#if defined(Py_LIMITED_API)
+    // abi3 LookupMethod returns a new ref (vs _PyType_Lookup's borrow); release it.
+    PyObject* res = (opn ? PyObject_CallFunction(meth, "OO", ob, opn)
+                         : PyObject_CallFunction(meth, "O", ob));
+    Py_DECREF(meth);
+    return res;
+#else
     if (opn)
     {
       return PyObject_CallFunction(meth, "OO", ob, opn);
     }
     return PyObject_CallFunction(meth, "O", ob);
+#endif
   }
 
   return nullptr;
