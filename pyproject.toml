@@ -24,32 +24,36 @@ name = "fvtk"
 # is overwritten by the wheel the backend actually produces.
 version = "9.6.2"
 description = "fvtk — trimmed PyVista-parity hard-fork of VTK 9.6.2 (vtkmodules renamed to top-level fvtk)"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 # ===========================================================================
-# cibuildwheel — Linux manylinux_2_17 (glibc 2.17), the same platform tag as the
-# stock vtk==9.6.2 wheels. One C++ build is shared across the cp matrix via ccache.
+# cibuildwheel — Linux manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1). The
+# 2_28 image is the single biggest cold-CI lever: its GCC>=12 toolchain ACTIVATES
+# the GCC<12-gated unity levers (FVTK_SOURCE_UNITY + FVTK_WRAP_UNITY) and the
+# array-TU split, which are inert on the old manylinux2014/GCC-10.2.1 image. One
+# C++ build is shared across the cp matrix via ccache. NOTE: 2_28 raises the glibc
+# floor from 2.17 to 2.28 — wheels no longer install on glibc<2.28 (CentOS7/RHEL7,
+# Ubuntu<18.10, Debian<10); stock vtk==9.6.2 still ships manylinux_2_17. This is
+# the deliberate tradeoff for the ~modern-GCC build speedup.
 # ===========================================================================
 [tool.cibuildwheel]
 build-frontend = "pip"
-# TWO-WHEEL matrix. The backend (ci/cibw/fvtk_backend.py) decides per leg from the
-# build python's version:
-#   * cp311  -> STATIC per-version wheel (FVTK_ABI3 forced OFF; cp311-cp311 tag).
-#   * cp312+ -> ONE abi3 wheel tagged cp312-abi3 (Py_LIMITED_API 0x030c0000),
-#               installs+imports on CPython 3.12+ incl. future minors.
-# 3.11 cannot be a stable-ABI floor (PyMemberDef + the Py_T_*/Py_READONLY member
-# constants the heap-type wrappers emit only entered the stable ABI in 3.12,
-# gh-93274), so it ships as a normal static wheel instead of being dropped.
-# We list all four cp legs; cibuildwheel's abi3 dedup means cp313/cp314 do NOT
-# rebuild — they reuse and TEST the cp312-abi3 wheel — so the matrix yields
-# exactly TWO builds (cp311 static + cp312 abi3) and two wheels. Set FVTK_ABI3=0
-# to force the legacy per-version static wheel on every leg.
-build = "cp311-* cp312-* cp313-* cp314-*"
+# SINGLE-WHEEL matrix (Python 3.11 dropped, maintainer directive). The backend
+# (ci/cibw/fvtk_backend.py) builds ONE abi3 wheel tagged cp312-abi3
+# (Py_LIMITED_API 0x030c0000) that installs + imports on CPython 3.12+ including
+# future minors. 3.12 is the abi3 floor: PyMemberDef + the Py_T_*/Py_READONLY
+# member constants the heap-type wrappers emit only entered the stable ABI in 3.12
+# (gh-93274), so 3.12 is the lowest possible stable-ABI target — and now the
+# minimum supported Python. We list cp312-* cp313-* cp314-*; cibuildwheel's abi3
+# dedup means cp313/cp314 do NOT rebuild — they reuse and TEST the cp312-abi3
+# wheel — so the matrix yields exactly ONE build and ONE wheel. Set FVTK_ABI3=0
+# to force a legacy per-version static wheel (escape hatch, reversible).
+build = "cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "FVTK_IMPORT_NAME=fvtk xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
-# auditwheel repair runs by default; stamp the 2_17 tag explicitly to match the
-# raw-docker recipe (manylinux2014 == manylinux_2_17_x86_64).
-repair-wheel-command = "auditwheel repair --plat manylinux_2_17_x86_64 -w {dest_dir} {wheel}"
+# auditwheel repair runs by default; stamp the 2_28 tag explicitly to match the
+# manylinux_2_28 build image (AlmaLinux 8 / glibc 2.28).
+repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel}"
 # NOTE on abi3audit: cibuildwheel >=4.0 auto-runs `abi3audit --strict` on
 # abi3-tagged wheels and FAILS the build on any non-abi3 symbol. fvtk's cp312-abi3
 # modules export the wrapper runtime's OWN cross-module symbols (PyVTKObject_New,
@@ -64,13 +68,18 @@ repair-wheel-command = "auditwheel repair --plat manylinux_2_17_x86_64 -w {dest_
 # keys, so it must NOT be added here until the cibuildwheel pin is >=4.0).
 
 [tool.cibuildwheel.linux]
-# manylinux2014 == glibc 2.17 == devtoolset-10 GCC 10.2.1 + gold 2.35 on PATH.
-manylinux-x86_64-image = "quay.io/pypa/manylinux2014_x86_64"
+# manylinux_2_28 == glibc 2.28 == AlmaLinux 8.10, system GCC 14.2.1 + gold on PATH.
+# GCC 14 (>=12) activates the unity + array-split build-time levers (inert on the
+# old manylinux2014/GCC-10.2.1 image).
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
 archs = ["x86_64"]
 # CIBW_BEFORE_ALL runs ONCE in the build container before the cp matrix: install
-# the el7 rendering stack (system mesa = GL backend) + ccache + ninja + xvfb.
+# the rendering stack (system mesa = GL backend) + ccache + ninja + xvfb. The
+# AlmaLinux 8 package names are identical to the el7 set (verified: all 13 install
+# from the stock 2_28 repos, no EPEL/CRB enable needed); only the package manager
+# is dnf (yum is a dnf alias on AlmaLinux 8, but call dnf explicitly).
 before-all = [
-  "yum install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb ccache git",
+  "dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb ccache git",
   # before-all runs as root; the build runs as a non-root user, so make the
   # in-container ccache dir world-writable up front.
   "mkdir -p /ccache && chmod 0777 /ccache",
@@ -81,16 +90,40 @@ before-all = [
 before-build = "{project}/ci/cibw/before-build.sh"
 
 [tool.cibuildwheel.linux.environment]
-# ccache shared across EVERY cp leg: cibuildwheel keeps ONE container alive for
+# ccache shared across the abi3 dedup: cibuildwheel keeps ONE container alive for
 # the whole linux matrix, so an in-container CCACHE_DIR persists across legs
-# automatically. This is the crux — VTK's C++ is python-independent, so legs 2..N
-# hit the cache and only recompile the per-python wrappers. (/output is a
+# automatically. This is the crux — VTK's C++ is python-independent, so the
+# cp313/cp314 dedup legs (and re-runs) hit the cache and only recompile the abi3
+# wrappers. For that to actually happen the C++ compile commands must be
+# byte-identical across legs, which is why fvtk_backend uses ONE constant build dir
+# (build-cibw-abi3 shared by cp312/313/314) rather than a per-SOABI one: the build
+# path is embedded in every TU's -I generated-header flags, so a name that varied
+# would change the cache key and miss on the C++.
+# (/output is a
 # cibuildwheel-managed in-container dir that survives the matrix; we use a plain
 # /tmp path the build user owns to avoid host-mount uid/permission friction.)
 CCACHE_DIR = "/ccache"
 CCACHE_MAXSIZE = "30G"
 CMAKE_C_COMPILER_LAUNCHER = "ccache"
 CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
+# Cross-leg cache robustness. The backend now uses ONE constant build tree
+# (fvtk_backend._build_dir), so the C++ object compile commands are byte-identical
+# across legs and ccache hits. These three harden that against the remaining ways a
+# path/time can leak into a TU and bust an otherwise-identical object:
+#   CCACHE_BASEDIR   — rewrite absolute paths under the repo to relative in the
+#                      hash, so a build run from a different checkout dir still hits.
+#   CCACHE_SLOPPINESS=time_macros — VTK bakes __DATE__/__TIME__ into a few banner
+#                      TUs; without this every rebuild misses on them. (locale +
+#                      pch_defines are the standard safe companions.)
+# NOHASHDIR is intentionally NOT set: with a constant build dir the directory is
+# already identical across legs, and NOHASHDIR would weaken debug-path correctness
+# for no extra hit.
+# NOTE: cibuildwheel does NOT expand the {project} token inside environment values
+# (only in before-build/test-command), so this literal "{project}" reaches the
+# build env unexpanded. fvtk_backend._fix_ccache_basedir() resolves it to the real
+# checkout root (REPO) before invoking cmake, so ccache sees a valid absolute path.
+CCACHE_BASEDIR = "{project}"
+CCACHE_SLOPPINESS = "time_macros,locale,pch_defines"
 FVTK_BUILD_JOBS = "16"
 
 # OPTIONAL cross-RUN persistence: mount a host dir at /ccache. NOT enabled by

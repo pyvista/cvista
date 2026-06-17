@@ -3,16 +3,18 @@
 #
 # One workflow, three OSes, one config (pyproject.toml [tool.cibuildwheel]).
 # cibuildwheel drives, per platform:
-#   linux   : manylinux2014 container, el7 yum mesa (CIBW_BEFORE_ALL), GCC 10.2.1
-#             + gold, ci/cmake/linux.cmake, auditwheel repair -> manylinux_2_17.
+#   linux   : manylinux_2_28 container, AlmaLinux 8 dnf mesa (CIBW_BEFORE_ALL),
+#             GCC 14.2.1 + gold (activates the unity + array-split build-time
+#             levers), ci/cmake/linux.cmake, auditwheel repair -> manylinux_2_28.
 #   macos   : ci/cmake/macos.cmake (Cocoa GL, ThinLTO), delocate.
 #   windows : ci/cmake/windows.cmake (WGL, /GL /LTCG), delvewheel.
 #
-# [tool.cibuildwheel].build is the cp311..cp314 matrix, but the backend builds a
-# TWO-WHEEL set per OS: a STATIC cp311 wheel for 3.11 (3.11 cannot be a stable-ABI
-# floor — PyMemberDef entered the stable ABI only in 3.12) and a single cp312-abi3
-# wheel for 3.12+ (cibuildwheel's abi3 dedup reuses it for cp313/cp314). Set
-# FVTK_ABI3=0 to build the legacy per-version static-type wheels on every leg.
+# [tool.cibuildwheel].build is the cp312..cp314 matrix (Python 3.11 dropped), and
+# the backend builds a SINGLE cp312-abi3 wheel per OS: ONE Py_LIMITED_API
+# 0x030c0000 wheel that loads on CPython 3.12+ (cibuildwheel's abi3 dedup reuses it
+# for cp313/cp314, so cp312 builds and 313/314 reuse). 3.12 is the abi3 floor —
+# PyMemberDef entered the stable ABI only in 3.12. Set FVTK_ABI3=0 to build a
+# legacy per-version static-type wheel instead (escape hatch, reversible).
 #
 # The C++ kit build is shared across the cp matrix on each OS via ccache
 # (linux/macos) / the build tree (windows). Release-gated like the originals.

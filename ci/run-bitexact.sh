@@ -18,10 +18,10 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 /tmp/stock/bin/pip -q install --upgrade pip
 /tmp/stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
 
-# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR may hold BOTH the static
-# cp311 wheel and the cp312-abi3 wheel (the two-wheel matrix); let pip pick the
-# one whose tag is compatible with this python instead of globbing both (which
-# would try to install the incompatible one and fail). --find-links points pip at
+# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR holds the single cp312-abi3
+# wheel (Python 3.11 dropped); let pip pick the tag-compatible wheel via the local
+# dir instead of globbing (robust if other artifacts are ever co-located).
+# --find-links points pip at
 # the local dir to resolve `fvtk` (tag-compatible pick) while PyPI stays available
 # for fvtk's own declared deps (matplotlib/numpy/...) — so NO --no-index.
 "$BASE_PY" -m venv /tmp/fvtk

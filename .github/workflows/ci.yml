@@ -1,32 +1,47 @@
-# Per-PR gate. Three jobs, all on a plain ubuntu host (no job-level `container:`):
+# CI gate — runs on every PR to main AND on every push to main. The Linux build
+# leg + the two Linux-only numeric gates run on PRs; the all-OS leg runs on main
+# only (see build-other-os `if:` below). Jobs:
 #
-#   build    : cibuildwheel builds the TWO-wheel matrix in the manylinux2014
-#              (glibc 2.17) container and runs the in-container offscreen smoke
-#              (pyproject [tool.cibuildwheel] test-command). The backend emits a
-#              STATIC cp311 wheel for the cp311 leg and a single cp312-abi3 wheel
-#              for cp312+ (cibuildwheel's abi3 dedup reuses it for cp313/cp314),
-#              so exactly two wheels land. cibuildwheel handles host-checkout ->
-#              build in the container -> auditwheel repair, so we don't hand-roll
-#              any docker.
-#   bitexact : install the matching wheel on the host (per-python via
+#   build (linux)   : cibuildwheel builds the SINGLE cp312-abi3 wheel in the
+#              manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1) container and
+#              runs the in-container offscreen smoke (pyproject [tool.cibuildwheel]
+#              test-command). Python 3.11 has been dropped (maintainer directive):
+#              the wheel is a single Py_LIMITED_API 0x030c0000 abi3 wheel tagged
+#              cp312-abi3 that loads on CPython 3.12+. cibuildwheel's abi3 dedup
+#              means the cp312-* cp313-* cp314-* selectors yield exactly ONE build
+#              and ONE wheel. cibuildwheel handles host-checkout -> build in the
+#              container -> auditwheel repair (--plat manylinux_2_28_x86_64), so we
+#              don't hand-roll any docker. Uploads fvtk-wheels-linux-cp312abi3.
+#              GCC 14 activates the GCC>=12-gated unity + array-split build-time
+#              levers that are inert on the old manylinux2014/GCC-10.2.1 image.
+#   build (macos/windows) : the build-other-os matrix — one job per OS (macos-14,
+#              windows-latest), each running the cp312+ abi3 build through
+#              cibuildwheel on a native runner and the in-cibuildwheel smoke. GATED
+#              to non-PR events (`if: github.event_name != 'pull_request'`): macOS /
+#              Windows build on PUSH-TO-MAIN and workflow_dispatch only, so PRs stay
+#              Linux-only (fast/cheap). Per-OS ccache (keyed fvtk-cibw-ccache-<os>)
+#              shares the python-independent C++ across runs. Each OS uploads
+#              fvtk-wheels-<os> (a DISJOINT artifact prefix from the Linux gate).
+#   bitexact : install the cp312-abi3 LINUX wheel on the host (per-python via
 #              setup-python) alongside stock vtk==9.6.2 and assert byte-for-byte
-#              identical output (maxULP=0). No container — only the build needs
-#              old glibc; the wheels run anywhere. Matrixed over Python:
-#                - 3.11 installs the STATIC cp311 wheel -> STRICT parity
-#                  (BITEXACT_ABI3=0): static types, byte-identical __flags__.
-#                - 3.12/3.13 install the cp312-abi3 wheel -> ABI3-AWARE parity
-#                  (BITEXACT_ABI3=1): only type __flags__ HEAPTYPE/IMMUTABLETYPE
-#                  diverges; numpy zero-copy preserved.
-#   renderexact : same idea but for the RENDERING pipeline (tests/renderexact).
-#              Renders the scenes offscreen via vtkEGLRenderWindow under stock vtk
-#              and fvtk through the SAME host Mesa software GL (llvmpipe) and asserts
+#              identical output (maxULP=0). No container — only the build needs old
+#              glibc; the wheel runs anywhere >= glibc 2.28. ABI3-AWARE parity
+#              (BITEXACT_ABI3=1): only type __flags__ HEAPTYPE/IMMUTABLETYPE
+#              diverges; numpy zero-copy preserved. Matrixed over py3.12 + py3.13
+#              (both install the one abi3 wheel). stock vtk==9.6.2 only ships Linux
+#              wheels, so this gate is Linux-only.
+#   renderexact : same idea for the RENDERING pipeline (tests/renderexact). Renders
+#              the scenes offscreen via vtkEGLRenderWindow under stock vtk and fvtk
+#              through the SAME host Mesa software GL (llvmpipe) and asserts
 #              pixel-for-pixel identical RGBA + Z framebuffers. A sibling of bitexact
-#              (reuses the build artifact) so its apt Mesa install / EGL flakes can
-#              never perturb the numeric gate. Run on 3.11 (static) and 3.13 (abi3)
-#              to cover both wheels; render output is wheel-format-independent.
+#              (reuses the Linux build artifact). Run on py3.13 (the abi3 wheel);
+#              render output is wheel-format-independent. Linux-only (same stock-vtk
+#              reason).
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -37,46 +52,87 @@ concurrency:
 
 jobs:
   build:
-    name: build ${{ matrix.leg }} (manylinux_2_17)
+    name: build cp312-abi3 (manylinux_2_28)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      # Two parallel legs instead of one sequential cibuildwheel run:
-      #   * cp311 static  — FVTK_ABI3 forced OFF, per-version cp311-cp311 wheel.
-      #   * cp312-abi3    — ONE Py_LIMITED_API 0x030c0000 wheel; cibuildwheel's
-      #     abi3 dedup means cp313/cp314 reuse + TEST it (no rebuild).
-      # Each leg uploads its own artifact; the test jobs merge both via the
-      # fvtk-wheels-* pattern and pip --find-links picks the tag-compatible wheel.
-      matrix:
-        include:
-          - leg: "cp311 static"
-            cibw_build: "cp311-*"
-            artifact: cp311
-          - leg: "cp312-abi3"
-            cibw_build: "cp312-* cp313-* cp314-*"
-            artifact: cp312abi3
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # VTK derives its version from full history
-      - name: Build wheels + offscreen smoke (cibuildwheel)
+      # No host ccache mount here: on Linux cibuildwheel keeps ONE container alive
+      # for the whole cp matrix, so the in-container /ccache (pyproject linux env)
+      # already shares the python-independent C++ across the abi3 dedup WITHIN the
+      # run. Combined with the constant build dir + CCACHE_BASEDIR fix in
+      # ci/cibw/fvtk_backend.py, that is where the cross-leg-ccache win lands.
+      - name: Build wheel + offscreen smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
-          CIBW_BUILD: ${{ matrix.cibw_build }}
-          # PR builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
-          # fvtk-config/minimal.cmake). cibuildwheel forwards CIBW_ENVIRONMENT
-          # into each per-leg build env. Releases (wheels-cibuildwheel.yml) leave
-          # FVTK_LTO unset -> default ON, so shipped wheels stay LTO-optimized.
-          # FVTK_SOURCE_UNITY=1 turns on per-module source UNITY_BUILD (amortizes
-          # the shared header parse; byte-identical objects). It is GCC<12-gated in
-          # CMake/vtkModule.cmake, so it is INERT on the current manylinux2014
-          # (GCC 10.2.1) container and active once that image is bumped to
-          # manylinux_2_28 (GCC 12+), which also re-activates the GCC<12-gated
-          # wrapper-unity lever. Harmless to leave set now; bit-exact regardless.
+          # Single abi3 wheel: cp312-* cp313-* cp314-* all dedup to ONE cp312-abi3
+          # build (pyproject `build` selector already restricts to cp312+).
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # PR/push builds are LTO-OFF for fast/cheap CI (FVTK_LTO=0 drops -flto in
+          # fvtk-config/minimal.cmake). -O3 stays ON: Release is the default build
+          # type and no FVTK_O1 knob exists — every leg compiles at -O3, the
+          # bit-exact contract is proven at -O3 by the bitexact job below. The
+          # release matrix (wheels-cibuildwheel.yml) leaves FVTK_LTO unset -> LTO on.
+          # FVTK_SOURCE_UNITY=1 turns on per-module source UNITY_BUILD (amortizes the
+          # shared header parse; byte-identical objects). It is GCC<12-gated in
+          # CMake/vtkModule.cmake; on the manylinux_2_28 (GCC 14.2.1) image that gate
+          # now PASSES, so source-unity is ACTIVE — together with the GCC<12-gated
+          # wrapper-unity (FVTK_WRAP_UNITY, default ON) and the array-TU split.
+          # Bit-exact regardless.
           CIBW_ENVIRONMENT: FVTK_LTO=0 FVTK_SOURCE_UNITY=1
       - uses: actions/upload-artifact@v4
         with:
-          name: fvtk-wheels-${{ matrix.artifact }}
+          name: fvtk-wheels-linux-cp312abi3
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-other-os:
+    name: build ${{ matrix.os }}
+    # macOS/Windows on main + workflow_dispatch only; PRs stay Linux-only (fast).
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # One job per non-Linux OS. Each runs the cp312+ abi3 build through
+      # cibuildwheel; the backend emits the single cp312-abi3 wheel per OS. All
+      # config (archs, init-cache, repair tool, per-OS test-command smoke) lives in
+      # pyproject.toml [tool.cibuildwheel.macos|windows]. These legs prove the wheel
+      # BUILDS + imports on its native platform; the numeric/pixel gates stay
+      # Linux-only (stock vtk==9.6.2 is Linux-only).
+      matrix:
+        os: [macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Per-OS cross-run ccache (Linux/macOS). The constant build dir + CCACHE_BASEDIR
+      # fix make the python-independent C++ a cache hit across runs.
+      - name: Restore ccache (cross-run)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/fvtk-cibw-ccache
+          key: fvtk-cibw-ccache-${{ matrix.os }}-${{ github.sha }}
+          restore-keys: fvtk-cibw-ccache-${{ matrix.os }}-
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for the whole job. The Ninja
+      # generator does NOT auto-run vcvars, so without this cmake auto-selects the
+      # mingw GCC that ships on the windows runner (C:\mingw64\bin\cc.exe) — or
+      # finds no cl at all — and fails ("CMAKE_C_COMPILER: cl is not a full path").
+      # ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so cl must be on PATH.
+      - name: Set up MSVC (vcvars) for the Ninja build
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build wheel + smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        # No env here: per-OS config (archs, FVTK_CMAKE_INIT, ccache launcher,
+        # test-command) is all in pyproject [tool.cibuildwheel.<os>]. The shipped
+        # macOS/Windows wheels stay fully optimized (no FVTK_LTO=0 override).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
@@ -87,15 +143,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # 3.11 -> static cp311 wheel -> STRICT parity (incl. __flags__).
-          - python: "3.11"
-            abi3: "0"
-          # 3.12/3.13 -> cp312-abi3 wheel -> abi3-aware parity (__flags__ only).
-          - python: "3.12"
-            abi3: "1"
-          - python: "3.13"
-            abi3: "1"
+        # Both pythons install the one cp312-abi3 wheel -> abi3-aware parity
+        # (only type __flags__ diverges; numpy zero-copy preserved).
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -105,20 +155,19 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: actions/download-artifact@v4
         with:
-          # both build legs upload fvtk-wheels-*; merge into one dir so
-          # pip --find-links can pick the tag-compatible wheel for this python.
-          pattern: fvtk-wheels-*
+          # ONLY the Linux build leg (fvtk-wheels-linux-*); pip --find-links picks
+          # the cp312-abi3 wheel (tag-compatible on 3.12 and 3.13). The
+          # macOS/Windows artifacts (fvtk-wheels-macos-14 / -windows-latest) are a
+          # DISJOINT prefix, so they never reach this Linux gate.
+          pattern: fvtk-wheels-linux-*
           merge-multiple: true
           path: dist
       - name: Bit-exact suite (fvtk vs stock VTK 9.6.2)
-        # pip installs the wheel whose tag matches this python: the static
-        # cp311 wheel on 3.11, the cp312-abi3 wheel on 3.12/3.13. BITEXACT_ABI3
-        # selects the parity mode to match: STRICT (0) for the static cp311
-        # wheel, ABI3-AWARE (1) for the abi3 wheel. Keeping them in lockstep is
-        # what stops the abi3 tolerance leaking into the static check (and the
-        # strict mode failing the abi3 wheel).
+        # The single abi3 wheel is always tested ABI3-AWARE (BITEXACT_ABI3=1):
+        # the heap-type wrappers differ from stock only in type __flags__
+        # (HEAPTYPE/IMMUTABLETYPE); every numeric value stays maxULP=0.
         env:
-          BITEXACT_ABI3: ${{ matrix.abi3 }}
+          BITEXACT_ABI3: "1"
         run: ci/run-bitexact.sh dist python
       - name: Upload diff artifacts on failure
         if: failure()
@@ -135,10 +184,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Cover both wheel formats: 3.11 (static) and 3.13 (abi3). Render output
-        # is wheel-format-independent (the GL command stream is identical), so a
-        # single python per format is sufficient.
-        python: ["3.11", "3.13"]
+        # The cp312-abi3 wheel on 3.13. Render output is wheel-format-independent
+        # (the GL command stream is identical), so a single python is sufficient.
+        python: ["3.13"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -153,7 +201,7 @@ jobs:
             libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
       - uses: actions/download-artifact@v4
         with:
-          pattern: fvtk-wheels-*
+          pattern: fvtk-wheels-linux-*
           merge-multiple: true
           path: dist
       - name: Pixel-exact render suite (fvtk vs stock VTK 9.6.2, software EGL)

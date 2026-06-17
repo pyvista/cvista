@@ -38,10 +38,9 @@ export VTK_EGL_DEVICE_INDEX="${VTK_EGL_DEVICE_INDEX:-0}"
 /tmp/rx-stock/bin/pip -q install --upgrade pip
 /tmp/rx-stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
 
-# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR may hold BOTH the static
-# cp311 wheel and the cp312-abi3 wheel (the two-wheel matrix); let pip pick the
-# tag-compatible one for this python rather than globbing both (which would try
-# the incompatible one and fail). --find-links points pip at the local dir for
+# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR holds the single cp312-abi3
+# wheel (Python 3.11 dropped); let pip pick the tag-compatible wheel from the local
+# dir rather than globbing. --find-links points pip at the local dir for
 # `fvtk` while PyPI stays available for fvtk's own deps — so NO --no-index.
 "$BASE_PY" -m venv /tmp/rx-fvtk
 /tmp/rx-fvtk/bin/pip -q install --upgrade pip "numpy==2.4.6"
