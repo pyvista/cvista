@@ -133,8 +133,6 @@ uninitMemberVar:*/Common/Transforms/vtkAbstractTransform.h
 uninitMemberVar:*/Common/Transforms/vtkTransform.cxx
 uninitMemberVar:*/Domains/Chemistry/Testing/Cxx/TestMoleculeSelection.cxx
 uninitMemberVar:*/Domains/Chemistry/vtkBlueObeliskDataParser.cxx
-uninitMemberVar:*/Domains/Chemistry/vtkOpenQubeElectronicData.cxx
-uninitMemberVar:*/Domains/Chemistry/vtkOpenQubeMoleculeSource.cxx
 uninitMemberVar:*/Domains/Microscopy/vtkOpenSlideReader.h
 uninitMemberVar:*/Examples/Charts/Cxx/vtkGraphItem.cxx
 uninitMemberVar:*/Examples/GUI/Qt/FourPaneViewer/QtVTKRenderWindows.cxx
