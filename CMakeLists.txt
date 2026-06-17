@@ -440,6 +440,19 @@ if (vtk_rejected_modules)
   list(REMOVE_DUPLICATES vtk_rejected_modules)
 endif ()
 
+# fvtk: these module directories were physically removed from this Python-only
+# fork (never built: Java, Catalyst, MPI, WebGPU, serialization). vtk_module_scan
+# reports a rejected module whose vtk.module file is absent as "unrecognized"
+# (CMake/vtkModule.cmake:1217) and fails the configure. Since the modules no
+# longer exist there is nothing to reject -- drop them from the reject list.
+list(REMOVE_ITEM vtk_rejected_modules
+  VTK::Java
+  VTK::catalyst
+  VTK::mpi
+  VTK::RenderingWebGPU
+  VTK::SerializationManager
+  VTK::TestingSerialization)
+
 set_property(GLOBAL
   PROPERTY
     "_vtk_module_autoinit_include" "\"vtkAutoInit.h\"")
@@ -747,18 +760,8 @@ if (VTK_WRAP_PYTHON)
     COMPONENT   "development")
 endif ()
 
-if (VTK_WRAP_JAVA)
-  find_package(Java 11 REQUIRED COMPONENTS Development)
-
-  # We need to set CMAKE_Java variables before enable_language to
-  # retain specified JDK in ENV{JAVA_HOME}.
-  set(CMAKE_Java_ARCHIVE ${Java_JAR_EXECUTABLE})
-  set(CMAKE_Java_COMPILER ${Java_JAVAC_EXECUTABLE})
-  set(CMAKE_Java_RUNTIME ${Java_JAVA_EXECUTABLE})
-
-  enable_language(Java)
-  add_subdirectory(Wrapping/Java)
-endif ()
+# fvtk: Java wrapping removed (Python-only wheel). The Wrapping/Java tree and the
+# VTK::Java module were deleted; VTK_WRAP_JAVA is unsupported in this fork.
 
 if (VTK_WRAP_JAVASCRIPT)
   include (vtkModuleWrapJavaScript)
