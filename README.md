@@ -183,6 +183,36 @@ maximum wheel portability.
     flat) **and −25% wheel** (28.5 MiB — PGO splits cold paths out and treats them for size).
     ~3× build time on top of LTO, so it runs only in the release job, not per-push.
 
+15. **Multicore-by-default for bit-exact-safe filters (on by default; overridable).** fvtk
+    keeps the *global* `vtkSMPTools` backend at **Sequential**, so the whole library is serial
+    and byte-for-byte identical to stock VTK 9.6.2 out of the box. A small, audited set of
+    filters whose parallel loops are *provably* bit-exact under any thread count — each
+    iteration writes only its own pre-sized output slot, `out[i] = f(in[i])`, with no
+    `InsertNext*` append, no floating-point reduction, no order-dependent locator insert —
+    opt **into** multithreading locally, defaulting to a cap of **4 threads**. The enabled set
+    is `vtkWarpVector`, `vtkWarpScalar`, `vtkPolyDataNormals` (cell + point normals), and
+    `vtkElevationFilter`. The mechanism is a tiny CommonCore helper
+    (`fvtk::RunSafeFilterParallel`, `Common/Core/vtkFVTKSMPDefaults.{h,cxx}`) that wraps just
+    those filters' `vtkSMPTools::For` regions in `vtkSMPTools::LocalScope`, temporarily
+    activating the (already-compiled-in) STDThread backend and then restoring the global
+    Sequential state — so nothing else in the library is threaded, and every other filter stays
+    serial/bit-exact. **All `tests/bitexact/` cases stay maxULP = 0 at the default config**, and
+    the enabled filters are byte-identical at 1, 4 and 8 threads (determinism proof). Overrides
+    use the *existing* VTK SMP APIs and take precedence over the default:
+
+    | Goal | How |
+    |---|---|
+    | Raise / lower the cap | `VTK_SMP_MAX_THREADS=8` (or any N); honored, not re-capped to 4 |
+    | Force everything serial | `VTK_SMP_MAX_THREADS=1`, or `FVTK_SMP_DEFAULT=0` |
+    | Explicit programmatic count | `vtkSMPTools.Initialize(n)` |
+    | Thread the **whole** library (not bit-exact) | `VTK_SMP_BACKEND_IN_USE=STDThread`, or `vtkSMPTools.SetBackend("STDThread")` |
+
+    Precedence (first match wins): `FVTK_SMP_DEFAULT=0` → global backend already non-Sequential
+    (inherit it) → `Initialize(n)` → `VTK_SMP_MAX_THREADS` env → default STDThread @ 4. The
+    helper also refuses to switch the (process-global, not-thread-safe) SMP singleton while
+    already inside a parallel scope (`vtkSMPTools::IsParallelScope()`), inheriting the caller's
+    backend instead. We set **defaults**, not removing knobs.
+
 Levers 12–14 are validated parity-green: differential PyVista core+plotting (**4,088 tests**),
 **0 regressions** vs the untuned `-O3` build (identical pass/fail/skip outcomes).
 

@@ -128,54 +128,54 @@ struct ScaleWorker
     fvtk::RunSafeFilterParallel(
       [&]()
       {
-    vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
-      [&](vtkIdType ptId, vtkIdType endPtId)
-      {
-        double s, *n = normal, inNormal[3];
-        bool isFirst = vtkSMPTools::GetSingleThread();
-        // Abort checking is hoisted out of the per-point arithmetic. vtkAlgorithm::
-        // CheckAbort() is a non-trivial call (timestamp/MTime comparisons) and, when
-        // invoked once per point as before, dominated this worker's cost (~7% of the
-        // whole pipeline in callgrind, ~62% of the worker itself). Check it only every
-        // kAbortInterval points instead. This is the canonical VTK batched-abort idiom
-        // (cf. vtkContourFilter) and is bit-exact for completed runs: CheckAbort() never
-        // touches the point or scalar arrays, so the values written are identical; only
-        // abort *responsiveness* is coarsened, which is inherently periodic/best-effort.
-        constexpr vtkIdType kAbortInterval = 4096;
-        for (; ptId < endPtId; ++ptId)
-        {
-          if (isFirst && (ptId % kAbortInterval == 0))
+        vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
+          [&](vtkIdType ptId, vtkIdType endPtId)
           {
-            self->CheckAbort();
-          }
-          if (self->GetAbortOutput())
-          {
-            break;
-          }
-          const auto xi = ipts[ptId];
-          auto xo = opts[ptId];
+            double s, *n = normal, inNormal[3];
+            bool isFirst = vtkSMPTools::GetSingleThread();
+            // Abort checking is hoisted out of the per-point arithmetic. vtkAlgorithm::
+            // CheckAbort() is a non-trivial call (timestamp/MTime comparisons) and, when
+            // invoked once per point as before, dominated this worker's cost (~7% of the
+            // whole pipeline in callgrind, ~62% of the worker itself). Check it only every
+            // kAbortInterval points instead. This is the canonical VTK batched-abort idiom
+            // (cf. vtkContourFilter) and is bit-exact for completed runs: CheckAbort() never
+            // touches the point or scalar arrays, so the values written are identical; only
+            // abort *responsiveness* is coarsened, which is inherently periodic/best-effort.
+            constexpr vtkIdType kAbortInterval = 4096;
+            for (; ptId < endPtId; ++ptId)
+            {
+              if (isFirst && (ptId % kAbortInterval == 0))
+              {
+                self->CheckAbort();
+              }
+              if (self->GetAbortOutput())
+              {
+                break;
+              }
+              const auto xi = ipts[ptId];
+              auto xo = opts[ptId];
 
-          if (XYPlane)
-          {
-            s = xi[2];
-          }
-          else
-          {
-            const auto sval = sRange[ptId];
-            s = sval[0]; // 0th component of the tuple
-          }
+              if (XYPlane)
+              {
+                s = xi[2];
+              }
+              else
+              {
+                const auto sval = sRange[ptId];
+                s = sval[0]; // 0th component of the tuple
+              }
 
-          if (inNormals)
-          {
-            inNormals->GetTuple(ptId, inNormal);
-            n = inNormal;
-          }
+              if (inNormals)
+              {
+                inNormals->GetTuple(ptId, inNormal);
+                n = inNormal;
+              }
 
-          xo[0] = xi[0] + sf * s * n[0];
-          xo[1] = xi[1] + sf * s * n[1];
-          xo[2] = xi[2] + sf * s * n[2];
-        }
-      }); // lambda
+              xo[0] = xi[0] + sf * s * n[0];
+              xo[1] = xi[1] + sf * s * n[1];
+              xo[2] = xi[2] + sf * s * n[2];
+            }
+          }); // lambda
       });
   }
 };
