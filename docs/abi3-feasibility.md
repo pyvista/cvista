@@ -69,8 +69,11 @@ cp313 nix python, floor `0x030b0000`).**
   identical, ONLY `__flags__` diverges), `test_abi3_heaptypes_in_effect` PASSED
   (every probed type actually became a heap type).
 - **Escape hatch:** `-DFVTK_ABI3=OFF` rebuilds the legacy static-type wheel
-  (`vtkCommonCore.cpython-313-*.so`) and passes the STRICT parity gate
-  (`BITEXACT_ABI3=0`, byte-for-byte incl. `__flags__`).
+  (`vtkCommonCore.cpython-313-x86_64-linux-gnu.so`, version-tagged, NOT abi3) and
+  passes the STRICT parity gate (`BITEXACT_ABI3=0`): **139 passed / 1 skipped** —
+  `test_wrapper_behavior_parity` PASSED byte-for-byte INCL. `__flags__` (static
+  types, HEAPTYPE=0/IMMUTABLETYPE=1 matching stock exactly),
+  `test_abi3_heaptypes_in_effect` correctly skipped.
 - **Wheel tag:** the backend's `_retag_abi3()` produces
   `fvtk-…-cp311-abi3-<plat>.whl` (filename + WHEEL `Tag:` + RECORD), verified to
   install via pip into a clean venv.
