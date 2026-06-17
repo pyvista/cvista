@@ -390,6 +390,20 @@ void vtkEGLRenderWindowInternals::ReleaseCurrent()
 //------------------------------------------------------------------------------
 bool vtkEGLRenderWindowInternals::MakeCurrent()
 {
+  // Redundant-call elimination: vtkOpenGLRenderWindow::MakeCurrent() is invoked
+  // many times per frame (render start, every pixel readback, etc.). If this
+  // context+surface are already current on this display, the eglMakeCurrent is an
+  // idempotent driver round-trip with no effect on GL state -- skip it. This does
+  // not alter the GL command stream or any rendered pixel; it only avoids a
+  // no-op context rebind.
+  if (eglGetCurrentContext() == this->Context &&
+    eglGetCurrentSurface(EGL_DRAW) == this->Surface &&
+    eglGetCurrentSurface(EGL_READ) == this->Surface &&
+    eglGetCurrentDisplay() == this->Display)
+  {
+    return false; // already current, nothing failed
+  }
+
   bool hasFailed =
     eglMakeCurrent(this->Display, this->Surface, this->Surface, this->Context) == EGL_FALSE;
 
