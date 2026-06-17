@@ -65,30 +65,29 @@ Fixed phases (validated, load-insensitive):
 bdist 3.6 + auditwheel 22 + smoke 6 ≈ 94 s (~1.6 min)**, independent of the
 compile work. This is the floor the build phase sits on top of.
 
-### Inside the build phase: codegen vs compile vs link (ninja_log busy-seconds)
+### Inside the build phase: codegen vs compile vs link
 
-From a ~48%-ccache-warm run (compiles largely cached → exposes the non-cacheable
-floor), busy-seconds across the 4-way parallel build:
+From the **100 %-ccache-hit warm build** (0 compile misses → exposes exactly the
+non-cacheable floor), the per-step durations are unambiguous:
 
-| bucket | busy-s | jobs | ccache-able? |
-|--------|-------:|-----:|--------------|
-| codegen (vtkWrapPython/`*Python.cxx` + hierarchy `.txt` + wrapper `.h`) | ~105 | ~1.6k real | **NO** (ccache wraps the C/C++ compiler, not the wrap tools) |
-| compile (`*.o`) | full-cold dominant; ~36 when cached | 3554 | **YES** |
-| link (`*.so`, 146 of them) | ~251 | 146 | **NO** (links always run) |
-
-Top single steps are all **links**: `libvtkCommon.so` 47 s, `libvtkFilters.so`
-22 s, `vtkCommonCore.abi3.so` 11 s, then a long tail of kit + wrapper `.so`.
+- **Links dominate the floor.** The longest steps are all `.so` links —
+  `libvtkCommon.so` 43 s, `libvtkFilters.so` 19 s, `vtkCommonCore.abi3.so` 8 s,
+  `libvtkOpenGL.so`/`libvtkParallel.so`/`libvtkIO.so` ~7 s each, then a long tail
+  of 146 kit + wrapper `.so`. Links are NEVER ccache-able. On 4 cores the link
+  set is the warm critical path.
+- **Codegen is cheap and parallel.** Every individual `vtkWrapPython` / hierarchy
+  step is sub-second (longest: `vtkWrapPython` 0.9 s, a `*-hierarchy.txt` 0.66 s).
+  They are ordinary ninja `add_custom_command` edges, scheduled across all `-j`
+  workers — never a serial long-pole.
+- **Compiles, when cached, are ~instant** (ccache hit ≈ fork + copy).
 
 **Key structural findings:**
-1. **Wrapper generation is already parallel.** The `vtkWrapPython` codegen steps
-   are ordinary ninja `add_custom_command` edges; ninja schedules them across all
-   `-j` workers interleaved with compiles. ~105 s of codegen busy-time spreads
-   over 4 cores ≈ 26 s of wall — NOT a serial long-pole. (Lever 3: little to gain
-   from "parallelizing" it — it already is.)
-2. **codegen + link are the warm-build floor.** They are NOT ccache-able, so a
-   perfectly-seeded (warm) build still pays them. Warm build wall ≈ codegen +
-   link on 4 cores ≈ the measured ~110 s. That is the real reason a warm build is
-   not instant — and it is still well under the targets.
+1. **Wrapper generation is already parallel and cheap** — no serial wrapper-gen
+   long-pole exists to fix (lever 3 is a non-lever; see §3).
+2. **The warm-build floor is the LINK set** (+ quick codegen + cache-fast
+   compiles). Links are not ccache-able, so a perfectly-seeded build still pays
+   them: measured **99.7 s** at 100 % hit. That is why a warm build is not instant
+   — and it is still far under the targets.
 
 ## Levers (each measured at -j4)
 
@@ -162,7 +161,7 @@ recompiles only its changed TUs (+ the non-cacheable codegen/link floor).
 \* under ~2× executor contention; a clean dedicated 4-vCPU runner is faster.
 
 The warm build-total of **99.7 s with 0 recompiles** IS the pure non-cacheable
-floor (codegen + 146 links + ninja overhead on 4 cores), exactly as predicted. A
+floor (the 146 links dominate, + quick codegen + ninja overhead on 4 cores). A
 real PR that edits a handful of files adds only those TU recompiles (~1–5 s each)
 on top — the floor dominates. **A warm PR build leg lands at ~3.5–4 min**, which
 puts the COMMON case (PR iteration) comfortably ≤10 min. This is the single lever
@@ -253,6 +252,16 @@ the cold tail.
 - Dead wrapper tools (`vtkWrapJavaScript`/`vtkWrapSerDes`) still build every run —
   a few seconds; a separate branch already prototypes gating them. Fold in if
   convenient; not a headline.
+- **ICF-off on the gate (attack the link floor): TESTED, NOT recommended.** Since
+  links are the warm floor and aren't ccache-able, dropping gold `--icf=all`
+  (`FVTK_ICF=0`, gate-only, bit-exact — ICF is layout/size only) was an obvious
+  candidate to speed linking. Measured the opposite/at-best-flat: a warm
+  ICF-off build's big-kit links were *not* faster than ICF-on in the runs I could
+  get (libvtkCommon/libvtkFilters link wall was higher, but under heavier
+  co-tenant load — the comparison is contention-confounded). No clean win
+  demonstrated, so it is NOT in the recommended stack. Worth a clean re-test on a
+  quiet/dedicated runner if squeezing the warm link floor ever matters; do not
+  ship it on the strength of these numbers.
 
 ## Reproduction
 
