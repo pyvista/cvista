@@ -149,6 +149,27 @@ option(VTK_DISPATCH_STRUCTURED_POINT_ARRAYS "Include implicit vtkDataArray subcl
 
 option(VTK_WARN_ON_DISPATCH_FAILURE "If enabled, vtkArrayDispatch will print a warning when a dispatch fails." OFF)
 
+# fvtk BUILD-TIME / SIZE lever: drop the two dead implicit-array families
+# vtkStridedArray and vtkStdFunctionArray. PyVista never constructs either (no
+# path in pyvista/_vtk.py, the reader factory, or numpy_to_vtk creates them), and
+# their dispatch options (VTK_DISPATCH_STRIDED_ARRAYS / _STD_FUNCTION_ARRAYS) are
+# OFF by default so they are already absent from the vtkArrayDispatch TypeList.
+# What is still paid for them is the per-numeric-type template-instantiation TUs
+# (vtkStridedArrayInstantiate_*, vtkStdFunctionArrayInstantiate_*,
+# vtkStridedImplicitBackendInstantiate_*) plus the generated fixed-size
+# specialization classes (vtkStridedType*Array / vtkStdFunctionType*Array). This
+# drops exactly those. The template HEADERS (vtkStridedArray.h /
+# vtkStdFunctionArray.h / vtkStridedImplicitBackend.h) are KEPT in place
+# (header-only, zero compile cost when not instantiated) so the cut is purely an
+# instantiation drop and trivially reversible. Unlike SOA/ScaledSOA, these two
+# are NOT referenced as complete types by vtkDataArrayPrivate.txx or any kept
+# CommonCore machinery (verified: no non-self include/reference in the tree), so
+# dropping the instantiations is link-safe, not a compile error. Default ON;
+# FVTK_DROP_DEAD_ARRAYS=OFF restores the stock instantiations.
+option(FVTK_DROP_DEAD_ARRAYS
+  "fvtk: drop instantiations of the PyVista-unused vtkStridedArray + vtkStdFunctionArray families"
+  ON)
+
 mark_as_advanced(
   VTK_DISPATCH_AOS_ARRAYS
   VTK_DISPATCH_SOA_ARRAYS
@@ -236,7 +257,6 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
     vtkCompositeImplicitBackendInstantiate
     vtkConstantImplicitBackendInstantiate
     vtkIndexedImplicitBackendInstantiate
-    vtkStridedImplicitBackendInstantiate
     vtkStructuredPointBackendInstantiate
     vtkAffineArrayInstantiate
     vtkAOSDataArrayTemplateInstantiate
@@ -244,11 +264,19 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
     vtkConstantArrayInstantiate
     vtkIndexedArrayInstantiate
     vtkScaledSOADataArrayTemplateInstantiate
-    vtkStridedArrayInstantiate
     vtkSOADataArrayTemplateInstantiate
-    vtkStdFunctionArrayInstantiate
     vtkStructuredPointArrayInstantiate
     vtkTypedDataArrayInstantiate)
+
+  # The dead vtkStridedArray + vtkStdFunctionArray families: their
+  # instantiation TUs are only added back when the cut is disabled
+  # (FVTK_DROP_DEAD_ARRAYS=OFF). See the option above.
+  if (NOT FVTK_DROP_DEAD_ARRAYS)
+    list(APPEND _list
+      vtkStridedImplicitBackendInstantiate
+      vtkStridedArrayInstantiate
+      vtkStdFunctionArrayInstantiate)
+  endif ()
 
   # NOTE: do NOT try to drop the dispatch-disabled SOA/ScaledSOA (or implicit)
   # backend instantiations from this list to save size — they are referenced

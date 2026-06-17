@@ -84,7 +84,16 @@ foreach (array_prefix IN ITEMS Affine Composite Constant Indexed)
   endforeach ()
 endforeach ()
 
-foreach (array_prefix IN ITEMS Affine Composite Constant Indexed ScaledSOA SOA StdFunction Strided)
+# fvtk: StdFunction + Strided are the two dead families (FVTK_DROP_DEAD_ARRAYS,
+# default ON) — omit their fixed-size specialization classes from the generated
+# set. The keep set always includes the load-bearing AOS/SOA/ScaledSOA + the
+# implicit Affine/Composite/Constant/Indexed families (used by PyVista's
+# ImageData/structured grids and the dispatcher).
+set(_fvtk_specialization_prefixes Affine Composite Constant Indexed ScaledSOA SOA)
+if (NOT FVTK_DROP_DEAD_ARRAYS)
+  list(APPEND _fvtk_specialization_prefixes StdFunction Strided)
+endif ()
+foreach (array_prefix IN LISTS _fvtk_specialization_prefixes)
   foreach (type IN LISTS vtk_fixed_size_numeric_types)
     vtk_fixed_size_type_to_without_prefix("${type}" "vtk" without_vtk_prefix)
     _generate_array_specialization("${array_prefix}" "${without_vtk_prefix}" "${type}" 0)
