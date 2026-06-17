@@ -89,6 +89,54 @@ most of what remains is genuinely reachable).
    the win holds at high core counts (drop the chunk size for bigger CI runners). Unlike
    C++-source unity, generated wrappers have no anonymous-namespace symbol collisions.
 
+6. **Split array-instantiation TUs (`FVTK_SPLIT_BULK_INSTANTIATE`, on by default).** Stock VTK
+   concatenates ~17 template-instantiation sources (`vtkAOSDataArrayTemplate`, the implicit
+   backends, the generated `vtkType*Array` specializations, etc.) **per numeric type** into one
+   `vtkArrayBulkInstantiate_<type>.cxx` (14 of them, one per type in `vtk_numeric_types`). At
+   `-O3` each of those bundled TUs is a ~140 s monster, and with only ~14 of them they serialize
+   badly on a few-core CI runner — the long pole of the whole build. The bundling was a
+   process-spawn optimization that backfires when the per-TU `-O3` cost dwarfs spawn cost.
+   `FVTK_SPLIT_BULK_INSTANTIATE` compiles the ~235 component `.cxx` (which already exist on disk;
+   the bulk file merely `#include`s them) **directly**, turning the 14 huge TUs into many small
+   ones that fill every core evenly. The object code is **byte-identical** (same explicit
+   instantiations, same flags, just emitted into separate `.o`), so it is ABI- and
+   bit-exact-neutral — it only changes build scheduling. Hooks in `Common/Core/CMakeLists.txt`
+   + `Common/Core/vtkTypeArrays.cmake` (the two generation sites that fed the bulk TU);
+   `FVTK_SPLIT_BULK_INSTANTIATE=OFF` restores the stock single-bulk-TU-per-type layout.
+   **Measured** (CommonCore array-instantiation TUs, `-j4 -O3` no-LTO): wall **361 s → 161 s
+   (−55 %, 2.24×)** and total CPU **1210 s → 627 s (−48 %)** — split wins on *both* because GCC's
+   per-TU `-O3` cost is super-linear in TU size, so many small TUs are cheaper in aggregate than
+   a few huge ones.
+
+7. **Module source unity (`FVTK_SOURCE_UNITY`, on by default).** The wrapper-unity lever (#5)
+   batched the *generated* `*Python.cxx`; this is its analogue for the **module C++ source**
+   `.cxx` (~2,500 of them). Each re-parses the same heavy VTK/STL header stack
+   (`vtkSetGet.h`/`vtkObjectFactory.h`/`vtkDataObject.h` + the dataset headers), the dominant
+   cold-compile cost per TU. A hook in `CMake/vtkModule.cmake` turns on CMake's native
+   `UNITY_BUILD` (BATCH mode, `FVTK_SOURCE_UNITY_BATCH`=8 by default) per module, concatenating
+   several `.cxx` into one TU so that shared parse is amortized once per batch. The emitted
+   object code is **byte-identical** (same source, just compiled together) → ABI- and
+   bit-exact-neutral; the standing bitexact suite (maxULP=0 vs stock VTK 9.6.2) is the proof.
+   Unlike generated wrappers, hand-written VTK sources are *not* uniformly unity-clean, so the
+   hook carries three exclusions, all compile-correctness (never numeric): (a) `vtkCommonCore`
+   (owned by the array-TU split #6 — batching would undo its parallelism) and `vtkWrappingPythonCore`
+   (delicate abi3 `PyType_FromSpec`/static-init runtime) are excluded whole; (b) all `ThirdParty`
+   vendored libs (C structs/macros, classic unity poison); (c) ~47 individual hand-written `.cxx`
+   with file-local anonymous-namespace globals / `#include`d global-table `.inl` / X11-macro leaks
+   that collide by *name* across a batch — listed in `fvtk-config/_source_unity_exclude.cmake`, each
+   pulled into its own standalone TU while the rest of its module still batches (generated
+   `*Instantiate*.cxx` are auto-excluded by a name pattern). That is <2 % of the source TUs;
+   the other ~98 % batch. `FVTK_SOURCE_UNITY=0` disables it for an A/B or to bisect a new breaker.
+   **Measured** (cold, no-LTO no-ccache, GCC 14): on the batchable-module subset at `-j4` (the CI
+   parallelism, isolating the lever from the unaffected `CommonCore` cluster) wall **165 s → 92 s
+   (−44 %)** with the compiled object-TU count **782 → 135 (−83 %)**. On the *full* wheel at `-j32`
+   wall **239 s → 194 s (−18.8 %)**, TU count **3,614 → 2,186 (−40 %)** — the full-wheel delta is
+   smaller because the `CommonCore` `-O3` array-instantiation cluster (lever #6's domain, excluded
+   from unity) is a serial long pole identical in both legs that dilutes the *total*; the per-TU
+   parse-amortization win is the −44 % subset figure. **GCC<12-gated** (see #5): inert on the
+   current manylinux2014 (GCC 10.2.1) CI container; bump the cibuildwheel image to manylinux_2_28
+   (GCC 12+) to activate it — and the wrapper-unity lever #5 — in CI.
+
 ### Binary-size levers (compiled C++)
 
 7. **SOA array-dispatch OFF** (`VTK_DISPATCH_SOA_ARRAYS` + `VTK_DISPATCH_SCALED_SOA_ARRAYS`
