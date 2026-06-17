@@ -29,11 +29,23 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
+import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Stable-ABI (abi3) is ON by default (matches fvtk-config/minimal.cmake's
+# FVTK_ABI3 default). The wrapper TUs compile against the CPython limited API and
+# the wheel is tagged cp311-abi3 (loads on CPython 3.11+). Set FVTK_ABI3=0 in the
+# environment to build the legacy per-version static-type wheel instead.
+ABI3_FLOOR_TAG = "cp311"  # mirrors FVTK_ABI3_VERSION 0x030b0000 in minimal.cmake
+
+
+def _abi3_enabled() -> bool:
+    return os.environ.get("FVTK_ABI3", "1") != "0"
 
 
 def _build_dir() -> str:
@@ -41,7 +53,11 @@ def _build_dir() -> str:
     # so cp312 and cp313 must NOT share a configured tree. They DO share the
     # python-independent C++ kit objects via ccache (CMAKE_*_COMPILER_LAUNCHER),
     # so only the first leg pays the full C++ cost. Key the dir by the ABI tag.
+    # Under abi3 the wrappers are version-independent, so one shared "abi3" tree
+    # serves every CPython leg (we only build cp311, but keep it explicit).
     base = os.environ.get("FVTK_BUILD_DIR", os.path.join(REPO, "build-cibw"))
+    if _abi3_enabled():
+        return f"{base}-abi3"
     import sysconfig
 
     tag = sysconfig.get_config_var("SOABI") or f"py{sys.version_info[0]}{sys.version_info[1]}"
@@ -87,6 +103,9 @@ def _configure_and_build():
         _init_cache(),
         f"-DPython3_EXECUTABLE={sys.executable}",
         "-DPython3_FIND_STRATEGY=LOCATION",
+        # Keep the backend's abi3 view and cmake's in lockstep: minimal.cmake
+        # defaults FVTK_ABI3 ON, and FVTK_ABI3=0 in the env flips both off.
+        f"-DFVTK_ABI3={'ON' if _abi3_enabled() else 'OFF'}",
     ]
     if launcher_c:
         cfg.append(f"-DCMAKE_C_COMPILER_LAUNCHER={launcher_c}")
@@ -111,6 +130,82 @@ def _bdist_wheel(build: str) -> str:
     return max(wheels, key=os.path.getmtime)
 
 
+def _retag_abi3(wheel: str) -> str:
+    """Rewrite a version-tagged wheel (e.g. ...-cp311-cp311-linux_x86_64.whl) into
+    the stable-ABI form ...-cp311-abi3-linux_x86_64.whl: the generated build-tree
+    setup.py has no notion of Py_LIMITED_API, so it tags the wheel with the build
+    python's version even though the modules are abi3 (vtkXxx.abi3.so). We flip the
+    python tag to the floor (cp311), the ABI tag to abi3, rewrite the WHEEL `Tag:`
+    line + the RECORD entry for it, and rename the file so the result installs on
+    CPython 3.11+. Bit-exact: only the wheel METADATA tag changes, not any module.
+    """
+    name = os.path.basename(wheel)
+    m = re.match(r"^(?P<base>.+)-(?P<py>[^-]+)-(?P<abi>[^-]+)-(?P<plat>[^-]+)\.whl$", name)
+    if not m:
+        raise RuntimeError(f"cannot parse wheel filename for abi3 retag: {name}")
+    if m.group("abi") == "abi3":
+        return wheel  # already abi3-tagged
+    new_pyabi = f"{ABI3_FLOOR_TAG}-abi3"
+    new_name = f"{m.group('base')}-{new_pyabi}-{m.group('plat')}.whl"
+    new_path = os.path.join(os.path.dirname(wheel), new_name)
+
+    tmp = wheel + ".retag.tmp"
+    with zipfile.ZipFile(wheel, "r") as zin, zipfile.ZipFile(
+        tmp, "w", zipfile.ZIP_DEFLATED
+    ) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.endswith(".dist-info/WHEEL"):
+                # Replace the whole py-abi-plat triple on every `Tag:` line with
+                # the abi3 form (one Tag line in practice; loop is robust to more).
+                text = data.decode("utf-8")
+                text = re.sub(
+                    r"^Tag: .+$",
+                    f"Tag: {new_pyabi}-{m.group('plat')}",
+                    text,
+                    flags=re.MULTILINE,
+                )
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    os.replace(tmp, new_path)
+    if new_path != wheel:
+        os.remove(wheel)
+    # Fix the RECORD entry for WHEEL (its hash/size changed).
+    _rewrite_record_for_wheel(new_path)
+    print(f"fvtk_backend: retagged abi3 wheel -> {os.path.basename(new_path)}", flush=True)
+    return new_path
+
+
+def _rewrite_record_for_wheel(wheel: str) -> None:
+    """Recompute the RECORD line for the .dist-info/WHEEL file after we edited it."""
+    import base64
+    import hashlib
+
+    with zipfile.ZipFile(wheel, "r") as z:
+        names = z.namelist()
+        wheel_name = next(n for n in names if n.endswith(".dist-info/WHEEL"))
+        record_name = next(n for n in names if n.endswith(".dist-info/RECORD"))
+        wheel_data = z.read(wheel_name)
+        record_text = z.read(record_name).decode("utf-8")
+        contents = {n: z.read(n) for n in names}
+
+    digest = base64.urlsafe_b64encode(hashlib.sha256(wheel_data).digest()).rstrip(b"=").decode()
+    new_line = f"{wheel_name},sha256={digest},{len(wheel_data)}"
+    lines = []
+    for line in record_text.splitlines():
+        if line.startswith(wheel_name + ","):
+            lines.append(new_line)
+        else:
+            lines.append(line)
+    contents[record_name] = ("\n".join(lines) + "\n").encode("utf-8")
+
+    tmp = wheel + ".rec.tmp"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, data in contents.items():
+            z.writestr(n, data)
+    os.replace(tmp, wheel)
+
+
 # --- PEP 517 hooks -----------------------------------------------------------
 
 
@@ -128,6 +223,8 @@ def get_requires_for_build_wheel(config_settings=None):
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     build = _configure_and_build()
     wheel = _bdist_wheel(build)
+    if _abi3_enabled():
+        wheel = _retag_abi3(wheel)
     dest = os.path.join(wheel_directory, os.path.basename(wheel))
     shutil.copy2(wheel, dest)
     print(f"fvtk_backend: produced {dest}", flush=True)

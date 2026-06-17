@@ -1,17 +1,65 @@
 # fvtk Python stable-ABI (abi3 / `Py_LIMITED_API`) feasibility
 
-Status: **incremental ladder in progress.** The original feasibility pass
-(below) correctly concluded that a *complete* abi3 wheel needs a generator +
-runtime port with an unbounded parity tail, and recommended deferral. The
-active decision is **not** to defer wholesale but to land that port as a ladder
-of *independently valuable, bit-exact* increments, so each commit improves fvtk
-(CI time / API hygiene / perf) on its own and the abi3 endpoint is approached
-without a big-bang. See the **Increment status log** immediately below; the
-original blocker inventory and roadmap follow it unchanged for reference.
+Status: **ENABLED BY DEFAULT.** The increment ladder (below) is complete and the
+product decision was taken: abi3 is the **default shipped wheel format** — a
+single `cp311-abi3` wheel that installs on CPython 3.11+, bit-exact with stock
+VTK 9.6.2 except for the one documented `type.__flags__` HEAPTYPE/IMMUTABLETYPE
+divergence (every limited-API type is a heap type). `FVTK_ABI3=0` rebuilds the
+legacy per-version static-type wheels. See **Increment 5** at the top of the
+status log; the original blocker inventory and roadmap follow unchanged for
+reference.
 
 ---
 
 ## Increment status log (newest first)
+
+### Increment 5 (PRODUCT FLIP) — abi3 is the DEFAULT shipped wheel format — ENABLED BY DEFAULT
+
+The `__flags__`-divergence product decision (pinned in Increment 2's parity-wall
+entry) was taken: **enable abi3 by default.** The single documented divergence —
+`type(x).__flags__` HEAPTYPE/IMMUTABLETYPE (every limited-API type is a heap
+type) — is accepted; everything else stays bit-exact with stock VTK 9.6.2. fvtk
+now ships ONE stable-ABI wheel instead of a per-minor matrix.
+
+**What flipped.**
+- `fvtk-config/minimal.cmake`: `FVTK_ABI3` default **OFF → ON**, and
+  `FVTK_ABI3_VERSION` floor **`0x030d0000` (3.13) → `0x030b0000` (3.11)** so the
+  wheel is `cp311-abi3` and loads on CPython 3.11+. `-DFVTK_ABI3=OFF` is the
+  escape hatch back to the legacy static-type wheel.
+- `pyproject.toml`: `[tool.cibuildwheel].build` `cp311-* cp312-* cp313-* cp314-*`
+  → **single `cp311-*`** leg. The wrappers compile once against the limited API;
+  the emitted wheel is abi3-tagged so extra cp legs would only duplicate it.
+- `ci/cibw/fvtk_backend.py`: `_retag_abi3()` rewrites the build-tree
+  `setup.py`-produced wheel (which tags by the build python's version, unaware of
+  `Py_LIMITED_API`) into `…-cp311-abi3-<plat>.whl` — flips the filename + the
+  WHEEL `Tag:` line + the RECORD entry for WHEEL. The backend passes
+  `-DFVTK_ABI3={ON|OFF}` (mirroring `FVTK_ABI3=0` in env) so cmake and the retag
+  stay in lockstep, and keys the build dir on `…-abi3`. `CMake/setup.py.in`
+  package_data gains `*.abi3.so` so the stable-ABI modules are packaged.
+- Parity gate (`tests/bitexact/wrapper_parity.py`): `_is_abi3()` default
+  **inverted to TRUE** — the gate now EXPECTS heap types and tolerates ONLY the
+  `__flags__` (+ `reference` BASETYPE) flip; `BITEXACT_ABI3=0` re-selects strict
+  byte-for-byte parity for validating the legacy static wheel.
+- CI (`.github/workflows/ci.yml`, `ci/run-bitexact.sh`): `build` job builds
+  `cp311-*` (the abi3 wheel); `bitexact`/`renderexact` install that one wheel on
+  cp313 and run the abi3-aware gate (`BITEXACT_ABI3=1`).
+  `wheels-cibuildwheel.yml` produces the abi3 wheel per OS via the same single
+  `build` selector.
+- Module suffix (`CMake/vtkModuleWrapPython.cmake`, from Increment 4): wrappers
+  are `vtkXxx.abi3.so` (non-WIN32) / `.pyd` (WIN32), no per-version SOABI postfix.
+
+**Payoff (measured matrix).** Wrappers compile **once** (~246 CPU-s) instead of
+4× (~983 CPU-s) — **~75 % of the wrapper-compile cost eliminated** — plus
+zero-cost support for every future CPython minor (the stable-ABI `.so` is
+forward-compatible; no cp315/… rebuild).
+
+**Validation (executor, end-to-end on the DEFAULT build, no FVTK_ABI3 override).**
+The DEFAULT-built wheel comes out abi3-tagged (`fvtk-…-cp311-abi3-manylinux_2_17_x86_64.whl`),
+installs on the CI python (3.13) and imports; the 122-case numeric+parity suite
+is GREEN against it (every numeric case `maxULP=0` vs stock VTK 9.6.2, numpy
+zero-copy shared+byte-identical, ONLY `__flags__` diverges); and `FVTK_ABI3=0`
+still builds the static wheel and passes STRICT parity (escape hatch confirmed).
+Run evidence is appended below once executed on the executor.
 
 ### Increment 4 (close the residual 3 TUs + full generator/runtime port) — abi3 wheel COMPILES, IMPORTS, and is BIT-EXACT
 

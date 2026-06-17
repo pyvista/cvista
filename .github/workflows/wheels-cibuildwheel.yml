@@ -8,6 +8,11 @@
 #   macos   : ci/cmake/macos.cmake (Cocoa GL, ThinLTO), delocate.
 #   windows : ci/cmake/windows.cmake (WGL, /GL /LTCG), delvewheel.
 #
+# FVTK_ABI3 is ON by default, so [tool.cibuildwheel].build is a single cp311 leg
+# and each OS produces ONE stable-ABI wheel tagged cp311-abi3 that installs on
+# CPython 3.11+ (no per-minor matrix). Set FVTK_ABI3=0 + restore the cp3xx matrix
+# in pyproject.toml to build the legacy per-version static-type wheels.
+#
 # The C++ kit build is shared across the cp matrix on each OS via ccache
 # (linux/macos) / the build tree (windows). Release-gated like the originals.
 name: wheels-cibuildwheel

@@ -32,10 +32,15 @@ requires-python = ">=3.11"
 # ===========================================================================
 [tool.cibuildwheel]
 build-frontend = "pip"
-# cp311..cp314 on CPython only (VTK has no PyPy/free-threading wrappers here).
-# cp39/cp310 dropped (EOL/near-EOL) to cut CI legs; cp314 added. cp311 is the
-# floor a future cp3x-abi3 (stable-ABI) wheel would target.
-build = "cp311-* cp312-* cp313-* cp314-*"
+# SINGLE abi3 leg. FVTK_ABI3 is ON by default, so the wrapper TUs compile against
+# the CPython limited API (floor cp311 = Py_LIMITED_API 0x030b0000) and produce a
+# single stable-ABI wheel tagged cp311-abi3 that installs+imports on CPython 3.11+
+# (incl. future minors, no rebuild). We therefore build ONLY on cp311: the wheel
+# the backend emits is already abi3-tagged, so adding cp312/cp313/cp314 legs would
+# just recompile the same wrappers and produce duplicate abi3 wheels. To rebuild
+# the legacy per-version static-type wheels, set FVTK_ABI3=0 and restore the
+# cp311-* cp312-* cp313-* cp314-* matrix.
+build = "cp311-*"
 skip = "*-musllinux_*"
 test-command = "FVTK_IMPORT_NAME=fvtk xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
 # auditwheel repair runs by default; stamp the 2_17 tag explicitly to match the

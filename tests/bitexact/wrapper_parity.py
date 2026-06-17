@@ -169,7 +169,15 @@ def main():
 # immutabletype False on fvtk vs the opposite on stock) and that NOTHING ELSE
 # differs. See docs/abi3-feasibility.md.
 def _is_abi3():
-    return os.environ.get("BITEXACT_ABI3", "") not in ("", "0", "false", "False")
+    """Whether the fvtk build under test is the abi3 (heap-type) wheel.
+
+    abi3 is the DEFAULT shipped wheel format, so this DEFAULTS TO TRUE: the parity
+    gate expects heap types and tolerates ONLY the __flags__ HEAPTYPE/IMMUTABLETYPE
+    (and reference BASETYPE) divergence, asserting everything else matches stock
+    byte-for-byte. To validate the legacy static-type wheel (FVTK_ABI3=0), set
+    BITEXACT_ABI3=0 — the gate then requires strict byte-for-byte parity incl.
+    __flags__."""
+    return os.environ.get("BITEXACT_ABI3", "1") not in ("0", "false", "False")
 
 
 def _expected_flag_divergence(key, stock_val, fvtk_val):
@@ -195,12 +203,15 @@ def _expected_flag_divergence(key, stock_val, fvtk_val):
 def compare_parity(stock_dir, fvtk_dir):
     """Return list of (key, stock_value, fvtk_value) mismatches. Empty == parity.
 
-    In the default (static-type) build EVERY checked fact must match stock byte
-    for byte (modulo the intentional package rename, already normalized). In the
-    abi3 build (BITEXACT_ABI3=1) the two type-flag bits are EXPECTED to flip to
-    the heap-type values and are accepted *only* in that exact direction; any
-    other divergence — including a flag flipping the wrong way, or a wrapped type
-    NOT becoming a heap type — is still reported as a mismatch."""
+    In the DEFAULT (abi3, heap-type) build the two type-flag bits are EXPECTED to
+    flip to the heap-type values (plus the reference BASETYPE bit) and are accepted
+    *only* in that exact direction; any other divergence — including a flag
+    flipping the wrong way, or a wrapped type NOT becoming a heap type — is still
+    reported as a mismatch. Everything else (identity/isinstance/mro/repr/weakref/
+    instance-dict/numpy zero-copy buffer/numeric) must match stock byte for byte
+    (modulo the intentional vtkmodules->fvtk package rename, already normalized).
+    In the legacy static-type build (BITEXACT_ABI3=0) EVERY checked fact must match
+    stock byte-for-byte, including __flags__."""
     with open(os.path.join(stock_dir, "parity.json")) as f:
         s = json.load(f)
     with open(os.path.join(fvtk_dir, "parity.json")) as f:
