@@ -14,6 +14,7 @@
 #include "vtkInformationVector.h"
 #include "vtkMath.h"
 #include "vtkNew.h"
+#include "vtkFVTKSMPDefaults.h"
 #include "vtkObjectFactory.h"
 #include "vtkOrientPolyData.h"
 #include "vtkPointData.h"
@@ -86,49 +87,58 @@ vtkSmartPointer<vtkFloatArray> vtkPolyDataNormals::GetCellNormals(vtkPolyData* d
   cellNormals->SetNumberOfComponents(3);
   cellNormals->SetNumberOfTuples(numVertices + numLines + numPolys + numStrips);
 
-  // Set default value for vertices and lines cell normals
-  vtkIdType offsetCells = numVertices + numLines;
-  vtkSMPTools::For(0, offsetCells,
-    [&](vtkIdType begin, vtkIdType end)
-    {
-      static constexpr float n[3] = { 1.0, 0.0, 0.0 };
-      for (vtkIdType cellId = begin; cellId < end; cellId++)
-      {
-        // add a default value for vertices and lines
-        // normals do not have meaningful values, we set them to X
-        cellNormals->SetTypedTuple(cellId, n);
-      }
-    });
-
-  // Compute Cell Normals of polys
+  // fvtk: every For below writes cellNormals[cellId] = f(cellId) into pre-sized
+  // slots (no append / no reduction), so it is bit-exact under any thread count.
+  // Opt the whole cell-normals computation into the fvtk default-on threading
+  // (capped at 4, overridable via the VTK SMP APIs). One scope -> the global SMP
+  // singleton is mutated once and all three For's inherit it.
   vtkSMPThreadLocalObject<vtkIdList> tlTempCellPointIds;
-  vtkSMPTools::For(0, numPolys,
-    [&](vtkIdType begin, vtkIdType end)
+  fvtk::RunSafeFilterParallel(
+    [&]()
     {
-      auto tempCellPointIds = tlTempCellPointIds.Local();
-      vtkIdType npts;
-      const vtkIdType* pts = nullptr;
-      double n[3];
-      for (vtkIdType polyId = begin; polyId < end; polyId++)
-      {
-        polys->GetCellAtId(polyId, npts, pts, tempCellPointIds);
-        vtkPolygon::ComputeNormal(points, npts, pts, n);
-        cellNormals->SetTuple(offsetCells + polyId, n);
-      }
-    });
+      // Set default value for vertices and lines cell normals
+      vtkIdType offsetCells = numVertices + numLines;
+      vtkSMPTools::For(0, offsetCells,
+        [&](vtkIdType begin, vtkIdType end)
+        {
+          static constexpr float n[3] = { 1.0, 0.0, 0.0 };
+          for (vtkIdType cellId = begin; cellId < end; cellId++)
+          {
+            // add a default value for vertices and lines
+            // normals do not have meaningful values, we set them to X
+            cellNormals->SetTypedTuple(cellId, n);
+          }
+        });
 
-  // Set default value for strip cell normals
-  offsetCells += numPolys;
-  vtkSMPTools::For(0, numStrips,
-    [&](vtkIdType begin, vtkIdType end)
-    {
-      static constexpr float n[3] = { 1.0, 0.0, 0.0 };
-      for (vtkIdType cellId = begin; cellId < end; cellId++)
-      {
-        // add a default value for strips
-        // normals do not have meaningful values, we set them to X
-        cellNormals->SetTypedTuple(cellId, n);
-      }
+      // Compute Cell Normals of polys
+      vtkSMPTools::For(0, numPolys,
+        [&](vtkIdType begin, vtkIdType end)
+        {
+          auto tempCellPointIds = tlTempCellPointIds.Local();
+          vtkIdType npts;
+          const vtkIdType* pts = nullptr;
+          double n[3];
+          for (vtkIdType polyId = begin; polyId < end; polyId++)
+          {
+            polys->GetCellAtId(polyId, npts, pts, tempCellPointIds);
+            vtkPolygon::ComputeNormal(points, npts, pts, n);
+            cellNormals->SetTuple(offsetCells + polyId, n);
+          }
+        });
+
+      // Set default value for strip cell normals
+      offsetCells += numPolys;
+      vtkSMPTools::For(0, numStrips,
+        [&](vtkIdType begin, vtkIdType end)
+        {
+          static constexpr float n[3] = { 1.0, 0.0, 0.0 };
+          for (vtkIdType cellId = begin; cellId < end; cellId++)
+          {
+            // add a default value for strips
+            // normals do not have meaningful values, we set them to X
+            cellNormals->SetTypedTuple(cellId, n);
+          }
+        });
     });
   return cellNormals;
 }
@@ -156,29 +166,37 @@ vtkSmartPointer<vtkFloatArray> vtkPolyDataNormals::GetPointNormals(
   float* pointNormalsPtr = pointNormals->GetPointer(0);
   float* cellNormalsPtr = cellNormals->GetPointer(0);
 
-  vtkSMPTools::For(0, numPoints,
-    [&](vtkIdType begin, vtkIdType end)
+  // fvtk: this For writes pointNormals[pointId] = f(pointId) into a pre-sized
+  // slot; each point's sum is over its own fixed cell list in a fixed order, so
+  // the result is bit-exact under any thread count -> opt into the fvtk
+  // default-on multithreading (capped at 4, overridable via VTK SMP APIs).
+  fvtk::RunSafeFilterParallel(
+    [&]()
     {
-      vtkIdType nCells;
-      vtkIdType* cells = nullptr;
-      for (vtkIdType pointId = begin; pointId < end; pointId++)
-      {
-        // Initialize point normals
-        float* pointNormal = &pointNormalsPtr[3 * pointId];
-        pointNormal[0] = pointNormal[1] = pointNormal[2] = 0.0;
-        // Compute Point Normals
-        data->GetPointCells(pointId, nCells, cells);
-        for (vtkIdType i = 0; i < nCells; ++i)
+      vtkSMPTools::For(0, numPoints,
+        [&](vtkIdType begin, vtkIdType end)
         {
-          vtkMath::Add(pointNormal, &cellNormalsPtr[3 * cells[i]], pointNormal);
-        }
-        // Normalize normals
-        const double length = vtkMath::Norm(pointNormal) * flipDirection;
-        if (length != 0.0)
-        {
-          vtkMath::MultiplyScalar(pointNormal, 1.0 / length);
-        }
-      }
+          vtkIdType nCells;
+          vtkIdType* cells = nullptr;
+          for (vtkIdType pointId = begin; pointId < end; pointId++)
+          {
+            // Initialize point normals
+            float* pointNormal = &pointNormalsPtr[3 * pointId];
+            pointNormal[0] = pointNormal[1] = pointNormal[2] = 0.0;
+            // Compute Point Normals
+            data->GetPointCells(pointId, nCells, cells);
+            for (vtkIdType i = 0; i < nCells; ++i)
+            {
+              vtkMath::Add(pointNormal, &cellNormalsPtr[3 * cells[i]], pointNormal);
+            }
+            // Normalize normals
+            const double length = vtkMath::Norm(pointNormal) * flipDirection;
+            if (length != 0.0)
+            {
+              vtkMath::MultiplyScalar(pointNormal, 1.0 / length);
+            }
+          }
+        });
     });
 
   return pointNormals;

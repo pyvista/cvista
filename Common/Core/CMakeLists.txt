@@ -420,6 +420,7 @@ endif ()
 
 set(sources
   vtkArrayIteratorTemplateInstantiate.cxx
+  vtkFVTKSMPDefaults.cxx
   vtkGenericDataArray.cxx
   vtkStringFormatter.cxx
   vtkValueFromString.cxx
@@ -618,6 +619,7 @@ endif ()
 set(nowrap_headers
   vtkAffineArray.h
   vtkAffineImplicitBackend.h
+  vtkFVTKSMPDefaults.h
   vtkCollectionRange.h
   vtkCompositeArray.h
   vtkConstantArray.h

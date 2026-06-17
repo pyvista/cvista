@@ -19,6 +19,7 @@
 #include "vtkRectilinearGridToPointSet.h"
 #include "vtkStructuredGrid.h"
 
+#include "vtkFVTKSMPDefaults.h"
 #include "vtkNew.h"
 #include "vtkSMPTools.h"
 #include "vtkSmartPointer.h"
@@ -91,29 +92,36 @@ struct WarpWorker
 
     // We use THRESHOLD to test if the data size is small enough
     // to execute the functor serially.
-    vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
-      [&](vtkIdType ptId, vtkIdType endPtId)
+    // fvtk: this For writes opts[ptId] = f(ipts[ptId]) into pre-sized output
+    // slots, so it is bit-exact under any thread count -> opt into the fvtk
+    // default-on multithreading (capped at 4, overridable via VTK SMP APIs).
+    fvtk::RunSafeFilterParallel(
+      [&]()
       {
-        bool isFirst = vtkSMPTools::GetSingleThread();
-        for (; ptId < endPtId; ++ptId)
-        {
-          if (isFirst)
+        vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
+          [&](vtkIdType ptId, vtkIdType endPtId)
           {
-            self->CheckAbort();
-          }
-          if (self->GetAbortOutput())
-          {
-            break;
-          }
-          const auto xi = ipts[ptId];
-          auto xo = opts[ptId];
-          const auto v = vecs[ptId];
+            bool isFirst = vtkSMPTools::GetSingleThread();
+            for (; ptId < endPtId; ++ptId)
+            {
+              if (isFirst)
+              {
+                self->CheckAbort();
+              }
+              if (self->GetAbortOutput())
+              {
+                break;
+              }
+              const auto xi = ipts[ptId];
+              auto xo = opts[ptId];
+              const auto v = vecs[ptId];
 
-          xo[0] = xi[0] + sf * v[0];
-          xo[1] = xi[1] + sf * v[1];
-          xo[2] = xi[2] + sf * v[2];
-        }
-      }); // lambda
+              xo[0] = xi[0] + sf * v[0];
+              xo[1] = xi[1] + sf * v[1];
+              xo[2] = xi[2] + sf * v[2];
+            }
+          }); // lambda
+      });
   }
 };
 
