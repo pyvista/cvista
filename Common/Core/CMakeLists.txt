@@ -181,24 +181,45 @@ set(instantiation_sources)
 
 include(vtkTypeLists)
 
-foreach (type IN LISTS vtk_numeric_types)
-  string(REPLACE " " "_" _suffix "${type}")
-  list(APPEND instantiation_sources
-    "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx")
+# fvtk BUILD-TIME lever: split the per-type "bulk" array instantiation TUs.
+#
+# Stock VTK concatenates ~17 template-instantiation sources (AOS/SOA/implicit
+# backends, etc.) per numeric type into ONE vtkArrayBulkInstantiate_<type>.cxx
+# via #include. At -O3 each of those 14 bulk TUs is a ~140s monster, and because
+# there are only 14 of them they serialize badly on a CI runner (the build's
+# critical path / long tail). The concatenation was a process-spawn optimization;
+# at -O3 the per-TU compile cost dwarfs spawn cost, so bundling only hurts.
+#
+# FVTK_SPLIT_BULK_INSTANTIATE=ON compiles the ~225 component .cxx (which already
+# exist on disk — the bulk file merely #includes them) DIRECTLY, turning 14 huge
+# TUs into ~225 small ones that fill all cores evenly. This is byte-for-byte
+# identical OBJECT CODE (same explicit instantiations, same flags, just emitted
+# into separate .o instead of one) -> ABI- and bit-exact-neutral; it only changes
+# build scheduling. OFF restores the stock single-bulk-TU-per-type layout.
+option(FVTK_SPLIT_BULK_INSTANTIATE
+  "fvtk: compile per-type array instantiations as many small TUs (parallelism) instead of one bulk TU"
+  ON)
 
-  if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
-    # This silences the following warning:
-    #     type attributes ignored after type is already defined [-Wattributes]
-    #     template class VTKCOMMONCORE_EXPORT vtkImplicitArray<vtkStructuredPointBackend<ValueType>>;
-    # This warning is caused by the vtkArrayDispatch instantiations,
-    # controlled by the VTK_DISPATCH_*_ARRAYS cmake variables.
-    # When ON, a vtkImplicitArray<vtk*Backend<ValueType>> will be indirectly instantiated
-    # by `vtkIndexedImplicitBackend::Internals` and `vtkCompositeImplicitBackend::Internals`
-    # causing the `__attribute__((visibility("default")))` to be ignored.
-    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
-      PROPERTIES COMPILE_OPTIONS "-Wno-attributes")
-  endif()
-endforeach ()
+if (NOT FVTK_SPLIT_BULK_INSTANTIATE)
+  foreach (type IN LISTS vtk_numeric_types)
+    string(REPLACE " " "_" _suffix "${type}")
+    list(APPEND instantiation_sources
+      "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx")
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+      # This silences the following warning:
+      #     type attributes ignored after type is already defined [-Wattributes]
+      #     template class VTKCOMMONCORE_EXPORT vtkImplicitArray<vtkStructuredPointBackend<ValueType>>;
+      # This warning is caused by the vtkArrayDispatch instantiations,
+      # controlled by the VTK_DISPATCH_*_ARRAYS cmake variables.
+      # When ON, a vtkImplicitArray<vtk*Backend<ValueType>> will be indirectly instantiated
+      # by `vtkIndexedImplicitBackend::Internals` and `vtkCompositeImplicitBackend::Internals`
+      # causing the `__attribute__((visibility("default")))` to be ignored.
+      set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
+        PROPERTIES COMPILE_OPTIONS "-Wno-attributes")
+    endif()
+  endforeach ()
+endif ()
 
 foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
   # We never need to instantiate vtkIdType or because they are instantiated
@@ -250,8 +271,33 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
       "${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx"
       @ONLY)
 
-    list(APPEND "bulk_instantiation_sources_${_suffix}"
-      "#include \"${_prefix}_${_suffix}.cxx\"")
+    if (FVTK_SPLIT_BULK_INSTANTIATE)
+      # Compile each component instantiation as its own small TU (build-time
+      # parallelism) instead of #include-ing it into the per-type bulk TU.
+      list(APPEND instantiation_sources
+        "${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx")
+      # VTK_DEPRECATION_LEVEL=0 reproduces EXACTLY what the bulk wrapper TU did:
+      # vtkArrayBulkInstantiate.cxx.in opens with `#define VTK_DEPRECATION_LEVEL 0`
+      # BEFORE any include, which makes VTK_DEPRECATED_IN_9_6_0() expand to empty
+      # (vtkDeprecation.h gates it on the level). The deprecated implicit-array
+      # specialization headers (vtkAffine<T>Array.h etc.) place the deprecation
+      # attribute as `class EXPORT VTK_DEPRECATED_IN_9_6_0(...) Name : public Base`;
+      # GCC < 11 (manylinux2014 ships GCC 10.2.1) CANNOT parse a [[deprecated]]
+      # attribute in that position after the export macro -> hard parse error
+      # ("expected identifier before '[' token"). Splitting these out of the bulk
+      # wrapper loses the wrapper's level-0 #define, so we must reapply it per-TU.
+      # This is byte-identical to the bulk object code (the attribute is suppressed
+      # in BOTH paths and has zero codegen effect regardless). -Wno-attributes is
+      # also kept for the dispatch-instantiation [-Wattributes] warning.
+      if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx"
+          PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
+                     COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
+      endif()
+    else ()
+      list(APPEND "bulk_instantiation_sources_${_suffix}"
+        "#include \"${_prefix}_${_suffix}.cxx\"")
+    endif ()
   endforeach ()
 endforeach ()
 
@@ -670,16 +716,20 @@ endforeach ()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/vtkTypeArrays.cmake")
 
-foreach (type IN LISTS vtk_numeric_types)
-  # Referenced in vtkArrayBulkInstantiate.cxx.in
-  string(REPLACE " " "_" _suffix "${type}")
-  list(JOIN "bulk_instantiation_sources_${_suffix}" "\n" BULK_INSTANTIATION_SOURCES)
-  configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/vtkArrayBulkInstantiate.cxx.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
-    @ONLY)
-  unset(BULK_INSTANTIATION_SOURCES)
-endforeach()
+# Only assemble the per-type bulk wrapper TUs when NOT splitting (split mode
+# compiles the component .cxx directly; see FVTK_SPLIT_BULK_INSTANTIATE above).
+if (NOT FVTK_SPLIT_BULK_INSTANTIATE)
+  foreach (type IN LISTS vtk_numeric_types)
+    # Referenced in vtkArrayBulkInstantiate.cxx.in
+    string(REPLACE " " "_" _suffix "${type}")
+    list(JOIN "bulk_instantiation_sources_${_suffix}" "\n" BULK_INSTANTIATION_SOURCES)
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/vtkArrayBulkInstantiate.cxx.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
+      @ONLY)
+    unset(BULK_INSTANTIATION_SOURCES)
+  endforeach()
+endif ()
 
 # Check C++ <cmath> first, where the C++11 standard says these must be.
 check_cxx_expression_compiles("std::isnan(0.0)" "cmath" VTK_HAS_STD_ISNAN)

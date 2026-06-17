@@ -41,8 +41,34 @@ macro(_generate_array_specialization array_prefix vtk_type concrete_type depreca
   else ()
     string(REPLACE " " "_" _suffix "${concrete_type}")
   endif ()
-  list(APPEND "bulk_instantiation_sources_${_suffix}"
-    "#include \"${_className}.cxx\"")
+  if (FVTK_SPLIT_BULK_INSTANTIATE)
+    # fvtk split mode: compile each generated specialization (e.g. the
+    # vtkType*Array.cxx that define vtkTypeFloat32Array::New() etc.) as its own TU
+    # directly, rather than #include-ing it into the per-type bulk TU. Without this
+    # these New() definitions would be generated but never compiled -> undefined
+    # references at link time. Append straight to `sources` (the list consumed by
+    # vtk_module_add_module at the end of CommonCore/CMakeLists.txt): this file is
+    # include()d AFTER `set(sources ...)` snapshots `instantiation_sources`, so the
+    # bulk path's early-reserved filenames trick is unavailable here; `sources` is
+    # still in scope (macros run in the caller scope) and is read later.
+    list(APPEND sources
+      "${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx")
+    if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+      # VTK_DEPRECATION_LEVEL=0: these implicit-array specialization classes are
+      # generated WITH a deprecation attribute (deprecated=1 -> @VTK_DEPRECATION@ =
+      # VTK_DEPRECATED_IN_9_6_0(...)) emitted as `class EXPORT <attr> Name : Base`,
+      # which GCC < 11 (manylinux2014's GCC 10.2.1) cannot parse. The bulk wrapper
+      # suppressed it with a leading `#define VTK_DEPRECATION_LEVEL 0`; the split
+      # path compiles these .cxx directly, so it reapplies that define. Byte-
+      # identical to the bulk object code (attribute suppressed in both paths).
+      set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx"
+        PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
+                   COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
+    endif ()
+  else ()
+    list(APPEND "bulk_instantiation_sources_${_suffix}"
+      "#include \"${_className}.cxx\"")
+  endif ()
 
   unset(VTK_DEPRECATION)
   unset(VTK_TYPE_NAME)
@@ -122,7 +148,25 @@ foreach (type IN LISTS vtk_fixed_size_numeric_types)
     # append generated source to the bulk instantiation of concrete_type
     vtk_get_fixed_size_type_mapping("${type}" numeric_type)
     string(REPLACE " " "_" _suffix "${numeric_type}")
-    list(APPEND "bulk_instantiation_sources_${_suffix}"
-      "#include \"${type}Array.cxx\"")
+    if (FVTK_SPLIT_BULK_INSTANTIATE)
+      # fvtk split mode: compile the plain vtkType*Array.cxx (vtkTypeFloat64Array
+      # etc., which define their New()/ctor) as its own TU instead of #include-ing
+      # it into the per-type bulk TU. See the matching branch in the macro above;
+      # append to `sources` (read by vtk_module_add_module later) since this runs
+      # after `set(sources ...)` snapshotted `instantiation_sources`.
+      list(APPEND sources
+        "${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx")
+      if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+        # VTK_DEPRECATION_LEVEL=0 to match the bulk wrapper's leading #define (see
+        # the macro above + vtkArrayBulkInstantiate.cxx.in). Keeps split TUs
+        # byte-identical to bulk and parseable on GCC < 11.
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx"
+          PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
+                     COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
+      endif ()
+    else ()
+      list(APPEND "bulk_instantiation_sources_${_suffix}"
+        "#include \"${type}Array.cxx\"")
+    endif ()
   endif ()
 endforeach ()

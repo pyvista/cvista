@@ -89,6 +89,25 @@ most of what remains is genuinely reachable).
    the win holds at high core counts (drop the chunk size for bigger CI runners). Unlike
    C++-source unity, generated wrappers have no anonymous-namespace symbol collisions.
 
+6. **Split array-instantiation TUs (`FVTK_SPLIT_BULK_INSTANTIATE`, on by default).** Stock VTK
+   concatenates ~17 template-instantiation sources (`vtkAOSDataArrayTemplate`, the implicit
+   backends, the generated `vtkType*Array` specializations, etc.) **per numeric type** into one
+   `vtkArrayBulkInstantiate_<type>.cxx` (14 of them, one per type in `vtk_numeric_types`). At
+   `-O3` each of those bundled TUs is a ~140 s monster, and with only ~14 of them they serialize
+   badly on a few-core CI runner — the long pole of the whole build. The bundling was a
+   process-spawn optimization that backfires when the per-TU `-O3` cost dwarfs spawn cost.
+   `FVTK_SPLIT_BULK_INSTANTIATE` compiles the ~235 component `.cxx` (which already exist on disk;
+   the bulk file merely `#include`s them) **directly**, turning the 14 huge TUs into many small
+   ones that fill every core evenly. The object code is **byte-identical** (same explicit
+   instantiations, same flags, just emitted into separate `.o`), so it is ABI- and
+   bit-exact-neutral — it only changes build scheduling. Hooks in `Common/Core/CMakeLists.txt`
+   + `Common/Core/vtkTypeArrays.cmake` (the two generation sites that fed the bulk TU);
+   `FVTK_SPLIT_BULK_INSTANTIATE=OFF` restores the stock single-bulk-TU-per-type layout.
+   **Measured** (CommonCore array-instantiation TUs, `-j4 -O3` no-LTO): wall **361 s → 161 s
+   (−55 %, 2.24×)** and total CPU **1210 s → 627 s (−48 %)** — split wins on *both* because GCC's
+   per-TU `-O3` cost is super-linear in TU size, so many small TUs are cheaper in aggregate than
+   a few huge ones.
+
 ### Binary-size levers (compiled C++)
 
 7. **SOA array-dispatch OFF** (`VTK_DISPATCH_SOA_ARRAYS` + `VTK_DISPATCH_SCALED_SOA_ARRAYS`
