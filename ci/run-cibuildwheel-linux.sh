@@ -3,9 +3,9 @@
 # ci/run-cibuildwheel-linux.sh — drive cibuildwheel locally via docker for fvtk.
 #
 # Mirrors what the pypa/cibuildwheel GHA action does on CI, but on THIS box:
-# cibuildwheel orchestrates the manylinux2014 container itself (mesa via
-# CIBW_BEFORE_ALL, cmake build via the fvtk_backend, auditwheel repair to
-# manylinux_2_17, smoke test under xvfb).
+# cibuildwheel orchestrates the manylinux_2_28 container itself (AlmaLinux 8 mesa
+# via CIBW_BEFORE_ALL, cmake build via the fvtk_backend, auditwheel repair to
+# manylinux_2_28, smoke test under xvfb).
 #
 # Usage:
 #   ci/run-cibuildwheel-linux.sh                       # default: full matrix

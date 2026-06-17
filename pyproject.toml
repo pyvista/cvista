@@ -27,8 +27,14 @@ description = "fvtk — trimmed PyVista-parity hard-fork of VTK 9.6.2 (vtkmodule
 requires-python = ">=3.11"
 
 # ===========================================================================
-# cibuildwheel — Linux manylinux_2_17 (glibc 2.17), the same platform tag as the
-# stock vtk==9.6.2 wheels. One C++ build is shared across the cp matrix via ccache.
+# cibuildwheel — Linux manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1). The
+# 2_28 image is the single biggest cold-CI lever: its GCC>=12 toolchain ACTIVATES
+# the GCC<12-gated unity levers (FVTK_SOURCE_UNITY + FVTK_WRAP_UNITY) and the
+# array-TU split, which are inert on the old manylinux2014/GCC-10.2.1 image. One
+# C++ build is shared across the cp matrix via ccache. NOTE: 2_28 raises the glibc
+# floor from 2.17 to 2.28 — wheels no longer install on glibc<2.28 (CentOS7/RHEL7,
+# Ubuntu<18.10, Debian<10); stock vtk==9.6.2 still ships manylinux_2_17. This is
+# the deliberate tradeoff for the ~modern-GCC build speedup.
 # ===========================================================================
 [tool.cibuildwheel]
 build-frontend = "pip"
@@ -47,9 +53,9 @@ build-frontend = "pip"
 build = "cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "FVTK_IMPORT_NAME=fvtk xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
-# auditwheel repair runs by default; stamp the 2_17 tag explicitly to match the
-# raw-docker recipe (manylinux2014 == manylinux_2_17_x86_64).
-repair-wheel-command = "auditwheel repair --plat manylinux_2_17_x86_64 -w {dest_dir} {wheel}"
+# auditwheel repair runs by default; stamp the 2_28 tag explicitly to match the
+# manylinux_2_28 build image (AlmaLinux 8 / glibc 2.28).
+repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel}"
 # NOTE on abi3audit: cibuildwheel >=4.0 auto-runs `abi3audit --strict` on
 # abi3-tagged wheels and FAILS the build on any non-abi3 symbol. fvtk's cp312-abi3
 # modules export the wrapper runtime's OWN cross-module symbols (PyVTKObject_New,
@@ -64,13 +70,18 @@ repair-wheel-command = "auditwheel repair --plat manylinux_2_17_x86_64 -w {dest_
 # keys, so it must NOT be added here until the cibuildwheel pin is >=4.0).
 
 [tool.cibuildwheel.linux]
-# manylinux2014 == glibc 2.17 == devtoolset-10 GCC 10.2.1 + gold 2.35 on PATH.
-manylinux-x86_64-image = "quay.io/pypa/manylinux2014_x86_64"
+# manylinux_2_28 == glibc 2.28 == AlmaLinux 8.10, system GCC 14.2.1 + gold on PATH.
+# GCC 14 (>=12) activates the unity + array-split build-time levers (inert on the
+# old manylinux2014/GCC-10.2.1 image).
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
 archs = ["x86_64"]
 # CIBW_BEFORE_ALL runs ONCE in the build container before the cp matrix: install
-# the el7 rendering stack (system mesa = GL backend) + ccache + ninja + xvfb.
+# the rendering stack (system mesa = GL backend) + ccache + ninja + xvfb. The
+# AlmaLinux 8 package names are identical to the el7 set (verified: all 13 install
+# from the stock 2_28 repos, no EPEL/CRB enable needed); only the package manager
+# is dnf (yum is a dnf alias on AlmaLinux 8, but call dnf explicitly).
 before-all = [
-  "yum install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb ccache git",
+  "dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb ccache git",
   # before-all runs as root; the build runs as a non-root user, so make the
   # in-container ccache dir world-writable up front.
   "mkdir -p /ccache && chmod 0777 /ccache",

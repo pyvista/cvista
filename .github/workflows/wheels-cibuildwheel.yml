@@ -3,8 +3,9 @@
 #
 # One workflow, three OSes, one config (pyproject.toml [tool.cibuildwheel]).
 # cibuildwheel drives, per platform:
-#   linux   : manylinux2014 container, el7 yum mesa (CIBW_BEFORE_ALL), GCC 10.2.1
-#             + gold, ci/cmake/linux.cmake, auditwheel repair -> manylinux_2_17.
+#   linux   : manylinux_2_28 container, AlmaLinux 8 dnf mesa (CIBW_BEFORE_ALL),
+#             GCC 14.2.1 + gold (activates the unity + array-split build-time
+#             levers), ci/cmake/linux.cmake, auditwheel repair -> manylinux_2_28.
 #   macos   : ci/cmake/macos.cmake (Cocoa GL, ThinLTO), delocate.
 #   windows : ci/cmake/windows.cmake (WGL, /GL /LTCG), delvewheel.
 #
