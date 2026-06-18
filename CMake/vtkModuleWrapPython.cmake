@@ -730,6 +730,82 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
     endforeach ()
     if (WIN32)
       set_property(TARGET "${name}" PROPERTY SUFFIX ".pyd")
+      # Limited-API link fix (LNK1104 "cannot open file 'python3.lib'").
+      #
+      # Under Py_LIMITED_API, MSVC's pyconfig.h emits
+      #   #pragma comment(lib, "python3.lib")
+      # to auto-link the stable-ABI forwarding import library (python3.lib ->
+      # python3.dll) instead of the version-specific python3XX.lib. That is
+      # exactly what we want for an abi3 wheel (the .pyd must depend on
+      # python3.dll, not python312.dll, so it loads on any CPython >= the floor).
+      #
+      # But FindPython links the version-specific python3XX.lib by FULL PATH via
+      # Python3::Module and never adds its directory to the linker search path.
+      # python3.lib lives in that SAME CPython "libs/" directory, so the
+      # auto-linked python3.lib is unresolved -> LNK1104. Put the libs/ dir on
+      # this wrapper target's linker search path so python3.lib resolves.
+      #
+      # Derive the libs/ dir from whatever FindPython populated, in order of
+      # preference. With the Development.Module component the version-specific
+      # link is via Python3_LIBRARY_DIRS / Python3_LIBRARIES; the include dir's
+      # sibling "libs" is the robust fallback (standard CPython Windows layout:
+      # <prefix>/include and <prefix>/libs are siblings, and python3.lib lives in
+      # <prefix>/libs alongside python3XX.lib).
+      set(_fvtk_abi3_libdirs)
+      # SABI dirs first: with FindPython's stable-ABI support these point right
+      # at python3.lib. Then the version-specific dirs (python3.lib lives in the
+      # SAME directory as python3XX.lib), then the include-sibling fallback.
+      if (Python3_SABI_LIBRARY_DIRS)
+        list(APPEND _fvtk_abi3_libdirs ${Python3_SABI_LIBRARY_DIRS})
+      endif ()
+      if (Python3_LIBRARY_DIRS)
+        list(APPEND _fvtk_abi3_libdirs ${Python3_LIBRARY_DIRS})
+      endif ()
+      if (Python3_LIBRARIES)
+        foreach (_fvtk_abi3_pylib IN LISTS Python3_LIBRARIES)
+          if (EXISTS "${_fvtk_abi3_pylib}")
+            get_filename_component(_fvtk_abi3_pld "${_fvtk_abi3_pylib}" DIRECTORY)
+            if (_fvtk_abi3_pld)
+              list(APPEND _fvtk_abi3_libdirs "${_fvtk_abi3_pld}")
+            endif ()
+          endif ()
+        endforeach ()
+      endif ()
+      foreach (_fvtk_abi3_incdir IN LISTS Python3_INCLUDE_DIRS)
+        get_filename_component(_fvtk_abi3_prefix "${_fvtk_abi3_incdir}" DIRECTORY)
+        if (_fvtk_abi3_prefix AND IS_DIRECTORY "${_fvtk_abi3_prefix}/libs")
+          list(APPEND _fvtk_abi3_libdirs "${_fvtk_abi3_prefix}/libs")
+        endif ()
+      endforeach ()
+      if (_fvtk_abi3_libdirs)
+        list(REMOVE_DUPLICATES _fvtk_abi3_libdirs)
+        target_link_directories("${name}" PRIVATE ${_fvtk_abi3_libdirs})
+      endif ()
+      # Make the .pyd depend on python3.dll, not python3XX.dll — the whole point
+      # of an abi3 wheel (one .pyd that loads on every CPython >= the floor).
+      #
+      # FindPython links the version-specific python3XX.lib (full path, via
+      # Python3::Module / VTK::Python below). Both python3.lib and python3XX.lib
+      # export the same limited-API symbol names, and MSVC resolves each import
+      # from the FIRST lib on the link line that provides it. So we must (a) put
+      # python3.lib in front so the limited-API symbols resolve to python3.dll,
+      # and (b) keep the version-specific import lib from being searched at all,
+      # so no python3XX.dll dependency can leak in (cibuildwheel tests the single
+      # abi3 wheel on cp312/cp313/cp314 — a python312.dll dependency would import
+      # on the build python but fail the cp313/cp314 smoke).
+      #
+      # (a) Link the forwarding stub explicitly, ahead of VTK::Python. CMake
+      #     emits target_link_libraries items in declaration order, and this call
+      #     precedes the VTK::Python link below.
+      target_link_libraries("${name}" PRIVATE python3.lib)
+      # (b) Exclude the version-specific import lib. When FindPython passes it as
+      #     a bare/default lib, /NODEFAULTLIB drops it; the explicit python3.lib
+      #     then satisfies every limited-API import. Harmless if the version lib
+      #     is not actually a default lib (no such lib to exclude).
+      if (Python3_VERSION_MAJOR AND Python3_VERSION_MINOR)
+        target_link_options("${name}" PRIVATE
+          "/NODEFAULTLIB:python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}.lib")
+      endif ()
     else ()
       set_property(TARGET "${name}" PROPERTY SUFFIX ".abi3.so")
     endif ()
