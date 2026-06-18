@@ -262,7 +262,7 @@ namespace
 
 template <typename PointDataType>
 PointDataType vtkOpenGLPointGaussianMapperHelperGetComponent(
-  PointDataType* tuple, int nComponent, int component)
+  const PointDataType* tuple, int nComponent, int component)
 {
   // If this is a single component array, make sure we do not compute
   // a useless magnitude
