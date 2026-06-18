@@ -43,10 +43,10 @@ namespace
 // inputs and produces byte-identical outputs in the identical loop order. Any
 // non-AOS / non-float-double storage keeps the cached pointer null and falls
 // back to the original virtual path.
-class TransformAOSReader
+class AbsTransformAOSReader
 {
 public:
-  explicit TransformAOSReader(vtkDataArray* arr)
+  explicit AbsTransformAOSReader(vtkDataArray* arr)
   {
     if (arr)
     {
@@ -91,10 +91,10 @@ private:
   vtkDataArray* Fallback = nullptr;
 };
 
-class TransformAOSWriter
+class AbsTransformAOSWriter
 {
 public:
-  explicit TransformAOSWriter(vtkDataArray* arr)
+  explicit AbsTransformAOSWriter(vtkDataArray* arr)
   {
     if (arr)
     {
@@ -278,10 +278,10 @@ void vtkAbstractTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPts)
 
   // fvtk: devirtualize the per-point coordinate gather/scatter while keeping the
   // exact same per-point virtual InternalTransformPoint math (nonlinear, not
-  // batchable). See TransformAOSReader/Writer above for the byte-exactness
+  // batchable). See AbsTransformAOSReader/Writer above for the byte-exactness
   // argument; non-AOS storage falls back to GetPoint/SetPoint.
-  const TransformAOSReader inReader(inPts->GetData());
-  const TransformAOSWriter outWriter(outPts->GetData());
+  const AbsTransformAOSReader inReader(inPts->GetData());
+  const AbsTransformAOSWriter outWriter(outPts->GetData());
 
   vtkSMPTools::For(0, n,
     [&](vtkIdType ptId, vtkIdType endPtId)
@@ -332,16 +332,16 @@ void vtkAbstractTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vtkPo
   // fvtk: devirtualize the per-point coordinate / vector / normal gather and
   // scatter while keeping the exact same per-point virtual
   // InternalTransformDerivative + vtkMath 3x3 math (nonlinear, not batchable).
-  // See TransformAOSReader/Writer above for the byte-exactness argument; non-AOS
+  // See AbsTransformAOSReader/Writer above for the byte-exactness argument; non-AOS
   // storage falls back to the original virtual GetPoint/SetPoint/GetTuple/SetTuple.
-  const TransformAOSReader inPtReader(inPts->GetData());
-  const TransformAOSWriter outPtWriter(outPts->GetData());
-  const TransformAOSReader inVrsReader(inVrs);
-  const TransformAOSWriter outVrsWriter(outVrs);
-  const TransformAOSReader inNmsReader(inNms);
-  const TransformAOSWriter outNmsWriter(outNms);
-  std::vector<TransformAOSReader> inVrsArrReaders;
-  std::vector<TransformAOSWriter> outVrsArrWriters;
+  const AbsTransformAOSReader inPtReader(inPts->GetData());
+  const AbsTransformAOSWriter outPtWriter(outPts->GetData());
+  const AbsTransformAOSReader inVrsReader(inVrs);
+  const AbsTransformAOSWriter outVrsWriter(outVrs);
+  const AbsTransformAOSReader inNmsReader(inNms);
+  const AbsTransformAOSWriter outNmsWriter(outNms);
+  std::vector<AbsTransformAOSReader> inVrsArrReaders;
+  std::vector<AbsTransformAOSWriter> outVrsArrWriters;
   if (inVrsArr)
   {
     inVrsArrReaders.reserve(nOptionalVectors);

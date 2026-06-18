@@ -28,10 +28,10 @@ namespace
 // The transform math therefore sees byte-identical inputs and writes
 // byte-identical outputs in the identical loop order. Non-AOS storage keeps the
 // cached pointer null and falls back to the original virtual path.
-class TransformAOSReader
+class HomogTransformAOSReader
 {
 public:
-  explicit TransformAOSReader(vtkDataArray* arr)
+  explicit HomogTransformAOSReader(vtkDataArray* arr)
   {
     if (arr)
     {
@@ -75,10 +75,10 @@ private:
   vtkDataArray* Fallback = nullptr;
 };
 
-class TransformAOSWriter
+class HomogTransformAOSWriter
 {
 public:
-  explicit TransformAOSWriter(vtkDataArray* arr)
+  explicit HomogTransformAOSWriter(vtkDataArray* arr)
   {
     if (arr)
     {
@@ -232,8 +232,8 @@ void vtkHomogeneousTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPt
   this->Update();
 
   // fvtk: devirtualize coordinate gather/scatter; same per-point homogeneous math.
-  const TransformAOSReader inReader(inPts->GetData());
-  const TransformAOSWriter outWriter(outPts->GetData());
+  const HomogTransformAOSReader inReader(inPts->GetData());
+  const HomogTransformAOSWriter outWriter(outPts->GetData());
 
   vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
     [&](vtkIdType ptId, vtkIdType endPtId)
@@ -289,14 +289,14 @@ void vtkHomogeneousTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vt
 
   // fvtk: devirtualize coordinate / vector / normal gather/scatter; same per-point
   // homogeneous math.
-  const TransformAOSReader inPtReader(inPts->GetData());
-  const TransformAOSWriter outPtWriter(outPts->GetData());
-  const TransformAOSReader inVrsReader(inVrs);
-  const TransformAOSWriter outVrsWriter(outVrs);
-  const TransformAOSReader inNmsReader(inNms);
-  const TransformAOSWriter outNmsWriter(outNms);
-  std::vector<TransformAOSReader> inVrsArrReaders;
-  std::vector<TransformAOSWriter> outVrsArrWriters;
+  const HomogTransformAOSReader inPtReader(inPts->GetData());
+  const HomogTransformAOSWriter outPtWriter(outPts->GetData());
+  const HomogTransformAOSReader inVrsReader(inVrs);
+  const HomogTransformAOSWriter outVrsWriter(outVrs);
+  const HomogTransformAOSReader inNmsReader(inNms);
+  const HomogTransformAOSWriter outNmsWriter(outNms);
+  std::vector<HomogTransformAOSReader> inVrsArrReaders;
+  std::vector<HomogTransformAOSWriter> outVrsArrWriters;
   if (inVrsArr)
   {
     inVrsArrReaders.reserve(nOptionalVectors);
