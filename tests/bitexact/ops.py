@@ -756,6 +756,36 @@ def op_warpvector(dtype, size):
     return w.GetOutput()
 
 
+def make_sphere_scalar_normals(theta=40, phi=40, dtype=np.float64):
+    """Sphere carrying both point normals AND a per-point scalar 's', so
+    vtkWarpScalar exercises the per-point data-normals path (inNormals !=
+    nullptr): xo = xi + sf*s*normal(ptId). Coordinates are the source's; the
+    scalar uses only the z coordinate (no trig) so both backends start
+    byte-identical."""
+    s = make_sphere(theta, phi)
+    n = vtkPolyDataNormals()
+    n.SetInputData(s)
+    n.SetComputePointNormals(True)
+    n.Update()
+    out = n.GetOutput()
+    coords = vtk_to_numpy(out.GetPoints().GetData())
+    scal = numpy_to_vtk(np.ascontiguousarray(coords[:, 2]).astype(dtype), deep=1)
+    scal.SetName("s")
+    out.GetPointData().SetScalars(scal)
+    return out
+
+
+def op_warpscalar_normals(dtype, size):
+    """vtkWarpScalar over a point set that carries point normals, so the
+    per-point inNormals->GetTuple path (not the constant-normal fast path) is
+    exercised. UseNormal stays off so the data normals are used."""
+    w = vtkWarpScalar()
+    w.SetInputData(make_sphere_scalar_normals(size, size, dtype))
+    w.SetScaleFactor(0.7)
+    w.Update()
+    return w.GetOutput()
+
+
 def op_transform(dtype, size):
     """vtkTransformFilter with a non-trivial 4x4 (rotate+translate+scale) so the
     full matrix*point math (vtkLinearTransform::TransformPoints, the fvtk AVX2
@@ -1836,7 +1866,12 @@ OPS = {
     "point2cell": dict(fn=op_point2cell, group="filter", dtypes=["float32", "float64"], sizes=[20, 28]),
     "point2cell_ugrid": dict(fn=op_point2cell_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "elevation": dict(fn=op_elevation, group="filter", dtypes=["float64"], sizes=[24, 40]),
-    "warpvector": dict(fn=op_warpvector, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "warpvector": dict(
+        fn=op_warpvector, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
+    ),
+    "warpscalar_normals": dict(
+        fn=op_warpscalar_normals, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
+    ),
     "transform": dict(
         fn=op_transform, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
     ),

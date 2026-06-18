@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkWarpScalar.h"
 
+#include "vtkAOSDataArrayTemplate.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayDispatchDataSetArrayList.h"
 #include "vtkCellArray.h"
@@ -108,6 +109,44 @@ int vtkWarpScalar::RequestDataObject(
 namespace
 { // anonymous
 
+// fvtk wave-11/12 typed-pointer kernel for the dominant constant-normal warp:
+// xo = xi + sf*s*n over raw contiguous AOS buffers resolved ONCE in the worker
+// (vtkAOSDataArrayTemplate::FastDownCast + GetPointer(0)) instead of through
+// vtkDataArrayTupleRange. Covers both s sources -- the scalar array's 0th
+// component (XYPlane off) and xi[2] (XYPlane on) -- with a constant normal `n`
+// (the inNormals==nullptr case). The per-point inNormals->GetTuple(...) path is
+// left on the original tuple-range loop below.
+//
+// BIT-EXACT: the operand types and operation order are reproduced exactly as the
+// original loop. `s` is a double: `s = xi[2]` (InT widened to double) when XYPlane,
+// else `s = scalar[scNComp*ptId]` (ST widened to double); identical to the original
+// `double s` assignments off the tuple ranges. `n[c]` is double (the passed-in
+// `normal`). Each component: xo[c] = xi[c] + sf*s*n[c] with xi[c]=InT, sf/s/n[c]
+// all double -> sf*s computed first, *n[c], then xi[c] promoted to double and added,
+// narrowed to OutT on store -- the EXACT same multiply/add chain and intermediate
+// precision as the original. -ffp-contract=off TU, so no a*b+c contracts to an FMA.
+template <typename InT, typename OutT, typename ScT>
+void fvtkWarpScalarPtr(const InT* in, OutT* out, const ScT* sc, int scNComp, bool XYPlane, double sf,
+  const double* n, vtkIdType begin, vtkIdType end)
+{
+  for (vtkIdType ptId = begin; ptId < end; ++ptId)
+  {
+    const vtkIdType i = 3 * ptId;
+    double s;
+    if (XYPlane)
+    {
+      s = in[i + 2];
+    }
+    else
+    {
+      s = sc[scNComp * ptId]; // 0th component of the tuple
+    }
+    out[i + 0] = in[i + 0] + sf * s * n[0];
+    out[i + 1] = in[i + 1] + sf * s * n[1];
+    out[i + 2] = in[i + 2] + sf * s * n[2];
+  }
+}
+
 struct ScaleWorker
 {
   template <typename InPT, typename OutPT, typename ST>
@@ -119,6 +158,23 @@ struct ScaleWorker
     const auto ipts = vtk::DataArrayTupleRange<3>(inPts);
     auto opts = vtk::DataArrayTupleRange<3>(outPts);
     const auto sRange = vtk::DataArrayTupleRange(scalars);
+
+    // fvtk: try to resolve raw AOS buffers once for the constant-normal fast path.
+    // The dispatch restricts outPts to AOS; inPts and scalars may be SOA, in which
+    // case the typed pointers stay null and we use the original tuple-range loop.
+    // The per-point-normal case (inNormals != nullptr) also uses the range loop so
+    // the exact GetTuple widening of arbitrary normal storage is preserved.
+    using InValueT = vtk::GetAPIType<InPT>;
+    using OutValueT = vtk::GetAPIType<OutPT>;
+    using ScValueT = vtk::GetAPIType<ST>;
+    auto* inAOS = vtkAOSDataArrayTemplate<InValueT>::FastDownCast(inPts);
+    auto* outAOS = vtkAOSDataArrayTemplate<OutValueT>::FastDownCast(outPts);
+    auto* scAOS = vtkAOSDataArrayTemplate<ScValueT>::FastDownCast(scalars);
+    const InValueT* inPtr = inAOS ? inAOS->GetPointer(0) : nullptr;
+    OutValueT* outPtr = outAOS ? outAOS->GetPointer(0) : nullptr;
+    const ScValueT* scPtr = scAOS ? scAOS->GetPointer(0) : nullptr;
+    const int scNComp = scalars->GetNumberOfComponents();
+    const bool useRaw = !inNormals && inPtr && outPtr && scPtr;
 
     // We use THRESHOLD to test if the data size is small enough
     // to execute the functor serially.
@@ -142,6 +198,27 @@ struct ScaleWorker
             // touches the point or scalar arrays, so the values written are identical; only
             // abort *responsiveness* is coarsened, which is inherently periodic/best-effort.
             constexpr vtkIdType kAbortInterval = 4096;
+            // fvtk: constant-normal AOS fast path uses the devirtualized raw-pointer
+            // kernel, processed in abort-checked batches identical to the per-point
+            // check (CheckAbort only sets a flag; abort breaks at a batch boundary and
+            // the undefined tail is discarded exactly as the per-point path would).
+            if (useRaw)
+            {
+              for (vtkIdType base = ptId; base < endPtId; base += kAbortInterval)
+              {
+                if (isFirst)
+                {
+                  self->CheckAbort();
+                }
+                if (self->GetAbortOutput())
+                {
+                  break;
+                }
+                const vtkIdType batchEnd = std::min(base + kAbortInterval, endPtId);
+                fvtkWarpScalarPtr(inPtr, outPtr, scPtr, scNComp, XYPlane, sf, n, base, batchEnd);
+              }
+              return;
+            }
             for (; ptId < endPtId; ++ptId)
             {
               if (isFirst && (ptId % kAbortInterval == 0))

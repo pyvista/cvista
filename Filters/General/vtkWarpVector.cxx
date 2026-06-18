@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkWarpVector.h"
 
+#include "vtkAOSDataArrayTemplate.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayDispatchDataSetArrayList.h"
 #include "vtkCellData.h"
@@ -119,6 +120,33 @@ FVTK_AVX2_TARGET_CLONES void fvtkWarpVectorRange(
   }
 }
 
+// fvtk wave-11/12 typed-pointer kernel: identical xo = xi + sf*v warp, but over
+// raw contiguous AOS buffers resolved ONCE in the worker (FastDownCast +
+// GetPointer(0)) instead of through vtkDataArrayTupleRange. The tuple-range layer
+// (proxy tuple-reference -> component-reference) still bottoms out at the same
+// stored value, but the extra indirection/aliasing it presents can keep the AVX2
+// clone from cleanly vectorizing the contiguous stride-3 stream. Indexing
+// in/out/vec at 3*ptId+c gives the compiler bare InT*/OutT*/VecT* arrays.
+// BIT-EXACT: the operand types are exactly the array storage types (in[i] is InT,
+// vec[i] is VecT, sf is double, assigned to OutT) -- identical to xi[c]/v[c]/xo[c]
+// off the AOS tuple range, whose operator[] returns ValueType& straight off the
+// raw Tuple pointer. So `xi + sf*v` is evaluated in the IDENTICAL operand types,
+// IDENTICAL operation order (mul then add), and narrowed identically on store;
+// byte-for-byte the same as the range kernel above. Same -ffp-contract=off TU, so
+// no clone contracts the a*b+c to an FMA.
+template <typename InT, typename OutT, typename VecT>
+FVTK_AVX2_TARGET_CLONES void fvtkWarpVectorPtr(
+  const InT* in, OutT* out, const VecT* vec, double sf, vtkIdType begin, vtkIdType end)
+{
+  for (vtkIdType ptId = begin; ptId < end; ++ptId)
+  {
+    const vtkIdType i = 3 * ptId;
+    out[i + 0] = in[i + 0] + sf * vec[i + 0];
+    out[i + 1] = in[i + 1] + sf * vec[i + 1];
+    out[i + 2] = in[i + 2] + sf * vec[i + 2];
+  }
+}
+
 struct WarpWorker
 {
   template <typename InPT, typename OutPT, typename VT>
@@ -129,6 +157,21 @@ struct WarpWorker
     const auto ipts = vtk::DataArrayTupleRange<3>(inPts);
     auto opts = vtk::DataArrayTupleRange<3>(outPts);
     const auto vecs = vtk::DataArrayTupleRange<3>(vectors);
+
+    // fvtk: try to resolve raw AOS coordinate/vector buffers once. The dispatch
+    // restricts outPts to AOS already; inPts and vectors may be SOA, in which
+    // case the typed pointers stay null and we use the tuple-range kernel. The
+    // raw-pointer kernel is selected only when all three are AOS-contiguous.
+    using InValueT = vtk::GetAPIType<InPT>;
+    using OutValueT = vtk::GetAPIType<OutPT>;
+    using VecValueT = vtk::GetAPIType<VT>;
+    auto* inAOS = vtkAOSDataArrayTemplate<InValueT>::FastDownCast(inPts);
+    auto* outAOS = vtkAOSDataArrayTemplate<OutValueT>::FastDownCast(outPts);
+    auto* vecAOS = vtkAOSDataArrayTemplate<VecValueT>::FastDownCast(vectors);
+    const InValueT* inPtr = inAOS ? inAOS->GetPointer(0) : nullptr;
+    OutValueT* outPtr = outAOS ? outAOS->GetPointer(0) : nullptr;
+    const VecValueT* vecPtr = vecAOS ? vecAOS->GetPointer(0) : nullptr;
+    const bool useRaw = inPtr && outPtr && vecPtr;
 
     // We use THRESHOLD to test if the data size is small enough
     // to execute the functor serially.
@@ -160,7 +203,14 @@ struct WarpWorker
                 break;
               }
               const vtkIdType batchEnd = std::min(base + kBatch, endPtId);
-              fvtkWarpVectorRange(ipts, opts, vecs, sf, base, batchEnd);
+              if (useRaw)
+              {
+                fvtkWarpVectorPtr(inPtr, outPtr, vecPtr, sf, base, batchEnd);
+              }
+              else
+              {
+                fvtkWarpVectorRange(ipts, opts, vecs, sf, base, batchEnd);
+              }
             }
           }); // lambda
       });
