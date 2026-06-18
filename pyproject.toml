@@ -24,7 +24,17 @@ name = "fvtk"
 # is overwritten by the wheel the backend actually produces.
 version = "9.6.2"
 description = "fvtk — trimmed PyVista-parity hard-fork of VTK 9.6.2 (vtkmodules renamed to top-level fvtk)"
-requires-python = ">=3.12"
+# Floor is 3.10 (NOT 3.12) so cibuildwheel will SELECT cp310/cp311 for the
+# additive legacy versioned-wheel line (.github/workflows/wheels-legacy.yml).
+# cibuildwheel intersects its `build`/CIBW_BUILD selector with this metadata
+# floor, so a 3.12 floor here silently dropped every cp310/cp311 identifier
+# ("No build identifiers selected"). The shipped cp312-abi3 path is UNAFFECTED:
+# ci.yml + wheels-cibuildwheel.yml + [tool.cibuildwheel].build all pin
+# cp312-*/cp313-*/cp314-*, so the abi3 build still selects only 3.12+. This is
+# pip's pre-build metadata peek only; the real wheel metadata is computed by
+# VTK's generated build-tree setup.py, so lowering the floor does not alter what
+# the abi3 wheel ships.
+requires-python = ">=3.10"
 
 # ===========================================================================
 # cibuildwheel — Linux manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1). The
