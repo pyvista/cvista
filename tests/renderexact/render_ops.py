@@ -124,6 +124,75 @@ def scene_sphere_shaded():
     return ren, _new_window(ren)
 
 
+def scene_camera_roundtrip():
+    """Multi-frame scene that exercises *per-frame uniform re-upload* and its
+    inverse. A single-render scene only ever uploads each uniform once (a fresh
+    program's uniform cache is empty), so it cannot catch a stale/skipped
+    re-upload. Here we render at the fixed camera, move the camera (which changes
+    the MCDC/MCVC/normal matrix uniforms -> they MUST be re-uploaded), then move
+    the camera *back* to the original pose and render again (the matrices return
+    to their first-frame values -> they must be re-uploaded with the original
+    values, not left stale). The window is left holding this final, moved-back
+    frame; the driver's readback therefore equals a fixed-camera render iff the
+    uniform path round-trips correctly. A renderer that wrongly skips changed
+    uniform uploads (or fails to restore them) produces a different final image.
+    Stays byte-identical between stock VTK and fvtk because both walk the exact
+    same camera sequence."""
+    s = vtkSphereSource()
+    s.SetThetaResolution(48)
+    s.SetPhiResolution(48)
+    s.SetRadius(1.0)
+    m = vtkPolyDataMapper()
+    m.SetInputConnection(s.GetOutputPort())
+    a = vtkActor()
+    a.SetMapper(m)
+    a.GetProperty().SetColor(0.85, 0.55, 0.30)
+    a.GetProperty().SetAmbient(0.18)
+    a.GetProperty().SetDiffuse(0.75)
+    a.GetProperty().SetSpecular(0.35)
+    a.GetProperty().SetSpecularPower(25.0)
+    ren = _renderer()
+    ren.AddActor(a)
+    _fixed_camera(ren, dist=3.2)
+    rw = _new_window(ren)
+    # Frame 1: fixed camera. Frame 2: camera moved (changed matrix uniforms).
+    # Frame 3 (implicit final render by the driver): camera moved back to the
+    # exact original pose -> uniforms must return to their frame-1 values.
+    rw.Render()
+    cam = ren.GetActiveCamera()
+    cam.Azimuth(37.0)
+    cam.Elevation(23.0)
+    rw.Render()
+    cam.Elevation(-23.0)
+    cam.Azimuth(-37.0)
+    return ren, rw
+
+
+def scene_camera_moved():
+    """Companion to scene_camera_roundtrip: render once at the fixed camera, then
+    move the camera and leave it there. The driver reads back the *moved* view,
+    which is only correct if the changed matrix uniforms were re-uploaded for the
+    new pose. Byte-identical stock-vs-fvtk (same camera sequence)."""
+    s = vtkSphereSource()
+    s.SetThetaResolution(40)
+    s.SetPhiResolution(40)
+    s.SetRadius(1.0)
+    m = vtkPolyDataMapper()
+    m.SetInputConnection(s.GetOutputPort())
+    a = vtkActor()
+    a.SetMapper(m)
+    a.GetProperty().SetColor(0.40, 0.72, 0.55)
+    ren = _renderer()
+    ren.AddActor(a)
+    _fixed_camera(ren, dist=3.2)
+    rw = _new_window(ren)
+    rw.Render()
+    cam = ren.GetActiveCamera()
+    cam.Azimuth(48.0)
+    cam.Elevation(-15.0)
+    return ren, rw
+
+
 def scene_cone_shaded():
     """A shaded cone (different primitive count / normals path)."""
     c = vtkConeSource()
@@ -544,6 +613,8 @@ def scene_volume_raycast():
 
 SCENES = {
     "sphere_shaded": scene_sphere_shaded,
+    "camera_roundtrip": scene_camera_roundtrip,
+    "camera_moved": scene_camera_moved,
     "textured": scene_textured,
     "multi_textured": scene_multi_textured,
     "volume_raycast": scene_volume_raycast,
