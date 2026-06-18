@@ -13,11 +13,153 @@
 #include "vtkHigherOrderQuadrilateral.h"
 #include "vtkHigherOrderTetra.h"
 #include "vtkHigherOrderWedge.h"
+#include "vtkIdList.h"
 #include "vtkPointData.h"
+
+#include "vtkCellArray.h"
+#include "vtkTypeInt32Array.h"
+#include "vtkTypeInt64Array.h"
+#include "vtkUnsignedCharArray.h"
+#include "vtkUnstructuredGrid.h"
 
 #include <cmath>
 
 VTK_ABI_NAMESPACE_BEGIN
+
+namespace
+{
+//------------------------------------------------------------------------------
+// Devirtualized per-cell reader for a vtkUnstructuredGrid input.
+//
+// The reflection per-cell loops call input->GetCellPoints(i, ids) and
+// input->GetCellType(i) once per cell. Both are virtual, cross-shared-library
+// calls (libvtkFiltersGeneral -> libvtkCommonDataModel): GetCellPoints routes
+// through vtkUnstructuredGrid::GetCellPoints -> vtkCellArray::GetCellAtId whose
+// StorageType switch is re-run on every cell, and GetCellType re-reads the
+// cell-types array through the same out-of-line path. A native profile of the
+// reflection filter showed exactly these per-cell input reads (plus the output
+// InsertNextCell growth) dominating self time.
+//
+// For the dominant storage (Int64-AOS, vtkCellArray's default; Int32-AOS also
+// supported) this reader resolves the offsets/connectivity raw pointers and the
+// cell-types unsigned-char buffer ONCE, then reads each cell inline:
+//
+//   * GetCellPoints fills the SAME vtkIdList GetCellAtId(cellId, vtkIdList*)
+//     would (SetNumberOfIds(cellSize); ids[k] = static_cast<vtkIdType>(
+//     conn[beginOffset + k])), in the same order -- byte-identical;
+//   * GetCellType returns static_cast<int>(typesPtr[cellId]), exactly the
+//     vtkUnstructuredGrid::GetCellType AOS fast path.
+//
+// Any other connectivity storage (FixedSize / Generic) leaves Offsets/Conn null
+// and GetCellPoints falls back to the virtual input->GetCellPoints; a non-AOS
+// cell-types array (e.g. a constant array) leaves Types null and GetCellType
+// falls back to the virtual input->GetCellType. So output is identical for every
+// input. This is an ACCESS-only change: the cell ids, cell types, iteration
+// order, the reflection arithmetic, and every output emission are untouched.
+class UGCellReader
+{
+public:
+  explicit UGCellReader(vtkDataSet* input)
+    : DataSet(input)
+  {
+    auto* ug = vtkUnstructuredGrid::SafeDownCast(input);
+    if (!ug)
+    {
+      return;
+    }
+    if (vtkCellArray* ca = ug->GetCells())
+    {
+      this->ConnectivitySize = ca->GetNumberOfConnectivityIds();
+      const vtkCellArray::StorageTypes st = ca->GetStorageType();
+      if (st == vtkCellArray::StorageTypes::Int64)
+      {
+        if (auto* offs = ca->GetOffsetsArray64())
+        {
+          if (auto* conn = ca->GetConnectivityArray64())
+          {
+            this->Offsets64 = offs->GetPointer(0);
+            this->Conn64 = conn->GetPointer(0);
+          }
+        }
+      }
+      else if (st == vtkCellArray::StorageTypes::Int32)
+      {
+        if (auto* offs = ca->GetOffsetsArray32())
+        {
+          if (auto* conn = ca->GetConnectivityArray32())
+          {
+            this->Offsets32 = offs->GetPointer(0);
+            this->Conn32 = conn->GetPointer(0);
+          }
+        }
+      }
+    }
+    if (auto* types = ug->GetCellTypesArray())
+    {
+      this->Types = types->GetPointer(0);
+    }
+  }
+
+  // Total number of connectivity entries in the input UG cell array, or -1 if the
+  // input is not an unstructured grid. Used only as an allocation hint -- it never
+  // affects output contents.
+  vtkIdType GetConnectivitySize() const { return this->ConnectivitySize; }
+
+  // Equivalent to input->GetCellPoints(cellId, ids).
+  inline void GetCellPoints(vtkIdType cellId, vtkIdList* ids) const
+  {
+    if (this->Offsets64)
+    {
+      const vtkTypeInt64 begin = this->Offsets64[cellId];
+      const vtkTypeInt64 end = this->Offsets64[cellId + 1];
+      const vtkIdType cellSize = static_cast<vtkIdType>(end - begin);
+      ids->SetNumberOfIds(cellSize);
+      vtkIdType* idPtr = ids->GetPointer(0);
+      const vtkTypeInt64* c = this->Conn64 + begin;
+      for (vtkIdType k = 0; k < cellSize; ++k)
+      {
+        idPtr[k] = static_cast<vtkIdType>(c[k]);
+      }
+    }
+    else if (this->Offsets32)
+    {
+      const vtkTypeInt32 begin = this->Offsets32[cellId];
+      const vtkTypeInt32 end = this->Offsets32[cellId + 1];
+      const vtkIdType cellSize = static_cast<vtkIdType>(end - begin);
+      ids->SetNumberOfIds(cellSize);
+      vtkIdType* idPtr = ids->GetPointer(0);
+      const vtkTypeInt32* c = this->Conn32 + begin;
+      for (vtkIdType k = 0; k < cellSize; ++k)
+      {
+        idPtr[k] = static_cast<vtkIdType>(c[k]);
+      }
+    }
+    else
+    {
+      this->DataSet->GetCellPoints(cellId, ids);
+    }
+  }
+
+  // Equivalent to input->GetCellType(cellId).
+  inline int GetCellType(vtkIdType cellId) const
+  {
+    if (this->Types)
+    {
+      return static_cast<int>(this->Types[cellId]);
+    }
+    return this->DataSet->GetCellType(cellId);
+  }
+
+private:
+  vtkDataSet* DataSet;
+  const vtkTypeInt64* Offsets64 = nullptr;
+  const vtkTypeInt64* Conn64 = nullptr;
+  const vtkTypeInt32* Offsets32 = nullptr;
+  const vtkTypeInt32* Conn32 = nullptr;
+  const unsigned char* Types = nullptr;
+  vtkIdType ConnectivitySize = -1;
+};
+} // anonymous namespace
 
 //------------------------------------------------------------------------------
 void vtkReflectionUtilities::FindReflectableArrays(
@@ -143,15 +285,24 @@ void vtkReflectionUtilities::FindAllReflectableArrays(
   }
 }
 
+namespace
+{
 //------------------------------------------------------------------------------
-vtkIdType vtkReflectionUtilities::ReflectNon3DCellInternal(vtkDataSet* input,
+// File-local body of ReflectNon3DCellInternal that reads the cell's point ids
+// and type through the devirtualized UGCellReader (the public wrapper below
+// constructs a reader and delegates here, so any caller still gets identical
+// behavior; the hot per-cell loop in ProcessUnstructuredGrid passes its hoisted
+// reader directly). input->GetCell(cellId) for higher-order quadrilaterals stays
+// virtual -- the reader only replaces GetCellPoints/GetCellType, which is an
+// ACCESS-only change; the reflected connectivity and emission are untouched.
+vtkIdType ReflectNon3DCellInternalImpl(const UGCellReader& reader, vtkDataSet* input,
   vtkUnstructuredGrid* output, vtkIdType cellId, vtkIdType numInputPoints, bool copyInput)
 {
   vtkNew<vtkIdList> cellPts;
-  input->GetCellPoints(cellId, cellPts);
+  reader.GetCellPoints(cellId, cellPts);
   int numCellPts = cellPts->GetNumberOfIds();
   std::vector<vtkIdType> newCellPts(numCellPts);
-  int cellType = input->GetCellType(cellId);
+  int cellType = reader.GetCellType(cellId);
   switch (cellType)
   {
     case VTK_QUADRATIC_EDGE:
@@ -312,6 +463,15 @@ vtkIdType vtkReflectionUtilities::ReflectNon3DCellInternal(vtkDataSet* input,
   }
   return output->InsertNextCell(cellType, numCellPts, newCellPts.data());
 }
+} // anonymous namespace
+
+//------------------------------------------------------------------------------
+vtkIdType vtkReflectionUtilities::ReflectNon3DCellInternal(vtkDataSet* input,
+  vtkUnstructuredGrid* output, vtkIdType cellId, vtkIdType numInputPoints, bool copyInput)
+{
+  UGCellReader reader(input);
+  return ReflectNon3DCellInternalImpl(reader, input, output, cellId, numInputPoints, copyInput);
+}
 
 //------------------------------------------------------------------------------
 void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstructuredGrid* output,
@@ -328,15 +488,44 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
   vtkSmartPointer<vtkIdList> ptIds = vtkSmartPointer<vtkIdList>::New();
   vtkSmartPointer<vtkPoints> outPoints = vtkSmartPointer<vtkPoints>::New();
 
+  // Resolve the input UG's typed cell-array offsets/connectivity and cell-types
+  // buffers ONCE, so the per-cell loops below read each cell's point ids and type
+  // inline instead of issuing a virtual, cross-shared-library GetCellPoints /
+  // GetCellType per cell. Non-UG inputs or unsupported storage fall back to the
+  // virtual path inside the reader, so output is byte-identical for every input.
+  const UGCellReader reader(input);
+
+  // Presize the output cell array to the known final cell/connectivity counts so
+  // the per-cell InsertNextCell below does not repeatedly grow-and-realloc its
+  // offsets/connectivity buffers (vtkUnstructuredGrid::InternalInsertNextCell was
+  // ~18% of the profiled reflection self time). The reflected cells reuse the same
+  // connectivity entries as the input (a couple of branches -- even-count triangle
+  // strips, polyhedra -- emit slightly more, in which case InsertNextCell still
+  // grows as before), so this is a capacity hint only and never changes contents.
+  const vtkIdType connSize = reader.GetConnectivitySize();
   if (copyInput)
   {
     outPoints->Allocate(2 * numPts);
-    output->Allocate(numCells * 2);
+    if (connSize >= 0)
+    {
+      output->AllocateExact(numCells * 2, connSize * 2);
+    }
+    else
+    {
+      output->Allocate(numCells * 2);
+    }
   }
   else
   {
     outPoints->Allocate(numPts);
-    output->Allocate(numCells);
+    if (connSize >= 0)
+    {
+      output->AllocateExact(numCells, connSize);
+    }
+    else
+    {
+      output->Allocate(numCells);
+    }
   }
   outPD->CopyAllOn();
   outPD->CopyGlobalIdsOff();
@@ -376,21 +565,24 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
 
   vtkNew<vtkIdList> cellPts;
 
+  // Hoist the per-cell input downcast used by the polyhedron special cases.
+  vtkUnstructuredGrid* inputUG = vtkUnstructuredGrid::SafeDownCast(input);
+
   // Copy original cells.
   if (copyInput)
   {
     for (vtkIdType i = 0; i < numCells; i++)
     {
       // special handling for polyhedron cells
-      if (vtkUnstructuredGrid::SafeDownCast(input) && input->GetCellType(i) == VTK_POLYHEDRON)
+      if (inputUG && reader.GetCellType(i) == VTK_POLYHEDRON)
       {
-        vtkUnstructuredGrid::SafeDownCast(input)->GetFaceStream(i, ptIds);
+        inputUG->GetFaceStream(i, ptIds);
         output->InsertNextCell(VTK_POLYHEDRON, ptIds);
       }
       else
       {
-        input->GetCellPoints(i, ptIds);
-        output->InsertNextCell(input->GetCellType(i), ptIds);
+        reader.GetCellPoints(i, ptIds);
+        output->InsertNextCell(reader.GetCellType(i), ptIds);
       }
       outCD->CopyData(inCD, i, i);
     }
@@ -408,23 +600,23 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       break;
     }
     vtkIdType outputCellId = -1;
-    int cellType = input->GetCellType(i);
+    int cellType = reader.GetCellType(i);
     switch (cellType)
     {
       case VTK_TRIANGLE_STRIP:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         int numCellPts = cellPts->GetNumberOfIds();
         if (numCellPts % 2 != 0)
         {
-          vtkReflectionUtilities::ReflectNon3DCellInternal(input, output, i, numPts, copyInput);
+          ReflectNon3DCellInternalImpl(reader, input, output, i, numPts, copyInput);
         }
         else
         {
           // Triangle strips with even number of triangles have
           // to be handled specially. A degenerate triangle is
           // introduced to reflect all the triangles properly.
-          input->GetCellPoints(i, cellPts);
+          reader.GetCellPoints(i, cellPts);
           numCellPts++;
           std::vector<vtkIdType> newCellPts(numCellPts);
           vtkIdType pointIdOffset = 0;
@@ -446,7 +638,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_TETRA:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[4] = { cellPts->GetId(3), cellPts->GetId(1), cellPts->GetId(2),
           cellPts->GetId(0) };
         if (copyInput)
@@ -462,7 +654,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       case VTK_VOXEL:
       case VTK_HEXAHEDRON:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[8] = { cellPts->GetId(4), cellPts->GetId(5), cellPts->GetId(6),
           cellPts->GetId(7), cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2),
           cellPts->GetId(3) };
@@ -478,7 +670,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_WEDGE:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[6] = { cellPts->GetId(3), cellPts->GetId(4), cellPts->GetId(5),
           cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2) };
         if (copyInput)
@@ -493,7 +685,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_PYRAMID:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[5];
         for (int j = 3; j >= 0; j--)
         {
@@ -513,7 +705,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_PENTAGONAL_PRISM:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[10] = { cellPts->GetId(5), cellPts->GetId(6), cellPts->GetId(7),
           cellPts->GetId(8), cellPts->GetId(9), cellPts->GetId(0), cellPts->GetId(1),
           cellPts->GetId(2), cellPts->GetId(3), cellPts->GetId(4) };
@@ -529,7 +721,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_HEXAGONAL_PRISM:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[12] = { cellPts->GetId(6), cellPts->GetId(7), cellPts->GetId(8),
           cellPts->GetId(9), cellPts->GetId(10), cellPts->GetId(11), cellPts->GetId(0),
           cellPts->GetId(1), cellPts->GetId(2), cellPts->GetId(3), cellPts->GetId(4),
@@ -546,7 +738,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_QUADRATIC_TETRA:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[10] = { cellPts->GetId(3), cellPts->GetId(1), cellPts->GetId(2),
           cellPts->GetId(0), cellPts->GetId(8), cellPts->GetId(5), cellPts->GetId(9),
           cellPts->GetId(7), cellPts->GetId(4), cellPts->GetId(6) };
@@ -562,7 +754,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_QUADRATIC_HEXAHEDRON:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[20] = { cellPts->GetId(4), cellPts->GetId(5), cellPts->GetId(6),
           cellPts->GetId(7), cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2),
           cellPts->GetId(3), cellPts->GetId(12), cellPts->GetId(13), cellPts->GetId(14),
@@ -581,7 +773,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_QUADRATIC_WEDGE:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[15] = { cellPts->GetId(3), cellPts->GetId(4), cellPts->GetId(5),
           cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2), cellPts->GetId(9),
           cellPts->GetId(10), cellPts->GetId(11), cellPts->GetId(6), cellPts->GetId(7),
@@ -598,7 +790,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_QUADRATIC_PYRAMID:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[13] = { cellPts->GetId(2), cellPts->GetId(1), cellPts->GetId(0),
           cellPts->GetId(3), cellPts->GetId(4), cellPts->GetId(6), cellPts->GetId(5),
           cellPts->GetId(8), cellPts->GetId(7), cellPts->GetId(11), cellPts->GetId(10),
@@ -615,7 +807,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_TRIQUADRATIC_HEXAHEDRON:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[27] = { cellPts->GetId(4), cellPts->GetId(5), cellPts->GetId(6),
           cellPts->GetId(7), cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2),
           cellPts->GetId(3), cellPts->GetId(12), cellPts->GetId(13), cellPts->GetId(14),
@@ -635,7 +827,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_TRIQUADRATIC_PYRAMID:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[19] = { cellPts->GetId(2), cellPts->GetId(1), cellPts->GetId(0),
           cellPts->GetId(3), cellPts->GetId(4), cellPts->GetId(6), cellPts->GetId(5),
           cellPts->GetId(8), cellPts->GetId(7), cellPts->GetId(11), cellPts->GetId(10),
@@ -653,7 +845,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_QUADRATIC_LINEAR_WEDGE:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[12] = { cellPts->GetId(3), cellPts->GetId(4), cellPts->GetId(5),
           cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2), cellPts->GetId(9),
           cellPts->GetId(10), cellPts->GetId(11), cellPts->GetId(6), cellPts->GetId(7),
@@ -670,7 +862,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_BIQUADRATIC_QUADRATIC_WEDGE:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[18] = { cellPts->GetId(3), cellPts->GetId(4), cellPts->GetId(5),
           cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2), cellPts->GetId(9),
           cellPts->GetId(10), cellPts->GetId(11), cellPts->GetId(6), cellPts->GetId(7),
@@ -688,7 +880,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_BIQUADRATIC_QUADRATIC_HEXAHEDRON:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         vtkIdType newCellPts[24] = { cellPts->GetId(4), cellPts->GetId(5), cellPts->GetId(6),
           cellPts->GetId(7), cellPts->GetId(0), cellPts->GetId(1), cellPts->GetId(2),
           cellPts->GetId(3), cellPts->GetId(12), cellPts->GetId(13), cellPts->GetId(14),
@@ -708,7 +900,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       case VTK_POLYHEDRON:
       {
-        vtkUnstructuredGrid::SafeDownCast(input)->GetFaceStream(i, cellPts);
+        inputUG->GetFaceStream(i, cellPts);
         vtkIdType* idPtr = cellPts->GetPointer(0);
         int nfaces = static_cast<int>(*idPtr++);
         for (int j = 0; j < nfaces; j++)
@@ -735,7 +927,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       case VTK_BEZIER_HEXAHEDRON:
       case VTK_LAGRANGE_HEXAHEDRON:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         const int numCellPts = cellPts->GetNumberOfIds();
         std::vector<vtkIdType> newCellPts(numCellPts);
 
@@ -778,7 +970,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       case VTK_BEZIER_WEDGE:
       case VTK_LAGRANGE_WEDGE:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         const int numCellPts = cellPts->GetNumberOfIds();
         std::vector<vtkIdType> newCellPts(numCellPts);
         if (numCellPts == 21)
@@ -832,7 +1024,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       case VTK_BEZIER_TETRAHEDRON:
       case VTK_LAGRANGE_TETRAHEDRON:
       {
-        input->GetCellPoints(i, cellPts);
+        reader.GetCellPoints(i, cellPts);
         const int numCellPts = cellPts->GetNumberOfIds();
         std::vector<vtkIdType> newCellPts(numCellPts);
         if (numCellPts == 15)
@@ -879,8 +1071,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
       }
       default:
       {
-        outputCellId =
-          vtkReflectionUtilities::ReflectNon3DCellInternal(input, output, i, numPts, copyInput);
+        outputCellId = ReflectNon3DCellInternalImpl(reader, input, output, i, numPts, copyInput);
       }
     }
     outCD->CopyData(inCD, i, outputCellId);
