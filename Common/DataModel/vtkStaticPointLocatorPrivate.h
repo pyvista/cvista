@@ -19,7 +19,9 @@
 #include "vtkDataArrayRange.h"
 #include "vtkDataSet.h"
 #include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkMath.h"
+#include "vtkPointSet.h"
 #include "vtkPoints.h"
 #include "vtkSMPThreadLocal.h"
 #include "vtkSMPThreadLocalObject.h"
@@ -45,6 +47,69 @@ VTK_ABI_NAMESPACE_BEGIN
 
 // Forward declaration of lists of neighboring buckets.
 struct NeighborBuckets;
+
+//------------------------------------------------------------------------------
+// Devirtualized per-point coordinate reader. The point-merging loops below read
+// each point's three coordinates via vtkDataSet::GetPoint(ptId, x), which for a
+// vtkPointSet resolves to vtkPoints::GetPoint -> vtkDataArray::GetTuple(ptId, x)
+// -- a virtual, out-of-line call across the libvtkCommonDataModel boundary for
+// every point. The input points are almost always an AOS float or double array.
+// This helper FastDownCasts the points array ONCE and, for those two common
+// storage types, reads the three coordinates inline from the raw typed pointer,
+// applying the exact same per-component static_cast<double> that GetTuple does
+// (a no-op copy for double, the identical float->double widening for float).
+// The result is byte-for-byte identical to GetPoint. For any other storage type
+// (or no point array) it falls back to the original virtual GetPoint path.
+struct FastPointReader
+{
+  vtkDataSet* DataSet = nullptr;
+  const float* FloatPts = nullptr;
+  const double* DoublePts = nullptr;
+
+  explicit FastPointReader(vtkDataSet* ds)
+    : DataSet(ds)
+  {
+    if (auto* ps = vtkPointSet::SafeDownCast(ds))
+    {
+      if (vtkPoints* pts = ps->GetPoints())
+      {
+        vtkDataArray* data = pts->GetData();
+        if (auto* fa = vtkFloatArray::FastDownCast(data))
+        {
+          this->FloatPts = fa->GetPointer(0);
+        }
+        else if (auto* da = vtkDoubleArray::FastDownCast(data))
+        {
+          this->DoublePts = da->GetPointer(0);
+        }
+      }
+    }
+  }
+
+  // Read the 3 coordinates of point ptId into x. Byte-identical to
+  // vtkDataSet::GetPoint(ptId, x) for AOS float/double point arrays.
+  inline void GetPoint(vtkIdType ptId, double x[3]) const
+  {
+    if (this->FloatPts)
+    {
+      const float* p = this->FloatPts + 3 * ptId;
+      x[0] = static_cast<double>(p[0]);
+      x[1] = static_cast<double>(p[1]);
+      x[2] = static_cast<double>(p[2]);
+    }
+    else if (this->DoublePts)
+    {
+      const double* p = this->DoublePts + 3 * ptId;
+      x[0] = p[0];
+      x[1] = p[1];
+      x[2] = p[2];
+    }
+    else
+    {
+      this->DataSet->GetPoint(ptId, x);
+    }
+  }
+};
 
 //------------------------------------------------------------------------------
 // The bucketed points, including the sorted map. This is just a PIMPLd
@@ -389,10 +454,12 @@ struct BucketList : public vtkBucketList
   {
     BucketList<T>* BList;
     vtkDataSet* DataSet;
+    FastPointReader Points;
     vtkIdType* MergeMap;
 
     MergePrecise(BucketList<T>* blist, vtkIdType* mergeMap)
       : BList(blist)
+      , Points(blist->DataSet)
       , MergeMap(mergeMap)
     {
       this->DataSet = blist->DataSet;
@@ -401,6 +468,7 @@ struct BucketList : public vtkBucketList
     void operator()(vtkIdType bucket, vtkIdType endBucket)
     {
       BucketList<T>* bList = this->BList;
+      const FastPointReader& points = this->Points;
       vtkIdType* mergeMap = this->MergeMap;
       int i, j;
       const vtkLocatorTuple<TIds>* ids;
@@ -418,13 +486,13 @@ struct BucketList : public vtkBucketList
             if (mergeMap[ptId] < 0)
             {
               mergeMap[ptId] = ptId;
-              this->DataSet->GetPoint(ptId, p);
+              points.GetPoint(ptId, p);
               for (j = i + 1; j < numIds; j++)
               {
                 ptId2 = ids[j].PtId;
                 if (mergeMap[ptId2] < 0)
                 {
-                  this->DataSet->GetPoint(ptId2, p2);
+                  points.GetPoint(ptId2, p2);
                   if (p[0] == p2[0] && p[1] == p2[1] && p[2] == p2[2])
                   {
                     mergeMap[ptId2] = ptId;
@@ -450,6 +518,7 @@ struct BucketList : public vtkBucketList
   {
     BucketList<T>* BList;
     vtkDataSet* DataSet;
+    FastPointReader Points;
     vtkIdType* MergeMap;
     double Tol;
 
@@ -457,6 +526,7 @@ struct BucketList : public vtkBucketList
 
     MergeClose(BucketList<T>* blist, double tol, vtkIdType* mergeMap)
       : BList(blist)
+      , Points(blist->DataSet)
       , MergeMap(mergeMap)
       , Tol(tol)
     {
@@ -473,7 +543,7 @@ struct BucketList : public vtkBucketList
       {
         mergeMap[ptId] = ptId;
         double p[3];
-        this->DataSet->GetPoint(ptId, p);
+        this->Points.GetPoint(ptId, p);
         this->BList->FindPointsWithinRadius(this->Tol, p, nearby);
         vtkIdType numIds = nearby->GetNumberOfIds();
         if (numIds > 0)
@@ -672,6 +742,7 @@ struct BucketList : public vtkBucketList
   {
     BucketList<T>* BList;
     vtkDataSet* DataSet;
+    FastPointReader Points;
     vtkDataArray* DataArray;
     vtkIdType* MergeMap;
     vtkSMPThreadLocal<std::vector<double>> Tuple;
@@ -679,6 +750,7 @@ struct BucketList : public vtkBucketList
 
     MergePointsAndData(BucketList<T>* blist, vtkDataArray* da, vtkIdType* mergeMap)
       : BList(blist)
+      , Points(blist->DataSet)
       , DataArray(da)
       , MergeMap(mergeMap)
     {
@@ -707,6 +779,7 @@ struct BucketList : public vtkBucketList
     void operator()(vtkIdType bucket, vtkIdType endBucket)
     {
       BucketList<T>* bList = this->BList;
+      const FastPointReader& points = this->Points;
       vtkIdType* mergeMap = this->MergeMap;
       int i, j;
       const vtkLocatorTuple<TIds>* ids;
@@ -727,14 +800,14 @@ struct BucketList : public vtkBucketList
             if (mergeMap[ptId] < 0)
             {
               mergeMap[ptId] = ptId;
-              this->DataSet->GetPoint(ptId, p);
+              points.GetPoint(ptId, p);
               this->DataArray->GetTuple(ptId, t);
               for (j = i + 1; j < numIds; j++)
               {
                 ptId2 = ids[j].PtId;
                 if (mergeMap[ptId2] < 0)
                 {
-                  this->DataSet->GetPoint(ptId2, p2);
+                  points.GetPoint(ptId2, p2);
                   if (p[0] == p2[0] && p[1] == p2[1] && p[2] == p2[2])
                   {
                     this->DataArray->GetTuple(ptId2, t2);
