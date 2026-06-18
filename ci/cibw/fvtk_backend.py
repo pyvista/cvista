@@ -191,9 +191,38 @@ def _fix_ccache_basedir() -> None:
         os.environ["CCACHE_BASEDIR"] = REPO
 
 
+def _set_abi3_windows_libdir() -> None:
+    # Windows + abi3 (Py_LIMITED_API) link fix, PART 1 of 2 (LNK1104).
+    #
+    # Under Py_LIMITED_API, MSVC's pyconfig.h emits
+    #   #pragma comment(lib, "python3.lib")
+    # so every TU including <Python.h> auto-links the BARE name python3.lib (the
+    # stable-ABI forwarding stub). The linker resolves a bare-name lib only via
+    # its /LIBPATH search dirs; FindPython links the version lib by ABSOLUTE path
+    # and never adds the CPython libs/ dir to the search path -> LNK1104.
+    #
+    # The fix must reach EVERY link line (WrappingPythonCore — a real VTK module
+    # in its own subdir scope — plus every wrapper .pyd). A cache-FORCE set from a
+    # later sibling subdir (Utilities/Python) does NOT update the directory-local
+    # copy of an already-entered scope, so it never lands on WrappingPythonCore.
+    # The ONLY placement that reaches all scopes is the `-C` init-cache, which is
+    # read before any subdirectory is entered. The init-cache runs before
+    # FindPython, so it cannot discover the libs/ dir itself — we hand it the dir
+    # here (the backend runs under the target interpreter) via an env knob that
+    # minimal.cmake appends to the MSVC linker flags. sys.base_prefix/libs is the
+    # CPython libs/ dir holding BOTH python3.lib and python3XX.lib (for a venv,
+    # base_prefix points at the real install, e.g. the cibuildwheel nuget tools/).
+    if os.name != "nt" or not _abi3_enabled():
+        return
+    libdir = os.path.join(sys.base_prefix, "libs")
+    if os.path.isdir(libdir):
+        os.environ["FVTK_PYTHON_LIBDIR"] = libdir
+
+
 def _configure_and_build():
     build = _build_dir()
     _fix_ccache_basedir()
+    _set_abi3_windows_libdir()
     _prepare_tree(build)
     launcher_c = os.environ.get("CMAKE_C_COMPILER_LAUNCHER", "")
     launcher_cxx = os.environ.get("CMAKE_CXX_COMPILER_LAUNCHER", "")

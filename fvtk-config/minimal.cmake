@@ -406,6 +406,39 @@ if (_FVTK_TOOLCHAIN STREQUAL "msvc")
   set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${_fvtk_msvc_link}" CACHE STRING "" FORCE)
   set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${_fvtk_msvc_link}" CACHE STRING "" FORCE)
   unset(_fvtk_msvc_link)
+
+  # === Windows abi3 (Py_LIMITED_API) link fixes — init-cache, reaches ALL scopes
+  # See ci/cibw/fvtk_backend.py::_set_abi3_windows_libdir for the full rationale.
+  #
+  # PART 1 (LNK1104 "cannot open file 'python3.lib'"): under Py_LIMITED_API MSVC's
+  # pyconfig.h auto-links the BARE name python3.lib via #pragma comment(lib,...);
+  # the linker resolves a bare-name lib only through /LIBPATH. FindPython never
+  # puts the CPython libs/ dir on the search path. We add it HERE, in the
+  # init-cache, because a cache-FORCE from a later sibling subdir does NOT update
+  # the directory-local linker flags of an already-entered scope (e.g.
+  # Wrapping/PythonCore) — only the init-cache, read before any add_subdirectory,
+  # lands on every link line. The backend passes the dir via FVTK_PYTHON_LIBDIR
+  # (it knows the target interpreter; the init-cache runs before FindPython).
+  if (NOT "$ENV{FVTK_PYTHON_LIBDIR}" STREQUAL "")
+    foreach (_fvtk_abi3_flagvar IN ITEMS
+        CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
+      set(${_fvtk_abi3_flagvar}
+        "${${_fvtk_abi3_flagvar}} /LIBPATH:\"$ENV{FVTK_PYTHON_LIBDIR}\""
+        CACHE STRING "" FORCE)
+    endforeach ()
+    unset(_fvtk_abi3_flagvar)
+  endif ()
+
+  # PART 2 (cross-version dependency): make every find_package() IMPORTED target a
+  # single GLOBAL target so the Python3::Module import-lib retarget in
+  # Utilities/Python (python3XX.lib -> the stable-ABI stub python3.lib, so the
+  # abi3 .pyd depends on python3.dll not python3XX.dll) actually sticks to the
+  # same target WrappingPythonCore links. Without this, each subdir scope holds
+  # its OWN directory-scoped Python3::Module instance and the retarget hits the
+  # wrong one — the link keeps python3XX.lib. Windows/MSVC only (FindPython on
+  # Linux/macOS does not link a version import lib), so the currently-green
+  # platforms are untouched. CMake >= 3.24; harmlessly ignored on older cmake.
+  set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON CACHE BOOL "" FORCE)
 endif ()
 
 set(VTK_PYTHON_FULL_THREADSAFE ON CACHE BOOL "")
