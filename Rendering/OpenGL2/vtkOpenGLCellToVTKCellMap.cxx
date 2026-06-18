@@ -8,6 +8,46 @@
 
 //------------------------------------------------------------------------------
 VTK_ABI_NAMESPACE_BEGIN
+
+namespace
+{
+// Visit every cell of a vtkCellArray, invoking fn(npts, pts) per cell, while
+// avoiding the per-cell switch(StorageType) re-dispatch that
+// GetNextCell()/GetCellAtId() perform. For the default Int64-AOS storage
+// (VTK_USE_64BIT_IDS) GetCellAtId returns a zero-copy pointer
+// conn->GetPointer(offsets[c]) with npts = offsets[c+1] - offsets[c] (its
+// CanShareConnPtr branch). We cache the raw typed offsets/connectivity pointers
+// ONCE and read each cell's span inline, yielding a byte-identical (npts, pts)
+// sequence. Any other storage type falls back to the virtual GetNextCell()
+// traversal, so the visited sequence is identical in all cases.
+template <typename Fn>
+void ForEachCellFast(vtkCellArray* cells, Fn&& fn)
+{
+  if (cells->IsStorage64Bit())
+  {
+    const vtkIdType* offsets =
+      reinterpret_cast<const vtkIdType*>(cells->GetOffsetsAOSArray64()->GetPointer(0));
+    const vtkIdType* conn =
+      reinterpret_cast<const vtkIdType*>(cells->GetConnectivityAOSArray64()->GetPointer(0));
+    const vtkIdType numCells = cells->GetNumberOfCells();
+    for (vtkIdType c = 0; c < numCells; ++c)
+    {
+      const vtkIdType begin = offsets[c];
+      fn(offsets[c + 1] - begin, conn + begin);
+    }
+  }
+  else
+  {
+    const vtkIdType* indices = nullptr;
+    vtkIdType npts = 0;
+    for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+    {
+      fn(npts, indices);
+    }
+  }
+}
+} // anonymous namespace
+
 vtkStandardNewMacro(vtkOpenGLCellToVTKCellMap);
 
 //------------------------------------------------------------------------------
@@ -138,8 +178,6 @@ void vtkOpenGLCellToVTKCellMap::BuildCellSupportArrays(
   // need an array to track what points to orig points
   vtkIdType minSize = prims[0]->GetNumberOfCells() + prims[1]->GetNumberOfCells() +
     prims[2]->GetNumberOfCells() + prims[3]->GetNumberOfCells();
-  const vtkIdType* indices(nullptr);
-  vtkIdType npts(0);
 
   // make sure we have at least minSize
   this->CellCellMap.clear();
@@ -150,14 +188,15 @@ void vtkOpenGLCellToVTKCellMap::BuildCellSupportArrays(
 
   // points
   this->PrimitiveOffsets[0] = this->StartOffset;
-  for (prims[0]->InitTraversal(); prims[0]->GetNextCell(npts, indices);)
-  {
-    for (vtkIdType i = 0; i < npts; ++i)
+  ForEachCellFast(prims[0],
+    [&](vtkIdType npts_, const vtkIdType*)
     {
-      this->CellCellMap.push_back(vtkCellCount);
-    }
-    vtkCellCount++;
-  } // for cell
+      for (vtkIdType i = 0; i < npts_; ++i)
+      {
+        this->CellCellMap.push_back(vtkCellCount);
+      }
+      vtkCellCount++;
+    });
 
   this->CellMapSizes[0] = static_cast<vtkIdType>(this->CellCellMap.size());
   cumulativeSize = this->CellMapSizes[0];
@@ -166,14 +205,15 @@ void vtkOpenGLCellToVTKCellMap::BuildCellSupportArrays(
   {
     for (int j = 1; j < 4; j++)
     {
-      for (prims[j]->InitTraversal(); prims[j]->GetNextCell(npts, indices);)
-      {
-        for (vtkIdType i = 0; i < npts; ++i)
+      ForEachCellFast(prims[j],
+        [&](vtkIdType npts_, const vtkIdType*)
         {
-          this->CellCellMap.push_back(vtkCellCount);
-        }
-        vtkCellCount++;
-      } // for cell
+          for (vtkIdType i = 0; i < npts_; ++i)
+          {
+            this->CellCellMap.push_back(vtkCellCount);
+          }
+          vtkCellCount++;
+        });
       this->PrimitiveOffsets[j] = this->PrimitiveOffsets[j - 1] + this->CellMapSizes[j - 1];
       this->CellMapSizes[j] = static_cast<vtkIdType>(this->CellCellMap.size()) - cumulativeSize;
       cumulativeSize = static_cast<vtkIdType>(this->CellCellMap.size());
@@ -182,14 +222,15 @@ void vtkOpenGLCellToVTKCellMap::BuildCellSupportArrays(
   }
 
   // lines
-  for (prims[1]->InitTraversal(); prims[1]->GetNextCell(npts, indices);)
-  {
-    for (vtkIdType i = 0; i < npts - 1; ++i)
+  ForEachCellFast(prims[1],
+    [&](vtkIdType npts_, const vtkIdType*)
     {
-      this->CellCellMap.push_back(vtkCellCount);
-    }
-    vtkCellCount++;
-  } // for cell
+      for (vtkIdType i = 0; i < npts_ - 1; ++i)
+      {
+        this->CellCellMap.push_back(vtkCellCount);
+      }
+      vtkCellCount++;
+    });
 
   this->PrimitiveOffsets[1] = this->PrimitiveOffsets[0] + this->CellMapSizes[0];
   this->CellMapSizes[1] = static_cast<vtkIdType>(this->CellCellMap.size()) - cumulativeSize;
@@ -198,30 +239,32 @@ void vtkOpenGLCellToVTKCellMap::BuildCellSupportArrays(
   if (representation == VTK_WIREFRAME)
   {
     // polys
-    for (prims[2]->InitTraversal(); prims[2]->GetNextCell(npts, indices);)
-    {
-      for (vtkIdType i = 0; i < npts; ++i)
+    ForEachCellFast(prims[2],
+      [&](vtkIdType npts_, const vtkIdType*)
       {
-        this->CellCellMap.push_back(vtkCellCount);
-      }
-      vtkCellCount++;
-    } // for cell
+        for (vtkIdType i = 0; i < npts_; ++i)
+        {
+          this->CellCellMap.push_back(vtkCellCount);
+        }
+        vtkCellCount++;
+      });
 
     this->PrimitiveOffsets[2] = this->PrimitiveOffsets[1] + this->CellMapSizes[1];
     this->CellMapSizes[2] = static_cast<vtkIdType>(this->CellCellMap.size()) - cumulativeSize;
     cumulativeSize = static_cast<vtkIdType>(this->CellCellMap.size());
 
     // strips
-    for (prims[3]->InitTraversal(); prims[3]->GetNextCell(npts, indices);)
-    {
-      this->CellCellMap.push_back(vtkCellCount);
-      for (vtkIdType i = 2; i < npts; ++i)
+    ForEachCellFast(prims[3],
+      [&](vtkIdType npts_, const vtkIdType*)
       {
         this->CellCellMap.push_back(vtkCellCount);
-        this->CellCellMap.push_back(vtkCellCount);
-      }
-      vtkCellCount++;
-    } // for cell
+        for (vtkIdType i = 2; i < npts_; ++i)
+        {
+          this->CellCellMap.push_back(vtkCellCount);
+          this->CellCellMap.push_back(vtkCellCount);
+        }
+        vtkCellCount++;
+      });
 
     this->PrimitiveOffsets[3] = this->PrimitiveOffsets[2] + this->CellMapSizes[2];
     this->CellMapSizes[3] = static_cast<vtkIdType>(this->CellCellMap.size()) - cumulativeSize;
@@ -229,42 +272,44 @@ void vtkOpenGLCellToVTKCellMap::BuildCellSupportArrays(
   }
 
   // polys
-  for (prims[2]->InitTraversal(); prims[2]->GetNextCell(npts, indices);)
-  {
-    if (npts > 2)
+  ForEachCellFast(prims[2],
+    [&](vtkIdType npts_, const vtkIdType* indices_)
     {
-      for (vtkIdType i = 2; i < npts; i++)
+      if (npts_ > 2)
       {
-        double p1[3];
-        points->GetPoint(indices[0], p1);
-        double p2[3];
-        points->GetPoint(indices[i - 1], p2);
-        double p3[3];
-        points->GetPoint(indices[i], p3);
-        bool valid = (p1[0] != p2[0] || p1[1] != p2[1] || p1[2] != p2[2]) &&
-          (p3[0] != p2[0] || p3[1] != p2[1] || p3[2] != p2[2]) &&
-          (p3[0] != p1[0] || p3[1] != p1[1] || p3[2] != p1[2]);
-        if (valid)
+        for (vtkIdType i = 2; i < npts_; i++)
         {
-          this->CellCellMap.push_back(vtkCellCount);
+          double p1[3];
+          points->GetPoint(indices_[0], p1);
+          double p2[3];
+          points->GetPoint(indices_[i - 1], p2);
+          double p3[3];
+          points->GetPoint(indices_[i], p3);
+          bool valid = (p1[0] != p2[0] || p1[1] != p2[1] || p1[2] != p2[2]) &&
+            (p3[0] != p2[0] || p3[1] != p2[1] || p3[2] != p2[2]) &&
+            (p3[0] != p1[0] || p3[1] != p1[1] || p3[2] != p1[2]);
+          if (valid)
+          {
+            this->CellCellMap.push_back(vtkCellCount);
+          }
         }
       }
-    }
-    vtkCellCount++;
-  } // for cell
+      vtkCellCount++;
+    });
   this->PrimitiveOffsets[2] = this->PrimitiveOffsets[1] + this->CellMapSizes[1];
   this->CellMapSizes[2] = static_cast<vtkIdType>(this->CellCellMap.size()) - cumulativeSize;
   cumulativeSize = static_cast<vtkIdType>(this->CellCellMap.size());
 
   // strips
-  for (prims[3]->InitTraversal(); prims[3]->GetNextCell(npts, indices);)
-  {
-    for (vtkIdType i = 2; i < npts; ++i)
+  ForEachCellFast(prims[3],
+    [&](vtkIdType npts_, const vtkIdType*)
     {
-      this->CellCellMap.push_back(vtkCellCount);
-    }
-    vtkCellCount++;
-  } // for cell
+      for (vtkIdType i = 2; i < npts_; ++i)
+      {
+        this->CellCellMap.push_back(vtkCellCount);
+      }
+      vtkCellCount++;
+    });
 
   this->PrimitiveOffsets[3] = this->PrimitiveOffsets[2] + this->CellMapSizes[2];
   this->CellMapSizes[3] = static_cast<vtkIdType>(this->CellCellMap.size()) - cumulativeSize;
