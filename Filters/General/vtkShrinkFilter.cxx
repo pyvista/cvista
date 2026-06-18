@@ -12,6 +12,8 @@
 #include "vtkSmartPointer.h"
 #include "vtkUnstructuredGrid.h"
 
+#include <vector>
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkShrinkFilter);
 
@@ -86,6 +88,14 @@ int vtkShrinkFilter::RequestData(
   // Point Id map.
   vtkIdType* pointMap = new vtkIdType[input->GetNumberOfPoints()];
 
+  // Reusable per-cell coordinate buffer. The input point coordinates for a cell
+  // are needed twice (center-of-mass accumulation, then the shrink computation).
+  // Fetching them ONCE via input->GetPoint() and caching them here halves the
+  // number of (virtual, cross-library) GetPoint() calls. GetPoint() returns the
+  // exact stored coordinates, so reading them once vs. twice yields byte-identical
+  // values and the accumulation/shrink arithmetic order is unchanged: bit-exact.
+  std::vector<double> cellPts;
+
   // Traverse all cells, obtaining node coordinates.  Compute "center"
   // of cell, then create new vertices shrunk towards center.
   for (vtkIdType cellId = 0; cellId < numCells && !abort; ++cellId)
@@ -104,12 +114,18 @@ int vtkShrinkFilter::RequestData(
       abort = this->CheckAbort();
     }
 
+    // Fetch the cell's point coordinates once into the reusable buffer.
+    cellPts.resize(static_cast<size_t>(numIds) * 3);
+    for (vtkIdType i = 0; i < numIds; ++i)
+    {
+      input->GetPoint(ptIds->GetId(i), cellPts.data() + 3 * i);
+    }
+
     // Compute the center of mass of the cell points.
     double center[3] = { 0, 0, 0 };
     for (vtkIdType i = 0; i < numIds; ++i)
     {
-      double p[3];
-      input->GetPoint(ptIds->GetId(i), p);
+      const double* p = cellPts.data() + 3 * i;
       for (int j = 0; j < 3; ++j)
       {
         center[j] += p[j];
@@ -124,9 +140,8 @@ int vtkShrinkFilter::RequestData(
     newPtIds->Reset();
     for (vtkIdType i = 0; i < numIds; ++i)
     {
-      // Get the old point location.
-      double p[3];
-      input->GetPoint(ptIds->GetId(i), p);
+      // Get the old point location (already fetched above).
+      const double* p = cellPts.data() + 3 * i;
 
       // Compute the new point location.
       double newPt[3];
