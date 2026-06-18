@@ -29,6 +29,50 @@ vtkOpenGLIndexBufferObject::~vtkOpenGLIndexBufferObject() = default;
 
 namespace
 {
+// Fast per-cell traversal of a vtkCellArray that avoids the per-cell
+// switch(StorageType) re-dispatch performed by GetNextCell()/GetCellAtId().
+//
+// vtkCellArray's default (and the overwhelmingly common) storage is Int64-AOS
+// (VTK_USE_64BIT_IDS => vtkIdType == int64 => Connectivity is an
+// vtkAOSDataArrayTemplate<vtkIdType>). In that case GetCellAtId() simply returns
+// a zero-copy pointer conn->GetPointer(beginOffset) with
+// npts = offsets[cellId + 1] - offsets[cellId] (the CanShareConnPtr branch).
+// We hoist that out of the loop: cache the raw typed offsets/connectivity
+// pointers ONCE, then read each cell's (npts, pts) span inline. This produces a
+// byte-identical (npts, pts) sequence to GetNextCell() for Int64-AOS storage.
+//
+// For any other storage type (Int32, FixedSize, Generic) IsValid() is false and
+// callers fall back to the virtual GetNextCell() traversal -- identical output.
+struct CellArrayInt64Fast
+{
+  const vtkIdType* Offsets = nullptr;
+  const vtkIdType* Connectivity = nullptr;
+  vtkIdType NumberOfCells = 0;
+
+  explicit CellArrayInt64Fast(vtkCellArray* cells)
+  {
+    if (cells->IsStorage64Bit())
+    {
+      // Int64 storage: both offsets and connectivity are AOSArray64 whose value
+      // type is int64 == vtkIdType (64BIT_IDS). GetPointer(0) is a vtkIdType*.
+      this->Offsets = reinterpret_cast<const vtkIdType*>(cells->GetOffsetsAOSArray64()->GetPointer(0));
+      this->Connectivity =
+        reinterpret_cast<const vtkIdType*>(cells->GetConnectivityAOSArray64()->GetPointer(0));
+      this->NumberOfCells = cells->GetNumberOfCells();
+    }
+  }
+
+  bool IsValid() const { return this->Offsets != nullptr; }
+
+  // Read the span for cell c (matches GetCellAtId's CanShareConnPtr branch).
+  void GetCell(vtkIdType c, vtkIdType& npts, const vtkIdType*& pts) const
+  {
+    const vtkIdType begin = this->Offsets[c];
+    npts = this->Offsets[c + 1] - begin;
+    pts = this->Connectivity + begin;
+  }
+};
+
 struct AppendTrianglesBatchData
 {
   vtkIdType TrianglesOffset;
@@ -275,11 +319,26 @@ void vtkOpenGLIndexBufferObject::AppendPointIndexBuffer(
     indexArray.reserve(targetSize);
   }
 
-  for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+  CellArrayInt64Fast fast(cells);
+  if (fast.IsValid())
   {
-    for (int i = 0; i < npts; ++i)
+    for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
     {
-      indexArray.push_back(static_cast<unsigned int>(*(indices++) + vOffset));
+      fast.GetCell(c, npts, indices);
+      for (int i = 0; i < npts; ++i)
+      {
+        indexArray.push_back(static_cast<unsigned int>(*(indices++) + vOffset));
+      }
+    }
+  }
+  else
+  {
+    for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+    {
+      for (int i = 0; i < npts; ++i)
+      {
+        indexArray.push_back(static_cast<unsigned int>(*(indices++) + vOffset));
+      }
     }
   }
 }
@@ -315,12 +374,30 @@ void vtkOpenGLIndexBufferObject::AppendTriangleLineIndexBuffer(
     indexArray.reserve(targetSize);
   }
 
-  for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+  CellArrayInt64Fast fast(cells);
+  if (fast.IsValid())
   {
-    for (int i = 0; i < npts; ++i)
+    for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
     {
-      indexArray.push_back(static_cast<unsigned int>(indices[i] + vOffset));
-      indexArray.push_back(static_cast<unsigned int>(indices[i < npts - 1 ? i + 1 : 0] + vOffset));
+      fast.GetCell(c, npts, indices);
+      for (int i = 0; i < npts; ++i)
+      {
+        indexArray.push_back(static_cast<unsigned int>(indices[i] + vOffset));
+        indexArray.push_back(
+          static_cast<unsigned int>(indices[i < npts - 1 ? i + 1 : 0] + vOffset));
+      }
+    }
+  }
+  else
+  {
+    for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+    {
+      for (int i = 0; i < npts; ++i)
+      {
+        indexArray.push_back(static_cast<unsigned int>(indices[i] + vOffset));
+        indexArray.push_back(
+          static_cast<unsigned int>(indices[i < npts - 1 ? i + 1 : 0] + vOffset));
+      }
     }
   }
 }
@@ -363,12 +440,28 @@ void vtkOpenGLIndexBufferObject::AppendLineIndexBuffer(
       indexArray.reserve(targetSize);
     }
   }
-  for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+  CellArrayInt64Fast fast(cells);
+  if (fast.IsValid())
   {
-    for (int i = 0; i < npts - 1; ++i)
+    for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
     {
-      indexArray.push_back(static_cast<unsigned int>(indices[i] + vOffset));
-      indexArray.push_back(static_cast<unsigned int>(indices[i + 1] + vOffset));
+      fast.GetCell(c, npts, indices);
+      for (int i = 0; i < npts - 1; ++i)
+      {
+        indexArray.push_back(static_cast<unsigned int>(indices[i] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(indices[i + 1] + vOffset));
+      }
+    }
+  }
+  else
+  {
+    for (cells->InitTraversal(); cells->GetNextCell(npts, indices);)
+    {
+      for (int i = 0; i < npts - 1; ++i)
+      {
+        indexArray.push_back(static_cast<unsigned int>(indices[i] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(indices[i + 1] + vOffset));
+      }
     }
   }
 }
@@ -416,30 +509,61 @@ void vtkOpenGLIndexBufferObject::AppendStripIndexBuffer(std::vector<unsigned int
   size_t targetSize = wireframeTriStrips ? 2 * (triCount * 2 + 1) : triCount * 3;
   indexArray.reserve(targetSize);
 
+  CellArrayInt64Fast fast(cells);
   if (wireframeTriStrips)
   {
-    for (cells->InitTraversal(); cells->GetNextCell(npts, pts);)
+    auto emit = [&](vtkIdType npts_, const vtkIdType* pts_)
     {
-      indexArray.push_back(static_cast<unsigned int>(pts[0] + vOffset));
-      indexArray.push_back(static_cast<unsigned int>(pts[1] + vOffset));
-      for (int j = 0; j < npts - 2; ++j)
+      indexArray.push_back(static_cast<unsigned int>(pts_[0] + vOffset));
+      indexArray.push_back(static_cast<unsigned int>(pts_[1] + vOffset));
+      for (int j = 0; j < npts_ - 2; ++j)
       {
-        indexArray.push_back(static_cast<unsigned int>(pts[j] + vOffset));
-        indexArray.push_back(static_cast<unsigned int>(pts[j + 2] + vOffset));
-        indexArray.push_back(static_cast<unsigned int>(pts[j + 1] + vOffset));
-        indexArray.push_back(static_cast<unsigned int>(pts[j + 2] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j + 2] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j + 1] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j + 2] + vOffset));
+      }
+    };
+    if (fast.IsValid())
+    {
+      for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
+      {
+        fast.GetCell(c, npts, pts);
+        emit(npts, pts);
+      }
+    }
+    else
+    {
+      for (cells->InitTraversal(); cells->GetNextCell(npts, pts);)
+      {
+        emit(npts, pts);
       }
     }
   }
   else
   {
-    for (cells->InitTraversal(); cells->GetNextCell(npts, pts);)
+    auto emit = [&](vtkIdType npts_, const vtkIdType* pts_)
     {
-      for (int j = 0; j < npts - 2; ++j)
+      for (int j = 0; j < npts_ - 2; ++j)
       {
-        indexArray.push_back(static_cast<unsigned int>(pts[j] + vOffset));
-        indexArray.push_back(static_cast<unsigned int>(pts[j + 1 + j % 2] + vOffset));
-        indexArray.push_back(static_cast<unsigned int>(pts[j + 1 + (j + 1) % 2] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j + 1 + j % 2] + vOffset));
+        indexArray.push_back(static_cast<unsigned int>(pts_[j + 1 + (j + 1) % 2] + vOffset));
+      }
+    };
+    if (fast.IsValid())
+    {
+      for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
+      {
+        fast.GetCell(c, npts, pts);
+        emit(npts, pts);
+      }
+    }
+    else
+    {
+      for (cells->InitTraversal(); cells->GetNextCell(npts, pts);)
+      {
+        emit(npts, pts);
       }
     }
   }
@@ -465,17 +589,33 @@ void vtkOpenGLIndexBufferObject::AppendEdgeFlagIndexBuffer(
       indexArray.reserve(targetSize);
     }
   }
-  for (cells->InitTraversal(); cells->GetNextCell(npts, pts);)
+  auto emit = [&](vtkIdType npts_, const vtkIdType* pts_)
   {
-    for (int j = 0; j < npts; ++j)
+    for (int j = 0; j < npts_; ++j)
     {
-      if (ucef[pts[j]] && npts > 1) // draw this edge and poly is not degenerate
+      if (ucef[pts_[j]] && npts_ > 1) // draw this edge and poly is not degenerate
       {
         // determine the ending vertex
-        vtkIdType nextVert = (j == npts - 1) ? pts[0] : pts[j + 1];
-        indexArray.push_back(static_cast<unsigned int>(pts[j] + vOffset));
+        vtkIdType nextVert = (j == npts_ - 1) ? pts_[0] : pts_[j + 1];
+        indexArray.push_back(static_cast<unsigned int>(pts_[j] + vOffset));
         indexArray.push_back(static_cast<unsigned int>(nextVert + vOffset));
       }
+    }
+  };
+  CellArrayInt64Fast fast(cells);
+  if (fast.IsValid())
+  {
+    for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
+    {
+      fast.GetCell(c, npts, pts);
+      emit(npts, pts);
+    }
+  }
+  else
+  {
+    for (cells->InitTraversal(); cells->GetNextCell(npts, pts);)
+    {
+      emit(npts, pts);
     }
   }
 }
@@ -506,11 +646,26 @@ void vtkOpenGLIndexBufferObject::AppendVertexIndexBuffer(
   std::set<vtkIdType> vertsUsed;
   for (int j = 0; j < 4; j++)
   {
-    for (cells[j]->InitTraversal(); cells[j]->GetNextCell(npts, indices);)
+    CellArrayInt64Fast fast(cells[j]);
+    if (fast.IsValid())
     {
-      for (int i = 0; i < npts; ++i)
+      for (vtkIdType c = 0; c < fast.NumberOfCells; ++c)
       {
-        vertsUsed.insert(static_cast<unsigned int>(*(indices++) + vOffset));
+        fast.GetCell(c, npts, indices);
+        for (int i = 0; i < npts; ++i)
+        {
+          vertsUsed.insert(static_cast<unsigned int>(*(indices++) + vOffset));
+        }
+      }
+    }
+    else
+    {
+      for (cells[j]->InitTraversal(); cells[j]->GetNextCell(npts, indices);)
+      {
+        for (int i = 0; i < npts; ++i)
+        {
+          vertsUsed.insert(static_cast<unsigned int>(*(indices++) + vOffset));
+        }
       }
     }
   }
