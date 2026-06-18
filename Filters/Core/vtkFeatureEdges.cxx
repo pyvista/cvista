@@ -14,6 +14,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPolygon.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkTriangleStrip.h"
@@ -329,6 +330,12 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
   // contents and the order in which ids are appended are unchanged).
   vtkNew<vtkIdList> edgesRemapping;
 
+  // Resolve Mesh's typed cell links once so the per-edge neighbor lookup in the
+  // loop below is inlined here, skipping the cross-.so PLT call into
+  // libvtkCommonDataModel and the per-call link re-fetch. Bit-for-bit identical
+  // to Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(Mesh);
+
   for (newCellId = 0, newPolys->InitTraversal(); newPolys->GetNextCell(npts, pts) && !abort;
        newCellId++)
   {
@@ -363,7 +370,7 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
       p1 = pts[i];
       p2 = pts[(i + 1) % npts];
 
-      Mesh->GetCellEdgeNeighbors(newCellId, p1, p2, neighbors);
+      edgeNeighbors.Get(newCellId, p1, p2, neighbors);
       numNei = neighbors->GetNumberOfIds();
 
       vtkIdType numNeiWithoutGhosts = numNei;

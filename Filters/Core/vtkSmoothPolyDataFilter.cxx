@@ -12,6 +12,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPolygon.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkTriangleFilter.h"
@@ -448,6 +449,12 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
 
     checkAbortInterval = std::min(polys->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
 
+    // Resolve Mesh's typed cell links once so the per-edge neighbor lookup in
+    // the loop below is inlined here, skipping the cross-.so PLT call into
+    // libvtkCommonDataModel and the per-call link re-fetch. Bit-for-bit
+    // identical to Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+    const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(Mesh);
+
     for (cellId = 0, polys->InitTraversal(); polys->GetNextCell(npts, pts); cellId++)
     {
       if (cellId % checkAbortInterval == 0 && this->CheckAbort())
@@ -470,7 +477,7 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
           Verts[p2].edges->Allocate(16, 6);
         }
 
-        Mesh->GetCellEdgeNeighbors(cellId, p1, p2, neighbors);
+        edgeNeighbors.Get(cellId, p1, p2, neighbors);
         numNei = neighbors->GetNumberOfIds();
 
         edge = VTK_SIMPLE_VERTEX;

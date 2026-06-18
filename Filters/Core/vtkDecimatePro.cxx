@@ -13,6 +13,7 @@
 #include "vtkPlane.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPriorityQueue.h"
 #include "vtkTriangle.h"
 
@@ -497,6 +498,14 @@ int vtkDecimatePro::EvaluateVertex(
   const vtkIdType* verts;
   double *x1, *x2, *normal;
   double v1[3], v2[3], center[3];
+
+  // Resolve the mesh's (editable => vtkCellLinks) cell links once for this
+  // vertex so the per-edge neighbor lookups below are inlined here, skipping the
+  // cross-.so PLT call into libvtkCommonDataModel and the per-call link
+  // re-fetch. The links are read fresh on every Get(), so in-place link
+  // mutations from prior decimation are reflected. Bit-for-bit identical to
+  // this->Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(this->Mesh);
   //
   //  The first step is to evaluate topology.
   //
@@ -577,7 +586,7 @@ int vtkDecimatePro::EvaluateVertex(
     this->Mesh->GetPoint(sn.id, sn.x);
     this->V->InsertNextVertex(sn);
 
-    this->Mesh->GetCellEdgeNeighbors(t.id, ptId, nextVertex, this->Neighbors);
+    edgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
     numNei = this->Neighbors->GetNumberOfIds();
   }
   //
@@ -664,7 +673,7 @@ int vtkDecimatePro::EvaluateVertex(
       this->Mesh->GetPoint(sn.id, sn.x);
       this->V->InsertNextVertex(sn);
 
-      this->Mesh->GetCellEdgeNeighbors(t.id, ptId, nextVertex, this->Neighbors);
+      edgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
       numNei = this->Neighbors->GetNumberOfIds();
     }
     //
@@ -872,6 +881,14 @@ void vtkDecimatePro::SplitVertex(
   int maxGroupSize;
   vtkPointData* meshPD = this->Mesh->GetPointData();
 
+  // Resolve the mesh's cell links once for this split. Even though points are
+  // inserted below (which may grow vtkCellLinks in place), the Links object
+  // itself is never replaced, and FastEdgeNeighbors reads GetCells() fresh on
+  // every Get(), so it always reflects the current link state. Bit-for-bit
+  // identical to this->Mesh->GetCellEdgeNeighbors(); see
+  // vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(this->Mesh);
+
   //
   // On an interior edge split along the edge
   //
@@ -1039,7 +1056,7 @@ void vtkDecimatePro::SplitVertex(
       {
         for (tri = startTri; p[j] >= 0;)
         {
-          this->Mesh->GetCellEdgeNeighbors(tri, ptId, p[j], cellIds);
+          edgeNeighbors.Get(tri, ptId, p[j], cellIds);
           if (cellIds->GetNumberOfIds() == 1 && triangles->IsId((tri = cellIds->GetId(0))) > -1 &&
             group->GetNumberOfIds() < maxGroupSize)
           {
