@@ -359,11 +359,26 @@ $<$<BOOL:${_vtk_python_hierarchy_files}>:\n--types \'$<JOIN:${_vtk_python_hierar
   # "argument to '-O' should be ... 'g','s' or 'fast'" on -Oz. Fall back to -Os
   # there (GCC's size-opt; the practical delta vs -Oz on these marshalling shims
   # is negligible, and under LTO the link-time -O3 governs anyway).
+  #
+  # fvtk PORTABILITY: -Oz/-Os are GNU/clang spellings. MSVC `cl` does not accept
+  # them ("-Oz" reaches cl as "/Oz" -> D9002 "ignoring unknown option" and the
+  # size intent is silently dropped). MSVC's size-opt analogue is /O1 (favor
+  # small code). AppleClang accepts -Oz natively. Branch on compiler so the GNU
+  # path is byte-IDENTICAL (Linux codegen unchanged -> bitexact gate preserved)
+  # and MSVC gets a real flag instead of an ignored one. The whole lever stays
+  # behind FVTK_WRAP_OPTSIZE.
   if (_vtk_python_sources AND NOT "$ENV{FVTK_WRAP_OPTSIZE}" STREQUAL "0")
-    set(_fvtk_wrap_optsize "-Oz")
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+    if (MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+      # /O1 = minimize size (MSVC has no -Oz/-Os equivalent; /Os tunes the
+      # speed-vs-size heuristic but does not by itself enable size-opt).
+      set(_fvtk_wrap_optsize "/O1")
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
         CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12")
+      # GCC<12 (manylinux2014 devtoolset-10): -Oz unsupported, use -Os.
       set(_fvtk_wrap_optsize "-Os")
+    else ()
+      # GCC>=12 and clang/AppleClang: -Oz (aggressive size). Linux path -> unchanged.
+      set(_fvtk_wrap_optsize "-Oz")
     endif ()
     set_source_files_properties(${_vtk_python_sources} PROPERTIES
       COMPILE_OPTIONS "${_fvtk_wrap_optsize}")
