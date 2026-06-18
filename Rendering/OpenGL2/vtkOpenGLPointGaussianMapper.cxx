@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkOpenGLPointGaussianMapper.h"
 
+#include "vtkArrayDispatch.h"
 #include "vtkOpenGLHelper.h"
 
 #include "vtkBoundingBox.h"
@@ -44,6 +45,7 @@
 #include "vtkOpenGLPointGaussianMapperHelper.h"
 
 #include <numeric>
+#include <vector>
 
 #include <iostream>
 
@@ -287,9 +289,14 @@ PointDataType vtkOpenGLPointGaussianMapperHelperGetComponent(
   return compVal;
 }
 
+// Fill rcolor for one point. The per-point opacity tuple has already been
+// materialized into opacityTuple as doubles (or opacityTuple is null when
+// there is no opacity array). This keeps ALL downstream arithmetic byte-for-byte
+// identical to the original GetTuple-based path; only the virtual per-point
+// tuple ACCESS has been hoisted/devirtualized by the caller.
 void vtkOpenGLPointGaussianMapperHelperComputeColor(unsigned char* rcolor, unsigned char* colors,
-  int colorComponents, vtkIdType index, vtkDataArray* opacities, int opacitiesComponent,
-  vtkOpenGLPointGaussianMapperHelper* self)
+  int colorComponents, vtkIdType index, const double* opacityTuple, int opacityNumComponents,
+  int opacitiesComponent, vtkOpenGLPointGaussianMapperHelper* self)
 {
   unsigned char white[4] = { 255, 255, 255, 255 };
 
@@ -300,10 +307,10 @@ void vtkOpenGLPointGaussianMapperHelperComputeColor(unsigned char* rcolor, unsig
   rcolor[1] = *(colorPtr++);
   rcolor[2] = *(colorPtr++);
 
-  if (opacities)
+  if (opacityTuple)
   {
     double opacity = vtkOpenGLPointGaussianMapperHelperGetComponent<double>(
-      opacities->GetTuple(index), opacities->GetNumberOfComponents(), opacitiesComponent);
+      opacityTuple, opacityNumComponents, opacitiesComponent);
     if (self->OpacityTable)
     {
       double tindex = (opacity - self->OpacityOffset) * self->OpacityScale;
@@ -330,17 +337,86 @@ void vtkOpenGLPointGaussianMapperHelperComputeColor(unsigned char* rcolor, unsig
   }
 }
 
+// Devirtualized per-point color builder. The opacities array is dispatched ONCE
+// on its concrete storage type; each per-point opacity tuple is materialized into
+// a stack double[] via static_cast<double>(GetTypedComponent(...)) -- exactly the
+// per-component cast vtkDataArray::GetTuple performs -- so the result is identical
+// to calling opacities->GetTuple(index) per point, but without the per-point
+// virtual call across the .so boundary.
+struct PointGaussianColorWorker
+{
+  vtkUnsignedCharArray* OutColors;
+  vtkIdType NumPts;
+  unsigned char* Colors;
+  int ColorComponents;
+  int OpacitiesComponent;
+  vtkOpenGLPointGaussianMapperHelper* Self;
+
+  template <typename ArrayT>
+  void operator()(ArrayT* opacities)
+  {
+    unsigned char* vPtr = this->OutColors->GetPointer(0);
+    const int nComp = opacities->GetNumberOfComponents();
+    double tuple[4];
+    double* tuplePtr = tuple;
+    std::vector<double> heapTuple;
+    if (nComp > 4)
+    {
+      heapTuple.resize(nComp);
+      tuplePtr = heapTuple.data();
+    }
+    for (vtkIdType i = 0; i < this->NumPts; i++)
+    {
+      for (int c = 0; c < nComp; c++)
+      {
+        // identical to GetTuple's per-component static_cast<double>
+        tuplePtr[c] = static_cast<double>(opacities->GetTypedComponent(i, c));
+      }
+      vtkOpenGLPointGaussianMapperHelperComputeColor(vPtr, this->Colors, this->ColorComponents, i,
+        tuplePtr, nComp, this->OpacitiesComponent, this->Self);
+      vPtr += 4;
+    }
+  }
+
+  // Generic fallback for array storage the fast dispatch does not cover:
+  // uses the original GetTuple path verbatim.
+  void operator()(vtkDataArray* opacities)
+  {
+    unsigned char* vPtr = this->OutColors->GetPointer(0);
+    const int nComp = opacities->GetNumberOfComponents();
+    for (vtkIdType i = 0; i < this->NumPts; i++)
+    {
+      vtkOpenGLPointGaussianMapperHelperComputeColor(vPtr, this->Colors, this->ColorComponents, i,
+        opacities->GetTuple(i), nComp, this->OpacitiesComponent, this->Self);
+      vPtr += 4;
+    }
+  }
+};
+
 void vtkOpenGLPointGaussianMapperHelperColors(vtkUnsignedCharArray* outColors, vtkIdType numPts,
   unsigned char* colors, int colorComponents, vtkDataArray* opacities, int opacitiesComponent,
   vtkOpenGLPointGaussianMapperHelper* self)
 {
-  unsigned char* vPtr = outColors->GetPointer(0);
-
-  for (vtkIdType i = 0; i < numPts; i++)
+  if (!opacities)
   {
-    vtkOpenGLPointGaussianMapperHelperComputeColor(
-      vPtr, colors, colorComponents, i, opacities, opacitiesComponent, self);
-    vPtr += 4;
+    // no opacity array: opacityTuple is null, alpha comes from colors
+    unsigned char* vPtr = outColors->GetPointer(0);
+    for (vtkIdType i = 0; i < numPts; i++)
+    {
+      vtkOpenGLPointGaussianMapperHelperComputeColor(
+        vPtr, colors, colorComponents, i, nullptr, 0, opacitiesComponent, self);
+      vPtr += 4;
+    }
+    return;
+  }
+
+  PointGaussianColorWorker worker{ outColors, numPts, colors, colorComponents, opacitiesComponent,
+    self };
+  using Dispatcher = vtkArrayDispatch::Dispatch;
+  if (!Dispatcher::Execute(opacities, worker))
+  {
+    // generic fallback (original GetTuple path)
+    worker(opacities);
   }
 }
 

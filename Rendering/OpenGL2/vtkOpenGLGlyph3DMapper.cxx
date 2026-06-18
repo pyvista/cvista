@@ -3,6 +3,7 @@
 #include "vtkOpenGLGlyph3DMapper.h"
 
 #include "vtkActor.h"
+#include "vtkArrayDispatch.h"
 #include "vtkBitArray.h"
 #include "vtkCompositeDataDisplayAttributes.h"
 #include "vtkCompositeDataIterator.h"
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 namespace
@@ -67,6 +69,80 @@ vtkDataObject* getChildDataObject(vtkDataObjectTree* tree, int child)
   }
   return result;
 }
+
+// Devirtualized per-point tuple reader.
+//
+// vtkDataArray::GetTuple(i, dst) fills dst[c] = static_cast<double>(value(i,c))
+// using a virtual call per element (an out-of-line cross-.so call into
+// libvtkCommon). The glyph builder calls GetTuple once-per-point inside loops
+// that run 10K-1M iterations. GlyphTupleReader dispatches on the array's
+// concrete storage type ONCE at construction and caches a typed accessor; each
+// per-point read then performs exactly the same per-component
+// static_cast<double>(GetTypedComponent(i,c)) WITHOUT a virtual call. For any
+// array type the dispatch does not cover, ReadTuple falls back to the original
+// GetTuple path verbatim, so behavior is byte-for-byte identical in all cases.
+class GlyphTupleReader
+{
+public:
+  explicit GlyphTupleReader(vtkDataArray* array)
+    : Array(array)
+  {
+    if (array)
+    {
+      this->NumComps = array->GetNumberOfComponents();
+      FillWorker worker{ this };
+      // On success, Typed* is set and Fast == true; otherwise fall back.
+      this->Fast = vtkArrayDispatch::Dispatch::Execute(array, worker);
+    }
+  }
+
+  int GetNumberOfComponents() const { return this->NumComps; }
+
+  // Equivalent to Array->GetTuple(i, dst).
+  inline void ReadTuple(vtkIdType i, double* dst) const
+  {
+    if (this->Fast)
+    {
+      this->FastRead(i, dst);
+    }
+    else
+    {
+      this->Array->GetTuple(i, dst);
+    }
+  }
+
+private:
+  struct FillWorker
+  {
+    GlyphTupleReader* Self;
+    template <typename ArrayT>
+    void operator()(ArrayT* arr)
+    {
+      this->Self->TypedRead = &GlyphTupleReader::FastReadImpl<ArrayT>;
+      this->Self->Typed = arr;
+    }
+  };
+
+  template <typename ArrayT>
+  void FastReadImpl(vtkIdType i, double* dst) const
+  {
+    ArrayT* arr = static_cast<ArrayT*>(this->Typed);
+    const int n = this->NumComps;
+    for (int c = 0; c < n; ++c)
+    {
+      // identical to GetTuple's per-component static_cast<double>
+      dst[c] = static_cast<double>(arr->GetTypedComponent(i, c));
+    }
+  }
+
+  inline void FastRead(vtkIdType i, double* dst) const { (this->*TypedRead)(i, dst); }
+
+  vtkDataArray* Array = nullptr;
+  void* Typed = nullptr;
+  void (GlyphTupleReader::*TypedRead)(vtkIdType, double*) const = nullptr;
+  int NumComps = 0;
+  bool Fast = false;
+};
 }
 
 class vtkOpenGLGlyph3DMappervtkColorMapper : public vtkMapper
@@ -715,6 +791,13 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
   vtkDataArray* scaleArray = this->GetScaleArray(dataset);
   vtkDataArray* selectionArray = this->GetSelectionIdArray(dataset);
 
+  // Dispatch each per-point array's storage type once up front so the
+  // per-point reads below avoid a virtual GetTuple call (see GlyphTupleReader).
+  GlyphTupleReader indexReader(indexArray);
+  GlyphTupleReader scaleReader(scaleArray);
+  GlyphTupleReader orientReader(orientArray);
+  GlyphTupleReader selectionReader(selectionArray);
+
   /// FIXME: Didn't handle the premultiplycolorswithalpha aspect...
   this->ColorMapper->SetInputDataObject(dataset);
   this->ColorMapper->MapScalars(actor->GetProperty()->GetOpacity());
@@ -731,6 +814,7 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
   {
     // loop over every point
     int index = 0;
+    std::vector<double> indexTuple(indexReader.GetNumberOfComponents());
     for (vtkIdType inPtId = 0; inPtId < numPts; inPtId++)
     {
       if (maskArray && maskArray->GetValue(inPtId) == 0)
@@ -739,8 +823,8 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
       }
 
       // Compute index into table of glyphs
-      double value =
-        vtkMath::Norm(indexArray->GetTuple(inPtId), indexArray->GetNumberOfComponents());
+      indexReader.ReadTuple(inPtId, indexTuple.data());
+      double value = vtkMath::Norm(indexTuple.data(), indexReader.GetNumberOfComponents());
       index = static_cast<int>(value);
       index = vtkMath::ClampValue(index, 0, numEntries - 1);
       numPointsPerSource[index]++;
@@ -779,6 +863,12 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
   double trans[16];
   double normalTrans[9];
 
+  // per-point tuple scratch buffers for the devirtualized readers
+  std::vector<double> indexTuple(indexReader.GetNumberOfComponents());
+  std::vector<double> scaleTuple(scaleReader.GetNumberOfComponents());
+  std::vector<double> selectionTuple(
+    selectionReader.GetNumberOfComponents() > 0 ? selectionReader.GetNumberOfComponents() : 1);
+
   for (vtkIdType inPtId = 0; inPtId < numPts; inPtId++)
   {
     if (!(inPtId % 10000))
@@ -798,8 +888,8 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
     // Compute index into table of glyphs
     if (indexArray)
     {
-      double value =
-        vtkMath::Norm(indexArray->GetTuple(inPtId), indexArray->GetNumberOfComponents());
+      indexReader.ReadTuple(inPtId, indexTuple.data());
+      double value = vtkMath::Norm(indexTuple.data(), indexReader.GetNumberOfComponents());
       index = static_cast<int>(value);
       index = vtkMath::ClampValue(index, 0, numEntries - 1);
     }
@@ -824,7 +914,8 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
       // Get the scalar and vector data
       if (scaleArray)
       {
-        double* tuple = scaleArray->GetTuple(inPtId);
+        scaleReader.ReadTuple(inPtId, scaleTuple.data());
+        double* tuple = scaleTuple.data();
         switch (this->ScaleMode)
         {
           case SCALE_BY_MAGNITUDE:
@@ -877,7 +968,7 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
       if (orientArray)
       {
         double orientation[4];
-        orientArray->GetTuple(inPtId, orientation);
+        orientReader.ReadTuple(inPtId, orientation);
 
         double rotMatrix[3][3];
         vtkQuaterniond quaternion;
@@ -953,7 +1044,8 @@ void vtkOpenGLGlyph3DMapper::RebuildStructures(
         }
         else
         {
-          selectionId = static_cast<vtkIdType>(*selectionArray->GetTuple(inPtId));
+          selectionReader.ReadTuple(inPtId, selectionTuple.data());
+          selectionId = static_cast<vtkIdType>(selectionTuple[0]);
         }
       }
       entry->PickIds[entry->NumberOfPoints] = selectionId;
