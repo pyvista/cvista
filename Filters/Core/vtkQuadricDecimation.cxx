@@ -45,7 +45,66 @@
 #include "vtkType.h"
 
 VTK_ABI_NAMESPACE_BEGIN
+
 vtkStandardNewMacro(vtkQuadricDecimation);
+
+//------------------------------------------------------------------------------
+// Fetch a working-Mesh cell's point ids. When the hoisted Int64-AOS pointers are
+// available (FastConn64Conn != null), read the cell span directly -- exactly
+// vtkCellArray::GetCellAtId's zero-copy CanShareConnPtr branch (numberOfPoints =
+// offsets[id+1]-offsets[id]; pts points into the int64 connectivity, which is
+// layout-identical to vtkIdType on a 64-bit build) -- avoiding the per-cell
+// cross-shared-library vtkCellArray::GetCellAtId call and its StorageType switch.
+//
+// Bit-exactness: the working Mesh is built from input->GetPolys() ONLY (no
+// verts/lines/strips), so the global cell id equals the Polys-local cell id used
+// by GetCellAtId. Deleted cells are handled identically to vtkPolyData::
+// GetCellPoints: GetCellType() reads the cell map tag inline and returns
+// VTK_EMPTY_CELL for a deleted cell (TypeTable[Polys|Dead]=VTK_EMPTY_CELL), for
+// which GetCellPoints sets npts=0/pts=nullptr -- so we do the same. The buffers
+// are only mutated in place during decimation (never reallocated), so the cached
+// pointers stay valid and observe ReplaceCellPoint writes.
+void vtkQuadricDecimation::GetMeshCellPoints(
+  vtkIdType cellId, vtkIdType& npts, const vtkIdType*& pts)
+{
+  if (this->FastConn64Conn)
+  {
+    if (this->Mesh->GetCellType(cellId) == VTK_EMPTY_CELL)
+    {
+      npts = 0;
+      pts = nullptr;
+      return;
+    }
+    const vtkTypeInt64 begin = this->FastConn64Offsets[cellId];
+    npts = static_cast<vtkIdType>(this->FastConn64Offsets[cellId + 1] - begin);
+    pts = reinterpret_cast<const vtkIdType*>(this->FastConn64Conn + begin);
+    return;
+  }
+  this->Mesh->GetCellPoints(cellId, npts, pts);
+}
+
+//------------------------------------------------------------------------------
+// Resolve the working Mesh's Polys cell array to raw typed pointers for the
+// dominant Int64-AOS storage case so the per-cell point-id fetches can read
+// connectivity inline (see GetMeshCellPoints). Any other storage leaves the
+// pointers null and the per-cell reads fall back to vtkPolyData::GetCellPoints.
+void vtkQuadricDecimation::InitFastConn()
+{
+  this->FastConn64Offsets = nullptr;
+  this->FastConn64Conn = nullptr;
+  vtkCellArray* polys = this->Mesh->GetPolys();
+  if (polys && polys->GetStorageType() == vtkCellArray::StorageTypes::Int64)
+  {
+    if (auto* offs = polys->GetOffsetsArray64())
+    {
+      if (auto* cn = polys->GetConnectivityArray64())
+      {
+        this->FastConn64Offsets = offs->GetPointer(0);
+        this->FastConn64Conn = cn->GetPointer(0);
+      }
+    }
+  }
+}
 
 //------------------------------------------------------------------------------
 vtkQuadricDecimation::vtkQuadricDecimation()
@@ -309,6 +368,7 @@ int vtkQuadricDecimation::RequestData(vtkInformation* vtkNotUsed(request),
   this->Mesh->BuildCells();
   this->Mesh->EditableOn();
   this->Mesh->BuildLinks();
+  this->InitFastConn();
 
   this->ErrorQuadrics = new vtkQuadricDecimation::ErrorQuadric[numPts];
   if (this->VolumePreservation)
@@ -326,7 +386,7 @@ int vtkQuadricDecimation::RequestData(vtkInformation* vtkNotUsed(request),
   this->EdgeCosts->Allocate(this->Mesh->GetPolys()->GetNumberOfCells() * 3);
   for (i = 0; i < this->Mesh->GetNumberOfCells(); i++)
   {
-    this->Mesh->GetCellPoints(i, npts, pts);
+    this->GetMeshCellPoints(i, npts, pts);
 
     for (j = 0; j < 3; j++)
     {
@@ -480,6 +540,8 @@ int vtkQuadricDecimation::RequestData(vtkInformation* vtkNotUsed(request),
 
   this->Mesh->DeleteLinks();
   this->Mesh->Delete();
+  this->FastConn64Offsets = nullptr;
+  this->FastConn64Conn = nullptr;
   outputCellList->Delete();
 
   // renormalize, clamp attributes
@@ -737,7 +799,7 @@ void vtkQuadricDecimation::AddBoundaryConstraints()
 
   for (cellId = 0; cellId < input->GetNumberOfCells(); cellId++)
   {
-    input->GetCellPoints(cellId, npts, pts);
+    this->GetMeshCellPoints(cellId, npts, pts);
 
     for (i = 0; i < 3; i++)
     {
@@ -860,7 +922,7 @@ void vtkQuadricDecimation::FindAffectedEdges(vtkIdType p1Id, vtkIdType p2Id, vtk
   this->Mesh->GetPointCells(p2Id, ncells, cells);
   for (i = 0; i < ncells; i++)
   {
-    this->Mesh->GetCellPoints(cells[i], npts, pts);
+    this->GetMeshCellPoints(cells[i], npts, pts);
     for (j = 0; j < 3; j++)
     {
       if (pts[j] != p1Id && pts[j] != p2Id && (edgeId = this->Edges->IsEdge(pts[j], p2Id)) >= 0 &&
@@ -874,7 +936,7 @@ void vtkQuadricDecimation::FindAffectedEdges(vtkIdType p1Id, vtkIdType p2Id, vtk
   this->Mesh->GetPointCells(p1Id, ncells, cells);
   for (i = 0; i < ncells; i++)
   {
-    this->Mesh->GetCellPoints(cells[i], npts, pts);
+    this->GetMeshCellPoints(cells[i], npts, pts);
     for (j = 0; j < 3; j++)
     {
       if (pts[j] != p1Id && pts[j] != p2Id && (edgeId = this->Edges->IsEdge(pts[j], p1Id)) >= 0 &&
@@ -1320,7 +1382,7 @@ int vtkQuadricDecimation::CollapseEdge(vtkIdType pt0Id, vtkIdType pt1Id)
   for (i = 0; i < this->CollapseCellIds->GetNumberOfIds(); i++)
   {
     cellId = this->CollapseCellIds->GetId(i);
-    this->Mesh->GetCellPoints(cellId, npts, pts);
+    this->GetMeshCellPoints(cellId, npts, pts);
 
     // Some non-triangular cells may have been inserted. Process only triangles here.
     if (npts == 3)
@@ -1342,7 +1404,7 @@ int vtkQuadricDecimation::CollapseEdge(vtkIdType pt0Id, vtkIdType pt1Id)
   for (i = 0; i < this->CollapseCellIds->GetNumberOfIds(); i++)
   {
     cellId = this->CollapseCellIds->GetId(i);
-    this->Mesh->GetCellPoints(cellId, npts, pts);
+    this->GetMeshCellPoints(cellId, npts, pts);
     // making sure we don't already have the triangle we're about to
     // change this one to
     if ((pts[0] == pt1Id && this->Mesh->IsTriangle(pt0Id, pts[1], pts[2])) ||
@@ -1419,7 +1481,7 @@ int vtkQuadricDecimation::IsGoodPlacement(vtkIdType pt0Id, vtkIdType pt1Id, cons
   this->Mesh->GetPointCells(pt0Id, ncells, cells);
   for (i = 0; i < ncells; i++)
   {
-    this->Mesh->GetCellPoints(cells[i], npts, pts);
+    this->GetMeshCellPoints(cells[i], npts, pts);
     // assume triangle
     if (pts[0] != pt1Id && pts[1] != pt1Id && pts[2] != pt1Id)
     {
@@ -1442,7 +1504,7 @@ int vtkQuadricDecimation::IsGoodPlacement(vtkIdType pt0Id, vtkIdType pt1Id, cons
   this->Mesh->GetPointCells(pt1Id, ncells, cells);
   for (i = 0; i < ncells; i++)
   {
-    this->Mesh->GetCellPoints(cells[i], npts, pts);
+    this->GetMeshCellPoints(cells[i], npts, pts);
     // assume triangle
     if (pts[0] != pt0Id && pts[1] != pt0Id && pts[2] != pt0Id)
     {
