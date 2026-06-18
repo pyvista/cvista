@@ -37,6 +37,123 @@ set(vtk_python_embed_target "Python3::Python")
 set(vtk_python_version "${Python3_VERSION}")
 set(vtk_python_version_pair "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
 
+# fvtk abi3 (Py_LIMITED_API) Windows link fix — GLOBAL, all Python-using links.
+#
+# Under Py_LIMITED_API (the abi3 default), MSVC's pyconfig.h emits
+#   #pragma comment(lib, "python3.lib")
+# so every TU that includes <Python.h> auto-links the stable-ABI forwarding
+# import lib python3.lib (-> python3.dll) instead of the version-specific
+# python3XX.lib. FindPython, however, links python3XX.lib by ABSOLUTE path (via
+# Python3::Module) and never puts its directory on the linker search path.
+# python3.lib lives in that SAME CPython "libs/" directory, so the auto-linked
+# python3.lib is unresolved -> LNK1104 "cannot open file 'python3.lib'".
+#
+# This bites EVERY Python-limited-API link, not just the wrapper .pyd modules
+# created by vtk_module_wrap_python: WrappingPythonCore is a real VTK module
+# built here in the main graph (Wrapping/PythonCore), so a per-wrapper-module fix
+# never reaches it. Fix it once, globally, by adding the CPython libs/ dir to the
+# linker search path for ALL links via the cache linker-flag variables (linker
+# flags are placement-insensitive and consumed at every shared/module/exe link),
+# so python3.lib's auto-link resolves everywhere. WIN32 + abi3 only; Linux/macOS
+# (.abi3.so, no #pragma comment(lib)) are untouched.
+if (WIN32 AND FVTK_ABI3)
+  set(_fvtk_abi3_py_libdirs)
+  # The python312.lib that FindPython links lives in the same dir as python3.lib;
+  # prefer the actual library path's directory, then FindPython's reported dirs,
+  # then the standard CPython <prefix>/include -> <prefix>/libs sibling fallback.
+  foreach (_fvtk_abi3_pyvar IN ITEMS
+      Python3_SABI_LIBRARY Python3_LIBRARY Python3_LIBRARY_RELEASE)
+    if (${_fvtk_abi3_pyvar} AND EXISTS "${${_fvtk_abi3_pyvar}}")
+      get_filename_component(_fvtk_abi3_d "${${_fvtk_abi3_pyvar}}" DIRECTORY)
+      if (_fvtk_abi3_d)
+        list(APPEND _fvtk_abi3_py_libdirs "${_fvtk_abi3_d}")
+      endif ()
+    endif ()
+  endforeach ()
+  foreach (_fvtk_abi3_pylib IN LISTS Python3_LIBRARIES Python3_SABI_LIBRARIES)
+    if (EXISTS "${_fvtk_abi3_pylib}")
+      get_filename_component(_fvtk_abi3_d "${_fvtk_abi3_pylib}" DIRECTORY)
+      if (_fvtk_abi3_d)
+        list(APPEND _fvtk_abi3_py_libdirs "${_fvtk_abi3_d}")
+      endif ()
+    endif ()
+  endforeach ()
+  foreach (_fvtk_abi3_dirvar IN ITEMS
+      Python3_SABI_LIBRARY_DIRS Python3_LIBRARY_DIRS Python3_RUNTIME_LIBRARY_DIRS)
+    if (${_fvtk_abi3_dirvar})
+      list(APPEND _fvtk_abi3_py_libdirs ${${_fvtk_abi3_dirvar}})
+    endif ()
+  endforeach ()
+  foreach (_fvtk_abi3_inc IN LISTS Python3_INCLUDE_DIRS)
+    get_filename_component(_fvtk_abi3_prefix "${_fvtk_abi3_inc}" DIRECTORY)
+    if (_fvtk_abi3_prefix AND IS_DIRECTORY "${_fvtk_abi3_prefix}/libs")
+      list(APPEND _fvtk_abi3_py_libdirs "${_fvtk_abi3_prefix}/libs")
+    endif ()
+  endforeach ()
+  if (_fvtk_abi3_py_libdirs)
+    list(REMOVE_DUPLICATES _fvtk_abi3_py_libdirs)
+    foreach (_fvtk_abi3_d IN LISTS _fvtk_abi3_py_libdirs)
+      foreach (_fvtk_abi3_flagvar IN ITEMS
+          CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
+        if (NOT "${${_fvtk_abi3_flagvar}}" MATCHES "/LIBPATH:\"${_fvtk_abi3_d}\"")
+          set(${_fvtk_abi3_flagvar}
+            "${${_fvtk_abi3_flagvar}} /LIBPATH:\"${_fvtk_abi3_d}\""
+            CACHE STRING "" FORCE)
+        endif ()
+      endforeach ()
+    endforeach ()
+    message(STATUS
+      "fvtk abi3: added CPython libs dir(s) to linker search path for python3.lib: ${_fvtk_abi3_py_libdirs}")
+
+    # abi3 portability: make every Python-using DLL/.pyd depend on python3.dll,
+    # NOT python3XX.dll. FindPython hands Python3::Module an IMPORTED_IMPLIB of
+    # the version-specific python3XX.lib (absolute path), so every consumer would
+    # otherwise gain a python312.dll dependency and fail to import on cp313/cp314
+    # (cibuildwheel tests the single abi3 wheel on cp312/cp313/cp314). Retarget
+    # the imported lib to the stable-ABI forwarding stub python3.lib (same libs/
+    # dir, exports the same limited-API symbols, forwards to python3.dll). One
+    # override covers WrappingPythonCore AND every wrapper .pyd through the normal
+    # VTK::Python -> Python3::Module link, with no /NODEFAULTLIB or absolute-path
+    # lib hacks. /NODEFAULTLIB:python3XX.lib would NOT work — FindPython passes
+    # python3XX.lib by absolute path, which /NODEFAULTLIB (bare-name only) ignores.
+    find_file(_fvtk_abi3_python3_lib
+      NAMES python3.lib
+      PATHS ${_fvtk_abi3_py_libdirs}
+      NO_DEFAULT_PATH)
+    if (_fvtk_abi3_python3_lib AND TARGET Python3::Module)
+      get_target_property(_fvtk_abi3_mod_type Python3::Module TYPE)
+      # Only retarget the import-library form (shared CPython -> .lib stub). A
+      # static/embedded libpython has no python3.lib and must keep its real lib.
+      get_target_property(_fvtk_abi3_mod_implib Python3::Module IMPORTED_IMPLIB)
+      if (_fvtk_abi3_mod_implib)
+        set_target_properties(Python3::Module PROPERTIES
+          IMPORTED_IMPLIB "${_fvtk_abi3_python3_lib}")
+        # Cover per-config implibs too, if FindPython set them.
+        foreach (_fvtk_abi3_cfg RELEASE DEBUG RELWITHDEBINFO MINSIZEREL)
+          get_target_property(_fvtk_abi3_cfg_implib
+            Python3::Module IMPORTED_IMPLIB_${_fvtk_abi3_cfg})
+          if (_fvtk_abi3_cfg_implib)
+            set_target_properties(Python3::Module PROPERTIES
+              IMPORTED_IMPLIB_${_fvtk_abi3_cfg} "${_fvtk_abi3_python3_lib}")
+          endif ()
+        endforeach ()
+        message(STATUS
+          "fvtk abi3: Python3::Module import lib retargeted to ${_fvtk_abi3_python3_lib} "
+          "(abi3 wheel depends on python3.dll, not python3${Python3_VERSION_MINOR}.dll)")
+      endif ()
+    else ()
+      message(WARNING
+        "fvtk abi3: python3.lib not found in ${_fvtk_abi3_py_libdirs}; the abi3 "
+        "wheel may keep a version-specific python3XX.dll dependency and fail to "
+        "import on other CPython minors.")
+    endif ()
+  else ()
+    message(WARNING
+      "fvtk abi3: could not determine the CPython libs/ directory; python3.lib "
+      "may fail to link under Py_LIMITED_API on Windows (LNK1104).")
+  endif ()
+endif ()
+
 set_property(GLOBAL PROPERTY _vtk_python_soabi "${Python3_SOABI}")
 set_property(GLOBAL PROPERTY _vtk_python_version_major "${Python3_VERSION_MAJOR}")
 set_property(GLOBAL PROPERTY _vtk_python_version_minor "${Python3_VERSION_MINOR}")
