@@ -71,6 +71,22 @@ option(FVTK_ABI3 "fvtk: compile Python wrappers against the CPython stable ABI (
 # on newer limited-API features if ever needed.
 set(FVTK_ABI3_VERSION "0x030c0000" CACHE STRING "fvtk: Py_LIMITED_API value when FVTK_ABI3 is ON (0x030c0000 = CPython 3.12 floor)")
 
+# --- non-abi3 (legacy static) kit-link closure fix ---------------------------
+# Restore two RenderingSceneGraph leaf classes to the COMPILED set when building
+# the legacy static (FVTK_ABI3=OFF) wheels (cp310/cp311). The compiled
+# vtkRendererNode pulls in vtkCameraNode::New()/vtkLightNode::New(); with both
+# trimmed by FVTK_NOCOMPILE_CLASSES this is an unresolved external when MSVC links
+# the vtkRendering kit DLL (LNK2001/LNK1120). The abi3 build dropped the
+# referencing object via /OPT:REF so it never surfaced there, and GNU ld permits
+# shlib-undefined so the Linux legs never tripped — but the MSVC non-abi3 kit link
+# requires the symbols. We scope the restore to NOT FVTK_ABI3 so the shipped
+# cp312-abi3 C++ build is left BYTE-IDENTICAL (its trimmed-object set is unchanged);
+# the legacy wheels simply compile two extra small classes. Mirrors the
+# ref-closure-restore precedent documented in _nocompile_classes.cmake's header.
+if (NOT FVTK_ABI3)
+  list(REMOVE_ITEM FVTK_NOCOMPILE_CLASSES vtkCameraNode vtkLightNode)
+endif ()
+
 # --- build hygiene -----------------------------------------------------------
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "")
 
