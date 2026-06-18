@@ -25,12 +25,13 @@
 name: wheels-legacy
 
 on:
-  workflow_dispatch:
-  # Convenience: also build on pushing a `legacy-v*` tag. The cp312-abi3 release
-  # path triggers on `*` tags (wheels-cibuildwheel.yml); this distinct prefix
-  # keeps the two release lines from colliding.
+  # MAIN-ONLY build: the legacy cp310/cp311 wheels build on every merge to main —
+  # like the LTO legs in ci.yml — and via manual dispatch. They NEVER run on PRs,
+  # so PR latency is unaffected; the slow, lower-priority legacy build is paid only
+  # post-merge.
   push:
-    tags: ["legacy-v*"]
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: wheels-legacy-${{ github.ref }}
