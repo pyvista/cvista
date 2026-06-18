@@ -139,11 +139,12 @@ set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 
-#-----------------------------------------------------------------------------
-# Add the Remote Subdirectory
-if (VTK_ENABLE_REMOTE_MODULES)
-  add_subdirectory(Remote)
-endif ()
+# fvtk: the Remote/ subdirectory (download-on-demand external modules:
+# MomentInvariants, RenderingLookingGlass, vtkDICOM) was physically removed from
+# this Python-only wheel fork. It is never built: minimal.cmake hard-sets
+# VTK_ENABLE_REMOTE_MODULES=OFF, so neither the add_subdirectory() here nor the
+# `Remote` entry in vtk_source_directories below ever ran. The option +
+# both wiring sites are dropped with the tree.
 
 #-----------------------------------------------------------------------------
 # Does VTK require support for 64 bit file systems
@@ -499,16 +500,8 @@ set(vtk_source_directories
   "${CMAKE_CURRENT_SOURCE_DIR}/Web"
   "${CMAKE_CURRENT_SOURCE_DIR}/Wrapping")
 
-set(remote_default ON)
-if (VTK_WHEEL_BUILD)
-  set(remote_default OFF)
-endif ()
-option(VTK_ENABLE_REMOTE_MODULES "Enable remote modules" ON)
-mark_as_advanced(VTK_ENABLE_REMOTE_MODULES)
-if (VTK_ENABLE_REMOTE_MODULES)
-  list(APPEND vtk_source_directories
-    "${CMAKE_CURRENT_SOURCE_DIR}/Remote")
-endif ()
+# fvtk: VTK_ENABLE_REMOTE_MODULES + the Remote/ source directory were removed
+# (see the note above). This Python-only wheel never fetches remote modules.
 
 vtk_module_find_modules(vtk_module_files ${vtk_source_directories})
 vtk_module_find_kits(vtk_kit_files ${vtk_source_directories})
