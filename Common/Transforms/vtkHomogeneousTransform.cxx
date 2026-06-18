@@ -2,14 +2,126 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkHomogeneousTransform.h"
 
+#include "vtkDataArray.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkMath.h"
 #include "vtkMatrix4x4.h"
 #include "vtkPoints.h"
 #include "vtkSMPTools.h"
 
+#include <vector> // for std::vector
+
 VTK_ABI_NAMESPACE_BEGIN
 namespace
 {
+// fvtk devirtualized AOS gather/scatter for the homogeneous (perspective) point
+// loop. The per-point homogeneous-divide math (vtkHomogeneousTransformPoint and
+// the in-loop vector/normal homogeneous correction) is unchanged; only the
+// virtual vtkPoints::GetPoint/SetPoint and vtkDataArray::GetTuple/SetTuple that
+// wrap it are resolved to raw contiguous AOS float/double pointers ONCE.
+//
+// Bit-exactness: GetTuple into a double[3] is dst[c]=ptr[3*id+c] for AOS double
+// and dst[c]=static_cast<double>(ptr[3*id+c]) for AOS float (the identical
+// widening); SetTuple from a double[3] is ptr[3*id+c]=src[c] for AOS double and
+// ptr[3*id+c]=static_cast<float>(src[c]) for AOS float (the identical narrowing).
+// The transform math therefore sees byte-identical inputs and writes
+// byte-identical outputs in the identical loop order. Non-AOS storage keeps the
+// cached pointer null and falls back to the original virtual path.
+class TransformAOSReader
+{
+public:
+  explicit TransformAOSReader(vtkDataArray* arr)
+  {
+    if (arr)
+    {
+      if (auto* da = vtkDoubleArray::FastDownCast(arr))
+      {
+        this->DPtr = da->GetPointer(0);
+      }
+      else if (auto* fa = vtkFloatArray::FastDownCast(arr))
+      {
+        this->FPtr = fa->GetPointer(0);
+      }
+      this->Fallback = arr;
+    }
+  }
+
+  inline void Read(vtkIdType id, double x[3]) const
+  {
+    if (this->DPtr)
+    {
+      const double* p = this->DPtr + 3 * id;
+      x[0] = p[0];
+      x[1] = p[1];
+      x[2] = p[2];
+    }
+    else if (this->FPtr)
+    {
+      const float* p = this->FPtr + 3 * id;
+      x[0] = static_cast<double>(p[0]);
+      x[1] = static_cast<double>(p[1]);
+      x[2] = static_cast<double>(p[2]);
+    }
+    else
+    {
+      this->Fallback->GetTuple(id, x);
+    }
+  }
+
+private:
+  const double* DPtr = nullptr;
+  const float* FPtr = nullptr;
+  vtkDataArray* Fallback = nullptr;
+};
+
+class TransformAOSWriter
+{
+public:
+  explicit TransformAOSWriter(vtkDataArray* arr)
+  {
+    if (arr)
+    {
+      if (auto* da = vtkDoubleArray::FastDownCast(arr))
+      {
+        this->DPtr = da->GetPointer(0);
+      }
+      else if (auto* fa = vtkFloatArray::FastDownCast(arr))
+      {
+        this->FPtr = fa->GetPointer(0);
+      }
+      this->Fallback = arr;
+    }
+  }
+
+  inline void Write(vtkIdType id, const double x[3]) const
+  {
+    if (this->DPtr)
+    {
+      double* p = this->DPtr + 3 * id;
+      p[0] = x[0];
+      p[1] = x[1];
+      p[2] = x[2];
+    }
+    else if (this->FPtr)
+    {
+      float* p = this->FPtr + 3 * id;
+      p[0] = static_cast<float>(x[0]);
+      p[1] = static_cast<float>(x[1]);
+      p[2] = static_cast<float>(x[2]);
+    }
+    else
+    {
+      this->Fallback->SetTuple(id, x);
+    }
+  }
+
+private:
+  double* DPtr = nullptr;
+  float* FPtr = nullptr;
+  vtkDataArray* Fallback = nullptr;
+};
+
 void TransformVector(double M[4][4], double* outPnt, double f, double* inVec, double* outVec)
 {
   // do the linear homogeneous transformation
@@ -119,15 +231,19 @@ void vtkHomogeneousTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPt
 
   this->Update();
 
+  // fvtk: devirtualize coordinate gather/scatter; same per-point homogeneous math.
+  const TransformAOSReader inReader(inPts->GetData());
+  const TransformAOSWriter outWriter(outPts->GetData());
+
   vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {
       double point[3];
       for (; ptId < endPtId; ++ptId)
       {
-        inPts->GetPoint(ptId, point);
+        inReader.Read(ptId, point);
         vtkHomogeneousTransformPoint(M, point, point);
-        outPts->SetPoint(m + ptId, point);
+        outWriter.Write(m + ptId, point);
       }
     });
 }
@@ -171,38 +287,59 @@ void vtkHomogeneousTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vt
     vtkMatrix4x4::Transpose(*L, *L);
   }
 
+  // fvtk: devirtualize coordinate / vector / normal gather/scatter; same per-point
+  // homogeneous math.
+  const TransformAOSReader inPtReader(inPts->GetData());
+  const TransformAOSWriter outPtWriter(outPts->GetData());
+  const TransformAOSReader inVrsReader(inVrs);
+  const TransformAOSWriter outVrsWriter(outVrs);
+  const TransformAOSReader inNmsReader(inNms);
+  const TransformAOSWriter outNmsWriter(outNms);
+  std::vector<TransformAOSReader> inVrsArrReaders;
+  std::vector<TransformAOSWriter> outVrsArrWriters;
+  if (inVrsArr)
+  {
+    inVrsArrReaders.reserve(nOptionalVectors);
+    outVrsArrWriters.reserve(nOptionalVectors);
+    for (int iArr = 0; iArr < nOptionalVectors; iArr++)
+    {
+      inVrsArrReaders.emplace_back(inVrsArr[iArr]);
+      outVrsArrWriters.emplace_back(outVrsArr[iArr]);
+    }
+  }
+
   vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {
       double inPnt[3], outPnt[3], inNrm[3], outNrm[3], inVec[3], outVec[3];
       for (; ptId < endPtId; ++ptId)
       {
-        inPts->GetPoint(ptId, inPnt);
+        inPtReader.Read(ptId, inPnt);
 
         // do the coordinate transformation, get 1/w
         double f = vtkHomogeneousTransformPoint(M, inPnt, outPnt);
-        outPts->SetPoint(m + ptId, outPnt);
+        outPtWriter.Write(m + ptId, outPnt);
 
         if (inVrs)
         {
-          inVrs->GetTuple(ptId, inVec);
+          inVrsReader.Read(ptId, inVec);
           TransformVector(M, outPnt, f, inVec, outVec);
-          outVrs->SetTuple(m + ptId, outVec);
+          outVrsWriter.Write(m + ptId, outVec);
         }
 
         if (inVrsArr)
         {
           for (int iArr = 0; iArr < nOptionalVectors; iArr++)
           {
-            inVrsArr[iArr]->GetTuple(ptId, inVec);
+            inVrsArrReaders[iArr].Read(ptId, inVec);
             TransformVector(M, outPnt, f, inVec, outVec);
-            outVrsArr[iArr]->SetTuple(m + ptId, outVec);
+            outVrsArrWriters[iArr].Write(m + ptId, outVec);
           }
         }
 
         if (inNms)
         {
-          inNms->GetTuple(ptId, inNrm);
+          inNmsReader.Read(ptId, inNrm);
 
           // calculate the w component of the normal
           double w = -(inNrm[0] * inPnt[0] + inNrm[1] * inPnt[1] + inNrm[2] * inPnt[2]);
@@ -214,7 +351,7 @@ void vtkHomogeneousTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vt
 
           // re-normalize
           vtkMath::Normalize(outNrm);
-          outNms->SetTuple(m + ptId, outNrm);
+          outNmsWriter.Write(m + ptId, outNrm);
         }
       }
     });

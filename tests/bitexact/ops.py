@@ -102,7 +102,12 @@ try:
         vtkWarpScalar,
         vtkWarpVector,
     )
-    from vtkmodules.vtkCommonTransforms import vtkTransform
+    from vtkmodules.vtkCommonTransforms import (
+        vtkPerspectiveTransform,
+        vtkThinPlateSplineTransform,
+        vtkTransform,
+    )
+    from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
     from vtkmodules.vtkIOPLY import (
         vtkPLYReader,
         vtkPLYWriter,
@@ -887,6 +892,100 @@ def op_transform(dtype, size):
         f.SetOutputPointsPrecision(1)  # DOUBLE
     else:
         f.SetOutputPointsPrecision(2)  # SINGLE
+    f.Update()
+    return f.GetOutput()
+
+
+def _make_linear_transform():
+    t = vtkTransform()
+    t.Translate(0.123, -0.456, 0.789)
+    t.RotateWXYZ(37.0, 0.3, 0.5, 0.81)
+    t.Scale(1.25, 0.875, 1.0625)
+    return t
+
+
+def op_transform_nv(dtype, size):
+    """vtkTransformFilter (linear) over a sphere carrying BOTH point normals and a
+    point vectors array, so TransformPointsNormalsVectors (points + normals +
+    vectors) is exercised. The linear path is already devirtualized; this guards
+    its bit-exactness alongside the nonlinear ops below."""
+    f = vtkTransformFilter()
+    f.SetTransform(_make_linear_transform())
+    f.SetInputData(make_sphere_with_vectors(size, size, dtype))
+    f.SetOutputPointsPrecision(1 if dtype == "float64" else 2)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_transform_pdf(dtype, size):
+    """vtkTransformPolyDataFilter (linear) with point normals + vectors. Covers the
+    second target filter; its normals/vectors output arrays are always float."""
+    f = vtkTransformPolyDataFilter()
+    f.SetTransform(_make_linear_transform())
+    f.SetInputData(make_sphere_with_vectors(size, size, dtype))
+    f.SetOutputPointsPrecision(1 if dtype == "float64" else 2)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_transform_perspective(dtype, size):
+    """vtkTransformFilter with a vtkPerspectiveTransform (a vtkHomogeneousTransform,
+    non-linear / perspective divide). Exercises the devirtualized AOS gather/scatter
+    in vtkHomogeneousTransform::TransformPointsNormalsVectors (points + normals +
+    vectors all go through the homogeneous loop)."""
+    t = vtkPerspectiveTransform()
+    t.Translate(0.123, -0.456, 0.789)
+    t.RotateWXYZ(37.0, 0.3, 0.5, 0.81)
+    t.Scale(1.25, 0.875, 1.0625)
+    # introduce a non-affine row so the homogeneous w-divide is non-trivial
+    m = t.GetMatrix()
+    m.SetElement(3, 0, 0.05)
+    m.SetElement(3, 1, -0.03)
+    m.SetElement(3, 2, 0.02)
+    t.SetMatrix(m)
+    f = vtkTransformFilter()
+    f.SetTransform(t)
+    f.SetInputData(make_sphere_with_vectors(size, size, dtype))
+    f.SetOutputPointsPrecision(1 if dtype == "float64" else 2)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_transform_tps(dtype, size):
+    """vtkTransformFilter with a vtkThinPlateSplineTransform (a truly nonlinear
+    vtkAbstractTransform subclass that does NOT override TransformPoints/
+    TransformPointsNormalsVectors). Exercises the devirtualized AOS gather/scatter
+    in vtkAbstractTransform's generic per-point loop (InternalTransformPoint /
+    InternalTransformDerivative stay virtual and bit-identical)."""
+    src = vtkPoints()
+    dst = vtkPoints()
+    # a small deterministic control-point cage around the unit sphere
+    cage = [
+        (-1.0, -1.0, -1.0),
+        (1.0, -1.0, -1.0),
+        (-1.0, 1.0, -1.0),
+        (1.0, 1.0, -1.0),
+        (-1.0, -1.0, 1.0),
+        (1.0, -1.0, 1.0),
+        (-1.0, 1.0, 1.0),
+        (1.0, 1.0, 1.0),
+    ]
+    for i, (x, y, z) in enumerate(cage):
+        src.InsertNextPoint(x, y, z)
+        # deterministic warp of each control point
+        dst.InsertNextPoint(
+            x + 0.10 * ((i % 3) - 1),
+            y - 0.07 * ((i % 2)),
+            z + 0.05 * (((i + 1) % 3) - 1),
+        )
+    tps = vtkThinPlateSplineTransform()
+    tps.SetSourceLandmarks(src)
+    tps.SetTargetLandmarks(dst)
+    tps.SetBasisToR()  # R basis is well-defined in 3D
+    f = vtkTransformFilter()
+    f.SetTransform(tps)
+    f.SetInputData(make_sphere_with_vectors(size, size, dtype))
+    f.SetOutputPointsPrecision(1 if dtype == "float64" else 2)
     f.Update()
     return f.GetOutput()
 
@@ -1960,6 +2059,18 @@ OPS = {
     ),
     "transform": dict(
         fn=op_transform, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
+    ),
+    "transform_nv": dict(
+        fn=op_transform_nv, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
+    ),
+    "transform_pdf": dict(
+        fn=op_transform_pdf, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
+    ),
+    "transform_perspective": dict(
+        fn=op_transform_perspective, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
+    ),
+    "transform_tps": dict(
+        fn=op_transform_tps, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
     ),
     "clean": dict(fn=op_clean, group="filter", dtypes=["float64"], sizes=[24, 40]),
     "triangle": dict(fn=op_triangle, group="filter", dtypes=["float64"], sizes=[24, 40]),

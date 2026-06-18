@@ -4,6 +4,8 @@
 
 #include "vtkDataArray.h"
 #include "vtkDebugLeaks.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkIndent.h"
 #include "vtkLinearTransform.h"
 #include "vtkMath.h"
@@ -12,9 +14,132 @@
 #include "vtkPoints.h"
 #include "vtkSMPTools.h"
 
-#include <mutex> // for std::mutex
+#include <mutex>  // for std::mutex
+#include <vector> // for std::vector
 
 VTK_ABI_NAMESPACE_BEGIN
+
+namespace
+{ // anonymous
+
+// fvtk devirtualized gather/scatter for the nonlinear (generic abstract)
+// transform path. Unlike the linear/homogeneous matrix*point kernels, the
+// per-point math here is a virtual InternalTransformPoint /
+// InternalTransformDerivative that CANNOT be batched (it is the whole point of
+// a nonlinear transform). What we CAN remove is the virtual coordinate
+// gather/scatter that wraps it: each loop iteration calls vtkPoints::GetPoint /
+// SetPoint and vtkDataArray::GetTuple / SetTuple, each of which re-dispatches on
+// array type (and crosses the libCommon shared-object boundary). The 3-component
+// AOS float/double storage that dominates points/vectors/normals is resolved to
+// a raw contiguous pointer ONCE; each access is then a direct indexed load/store
+// feeding the SAME double[3] into/out of the unchanged transform-math call.
+//
+// Bit-exactness: GetPoint/GetTuple into a double[3] is, for AOS double storage,
+// dst[c]=ptr[3*id+c] and, for AOS float storage, dst[c]=static_cast<double>(
+// ptr[3*id+c]) -- the identical widening these virtual calls perform. SetPoint/
+// SetTuple from a double[3] is, for AOS double, ptr[3*id+c]=src[c] and, for AOS
+// float, ptr[3*id+c]=static_cast<float>(src[c]) -- the identical narrowing. No
+// arithmetic is introduced or reordered; the transform math sees byte-identical
+// inputs and produces byte-identical outputs in the identical loop order. Any
+// non-AOS / non-float-double storage keeps the cached pointer null and falls
+// back to the original virtual path.
+class TransformAOSReader
+{
+public:
+  explicit TransformAOSReader(vtkDataArray* arr)
+  {
+    if (arr)
+    {
+      if (auto* da = vtkDoubleArray::FastDownCast(arr))
+      {
+        this->DPtr = da->GetPointer(0);
+      }
+      else if (auto* fa = vtkFloatArray::FastDownCast(arr))
+      {
+        this->FPtr = fa->GetPointer(0);
+      }
+      this->Fallback = arr;
+    }
+  }
+
+  // Equivalent to arr->GetTuple(id, x) for a 3-component array.
+  inline void Read(vtkIdType id, double x[3]) const
+  {
+    if (this->DPtr)
+    {
+      const double* p = this->DPtr + 3 * id;
+      x[0] = p[0];
+      x[1] = p[1];
+      x[2] = p[2];
+    }
+    else if (this->FPtr)
+    {
+      const float* p = this->FPtr + 3 * id;
+      x[0] = static_cast<double>(p[0]);
+      x[1] = static_cast<double>(p[1]);
+      x[2] = static_cast<double>(p[2]);
+    }
+    else
+    {
+      this->Fallback->GetTuple(id, x);
+    }
+  }
+
+private:
+  const double* DPtr = nullptr;
+  const float* FPtr = nullptr;
+  vtkDataArray* Fallback = nullptr;
+};
+
+class TransformAOSWriter
+{
+public:
+  explicit TransformAOSWriter(vtkDataArray* arr)
+  {
+    if (arr)
+    {
+      if (auto* da = vtkDoubleArray::FastDownCast(arr))
+      {
+        this->DPtr = da->GetPointer(0);
+      }
+      else if (auto* fa = vtkFloatArray::FastDownCast(arr))
+      {
+        this->FPtr = fa->GetPointer(0);
+      }
+      this->Fallback = arr;
+    }
+  }
+
+  // Equivalent to arr->SetTuple(id, x) for a 3-component array.
+  inline void Write(vtkIdType id, const double x[3]) const
+  {
+    if (this->DPtr)
+    {
+      double* p = this->DPtr + 3 * id;
+      p[0] = x[0];
+      p[1] = x[1];
+      p[2] = x[2];
+    }
+    else if (this->FPtr)
+    {
+      float* p = this->FPtr + 3 * id;
+      p[0] = static_cast<float>(x[0]);
+      p[1] = static_cast<float>(x[1]);
+      p[2] = static_cast<float>(x[2]);
+    }
+    else
+    {
+      this->Fallback->SetTuple(id, x);
+    }
+  }
+
+private:
+  double* DPtr = nullptr;
+  float* FPtr = nullptr;
+  vtkDataArray* Fallback = nullptr;
+};
+
+} // anonymous namespace
 
 class vtkAbstractTransform::vtkInternals
 {
@@ -151,15 +276,22 @@ void vtkAbstractTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPts)
   vtkIdType m = outPts->GetNumberOfPoints();
   outPts->SetNumberOfPoints(m + n);
 
+  // fvtk: devirtualize the per-point coordinate gather/scatter while keeping the
+  // exact same per-point virtual InternalTransformPoint math (nonlinear, not
+  // batchable). See TransformAOSReader/Writer above for the byte-exactness
+  // argument; non-AOS storage falls back to GetPoint/SetPoint.
+  const TransformAOSReader inReader(inPts->GetData());
+  const TransformAOSWriter outWriter(outPts->GetData());
+
   vtkSMPTools::For(0, n,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {
       double point[3];
       for (; ptId < endPtId; ++ptId)
       {
-        inPts->GetPoint(ptId, point);
+        inReader.Read(ptId, point);
         this->InternalTransformPoint(point, point);
-        outPts->SetPoint(m + ptId, point);
+        outWriter.Write(m + ptId, point);
       }
     });
 }
@@ -197,6 +329,30 @@ void vtkAbstractTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vtkPo
     outNms->SetNumberOfTuples(m + n);
   }
 
+  // fvtk: devirtualize the per-point coordinate / vector / normal gather and
+  // scatter while keeping the exact same per-point virtual
+  // InternalTransformDerivative + vtkMath 3x3 math (nonlinear, not batchable).
+  // See TransformAOSReader/Writer above for the byte-exactness argument; non-AOS
+  // storage falls back to the original virtual GetPoint/SetPoint/GetTuple/SetTuple.
+  const TransformAOSReader inPtReader(inPts->GetData());
+  const TransformAOSWriter outPtWriter(outPts->GetData());
+  const TransformAOSReader inVrsReader(inVrs);
+  const TransformAOSWriter outVrsWriter(outVrs);
+  const TransformAOSReader inNmsReader(inNms);
+  const TransformAOSWriter outNmsWriter(outNms);
+  std::vector<TransformAOSReader> inVrsArrReaders;
+  std::vector<TransformAOSWriter> outVrsArrWriters;
+  if (inVrsArr)
+  {
+    inVrsArrReaders.reserve(nOptionalVectors);
+    outVrsArrWriters.reserve(nOptionalVectors);
+    for (int iArr = 0; iArr < nOptionalVectors; iArr++)
+    {
+      inVrsArrReaders.emplace_back(inVrsArr[iArr]);
+      outVrsArrWriters.emplace_back(outVrsArr[iArr]);
+    }
+  }
+
   vtkSMPTools::For(0, n,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {
@@ -204,32 +360,32 @@ void vtkAbstractTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vtkPo
       double point[3];
       for (; ptId < endPtId; ++ptId)
       {
-        inPts->GetPoint(ptId, point);
+        inPtReader.Read(ptId, point);
         this->InternalTransformDerivative(point, point, matrix);
-        outPts->SetPoint(m + ptId, point);
+        outPtWriter.Write(m + ptId, point);
 
         if (inVrs)
         {
-          inVrs->GetTuple(ptId, point);
+          inVrsReader.Read(ptId, point);
           vtkMath::Multiply3x3(matrix, point, point);
-          outVrs->SetTuple(m + ptId, point);
+          outVrsWriter.Write(m + ptId, point);
         }
         if (inVrsArr)
         {
           for (int iArr = 0; iArr < nOptionalVectors; iArr++)
           {
-            inVrsArr[iArr]->GetTuple(ptId, point);
+            inVrsArrReaders[iArr].Read(ptId, point);
             vtkMath::Multiply3x3(matrix, point, point);
-            outVrsArr[iArr]->SetTuple(m + ptId, point);
+            outVrsArrWriters[iArr].Write(m + ptId, point);
           }
         }
         if (inNms)
         {
-          inNms->GetTuple(ptId, point);
+          inNmsReader.Read(ptId, point);
           vtkMath::Transpose3x3(matrix, matrix);
           vtkMath::LinearSolve3x3(matrix, point, point);
           vtkMath::Normalize(point);
-          outNms->SetTuple(m + ptId, point);
+          outNmsWriter.Write(m + ptId, point);
         }
       }
     });
