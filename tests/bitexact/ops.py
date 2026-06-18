@@ -629,7 +629,7 @@ def op_threshold_ugrid_pointdata(dtype, size):
     t.SetInputArrayToProcess(
         0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_POINTS, "v"
     )
-    t.SetAllScalarsOn()
+    t.SetAllScalars(1)
     t.SetLowerThreshold(3.0)
     t.SetUpperThreshold(0.45 * size * size)
     t.Update()
@@ -645,7 +645,7 @@ def op_threshold_ugrid_pointdata_any(dtype, size):
     t.SetInputArrayToProcess(
         0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_POINTS, "v"
     )
-    t.SetAllScalarsOff()
+    t.SetAllScalars(0)
     t.SetLowerThreshold(3.0)
     t.SetUpperThreshold(0.45 * size * size)
     t.Update()
