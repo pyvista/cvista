@@ -41,6 +41,26 @@ constexpr unsigned char MASKED_CELL_VALUE = vtkDataSetAttributes::HIDDENCELL |
   vtkDataSetAttributes::DUPLICATECELL | vtkDataSetAttributes::REFINEDCELL;
 
 //==============================================================================
+// Read a cell type from the Types array. The Types array always holds unsigned
+// char values; in the overwhelmingly common case it is a concrete (AOS)
+// vtkUnsignedCharArray, in which case we read its raw buffer directly and skip
+// the cross-library virtual vtkDataArray::GetComponent dispatch (which routes
+// through GetTuple in CommonCore). For any other backing (e.g. an implicit
+// vtkConstantArray<unsigned char> set via SetCells), we fall back to the
+// virtual path. This is byte-for-byte identical to
+// `static_cast<int>(types->GetComponent(cellId, 0))`: for an unsigned char the
+// value is exactly representable, so the char -> int read equals the
+// char -> double -> int read.
+inline int GetCellTypeFromArray(vtkDataArray* types, vtkIdType cellId)
+{
+  if (auto* aos = vtkUnsignedCharArray::FastDownCast(types))
+  {
+    return static_cast<int>(aos->GetPointer(0)[cellId]);
+  }
+  return static_cast<int>(types->GetComponent(cellId, 0));
+}
+
+//==============================================================================
 struct RemoveGhostCellsWorker
 {
   vtkNew<vtkIdList> NewPointIdMap;
@@ -350,7 +370,7 @@ void vtkUnstructuredGrid::Initialize()
 //------------------------------------------------------------------------------
 int vtkUnstructuredGrid::GetCellType(vtkIdType cellId)
 {
-  return static_cast<int>(this->Types->GetComponent(cellId, 0));
+  return GetCellTypeFromArray(this->Types, cellId);
 }
 
 //------------------------------------------------------------------------------
@@ -369,7 +389,7 @@ vtkCell* vtkUnstructuredGrid::GetCell(vtkIdType cellId)
 //------------------------------------------------------------------------------
 void vtkUnstructuredGrid::GetCell(vtkIdType cellId, vtkGenericCell* cell)
 {
-  const int cellType = static_cast<int>(this->Types->GetComponent(cellId, 0));
+  const int cellType = GetCellTypeFromArray(this->Types, cellId);
   cell->SetCellType(cellType);
 
   this->Connectivity->GetCellAtId(cellId, cell->PointIds);
