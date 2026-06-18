@@ -135,13 +135,25 @@ jobs:
         uses: pypa/cibuildwheel@v3.1.4
         env:
           CIBW_BUILD: "cp310-* cp311-*"
-          # Belt-and-suspenders: < 3.12 interpreters already disable abi3; make the
-          # legacy per-version path explicit. All other Windows config (archs,
-          # FVTK_CMAKE_INIT, MSVC force, delvewheel repair, smoke_min test-command)
-          # is reused from pyproject [tool.cibuildwheel.windows]. The abi3-only
-          # test-skip (cp313/cp314) is irrelevant here — we only build cp310/cp311
-          # and each tests on its own interpreter.
-          CIBW_ENVIRONMENT: "FVTK_ABI3=0"
+          # CIBW_ENVIRONMENT REPLACES (does not merge with) the pyproject
+          # [tool.cibuildwheel.windows.environment] table, so we MUST re-declare the
+          # Windows build vars here or they are lost:
+          #   FVTK_CMAKE_INIT=ci/cmake/windows.cmake — selects the MSVC init-cache.
+          #     Without it the backend defaults to ci/cmake/linux.cmake, which lacks
+          #     windows.cmake's MSVC link-closure restore (vtkCameraNode/vtkLightNode/
+          #     vtkDiscretizableColorTransferFunction are referenced by kept code but
+          #     trimmed by FVTK_NOCOMPILE_CLASSES) -> the vtkRendering kit DLL fails
+          #     to link (LNK2001/LNK1120). windows.cmake re-adds them to the compiled
+          #     set; linux.cmake does not (GNU/gold gc-sections elides the dead path).
+          #   FVTK_FORCE_MSVC=ON — makes minimal.cmake's toolchain gate take the MSVC
+          #     branch (an -C file runs before the compiler probe, so WIN32 isn't set).
+          #   FVTK_ABI3=0 — belt-and-suspenders; < 3.12 already disables abi3, make the
+          #     legacy per-version static path explicit.
+          # delvewheel repair + smoke_min test-command come from the pyproject
+          # [tool.cibuildwheel.windows] table (those keys are not part of the env
+          # table, so they are NOT clobbered). The abi3-only test-skip (cp313/cp314)
+          # is irrelevant — we build only cp310/cp311, each tested on its own interp.
+          CIBW_ENVIRONMENT: "FVTK_ABI3=0 FVTK_CMAKE_INIT=ci/cmake/windows.cmake FVTK_FORCE_MSVC=ON"
 
       - uses: actions/upload-artifact@v4
         with:
