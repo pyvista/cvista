@@ -198,25 +198,27 @@ def _set_abi3_windows_libdir() -> None:
     #   #pragma comment(lib, "python3.lib")
     # so every TU including <Python.h> auto-links the BARE name python3.lib (the
     # stable-ABI forwarding stub). The linker resolves a bare-name lib only via
-    # its /LIBPATH search dirs; FindPython links the version lib by ABSOLUTE path
-    # and never adds the CPython libs/ dir to the search path -> LNK1104.
+    # its search dirs; FindPython links the version lib by ABSOLUTE path and never
+    # adds the CPython libs/ dir to the search path -> LNK1104 on EVERY Python link
+    # (WrappingPythonCore — a real VTK module in its own subdir scope — plus every
+    # wrapper .pyd).
     #
-    # The fix must reach EVERY link line (WrappingPythonCore — a real VTK module
-    # in its own subdir scope — plus every wrapper .pyd). A cache-FORCE set from a
-    # later sibling subdir (Utilities/Python) does NOT update the directory-local
-    # copy of an already-entered scope, so it never lands on WrappingPythonCore.
-    # The ONLY placement that reaches all scopes is the `-C` init-cache, which is
-    # read before any subdirectory is entered. The init-cache runs before
-    # FindPython, so it cannot discover the libs/ dir itself — we hand it the dir
-    # here (the backend runs under the target interpreter) via an env knob that
-    # minimal.cmake appends to the MSVC linker flags. sys.base_prefix/libs is the
-    # CPython libs/ dir holding BOTH python3.lib and python3XX.lib (for a venv,
-    # base_prefix points at the real install, e.g. the cibuildwheel nuget tools/).
+    # Fix it via the MSVC `LIB` environment variable, which link.exe consults as a
+    # default library search path. The build (cmake --build -> ninja -> link.exe)
+    # inherits this process env, so the dir reaches every link with NO /LIBPATH on
+    # any command line. We avoid putting /LIBPATH into CMAKE_*_LINKER_FLAGS on
+    # purpose: ThirdParty/hdf5 embeds the linker flags verbatim into a C string
+    # literal (H5build_settings.c), which a quoted Windows path would corrupt.
+    # sys.base_prefix/libs is the CPython libs/ dir holding both python3.lib and
+    # python3XX.lib (for a venv, base_prefix points at the real install — e.g. the
+    # cibuildwheel nuget tools/).
     if os.name != "nt" or not _abi3_enabled():
         return
     libdir = os.path.join(sys.base_prefix, "libs")
     if os.path.isdir(libdir):
-        os.environ["FVTK_PYTHON_LIBDIR"] = libdir
+        existing = os.environ.get("LIB", "")
+        if libdir not in existing.split(os.pathsep):
+            os.environ["LIB"] = libdir + (os.pathsep + existing if existing else "")
 
 
 def _configure_and_build():

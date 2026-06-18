@@ -407,28 +407,18 @@ if (_FVTK_TOOLCHAIN STREQUAL "msvc")
   set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${_fvtk_msvc_link}" CACHE STRING "" FORCE)
   unset(_fvtk_msvc_link)
 
-  # === Windows abi3 (Py_LIMITED_API) link fixes — init-cache, reaches ALL scopes
-  # See ci/cibw/fvtk_backend.py::_set_abi3_windows_libdir for the full rationale.
+  # === Windows abi3 (Py_LIMITED_API) link fixes ================================
+  # PART 1 (LNK1104 "cannot open file 'python3.lib'") is handled OUTSIDE cmake:
+  # the backend (ci/cibw/fvtk_backend.py::_set_abi3_windows_libdir) prepends the
+  # CPython libs/ dir to the MSVC `LIB` environment variable, which link.exe reads
+  # as a default library search path. That resolves the bare-name python3.lib the
+  # #pragma comment(lib,...) auto-links under Py_LIMITED_API, on EVERY link, with
+  # no /LIBPATH on the command line. We deliberately do NOT add /LIBPATH to
+  # CMAKE_*_LINKER_FLAGS here: ThirdParty/hdf5 embeds the linker flags verbatim
+  # into a C string literal (H5build_settings.c), so a flag carrying a quoted
+  # Windows path ("C:\...\libs") corrupts that source (unknown escape sequence /
+  # premature string close). The `LIB` env route sidesteps that entirely.
   #
-  # PART 1 (LNK1104 "cannot open file 'python3.lib'"): under Py_LIMITED_API MSVC's
-  # pyconfig.h auto-links the BARE name python3.lib via #pragma comment(lib,...);
-  # the linker resolves a bare-name lib only through /LIBPATH. FindPython never
-  # puts the CPython libs/ dir on the search path. We add it HERE, in the
-  # init-cache, because a cache-FORCE from a later sibling subdir does NOT update
-  # the directory-local linker flags of an already-entered scope (e.g.
-  # Wrapping/PythonCore) — only the init-cache, read before any add_subdirectory,
-  # lands on every link line. The backend passes the dir via FVTK_PYTHON_LIBDIR
-  # (it knows the target interpreter; the init-cache runs before FindPython).
-  if (NOT "$ENV{FVTK_PYTHON_LIBDIR}" STREQUAL "")
-    foreach (_fvtk_abi3_flagvar IN ITEMS
-        CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
-      set(${_fvtk_abi3_flagvar}
-        "${${_fvtk_abi3_flagvar}} /LIBPATH:\"$ENV{FVTK_PYTHON_LIBDIR}\""
-        CACHE STRING "" FORCE)
-    endforeach ()
-    unset(_fvtk_abi3_flagvar)
-  endif ()
-
   # PART 2 (cross-version dependency): make every find_package() IMPORTED target a
   # single GLOBAL target so the Python3::Module import-lib retarget in
   # Utilities/Python (python3XX.lib -> the stable-ABI stub python3.lib, so the

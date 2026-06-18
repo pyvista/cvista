@@ -37,25 +37,29 @@ set(vtk_python_embed_target "Python3::Python")
 set(vtk_python_version "${Python3_VERSION}")
 set(vtk_python_version_pair "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
 
-# fvtk abi3 (Py_LIMITED_API) Windows link fix — GLOBAL, all Python-using links.
+# fvtk abi3 (Py_LIMITED_API) Windows link fix — cross-version dependency (PART 2).
 #
 # Under Py_LIMITED_API (the abi3 default), MSVC's pyconfig.h emits
 #   #pragma comment(lib, "python3.lib")
 # so every TU that includes <Python.h> auto-links the stable-ABI forwarding
-# import lib python3.lib (-> python3.dll) instead of the version-specific
-# python3XX.lib. FindPython, however, links python3XX.lib by ABSOLUTE path (via
-# Python3::Module) and never puts its directory on the linker search path.
-# python3.lib lives in that SAME CPython "libs/" directory, so the auto-linked
-# python3.lib is unresolved -> LNK1104 "cannot open file 'python3.lib'".
+# import lib python3.lib (-> python3.dll). FindPython, however, hands
+# Python3::Module an IMPORTED_IMPLIB of the version-specific python3XX.lib
+# (absolute path), so every Python-using DLL/.pyd would also gain a python3XX.dll
+# dependency and fail to import on a different CPython minor (cibuildwheel tests
+# the single abi3 wheel on cp312/cp313/cp314).
 #
-# This bites EVERY Python-limited-API link, not just the wrapper .pyd modules
-# created by vtk_module_wrap_python: WrappingPythonCore is a real VTK module
-# built here in the main graph (Wrapping/PythonCore), so a per-wrapper-module fix
-# never reaches it. Fix it once, globally, by adding the CPython libs/ dir to the
-# linker search path for ALL links via the cache linker-flag variables (linker
-# flags are placement-insensitive and consumed at every shared/module/exe link),
-# so python3.lib's auto-link resolves everywhere. WIN32 + abi3 only; Linux/macOS
-# (.abi3.so, no #pragma comment(lib)) are untouched.
+# PART 1 (resolving the bare python3.lib the #pragma auto-links -> LNK1104) is
+# handled in the backend via the MSVC `LIB` env var (see
+# ci/cibw/fvtk_backend.py::_set_abi3_windows_libdir) — NOT via /LIBPATH in the
+# linker flags, because ThirdParty/hdf5 embeds those flags into a C string
+# literal that a quoted Windows path corrupts.
+#
+# PART 2, below: retarget Python3::Module's import lib to the stable-ABI stub
+# python3.lib so the abi3 wheel depends on python3.dll, not python3XX.dll. The
+# detection loop locates python3.lib's directory; the retarget sticks across all
+# subdir scopes because CMAKE_FIND_PACKAGE_TARGETS_GLOBAL (set in minimal.cmake,
+# MSVC only) makes Python3::Module a single global target. WIN32 + abi3 only;
+# Linux/macOS (.abi3.so, no #pragma comment(lib), no version import lib) untouched.
 if (WIN32 AND FVTK_ABI3)
   set(_fvtk_abi3_py_libdirs)
   # The python312.lib that FindPython links lives in the same dir as python3.lib;
@@ -92,18 +96,6 @@ if (WIN32 AND FVTK_ABI3)
   endforeach ()
   if (_fvtk_abi3_py_libdirs)
     list(REMOVE_DUPLICATES _fvtk_abi3_py_libdirs)
-    foreach (_fvtk_abi3_d IN LISTS _fvtk_abi3_py_libdirs)
-      foreach (_fvtk_abi3_flagvar IN ITEMS
-          CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
-        if (NOT "${${_fvtk_abi3_flagvar}}" MATCHES "/LIBPATH:\"${_fvtk_abi3_d}\"")
-          set(${_fvtk_abi3_flagvar}
-            "${${_fvtk_abi3_flagvar}} /LIBPATH:\"${_fvtk_abi3_d}\""
-            CACHE STRING "" FORCE)
-        endif ()
-      endforeach ()
-    endforeach ()
-    message(STATUS
-      "fvtk abi3: added CPython libs dir(s) to linker search path for python3.lib: ${_fvtk_abi3_py_libdirs}")
 
     # abi3 portability: make every Python-using DLL/.pyd depend on python3.dll,
     # NOT python3XX.dll. FindPython hands Python3::Module an IMPORTED_IMPLIB of
