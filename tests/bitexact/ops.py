@@ -89,6 +89,7 @@ try:
     )
     from vtkmodules.vtkFiltersGeneral import (
         vtkClipDataSet,
+        vtkContourTriangulator,
         vtkDataSetTriangleFilter,
         vtkGradientFilter,
         vtkShrinkFilter,
@@ -821,6 +822,67 @@ def op_cone_triangulate(dtype, size):
     t.SetInputConnection(c.GetOutputPort())
     t.Update()
     return t.GetOutput()
+
+
+def make_nested_loops(nrings, perside, dtype):
+    """A vtkPolyData of `nrings` concentric, closed, axis-aligned square line
+    loops centered on the origin, each loop a single closed line cell with
+    `perside` segments per side. Coordinates are pure integer algebra so both
+    backends start byte-identical. The loops nest inside one another, so
+    vtkContourTriangulator must run its O(n^2) poly-in-poly grouping to decide
+    which loops are holes -- the path whose per-vertex vtkPoints::GetPoint this
+    change devirtualizes."""
+    pts = []
+    cells = []  # list of point-id lists, one closed loop each
+    for r in range(nrings):
+        half = (nrings - r) * 4  # outer rings are larger
+        base = len(pts)
+        loop = []
+        # walk the square perimeter as integer lattice points
+        per = []
+        for i in range(perside):
+            t = i * (2 * half) // perside
+            per.append((-half + t, -half))  # bottom edge L->R
+        for i in range(perside):
+            t = i * (2 * half) // perside
+            per.append((half, -half + t))  # right edge B->T
+        for i in range(perside):
+            t = i * (2 * half) // perside
+            per.append((half - t, half))  # top edge R->L
+        for i in range(perside):
+            t = i * (2 * half) // perside
+            per.append((-half, half - t))  # left edge T->B
+        for (x, y) in per:
+            pts.append((x, y, 0))
+            loop.append(base + len(loop))
+        loop.append(base)  # close the loop back to its first vertex
+        cells.append(loop)
+    coords = np.array(pts, dtype=dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd.SetPoints(vp)
+    lines = vtkCellArray()
+    for loop in cells:
+        ids = vtkIdList()
+        for pid in loop:
+            ids.InsertNextId(pid)
+        lines.InsertNextCell(ids)
+    pd.SetLines(lines)
+    return pd
+
+
+def op_contour_triangulator(dtype, size):
+    # vtkContourTriangulator on nested closed line loops. The concentric loops
+    # force the vtkCCSMakeHoleyPolys / vtkCCSPolyInPoly grouping (O(n^2) over the
+    # polygon vertices), which fetches every vertex coordinate via the
+    # devirtualized vtkCCSPointReader (was vtkPoints::GetPoint -> virtual
+    # GetTuple). `size` -> segments-per-side; dtype drives the point-array
+    # precision so both the float and double reader branches are exercised.
+    ct = vtkContourTriangulator()
+    ct.SetInputData(make_nested_loops(nrings=4, perside=size, dtype=dtype))
+    ct.Update()
+    return ct.GetOutput()
 
 
 def op_tube(dtype, size):
@@ -1705,6 +1767,8 @@ OPS = {
     "glyph_mixedcells": dict(fn=op_glyph_mixedcells, group="filter", dtypes=["float64"], sizes=[20, 32]),
     "decimatepro": dict(fn=op_decimatepro, group="filter", dtypes=["float64"], sizes=[24, 40]),
     "cone": dict(fn=op_cone_triangulate, group="filter", dtypes=["float64"], sizes=[12, 30]),
+    "contour_triangulator": dict(
+        fn=op_contour_triangulator, group="filter", dtypes=["float32", "float64"], sizes=[6, 12]),
     "tube": dict(fn=op_tube, group="filter", dtypes=["float32", "float64"], sizes=[16, 32]),
     "gradient": dict(fn=op_gradient, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
     "cutter": dict(fn=op_cutter, group="filter", dtypes=["float64"], sizes=[8, 12]),

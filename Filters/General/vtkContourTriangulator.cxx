@@ -5,6 +5,8 @@
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkDataSet.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkIncrementalOctreePointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -263,22 +265,91 @@ double vtkCCSTriangleQuality(
 int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPolyEdges& polyEdges,
   const vtkCCSCellArray& originalEdges, vtkCellArray* polys, const double normal[3]);
 
+//------------------------------------------------------------------------------
+// Devirtualized per-vertex coordinate reader for the vtkCCS* polygon helpers.
+//
+// Every helper below fetches polygon vertex coordinates via vtkPoints::GetPoint,
+// a virtual, cross-shared-library call into the point array's GetTuple
+// (libvtkCommon). The poly-in-poly grouping (vtkCCSPolyInPoly and friends) is
+// O(n^2) in the polygon vertex count and re-issues that virtual call per vertex
+// per probe, dominating the filter's self time. For the dominant AOS
+// float/double point storage, resolve the raw contiguous coordinate buffer ONCE
+// (vtkFloatArray/vtkDoubleArray FastDownCast + GetPointer(0)) at reader
+// construction and read each vertex's coords inline from ptr + 3*id. For any
+// other storage the cached pointer stays null and GetPoint falls back to the
+// original vtkPoints::GetPoint path.
+//
+// Bit-exactness: vtkPoints::GetPoint copies the exact stored coordinates
+// (double storage: x[c] = ptr[3*id+c]; float storage:
+// x[c] = static_cast<double>(ptr[3*id+c]), the identical float->double widening
+// that GetTuple performs). No arithmetic is introduced, so every consumed
+// coordinate is byte-identical to the GetPoint value. The poly-in-poly algorithm
+// and all geometric arithmetic remain unchanged; only coordinate access changes.
+class vtkCCSPointReader
+{
+public:
+  explicit vtkCCSPointReader(vtkPoints* points)
+    : Points(points)
+  {
+    if (points)
+    {
+      if (auto* da = vtkDoubleArray::FastDownCast(points->GetData()))
+      {
+        this->DPtr = da->GetPointer(0);
+      }
+      else if (auto* fa = vtkFloatArray::FastDownCast(points->GetData()))
+      {
+        this->FPtr = fa->GetPointer(0);
+      }
+    }
+  }
+
+  // Equivalent to Points->GetPoint(id, x).
+  inline void GetPoint(vtkIdType id, double x[3]) const
+  {
+    if (this->DPtr)
+    {
+      const double* p = this->DPtr + 3 * id;
+      x[0] = p[0];
+      x[1] = p[1];
+      x[2] = p[2];
+    }
+    else if (this->FPtr)
+    {
+      const float* p = this->FPtr + 3 * id;
+      x[0] = static_cast<double>(p[0]);
+      x[1] = static_cast<double>(p[1]);
+      x[2] = static_cast<double>(p[2]);
+    }
+    else
+    {
+      this->Points->GetPoint(id, x);
+    }
+  }
+
+private:
+  vtkPoints* Points;
+  const double* DPtr = nullptr;
+  const float* FPtr = nullptr;
+};
+
 // ---------------------------------------------------
 // compute the normal of a polygon
 double vtkCCSPolygonNormal(const vtkCCSPoly& poly, vtkPoints* points, double normal[3])
 {
+  const vtkCCSPointReader pointReader(points);
   double nn[3] = { 0.0, 0.0, 0.0 };
   double p0[3], p1[3], p2[3];
 
   size_t n = poly.size();
-  points->GetPoint(poly[0], p0);
-  points->GetPoint(poly[1], p1);
+  pointReader.GetPoint(poly[0], p0);
+  pointReader.GetPoint(poly[1], p1);
 
   for (size_t j = 2; j < n; j++)
   {
     double v1[3], v2[3];
 
-    points->GetPoint(poly[j], p2);
+    pointReader.GetPoint(poly[j], p2);
 
     v1[0] = p2[0] - p1[0];
     v1[1] = p2[1] - p1[1];
@@ -351,6 +422,7 @@ double vtkCCSTriangleQuality(
 int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPolyEdges& polyEdges,
   const vtkCCSCellArray& originalEdges, vtkCellArray* polys, const double normal[3])
 {
+  const vtkCCSPointReader pointReader(points);
   int triangulationFailure = 0;
   size_t n = poly.size();
 
@@ -384,9 +456,9 @@ int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPol
 
     // compute the triangle quality for each vert
     k = n - 2;
-    points->GetPoint(poly[verts[k].first], point);
+    pointReader.GetPoint(poly[verts[k].first], point);
     i = n - 1;
-    points->GetPoint(poly[verts[i].first], npoint);
+    pointReader.GetPoint(poly[verts[i].first], npoint);
 
     size_t concave = 0;
     double maxq = 0;
@@ -399,7 +471,7 @@ int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPol
       point[0] = npoint[0];
       point[1] = npoint[1];
       point[2] = npoint[2];
-      points->GetPoint(poly[verts[j].first], npoint);
+      pointReader.GetPoint(poly[verts[j].first], npoint);
 
       double q = vtkCCSTriangleQuality(ppoint, point, npoint, normal);
       if (q > maxq)
@@ -429,8 +501,8 @@ int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPol
       if (verts[i].second > 0)
       {
         bool foundEar = true;
-        points->GetPoint(poly[verts[j].first], npoint);
-        points->GetPoint(poly[verts[k].first], ppoint);
+        pointReader.GetPoint(poly[verts[j].first], npoint);
+        pointReader.GetPoint(poly[verts[k].first], ppoint);
 
         // only do ear check if there are concave vertices
         if (concave)
@@ -447,7 +519,7 @@ int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPol
 
           size_t jj = (j + 1 != n ? j + 1 : 0);
           double x[3];
-          points->GetPoint(poly[verts[jj].first], x);
+          pointReader.GetPoint(poly[verts[jj].first], x);
           bool side = (vtkMath::Dot(x, u) < d);
           bool foundNegative = side;
 
@@ -459,7 +531,7 @@ int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPol
             y[0] = x[0];
             y[1] = x[1];
             y[2] = x[2];
-            points->GetPoint(poly[verts[jj].first], x);
+            pointReader.GetPoint(poly[verts[jj].first], x);
             if (side ^ (vtkMath::Dot(x, u) < d))
             {
               side = !side;
@@ -500,14 +572,14 @@ int vtkCCSTriangulate(const vtkCCSPoly& poly, vtkPoints* points, const vtkCCSPol
 
           // re-compute quality of previous point
           size_t kk = (k != 0 ? k - 1 : n - 1);
-          points->GetPoint(poly[verts[kk].first], point);
+          pointReader.GetPoint(poly[verts[kk].first], point);
           double kq = vtkCCSTriangleQuality(point, ppoint, npoint, normal);
           concave -= ((verts[k].second < 0) && (kq >= 0));
           verts[k].second = kq;
 
           // re-compute quality of next point
           size_t jj = (j + 1 != n ? j + 1 : 0);
-          points->GetPoint(poly[verts[jj].first], point);
+          pointReader.GetPoint(poly[verts[jj].first], point);
           double jq = vtkCCSTriangleQuality(ppoint, npoint, point, normal);
           concave -= ((verts[j].second < 0) && (jq >= 0));
           verts[j].second = jq;
@@ -725,6 +797,7 @@ void vtkCCSMakePolysFromLines(vtkPolyData* data, vtkIdType firstLine, vtkIdType 
 void vtkCCSJoinLooseEnds(std::vector<vtkCCSPoly>& polys, std::vector<size_t>& incompletePolys,
   vtkPoints* points, const double normal[3])
 {
+  const vtkCCSPointReader pointReader(points);
   // Relative tolerance for checking whether an edge is on the hull
   const double tol = VTK_CCS_POLYGON_TOLERANCE;
 
@@ -737,7 +810,7 @@ void vtkCCSJoinLooseEnds(std::vector<vtkCCSPoly>& polys, std::vector<size_t>& in
     vtkCCSPoly& poly1 = polys[incompletePolys[n - 1]];
     vtkIdType pt1 = poly1[poly1.size() - 1];
     double p1[3], p2[3];
-    points->GetPoint(pt1, p1);
+    pointReader.GetPoint(pt1, p1);
 
     double dMin = VTK_DOUBLE_MAX;
     size_t iMin = 0;
@@ -746,7 +819,7 @@ void vtkCCSJoinLooseEnds(std::vector<vtkCCSPoly>& polys, std::vector<size_t>& in
     {
       vtkCCSPoly& poly2 = polys[incompletePolys[i]];
       vtkIdType pt2 = poly2[0];
-      points->GetPoint(pt2, p2);
+      pointReader.GetPoint(pt2, p2);
 
       // The next few steps verify that edge [p1, p2] is on the hull
       double v[3];
@@ -786,7 +859,7 @@ void vtkCCSJoinLooseEnds(std::vector<vtkCCSPoly>& polys, std::vector<size_t>& in
           if (ptId != pt1 && ptId != pt2)
           {
             double p[3];
-            points->GetPoint(ptId, p);
+            pointReader.GetPoint(ptId, p);
             double val = p[0] * pc[0] + p[1] * pc[1] + p[2] * pc[2] + pc[3];
             double r2 = vtkMath::Distance2BetweenPoints(p, pm);
 
@@ -860,6 +933,7 @@ int vtkCCSSplitAtPinchPoints(std::vector<vtkCCSPoly>& polys, vtkPoints* points,
   std::vector<vtkCCSPolyGroup>& polyGroups, std::vector<vtkCCSPolyEdges>& polyEdges,
   const double normal[3], bool oriented)
 {
+  const vtkCCSPointReader pointReader(points);
   vtkNew<vtkPoints> tryPoints;
   tryPoints->SetDataTypeToDouble();
 
@@ -894,7 +968,7 @@ int vtkCCSSplitAtPinchPoints(std::vector<vtkCCSPoly>& polys, vtkPoints* points,
     {
       double point[3];
       vtkIdType firstId = poly[idx2];
-      points->GetPoint(firstId, point);
+      pointReader.GetPoint(firstId, point);
 
       vtkIdType vertIdx = 0;
       if (!locator->InsertUniquePoint(point, vertIdx))
@@ -928,9 +1002,9 @@ int vtkCCSSplitAtPinchPoints(std::vector<vtkCCSPoly>& polys, vtkPoints* points,
               nextIdx -= n;
             }
 
-            points->GetPoint(poly[prevIdx], p1);
-            points->GetPoint(poly[midIdx], p2);
-            points->GetPoint(poly[nextIdx], p3);
+            pointReader.GetPoint(poly[prevIdx], p1);
+            pointReader.GetPoint(poly[midIdx], p2);
+            pointReader.GetPoint(poly[nextIdx], p3);
 
             if (vtkCCSVectorProgression(point, p1, p2, p3, normal) > 0)
             {
@@ -1070,17 +1144,18 @@ int vtkCCSVectorProgression(const double p[3], const double p1[3], const double 
 // Requires a poly with at least one point.
 double vtkCCSPolygonBounds(const vtkCCSPoly& poly, vtkPoints* points, double bounds[6])
 {
+  const vtkCCSPointReader pointReader(points);
   size_t n = poly.size();
   double p[3];
 
-  points->GetPoint(poly[0], p);
+  pointReader.GetPoint(poly[0], p);
   bounds[0] = bounds[1] = p[0];
   bounds[2] = bounds[3] = p[1];
   bounds[4] = bounds[5] = p[2];
 
   for (size_t j = 1; j < n; j++)
   {
-    points->GetPoint(poly[j], p);
+    pointReader.GetPoint(poly[j], p);
     bounds[0] = std::min(p[0], bounds[0]);
     bounds[1] = std::max(p[0], bounds[1]);
     bounds[2] = std::min(p[1], bounds[2]);
@@ -1105,6 +1180,7 @@ double vtkCCSPolygonBounds(const vtkCCSPoly& poly, vtkPoints* points, double bou
 void vtkCCSFindTrueEdges(std::vector<vtkCCSPoly>& polys, vtkPoints* points,
   std::vector<vtkCCSPolyEdges>& polyEdges, vtkCCSCellArray& originalEdges)
 {
+  const vtkCCSPointReader pointReader(points);
   // Tolerance^2 for angle to see if line segments are parallel
   constexpr double atol2 = (VTK_CCS_POLYGON_TOLERANCE * VTK_CCS_POLYGON_TOLERANCE);
 
@@ -1149,8 +1225,8 @@ void vtkCCSFindTrueEdges(std::vector<vtkCCSPoly>& polys, vtkPoints* points,
     double v1[3], v2[3];
     double l1, l2;
 
-    points->GetPoint(oldPoly[n - 1], p0);
-    points->GetPoint(oldPoly[0], p1);
+    pointReader.GetPoint(oldPoly[n - 1], p0);
+    pointReader.GetPoint(oldPoly[0], p1);
     v1[0] = p1[0] - p0[0];
     v1[1] = p1[1] - p0[1];
     v1[2] = p1[2] - p0[2];
@@ -1164,7 +1240,7 @@ void vtkCCSFindTrueEdges(std::vector<vtkCCSPoly>& polys, vtkPoints* points,
         k -= n;
       }
 
-      points->GetPoint(oldPoly[k], p2);
+      pointReader.GetPoint(oldPoly[k], p2);
       v2[0] = p2[0] - p1[0];
       v2[1] = p2[1] - p1[1];
       v2[2] = p2[2] - p1[2];
@@ -1451,14 +1527,15 @@ void vtkCCSInsertTriangle(vtkCellArray* polys, const vtkCCSPoly& poly, const siz
 int vtkCCSCheckPolygonSense(
   vtkCCSPoly& poly, vtkPoints* points, const double normal[3], bool& sense)
 {
+  const vtkCCSPointReader pointReader(points);
   // Compute the normal
   double pnormal[3], p0[3], p1[3], p2[3], v1[3], v2[3], v[3];
   pnormal[0] = 0.0;
   pnormal[1] = 0.0;
   pnormal[2] = 0.0;
 
-  points->GetPoint(poly[0], p0);
-  points->GetPoint(poly[1], p1);
+  pointReader.GetPoint(poly[0], p0);
+  pointReader.GetPoint(poly[1], p1);
   v1[0] = p1[0] - p0[0];
   v1[1] = p1[1] - p0[1];
   v1[2] = p1[2] - p0[2];
@@ -1466,7 +1543,7 @@ int vtkCCSCheckPolygonSense(
   size_t n = poly.size();
   for (size_t jj = 2; jj < n; jj++)
   {
-    points->GetPoint(poly[jj], p2);
+    pointReader.GetPoint(poly[jj], p2);
     v2[0] = p2[0] - p0[0];
     v2[1] = p2[1] - p0[1];
     v2[2] = p2[2] - p0[2];
@@ -1499,6 +1576,7 @@ int vtkCCSCheckPolygonSense(
 int vtkCCSPolyInPoly(const vtkCCSPoly& outerPoly, const vtkCCSPoly& innerPoly, vtkPoints* points,
   const double normal[3], const double* pp, const double bounds[6], double tol2)
 {
+  const vtkCCSPointReader pointReader(points);
   // Find a vertex of poly "j" that isn't on the edge of poly "i".
   // This is necessary or the PointInPolygon might return "true"
   // based only on roundoff error.
@@ -1511,18 +1589,18 @@ int vtkCCSPolyInPoly(const vtkCCSPoly& outerPoly, const vtkCCSPoly& innerPoly, v
     // Semi-randomize the point order
     size_t kk = (jj >> 1) + (jj & 1) * ((m + 1) >> 1);
     double p[3];
-    points->GetPoint(innerPoly[kk], p);
+    pointReader.GetPoint(innerPoly[kk], p);
 
     if (vtkPolygon::PointInPolygon(p, static_cast<int>(n), const_cast<double*>(pp),
           const_cast<double*>(bounds), const_cast<double*>(normal)))
     {
       int pointOnEdge = 0;
       double q1[3], q2[3];
-      points->GetPoint(outerPoly[n - 1], q1);
+      pointReader.GetPoint(outerPoly[n - 1], q1);
 
       for (size_t ii = 0; ii < n; ii++)
       {
-        points->GetPoint(outerPoly[ii], q2);
+        pointReader.GetPoint(outerPoly[ii], q2);
         double t, dummy[3];
         // This method returns distance squared
         if (vtkLine::DistanceToLine(p, q1, q2, t, dummy) < tol2)
@@ -1558,6 +1636,7 @@ int vtkCCSPolyInPoly(const vtkCCSPoly& outerPoly, const vtkCCSPoly& innerPoly, v
 void vtkCCSPrepareForPolyInPoly(
   const vtkCCSPoly& outerPoly, vtkPoints* points, double* pp, double bounds[6], double& tol2)
 {
+  const vtkCCSPointReader pointReader(points);
   size_t n = outerPoly.size();
 
   if (n == 0)
@@ -1570,7 +1649,7 @@ void vtkCCSPrepareForPolyInPoly(
   for (size_t k = 0; k < n; k++)
   {
     double* p = &pp[3 * k];
-    points->GetPoint(outerPoly[k], p);
+    pointReader.GetPoint(outerPoly[k], p);
   }
 
   // Find the bounding box and tolerance for the polygon
@@ -1797,14 +1876,15 @@ int vtkCCSCheckCut(const std::vector<vtkCCSPoly>& polys, vtkPoints* points, cons
   const vtkCCSPolyGroup& polyGroup, size_t outerPolyId, size_t innerPolyId, vtkIdType outerIdx,
   vtkIdType innerIdx)
 {
+  const vtkCCSPointReader pointReader(points);
   vtkIdType ptId1 = polys[outerPolyId][outerIdx];
   vtkIdType ptId2 = polys[innerPolyId][innerIdx];
 
   const double tol = VTK_CCS_POLYGON_TOLERANCE;
 
   double p1[3], p2[3];
-  points->GetPoint(ptId1, p1);
-  points->GetPoint(ptId2, p2);
+  pointReader.GetPoint(ptId1, p1);
+  pointReader.GetPoint(ptId2, p2);
 
   double w[3];
   w[0] = p2[0] - p1[0];
@@ -1844,8 +1924,8 @@ int vtkCCSCheckCut(const std::vector<vtkCCSPoly>& polys, vtkPoints* points, cons
 
     double r1[3], r3[3];
 
-    points->GetPoint(poly[prevIdx], r1);
-    points->GetPoint(poly[nextIdx], r3);
+    pointReader.GetPoint(poly[prevIdx], r1);
+    pointReader.GetPoint(poly[nextIdx], r3);
 
     if (vtkCCSVectorProgression(r, r1, r2, r3, normal) > 0)
     {
@@ -1871,7 +1951,7 @@ int vtkCCSCheckCut(const std::vector<vtkCCSPoly>& polys, vtkPoints* points, cons
 
     double q1[3];
     vtkIdType qtId1 = poly[n - 1];
-    points->GetPoint(qtId1, q1);
+    pointReader.GetPoint(qtId1, q1);
     double v1 = pc[0] * q1[0] + pc[1] * q1[1] + pc[2] * q1[2] + pc[3];
     int c1 = (v1 > 0);
 
@@ -1879,7 +1959,7 @@ int vtkCCSCheckCut(const std::vector<vtkCCSPoly>& polys, vtkPoints* points, cons
     {
       double q2[3];
       vtkIdType qtId2 = poly[j];
-      points->GetPoint(qtId2, q2);
+      pointReader.GetPoint(qtId2, q2);
       double v2 = pc[0] * q2[0] + pc[1] * q2[1] + pc[2] * q2[2] + pc[3];
       int c2 = (v2 > 0);
 
@@ -1947,6 +2027,7 @@ int vtkCCSCheckCut(const std::vector<vtkCCSPoly>& polys, vtkPoints* points, cons
 double vtkCCSCutQuality(
   const vtkCCSPoly& outerPoly, const vtkCCSPoly& innerPoly, size_t i, size_t j, vtkPoints* points)
 {
+  const vtkCCSPointReader pointReader(points);
   size_t n = outerPoly.size();
   size_t m = innerPoly.size();
 
@@ -1957,8 +2038,8 @@ double vtkCCSCutQuality(
   size_t d = ((j < m - 1) ? j + 1 : 0);
 
   double p0[3], p1[3], p2[3];
-  points->GetPoint(outerPoly[i], p1);
-  points->GetPoint(innerPoly[j], p2);
+  pointReader.GetPoint(outerPoly[i], p1);
+  pointReader.GetPoint(innerPoly[j], p2);
 
   double v1[3], v2[3];
   v1[0] = p2[0] - p1[0];
@@ -1970,7 +2051,7 @@ double vtkCCSCutQuality(
   double qmax = 0;
   double q;
 
-  points->GetPoint(outerPoly[a], p0);
+  pointReader.GetPoint(outerPoly[a], p0);
   v2[0] = p0[0] - p1[0];
   v2[1] = p0[1] - p1[1];
   v2[2] = p0[2] - p1[2];
@@ -1982,7 +2063,7 @@ double vtkCCSCutQuality(
     qmax = std::max(q, qmax);
   }
 
-  points->GetPoint(outerPoly[b], p0);
+  pointReader.GetPoint(outerPoly[b], p0);
   v2[0] = p0[0] - p1[0];
   v2[1] = p0[1] - p1[1];
   v2[2] = p0[2] - p1[2];
@@ -1994,7 +2075,7 @@ double vtkCCSCutQuality(
     qmax = std::max(q, qmax);
   }
 
-  points->GetPoint(innerPoly[c], p0);
+  pointReader.GetPoint(innerPoly[c], p0);
   v2[0] = p2[0] - p0[0];
   v2[1] = p2[1] - p0[1];
   v2[2] = p2[2] - p0[2];
@@ -2006,7 +2087,7 @@ double vtkCCSCutQuality(
     qmax = std::max(q, qmax);
   }
 
-  points->GetPoint(innerPoly[d], p0);
+  pointReader.GetPoint(innerPoly[d], p0);
   v2[0] = p2[0] - p0[0];
   v2[1] = p2[1] - p0[1];
   v2[2] = p2[2] - p0[2];
@@ -2032,6 +2113,7 @@ double vtkCCSCutQuality(
 void vtkCCSFindSharpestVerts(
   const vtkCCSPoly& poly, vtkPoints* points, const double normal[3], size_t verts[2])
 {
+  const vtkCCSPointReader pointReader(points);
   double p1[3], p2[3];
   double v1[3], v2[3], v[3];
   double l1, l2;
@@ -2044,8 +2126,8 @@ void vtkCCSFindSharpestVerts(
   verts[1] = 0;
 
   size_t n = poly.size();
-  points->GetPoint(poly[n - 1], p2);
-  points->GetPoint(poly[0], p1);
+  pointReader.GetPoint(poly[n - 1], p2);
+  pointReader.GetPoint(poly[0], p1);
 
   v1[0] = p1[0] - p2[0];
   v1[1] = p1[1] - p2[1];
@@ -2060,7 +2142,7 @@ void vtkCCSFindSharpestVerts(
       k = 0;
     }
 
-    points->GetPoint(poly[k], p2);
+    pointReader.GetPoint(poly[k], p2);
     v2[0] = p2[0] - p1[0];
     v2[1] = p2[1] - p1[1];
     v2[2] = p2[2] - p1[2];
@@ -2101,6 +2183,7 @@ int vtkCCSFindCuts(const std::vector<vtkCCSPoly>& polys, const vtkCCSPolyGroup& 
   size_t outerPolyId, size_t innerPolyId, vtkPoints* points, const double normal[3],
   size_t cuts[2][2], size_t exhaustive)
 {
+  const vtkCCSPointReader pointReader(points);
   const vtkCCSPoly& outerPoly = polys[outerPolyId];
   const vtkCCSPoly& innerPoly = polys[innerPolyId];
   size_t innerSize = innerPoly.size();
@@ -2154,12 +2237,12 @@ int vtkCCSFindCuts(const std::vector<vtkCCSPoly>& polys, const vtkCCSPolyGroup& 
 
           // Make sure cuts don't intersect
           double p1[3], p2[3];
-          points->GetPoint(outerPoly[cuts[0][0]], p1);
-          points->GetPoint(innerPoly[cuts[0][1]], p2);
+          pointReader.GetPoint(outerPoly[cuts[0][0]], p1);
+          pointReader.GetPoint(innerPoly[cuts[0][1]], p2);
 
           double q1[3], q2[3];
-          points->GetPoint(outerPoly[k], q1);
-          points->GetPoint(innerPoly[j], q2);
+          pointReader.GetPoint(outerPoly[k], q1);
+          pointReader.GetPoint(innerPoly[j], q2);
 
           double u, v;
           if (vtkLine::Intersection(p1, p2, q1, q2, u, v) == vtkLine::Intersect)
@@ -2196,13 +2279,14 @@ int vtkCCSFindCuts(const std::vector<vtkCCSPoly>& polys, const vtkCCSPolyGroup& 
 void vtkCCSMakeCuts(std::vector<vtkCCSPoly>& polys, std::vector<vtkCCSPolyEdges>& polyEdges,
   size_t outerPolyId, size_t innerPolyId, vtkPoints* points, const size_t cuts[2][2])
 {
+  const vtkCCSPointReader pointReader(points);
   double q[3], r[3];
   for (size_t bb = 0; bb < 2; bb++)
   {
     vtkIdType ptId1 = polys[outerPolyId][cuts[bb][0]];
     vtkIdType ptId2 = polys[innerPolyId][cuts[bb][1]];
-    points->GetPoint(ptId1, q);
-    points->GetPoint(ptId2, r);
+    pointReader.GetPoint(ptId1, q);
+    pointReader.GetPoint(ptId2, r);
   }
 
   vtkCCSPoly& outerPoly = polys[outerPolyId];
