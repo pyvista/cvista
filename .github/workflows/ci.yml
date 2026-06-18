@@ -1,6 +1,8 @@
 # CI gate — runs on every PR to main AND on every push to main. The Linux build
-# leg + the two Linux-only numeric gates run on PRs; the all-OS leg runs on main
-# only (see build-other-os `if:` below). Jobs:
+# leg, the two Linux-only numeric gates, AND the macOS/Windows build legs all run
+# on every PR (the all-OS legs are no longer main-only — see build-other-os). We
+# accept slower PRs to guarantee a non-Linux build break can never land on main.
+# Jobs:
 #
 #   build (linux)   : cibuildwheel builds the SINGLE cp312-abi3 wheel in the
 #              manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1) container and
@@ -16,10 +18,10 @@
 #              levers that are inert on the old manylinux2014/GCC-10.2.1 image.
 #   build (macos/windows) : the build-other-os matrix — one job per OS (macos-14,
 #              windows-latest), each running the cp312+ abi3 build through
-#              cibuildwheel on a native runner and the in-cibuildwheel smoke. GATED
-#              to non-PR events (`if: github.event_name != 'pull_request'`): macOS /
-#              Windows build on PUSH-TO-MAIN and workflow_dispatch only, so PRs stay
-#              Linux-only (fast/cheap). Per-OS ccache (keyed fvtk-cibw-ccache-<os>)
+#              cibuildwheel on a native runner and the in-cibuildwheel smoke. Runs
+#              on EVERY PR (and push-to-main + workflow_dispatch) so AppleClang/MSVC
+#              build breaks are caught BEFORE merge, not after. Per-OS ccache keeps
+#              the warm cost bounded (keyed fvtk-cibw-ccache-<os>)
 #              shares the python-independent C++ across runs. Each OS uploads
 #              fvtk-wheels-<os> (a DISJOINT artifact prefix from the Linux gate).
 #   bitexact : install the cp312-abi3 LINUX wheel on the host (per-python via
@@ -117,8 +119,11 @@ jobs:
 
   build-other-os:
     name: build ${{ matrix.os }}
-    # macOS/Windows on main + workflow_dispatch only; PRs stay Linux-only (fast).
-    if: github.event_name != 'pull_request'
+    # macOS/Windows build on EVERY PR (and main + workflow_dispatch). We accept a
+    # slower PR gate to never let a non-Linux build break land on main again: a
+    # GCC/x86-only construct (e.g. target_clones FMV) compiles clean on the Linux
+    # leg but fails AppleClang/MSVC, and a main-only gate caught it only post-merge.
+    # Cost is bounded — single cp312-abi3 wheel, one job per OS.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
