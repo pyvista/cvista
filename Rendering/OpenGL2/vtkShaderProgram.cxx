@@ -14,6 +14,8 @@
 #include "vtksys/FStream.hxx"
 
 #include <cassert>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <vtksys/SystemTools.hxx>
@@ -96,6 +98,11 @@ vtkShaderProgram::vtkShaderProgram()
   this->Bound = false;
 
   this->FileNamePrefixForDebugging = nullptr;
+
+  // Redundant-uniform-upload elimination is on by default; an escape hatch lets a
+  // user disable it without rebuilding (purely a performance toggle -- the cache
+  // is pixel-exact, so this only matters for debugging).
+  this->CacheUniforms = (std::getenv("VTK_DISABLE_UNIFORM_VALUE_CACHE") == nullptr);
 }
 
 vtkShaderProgram::~vtkShaderProgram()
@@ -439,6 +446,27 @@ void vtkShaderProgram::ClearMaps()
   }
   this->AttributeLocs.clear();
   this->UniformGroupMTimes.clear();
+  // (Re)linking resets all GL uniform values and may renumber locations, so the
+  // last-uploaded-value cache must be dropped here -- Link() calls ClearMaps()
+  // before glLinkProgram(). This keeps the redundant-upload skip pixel-exact.
+  this->UniformValueCache.clear();
+}
+
+//------------------------------------------------------------------------------
+bool vtkShaderProgram::UniformValueUnchanged(int location, const void* data, std::size_t nbytes)
+{
+  if (!this->CacheUniforms || nbytes == 0 || nbytes > MaxCachedUniformBytes)
+  {
+    return false;
+  }
+  CachedUniform& slot = this->UniformValueCache[location];
+  if (slot.Size == nbytes && std::memcmp(slot.Bytes, data, nbytes) == 0)
+  {
+    return true; // identical bytes already on the GL program; skip the upload
+  }
+  slot.Size = nbytes;
+  std::memcpy(slot.Bytes, data, nbytes);
+  return false;
 }
 
 void vtkShaderProgram::SetUniformGroupUpdateTime(int gid, vtkMTimeType tm)
@@ -754,7 +782,11 @@ bool vtkShaderProgram::SetUniformi(const char* name, int i)
     this->Error += name;
     return false;
   }
-  glUniform1i(location, static_cast<GLint>(i));
+  const GLint iv = static_cast<GLint>(i);
+  if (!this->UniformValueUnchanged(location, &iv, sizeof(iv)))
+  {
+    glUniform1i(location, iv);
+  }
   return true;
 }
 
@@ -767,7 +799,11 @@ bool vtkShaderProgram::SetUniformf(const char* name, float f)
     this->Error += name;
     return false;
   }
-  glUniform1f(location, static_cast<GLfloat>(f));
+  const GLfloat fv = static_cast<GLfloat>(f);
+  if (!this->UniformValueUnchanged(location, &fv, sizeof(fv)))
+  {
+    glUniform1f(location, fv);
+  }
   return true;
 }
 
@@ -785,7 +821,10 @@ bool vtkShaderProgram::SetUniformMatrix(const char* name, vtkMatrix4x4* matrix)
   {
     data[i] = matrix->Element[i / 4][i % 4];
   }
-  glUniformMatrix4fv(location, 1, GL_FALSE, data);
+  if (!this->UniformValueUnchanged(location, data, sizeof(data)))
+  {
+    glUniformMatrix4fv(location, 1, GL_FALSE, data);
+  }
   return true;
 }
 
@@ -798,7 +837,10 @@ bool vtkShaderProgram::SetUniformMatrix3x3(const char* name, float* matrix)
     this->Error += name;
     return false;
   }
-  glUniformMatrix3fv(location, 1, GL_FALSE, matrix);
+  if (!this->UniformValueUnchanged(location, matrix, 9 * sizeof(float)))
+  {
+    glUniformMatrix3fv(location, 1, GL_FALSE, matrix);
+  }
   return true;
 }
 
@@ -816,7 +858,11 @@ bool vtkShaderProgram::SetUniformMatrix4x4v(const char* name, int count, float* 
     this->Error += name;
     return false;
   }
-  glUniformMatrix4fv(location, count, GL_FALSE, matrix);
+  if (!this->UniformValueUnchanged(
+        location, matrix, static_cast<std::size_t>(count) * 16 * sizeof(float)))
+  {
+    glUniformMatrix4fv(location, count, GL_FALSE, matrix);
+  }
   return true;
 }
 
@@ -834,7 +880,10 @@ bool vtkShaderProgram::SetUniformMatrix(const char* name, vtkMatrix3x3* matrix)
   {
     data[i] = matrix->GetElement(i / 3, i % 3);
   }
-  glUniformMatrix3fv(location, 1, GL_FALSE, data);
+  if (!this->UniformValueUnchanged(location, data, sizeof(data)))
+  {
+    glUniformMatrix3fv(location, 1, GL_FALSE, data);
+  }
   return true;
 }
 
@@ -847,7 +896,11 @@ bool vtkShaderProgram::SetUniform1fv(const char* name, int count, const float* v
     this->Error += name;
     return false;
   }
-  glUniform1fv(location, count, static_cast<const GLfloat*>(v));
+  if (!this->UniformValueUnchanged(
+        location, v, static_cast<std::size_t>(count) * sizeof(float)))
+  {
+    glUniform1fv(location, count, static_cast<const GLfloat*>(v));
+  }
   return true;
 }
 
@@ -860,7 +913,11 @@ bool vtkShaderProgram::SetUniform1iv(const char* name, int count, const int* v)
     this->Error += name;
     return false;
   }
-  glUniform1iv(location, count, static_cast<const GLint*>(v));
+  if (!this->UniformValueUnchanged(
+        location, v, static_cast<std::size_t>(count) * sizeof(int)))
+  {
+    glUniform1iv(location, count, static_cast<const GLint*>(v));
+  }
   return true;
 }
 
@@ -873,7 +930,11 @@ bool vtkShaderProgram::SetUniform3fv(const char* name, int count, const float* f
     this->Error += name;
     return false;
   }
-  glUniform3fv(location, count, (const GLfloat*)f);
+  if (!this->UniformValueUnchanged(
+        location, f, static_cast<std::size_t>(count) * 3 * sizeof(float)))
+  {
+    glUniform3fv(location, count, (const GLfloat*)f);
+  }
   return true;
 }
 
@@ -886,7 +947,11 @@ bool vtkShaderProgram::SetUniform3fv(const char* name, int count, const float (*
     this->Error += name;
     return false;
   }
-  glUniform3fv(location, count, (const GLfloat*)v);
+  if (!this->UniformValueUnchanged(
+        location, v, static_cast<std::size_t>(count) * 3 * sizeof(float)))
+  {
+    glUniform3fv(location, count, (const GLfloat*)v);
+  }
   return true;
 }
 
@@ -899,7 +964,11 @@ bool vtkShaderProgram::SetUniform4fv(const char* name, int count, const float* f
     this->Error += name;
     return false;
   }
-  glUniform4fv(location, count, (const GLfloat*)f);
+  if (!this->UniformValueUnchanged(
+        location, f, static_cast<std::size_t>(count) * 4 * sizeof(float)))
+  {
+    glUniform4fv(location, count, (const GLfloat*)f);
+  }
   return true;
 }
 
@@ -912,7 +981,11 @@ bool vtkShaderProgram::SetUniform4fv(const char* name, int count, const float (*
     this->Error += name;
     return false;
   }
-  glUniform4fv(location, count, (const GLfloat*)v);
+  if (!this->UniformValueUnchanged(
+        location, v, static_cast<std::size_t>(count) * 4 * sizeof(float)))
+  {
+    glUniform4fv(location, count, (const GLfloat*)v);
+  }
   return true;
 }
 
@@ -925,7 +998,10 @@ bool vtkShaderProgram::SetUniform2f(const char* name, const float v[2])
     this->Error += name;
     return false;
   }
-  glUniform2fv(location, 1, v);
+  if (!this->UniformValueUnchanged(location, v, 2 * sizeof(float)))
+  {
+    glUniform2fv(location, 1, v);
+  }
   return true;
 }
 
@@ -938,7 +1014,11 @@ bool vtkShaderProgram::SetUniform2fv(const char* name, int count, const float* f
     this->Error += name;
     return false;
   }
-  glUniform2fv(location, count, (const GLfloat*)f);
+  if (!this->UniformValueUnchanged(
+        location, f, static_cast<std::size_t>(count) * 2 * sizeof(float)))
+  {
+    glUniform2fv(location, count, (const GLfloat*)f);
+  }
   return true;
 }
 
@@ -951,7 +1031,11 @@ bool vtkShaderProgram::SetUniform2fv(const char* name, int count, const float (*
     this->Error += name;
     return false;
   }
-  glUniform2fv(location, count, (const GLfloat*)f);
+  if (!this->UniformValueUnchanged(
+        location, f, static_cast<std::size_t>(count) * 2 * sizeof(float)))
+  {
+    glUniform2fv(location, count, (const GLfloat*)f);
+  }
   return true;
 }
 
@@ -964,7 +1048,10 @@ bool vtkShaderProgram::SetUniform3f(const char* name, const float v[3])
     this->Error += name;
     return false;
   }
-  glUniform3fv(location, 1, v);
+  if (!this->UniformValueUnchanged(location, v, 3 * sizeof(float)))
+  {
+    glUniform3fv(location, 1, v);
+  }
   return true;
 }
 
@@ -980,7 +1067,10 @@ bool vtkShaderProgram::SetUniform3f(const char* name, const double v[3])
 
   float tmp[3] = { static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]) };
 
-  glUniform3fv(location, 1, tmp);
+  if (!this->UniformValueUnchanged(location, tmp, sizeof(tmp)))
+  {
+    glUniform3fv(location, 1, tmp);
+  }
   return true;
 }
 
@@ -993,7 +1083,10 @@ bool vtkShaderProgram::SetUniform4f(const char* name, const float v[4])
     this->Error += name;
     return false;
   }
-  glUniform4fv(location, 1, v);
+  if (!this->UniformValueUnchanged(location, v, 4 * sizeof(float)))
+  {
+    glUniform4fv(location, 1, v);
+  }
   return true;
 }
 
@@ -1006,7 +1099,10 @@ bool vtkShaderProgram::SetUniform2i(const char* name, const int v[2])
     this->Error += name;
     return false;
   }
-  glUniform2iv(location, 1, v);
+  if (!this->UniformValueUnchanged(location, v, 2 * sizeof(int)))
+  {
+    glUniform2iv(location, 1, v);
+  }
   return true;
 }
 
@@ -1020,7 +1116,10 @@ bool vtkShaderProgram::SetUniform3uc(const char* name, const unsigned char v[3])
     return false;
   }
   float colorf[3] = { v[0] / 255.0f, v[1] / 255.0f, v[2] / 255.0f };
-  glUniform3fv(location, 1, colorf);
+  if (!this->UniformValueUnchanged(location, colorf, sizeof(colorf)))
+  {
+    glUniform3fv(location, 1, colorf);
+  }
   return true;
 }
 
@@ -1034,7 +1133,10 @@ bool vtkShaderProgram::SetUniform4uc(const char* name, const unsigned char v[4])
     return false;
   }
   float colorf[4] = { v[0] / 255.0f, v[1] / 255.0f, v[2] / 255.0f, v[3] / 255.0f };
-  glUniform4fv(location, 1, colorf);
+  if (!this->UniformValueUnchanged(location, colorf, sizeof(colorf)))
+  {
+    glUniform4fv(location, 1, colorf);
+  }
   return true;
 }
 

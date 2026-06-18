@@ -15,8 +15,10 @@
 #include "vtkObject.h"
 #include "vtkRenderingOpenGL2Module.h" // for export macro
 
-#include <map>    // For member variables.
-#include <string> // For member variables.
+#include <cstddef>       // For std::size_t
+#include <map>           // For member variables.
+#include <string>        // For member variables.
+#include <unordered_map> // For member variables.
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkMatrix3x3;
@@ -412,6 +414,31 @@ protected:
   std::map<const char*, int, cmp_str> UniformLocs;
 
   std::map<int, vtkMTimeType> UniformGroupMTimes;
+
+  // Redundant-uniform-upload elimination. GL uniform state lives in the program
+  // object and persists across binds; it is only reset when the program is
+  // (re)linked. We cache, per uniform location, the exact bytes last uploaded so
+  // a subsequent SetUniform* with a byte-identical payload can skip the glUniform*
+  // call. Skipping a redundant upload leaves the GL pipeline -- and therefore the
+  // framebuffer -- bit-for-bit unchanged. The cache is cleared in ClearMaps(),
+  // which Link() invokes before every (re)link, so stale locations/values can
+  // never survive a relink. Every uniform write in the codebase flows through the
+  // SetUniform* methods below (there are no direct glUniform* callers elsewhere),
+  // so the cache is the single source of truth and stays coherent.
+  // Payloads larger than this are never cached (always uploaded).
+  static constexpr std::size_t MaxCachedUniformBytes = 64; // fits a mat4 of floats
+  struct CachedUniform
+  {
+    std::size_t Size = 0;
+    unsigned char Bytes[MaxCachedUniformBytes];
+  };
+  std::unordered_map<int, CachedUniform> UniformValueCache;
+  bool CacheUniforms = true;
+
+  // Returns true if a glUniform* upload of `nbytes` from `data` to `location` can
+  // be skipped because the identical bytes were already uploaded; otherwise records
+  // the new bytes and returns false (caller must perform the upload).
+  bool UniformValueUnchanged(int location, const void* data, std::size_t nbytes);
 
   friend class VertexArrayObject;
 
