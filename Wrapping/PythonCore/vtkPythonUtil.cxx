@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -62,6 +63,34 @@ VTK_ABI_NAMESPACE_END
 
 VTK_ABI_NAMESPACE_BEGIN
 //------------------------------------------------------------------------------
+// Bit-mixing hash for the pointer-keyed maps (ObjectMap, GhostMap).
+//
+// The default std::hash<vtkObjectBase*> is the identity on the raw address.
+// Heap-allocated VTK objects share similar high bits and have alignment zeros
+// in the low bits, so identity hashing clusters keys into a few buckets. That
+// clustering lengthens the collision chains that find()/erase() walk, which is
+// exactly the cost seen in vtkPythonUtil::RemoveObjectFromMap under
+// object-churny workloads. Running the address through the SplitMix64 finalizer
+// (a well-known integer avalanche) spreads keys uniformly across buckets.
+//
+// This changes only internal bucket placement of an unordered_map; it is not
+// observable from Python (it is not the hash() of any wrapped object) and does
+// not affect any rendered pixel or computed array byte, so it is bit-exact.
+struct vtkPythonPointerHash
+{
+  std::size_t operator()(const vtkObjectBase* ptr) const noexcept
+  {
+    std::uint64_t x = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(ptr));
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return static_cast<std::size_t>(x);
+  }
+};
+
+//------------------------------------------------------------------------------
 // A ghost object, can be used to recreate a deleted PyVTKObject
 class PyVTKObjectGhost
 {
@@ -84,7 +113,8 @@ public:
 // of the vtk/python garbage collection system, because it contains
 // exactly one pointer reference for each VTK object known to python)
 class vtkPythonObjectMap
-  : public std::unordered_map<vtkObjectBase*, std::pair<PyObject*, std::atomic<int32_t>>>
+  : public std::unordered_map<vtkObjectBase*, std::pair<PyObject*, std::atomic<int32_t>>,
+      vtkPythonPointerHash>
 {
 public:
   ~vtkPythonObjectMap();
@@ -149,7 +179,8 @@ void vtkPythonObjectMap::remove(vtkObjectBase* key)
 // VTK objects come back, their 'dict' can be restored to them.
 // Periodically the weak pointers are checked and the dicts of
 // VTK objects that have been deleted are tossed away.
-class vtkPythonGhostMap : public std::unordered_map<vtkObjectBase*, PyVTKObjectGhost>
+class vtkPythonGhostMap
+  : public std::unordered_map<vtkObjectBase*, PyVTKObjectGhost, vtkPythonPointerHash>
 {
 };
 
