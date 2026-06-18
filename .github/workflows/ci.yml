@@ -39,6 +39,14 @@
 #              (reuses the Linux build artifact). Run on py3.13 (the abi3 wheel);
 #              render output is wheel-format-independent. Linux-only (same stock-vtk
 #              reason).
+#   build-lto / bitexact-lto / renderexact-lto : MAIN-ONLY legs (skipped on PRs
+#              via `if: github.event_name != 'pull_request'`). They rebuild the
+#              Linux wheel in the SHIPPED config (-flto=auto + -O3, both FVTK_LTO
+#              and FVTK_GATE_O2 unset) and re-run the byte-for-byte + pixel-exact
+#              gates against it, so the configuration we actually release is
+#              bit-exact-validated on every merge — without paying LTO's ~2-3x
+#              build cost on PRs. Separate ccache namespace + artifact prefix
+#              (…-lto-…) so they never perturb the fast PR build or its seed.
 name: CI
 
 on:
@@ -244,5 +252,124 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: renderexact-output-py${{ matrix.python }}
+          path: /tmp/rx-out
+          if-no-files-found: ignore
+
+  # === LTO-on-main legs (push-to-main / workflow_dispatch ONLY) ==============
+  # The PR gate above builds the FAST Linux wheel (FVTK_LTO=0 + -O2) so PRs stay
+  # cheap — but that means the configuration we actually SHIP (the tag-gated
+  # wheels-cibuildwheel.yml build: -flto + -O3) was never run through the
+  # byte-for-byte / pixel-exact gates. These legs close that gap: on merge to
+  # main (and manual dispatch) ONLY — never on PRs, so PR latency is untouched —
+  # rebuild the Linux wheel exactly as shipped (FVTK_LTO + FVTK_GATE_O2 both
+  # UNSET => -flto=auto + -O3, per fvtk-config/minimal.cmake) and re-run both
+  # gates against it. LTO/-O3 change inlining + codegen, NOT IEEE FP values (no
+  # -ffast-math anywhere), so this is expected to stay maxULP=0 — these legs
+  # PROVE it per-merge instead of only at release time.
+  build-lto:
+    name: build cp312-abi3 LTO (manylinux_2_28, main only)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # SEPARATE ccache namespace (…-lto-…) from the non-LTO `build` seed: the
+      # -flto/-O3 objects hash differently and must never poison the fast PR seed.
+      # The non-LTO `build` job still runs on push-to-main and keeps refreshing
+      # the seed that PRs restore, so PR build time is unaffected.
+      - name: Make ccache dir world-writable (container build user differs)
+        run: mkdir -p /tmp/fvtk-cibw-ccache-lto && chmod 0777 /tmp/fvtk-cibw-ccache-lto
+      - name: Restore ccache seed (cross-run, LTO namespace)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/fvtk-cibw-ccache-lto
+          key: fvtk-ccache-linux-cp312abi3-lto-${{ github.run_id }}
+          restore-keys: |
+            fvtk-ccache-linux-cp312abi3-lto-
+      - name: Build LTO wheel + offscreen smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # Ship config: FVTK_LTO + FVTK_GATE_O2 left UNSET => -flto=auto + -O3
+          # (the release default). FVTK_SOURCE_UNITY=1 stays on (byte-identical
+          # objects). This is byte-for-byte the wheels-cibuildwheel.yml config.
+          CIBW_ENVIRONMENT: FVTK_SOURCE_UNITY=1
+          CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/fvtk-cibw-ccache-lto:/ccache"
+      - uses: actions/upload-artifact@v4
+        with:
+          # DISTINCT prefix (fvtk-wheels-lto-*) so the non-LTO gates' download
+          # pattern (fvtk-wheels-linux-*) never picks up the LTO wheel and the
+          # LTO gates below never pick up the fast wheel.
+          name: fvtk-wheels-lto-linux-cp312abi3
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  bitexact-lto:
+    name: fvtk == stock VTK 9.6.2 (bit-exact LTO, py${{ matrix.python }})
+    if: github.event_name != 'pull_request'
+    needs: build-lto
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fvtk-wheels-lto-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Bit-exact suite (LTO wheel vs stock VTK 9.6.2)
+        env:
+          BITEXACT_ABI3: "1"
+        run: ci/run-bitexact.sh dist python
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitexact-lto-output-py${{ matrix.python }}
+          path: /tmp/bx-out
+          if-no-files-found: ignore
+
+  renderexact-lto:
+    name: fvtk == stock VTK 9.6.2 (pixel-exact render LTO, py${{ matrix.python }})
+    if: github.event_name != 'pull_request'
+    needs: build-lto
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Mesa software GL/EGL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fvtk-wheels-lto-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Pixel-exact render suite (LTO wheel vs stock VTK 9.6.2, software EGL)
+        run: ci/run-renderexact.sh dist python
+      - name: Upload render diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderexact-lto-output-py${{ matrix.python }}
           path: /tmp/rx-out
           if-no-files-found: ignore
