@@ -227,13 +227,40 @@ ExtractedCellsT ExtractCells(vtkDataSet* input, const CellWorkT& work, unsigned 
   // ensure that internal structures are initialized.
   input->GetCell(0);
 
+  // Devirtualized cell access for the common vtkUnstructuredGrid input: read the
+  // concrete cell-types array + connectivity vtkCellArray directly so the dense
+  // per-cell loops below avoid dispatching vtkDataSet::GetCellType /
+  // vtkDataSet::GetCellPoints virtually for every cell. The values read are
+  // byte-identical to the virtual path (vtkUnstructuredGrid::GetCellType /
+  // GetCellPoints are thin wrappers over exactly these arrays), and the loop
+  // order, batch offsets, and work indexing are unchanged, so the produced
+  // CellTypes / connectivity / offsets are byte-for-byte identical. Null for
+  // non-UG inputs -> the original virtual path is used.
+  vtkUnsignedCharArray* ugCellTypes = nullptr;
+  vtkCellArray* ugConnectivity = nullptr;
+  if (auto* ug = vtkUnstructuredGrid::SafeDownCast(input))
+  {
+    ugCellTypes = ug->GetCellTypesArray();
+    ugConnectivity = ug->GetCells();
+  }
+
   // set cell types
   vtkSMPTools::For(0, outputNumCells,
     [&](vtkIdType begin, vtkIdType end)
     {
-      for (vtkIdType cc = begin; cc < end; ++cc)
+      if (ugCellTypes)
       {
-        result.CellTypes->SetValue(cc, input->GetCellType(work.GetCellId(cc)));
+        for (vtkIdType cc = begin; cc < end; ++cc)
+        {
+          result.CellTypes->SetValue(cc, ugCellTypes->GetValue(work.GetCellId(cc)));
+        }
+      }
+      else
+      {
+        for (vtkIdType cc = begin; cc < end; ++cc)
+        {
+          result.CellTypes->SetValue(cc, input->GetCellType(work.GetCellId(cc)));
+        }
       }
     });
 
@@ -256,7 +283,14 @@ ExtractedCellsT ExtractCells(vtkDataSet* input, const CellWorkT& work, unsigned 
         for (cellIndex = batch.BeginId; cellIndex < batch.EndId; ++cellIndex)
         {
           cellId = work.GetCellId(cellIndex);
-          input->GetCellPoints(cellId, numCellPts, cellPts, cellPointIds);
+          if (ugConnectivity)
+          {
+            ugConnectivity->GetCellAtId(cellId, numCellPts, cellPts, cellPointIds);
+          }
+          else
+          {
+            input->GetCellPoints(cellId, numCellPts, cellPts, cellPointIds);
+          }
           cellsConnectivity += numCellPts;
         }
       }
@@ -284,7 +318,14 @@ ExtractedCellsT ExtractCells(vtkDataSet* input, const CellWorkT& work, unsigned 
         for (cellIndex = batch.BeginId; cellIndex < batch.EndId; ++cellIndex)
         {
           cellId = work.GetCellId(cellIndex);
-          input->GetCellPoints(cellId, numCellPts, cellPts, cellPointIds);
+          if (ugConnectivity)
+          {
+            ugConnectivity->GetCellAtId(cellId, numCellPts, cellPts, cellPointIds);
+          }
+          else
+          {
+            input->GetCellPoints(cellId, numCellPts, cellPts, cellPointIds);
+          }
           offsets->SetValue(cellIndex, cellsConnectivityOffset);
           for (ptId = 0; ptId < numCellPts; ++ptId)
           {
@@ -410,6 +451,17 @@ vtkSmartPointer<vtkIdList> GeneratePointMap(
   // ensure that internal structures are initialized.
   input->GetCell(0);
 
+  // Devirtualized cell access for the common vtkUnstructuredGrid input (see the
+  // note in ExtractCells): read the concrete connectivity vtkCellArray directly
+  // instead of dispatching vtkDataSet::GetCellPoints virtually per cell. The
+  // point ids returned and the iteration order are identical, so the flag marks
+  // (and thus the resulting point map / new-id assignment order) are byte-exact.
+  vtkCellArray* ugConnectivity = nullptr;
+  if (auto* ug = vtkUnstructuredGrid::SafeDownCast(input))
+  {
+    ugConnectivity = ug->GetCells();
+  }
+
   auto pointMapPtr = pointMap->GetPointer(0);
   vtkSMPTools::For(0, numberOutputCells,
     [&](vtkIdType begin, vtkIdType end)
@@ -420,7 +472,14 @@ vtkSmartPointer<vtkIdList> GeneratePointMap(
       for (vtkIdType cellIndex = begin; cellIndex < end; ++cellIndex)
       {
         cellId = cellList->GetId(cellIndex);
-        input->GetCellPoints(cellId, npts, ptids, cellPointIds);
+        if (ugConnectivity)
+        {
+          ugConnectivity->GetCellAtId(cellId, npts, ptids, cellPointIds);
+        }
+        else
+        {
+          input->GetCellPoints(cellId, npts, ptids, cellPointIds);
+        }
         for (vtkIdType i = 0; i < npts; ++i)
         {
           pointMapPtr[ptids[i]] = 1;

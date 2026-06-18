@@ -54,6 +54,7 @@ try:
     from vtkmodules.vtkCommonDataModel import (
         vtkCellArray,
         vtkCellLocator,
+        vtkDataObject,
         vtkGenericCell,
         vtkImageData,
         vtkMergePoints,
@@ -580,6 +581,91 @@ def op_threshold_ugrid(dtype, size):
     t.SetInputData(make_hex_ugrid(size, dtype))
     t.SetLowerThreshold(3.0)
     t.SetUpperThreshold(0.45 * size * size)
+    t.Update()
+    return t.GetOutput()
+
+
+def _hex_ugrid_with_extra_data(size, dtype):
+    """make_hex_ugrid plus extra point AND cell data so the threshold extraction
+    must copy non-scalar arrays through vtkExtractCells' presized/devirtualized
+    point + cell copy loops. All arrays are pure-integer algebra (deterministic,
+    no trig) so the two backends start from byte-identical inputs."""
+    ug = make_hex_ugrid(size, dtype)
+    npts = ug.GetNumberOfPoints()
+    ncells = ug.GetNumberOfCells()
+
+    # extra 3-component point array (so the point-data copy moves a multi-comp tuple)
+    pidx = np.arange(npts, dtype=dtype)
+    pvec = np.ascontiguousarray(
+        np.stack([pidx, 2.0 * pidx, pidx * pidx], axis=1).astype(dtype)
+    )
+    parr = numpy_to_vtk(pvec, deep=1)
+    parr.SetName("pvec")
+    ug.GetPointData().AddArray(parr)
+
+    # cell scalar 'cv' (drives the cell-scalar criterion path) + a 2-comp extra
+    # cell array that must be carried through to the output cell data.
+    cidx = np.arange(ncells, dtype=dtype)
+    cv = numpy_to_vtk(np.ascontiguousarray(cidx), deep=1)
+    cv.SetName("cv")
+    ug.GetCellData().SetScalars(cv)
+    cextra = np.ascontiguousarray(
+        np.stack([cidx, ncells - 1 - cidx], axis=1).astype(dtype)
+    )
+    carr = numpy_to_vtk(cextra, deep=1)
+    carr.SetName("cextra")
+    ug.GetCellData().AddArray(carr)
+    return ug
+
+
+def op_threshold_ugrid_pointdata(dtype, size):
+    # Point-scalar threshold over a hex UG carrying extra point + cell data.
+    # Default AllScalars=On: a cell passes only if ALL its point scalars satisfy
+    # the criterion. Exercises vtkExtractCells' point-map / cell copy loops with
+    # non-trivial point AND cell data to carry through.
+    ug = _hex_ugrid_with_extra_data(size, dtype)
+    t = vtkThreshold()
+    t.SetInputData(ug)
+    t.SetInputArrayToProcess(
+        0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_POINTS, "v"
+    )
+    t.SetAllScalarsOn()
+    t.SetLowerThreshold(3.0)
+    t.SetUpperThreshold(0.45 * size * size)
+    t.Update()
+    return t.GetOutput()
+
+
+def op_threshold_ugrid_pointdata_any(dtype, size):
+    # Same as above but AllScalars=Off: a cell passes if ANY point scalar passes.
+    # Different selection set -> distinct cell/point order through the copy loops.
+    ug = _hex_ugrid_with_extra_data(size, dtype)
+    t = vtkThreshold()
+    t.SetInputData(ug)
+    t.SetInputArrayToProcess(
+        0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_POINTS, "v"
+    )
+    t.SetAllScalarsOff()
+    t.SetLowerThreshold(3.0)
+    t.SetUpperThreshold(0.45 * size * size)
+    t.Update()
+    return t.GetOutput()
+
+
+def op_threshold_ugrid_celldata(dtype, size):
+    # Cell-scalar threshold over the same UG: drives the "use cell scalars"
+    # branch (EvaluateComponents(scalars, cellId)) and a different kept-cell set,
+    # so the devirtualized vtkExtractCells copy loops carry the extra point + cell
+    # data for a cell-criterion selection.
+    ug = _hex_ugrid_with_extra_data(size, dtype)
+    t = vtkThreshold()
+    t.SetInputData(ug)
+    t.SetInputArrayToProcess(
+        0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_CELLS, "cv"
+    )
+    ncells = (size - 1) ** 3
+    t.SetLowerThreshold(0.2 * ncells)
+    t.SetUpperThreshold(0.8 * ncells)
     t.Update()
     return t.GetOutput()
 
@@ -1907,6 +1993,9 @@ OPS = {
     "probe": dict(fn=op_probe, group="filter", dtypes=["float32", "float64"], sizes=[10, 16]),
     "geometry_ugrid": dict(fn=op_geometry_ugrid, group="filter", dtypes=["float64"], sizes=[8, 14]),
     "threshold_ugrid": dict(fn=op_threshold_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "threshold_ugrid_pointdata": dict(fn=op_threshold_ugrid_pointdata, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "threshold_ugrid_pointdata_any": dict(fn=op_threshold_ugrid_pointdata_any, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "threshold_ugrid_celldata": dict(fn=op_threshold_ugrid_celldata, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "datasetsurface_ugrid": dict(fn=op_datasetsurface_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "tableclip_ugrid": dict(fn=op_tableclip_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "contour_wedgepyr": dict(fn=op_contour_wedgepyr, group="filter", dtypes=["float32", "float64"], sizes=[2, 4]),
