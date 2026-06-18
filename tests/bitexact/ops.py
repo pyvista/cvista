@@ -344,6 +344,80 @@ def make_wedge_pyramid_ugrid(nrep=3, dtype=np.float64):
     return ug
 
 
+def make_mixed_ugrid(nrep=3, dtype=np.float64):
+    """A vtkUnstructuredGrid with a MIX of 3D linear cell types
+    (TETRA, HEXAHEDRON, VOXEL, WEDGE, PYRAMID) plus per-point AND per-cell
+    deterministic scalar data. This drives the distinct branches of
+    vtkGeometryFilter's ExtractCellGeometry (one switch case per cell type,
+    each with its own GetFaceArray boundary-face emission), exercising the
+    typed-cell-array / typed-cell-type devirtualized per-cell loop on a
+    heterogeneous grid while still using only integer/half-integer point
+    coordinates (no transcendentals) so both backends start byte-identical."""
+    from vtkmodules.vtkCommonDataModel import (
+        VTK_TETRA,
+        VTK_HEXAHEDRON,
+        VTK_VOXEL,
+        VTK_WEDGE,
+        VTK_PYRAMID,
+    )
+
+    pts = []
+    cells = []  # (celltype, [point ids])
+
+    def add(coords):
+        base = len(pts)
+        pts.extend(coords)
+        return base
+
+    for r in range(nrep):
+        z = 4.0 * r
+        # TETRA
+        b = add([(0, 0, z), (1, 0, z), (0, 1, z), (0, 0, z + 1)])
+        cells.append((VTK_TETRA, [b, b + 1, b + 2, b + 3]))
+        # HEXAHEDRON (VTK ordering: bottom CCW then top CCW)
+        b = add([(2, 0, z), (3, 0, z), (3, 1, z), (2, 1, z),
+                 (2, 0, z + 1), (3, 0, z + 1), (3, 1, z + 1), (2, 1, z + 1)])
+        cells.append((VTK_HEXAHEDRON, [b, b + 1, b + 2, b + 3,
+                                       b + 4, b + 5, b + 6, b + 7]))
+        # VOXEL (axis-aligned, lexicographic point order)
+        b = add([(4, 0, z), (5, 0, z), (4, 1, z), (5, 1, z),
+                 (4, 0, z + 1), (5, 0, z + 1), (4, 1, z + 1), (5, 1, z + 1)])
+        cells.append((VTK_VOXEL, [b, b + 1, b + 2, b + 3,
+                                  b + 4, b + 5, b + 6, b + 7]))
+        # WEDGE
+        b = add([(6, 0, z), (7, 0, z), (6, 1, z),
+                 (6, 0, z + 1), (7, 0, z + 1), (6, 1, z + 1)])
+        cells.append((VTK_WEDGE, [b, b + 1, b + 2, b + 3, b + 4, b + 5]))
+        # PYRAMID
+        b = add([(8, 0, z), (9, 0, z), (9, 1, z), (8, 1, z), (8.5, 0.5, z + 1)])
+        cells.append((VTK_PYRAMID, [b, b + 1, b + 2, b + 3, b + 4]))
+
+    arr = np.array(pts, dtype=dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(arr), deep=1))
+    ug = vtkUnstructuredGrid()
+    ug.SetPoints(vp)
+    ug.Allocate(len(cells))
+    for ctype, ids in cells:
+        idl = vtkIdList()
+        for i in ids:
+            idl.InsertNextId(i)
+        ug.InsertNextCell(ctype, idl)
+
+    # per-point scalar (deterministic integer algebra over the coordinates)
+    pscal = (arr[:, 0] * 3 + arr[:, 1] * 5 + arr[:, 2] * 7).astype(dtype)
+    pa = numpy_to_vtk(np.ascontiguousarray(pscal), deep=1)
+    pa.SetName("pv")
+    ug.GetPointData().SetScalars(pa)
+
+    # per-cell scalar so the boundary-face cell-data copy path is exercised
+    cscal = (np.arange(len(cells), dtype=np.int64) % 13).astype(dtype)
+    ca = numpy_to_vtk(np.ascontiguousarray(cscal), deep=1)
+    ca.SetName("cv")
+    ug.GetCellData().SetScalars(ca)
+    return ug
+
+
 def make_structured_grid(n=24, dtype=np.float64):
     """A curvilinear vtkStructuredGrid on an n*n*n lattice carrying explicit
     per-point coordinates (so vtkExtractGrid's CopyPointsAndPointData copies real
@@ -1449,6 +1523,20 @@ def op_geometry_ugrid(dtype, size):
     return g.GetOutput()
 
 
+def op_geometry_ugrid_mixed(dtype, size):
+    # vtkGeometryFilter over a MIXED-cell-type unstructured grid (tetra, hex,
+    # voxel, wedge, pyramid) carrying both point and cell data. Drives the
+    # devirtualized ExtractUG::FaceOperator (typed offsets/connectivity +
+    # typed cell-types arrays via vtkArrayDispatch::Dispatch3ByArray, raw
+    # pointer per-cell read), the per-celltype boundary-face emission in
+    # ExtractCellGeometry, and the presized point/cell/data composite path.
+    # Run on float32 AND float64 to cover both typed point-copy paths.
+    g = vtkGeometryFilter()
+    g.SetInputData(make_mixed_ugrid(size, dtype))
+    g.Update()
+    return g.GetOutput()
+
+
 def op_tableclip_ugrid(dtype, size):
     # vtkTableBasedClipDataSet (pyvista's default clip) on a hex UG -> the
     # ClipTDataSet<vtkUnstructuredGrid> instantiation, whose EvaluateCells /
@@ -2125,6 +2213,7 @@ OPS = {
     "append_polydata_partial": dict(fn=op_append_polydata_partial, group="filter", dtypes=["float64"], sizes=[8, 16]),
     "probe": dict(fn=op_probe, group="filter", dtypes=["float32", "float64"], sizes=[10, 16]),
     "geometry_ugrid": dict(fn=op_geometry_ugrid, group="filter", dtypes=["float64"], sizes=[8, 14]),
+    "geometry_ugrid_mixed": dict(fn=op_geometry_ugrid_mixed, group="filter", dtypes=["float32", "float64"], sizes=[3, 6]),
     "threshold_ugrid": dict(fn=op_threshold_ugrid, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "threshold_ugrid_pointdata": dict(fn=op_threshold_ugrid_pointdata, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "threshold_ugrid_pointdata_any": dict(fn=op_threshold_ugrid_pointdata_any, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
