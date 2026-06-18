@@ -1083,11 +1083,75 @@ def op_transform_tps(dtype, size):
     f.SetOutputPointsPrecision(1 if dtype == "float64" else 2)
     f.Update()
     return f.GetOutput()
+def make_coincident_mesh(size, dtype):
+    """A vtkPolyData with deliberately coincident points so vtkCleanPolyData must
+    actually MERGE (locator/MergePoints path) and REMAP cell connectivity.
+
+    Builds an (size x size) grid of triangles where every grid vertex is emitted
+    DUPLICATED per-triangle (so adjacent triangles reference distinct point ids
+    that share identical coordinates). Cleaning collapses the duplicates back to
+    the unique grid lattice, exercising: point-merge order, locator insertion
+    order, id remapping, and the surviving point/cell order. Carries an AOS
+    point-data scalar (concrete float32/float64 -> drives the typed reader) and a
+    per-cell cell-data scalar so both CopyData paths are covered."""
+    n = max(int(size), 2)
+    # Unique lattice coordinates (integer algebra -> byte-identical both backends).
+    lin = np.arange(n, dtype=np.float64)
+    gx, gy = np.meshgrid(lin, lin, indexing="ij")
+    lattice = np.stack([gx.ravel(), gy.ravel(), np.zeros(n * n)], axis=1)
+
+    coords = []  # duplicated per-triangle-corner coordinates
+    conn = []    # triangle connectivity into `coords`
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            b = (i + 1) * n + j
+            c = i * n + (j + 1)
+            d = (i + 1) * n + (j + 1)
+            for tri in ((a, b, c), (b, d, c)):
+                base = len(coords)
+                for v in tri:
+                    coords.append(lattice[v])
+                conn.append((base, base + 1, base + 2))
+
+    coords = np.ascontiguousarray(np.array(coords), dtype=dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(coords, deep=1))
+    pd.SetPoints(vp)
+
+    polys = vtkCellArray()
+    for (p0, p1, p2) in conn:
+        ids = vtkIdList()
+        ids.InsertNextId(p0)
+        ids.InsertNextId(p1)
+        ids.InsertNextId(p2)
+        polys.InsertNextCell(ids)
+    pd.SetPolys(polys)
+
+    # Point-data scalar (deterministic integer ramp, concrete dtype).
+    npts = coords.shape[0]
+    ps = numpy_to_vtk(np.ascontiguousarray(np.arange(npts, dtype=dtype)), deep=1)
+    ps.SetName("ps")
+    pd.GetPointData().SetScalars(ps)
+
+    # Cell-data scalar.
+    ncells = len(conn)
+    cs = numpy_to_vtk(
+        np.ascontiguousarray((1000 + np.arange(ncells, dtype=np.int64)).astype(np.float64)),
+        deep=1)
+    cs.SetName("cs")
+    pd.GetCellData().SetScalars(cs)
+    return pd
 
 
 def op_clean(dtype, size):
+    """vtkCleanPolyData over a mesh with deliberately coincident points so the
+    devirtualized typed point-coordinate reader feeds the actual MERGE path
+    (vtkMergePoints, tolerance 0). Covers point+cell data copy and id remapping
+    for both float32 and float64 AOS point storage."""
     c = vtkCleanPolyData()
-    c.SetInputData(make_sphere(size, size))
+    c.SetInputData(make_coincident_mesh(size, dtype))
     c.Update()
     return c.GetOutput()
 
@@ -2182,7 +2246,7 @@ OPS = {
     "transform_tps": dict(
         fn=op_transform_tps, group="filter", dtypes=["float32", "float64"], sizes=[24, 40]
     ),
-    "clean": dict(fn=op_clean, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "clean": dict(fn=op_clean, group="filter", dtypes=["float32", "float64"], sizes=[12, 24]),
     "triangle": dict(fn=op_triangle, group="filter", dtypes=["float64"], sizes=[24, 40]),
     "geometry": dict(fn=op_geometry, group="filter", dtypes=["float64"], sizes=[18, 28]),
     "shrink": dict(fn=op_shrink, group="filter", dtypes=["float64"], sizes=[16, 24]),

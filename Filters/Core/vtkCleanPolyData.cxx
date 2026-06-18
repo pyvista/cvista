@@ -4,6 +4,8 @@
 
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkIdTypeArray.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkInformation.h"
@@ -23,6 +25,72 @@ vtkStandardNewMacro(vtkCleanPolyData);
 
 namespace
 {
+// Devirtualized per-point input-coordinate reader for vtkCleanPolyData.
+//
+// The four topology loops (verts/lines/polys/strips) read every cell vertex's
+// coordinates via inPts->GetPoint(id, x), which resolves through the virtual,
+// cross-shared-library vtkDataArray::GetTuple and re-runs the array's type
+// switch on every point. The point-storage layout is invariant for the whole
+// pass, so resolve the typed contiguous coordinate buffer ONCE (FastDownCast to
+// vtkDoubleArray / vtkFloatArray + GetPointer(0)) and read each vertex inline
+// from ptr + 3*id. For any other storage (non-AOS / unsupported type / no array)
+// the cached pointers stay null and Read falls back to the original GetPoint.
+//
+// Bit-exactness: this only changes HOW the coordinate is fetched, never the
+// value. GetPoint copies the exact stored coordinate (double storage:
+// x[c] = ptr[3*id+c]; float storage: x[c] = static_cast<double>(ptr[3*id+c]),
+// the identical float->double widening GetTuple performs). No arithmetic is
+// introduced and the merge/locator input (x -> OperateOnPoint -> newx) is
+// byte-identical, so the point-merge order, the locator insertion order, the
+// id remapping, and the surviving output point/cell order are all unchanged.
+class CleanPDPointReader
+{
+public:
+  explicit CleanPDPointReader(vtkPoints* pts)
+    : Points(pts)
+  {
+    if (pts)
+    {
+      if (auto* da = vtkDoubleArray::FastDownCast(pts->GetData()))
+      {
+        this->DPtr = da->GetPointer(0);
+      }
+      else if (auto* fa = vtkFloatArray::FastDownCast(pts->GetData()))
+      {
+        this->FPtr = fa->GetPointer(0);
+      }
+    }
+  }
+
+  // Equivalent to Points->GetPoint(id, x).
+  inline void Read(vtkIdType id, double x[3]) const
+  {
+    if (this->DPtr)
+    {
+      const double* p = this->DPtr + 3 * id;
+      x[0] = p[0];
+      x[1] = p[1];
+      x[2] = p[2];
+    }
+    else if (this->FPtr)
+    {
+      const float* p = this->FPtr + 3 * id;
+      x[0] = static_cast<double>(p[0]);
+      x[1] = static_cast<double>(p[1]);
+      x[2] = static_cast<double>(p[2]);
+    }
+    else
+    {
+      this->Points->GetPoint(id, x);
+    }
+  }
+
+private:
+  vtkPoints* Points;
+  const double* DPtr = nullptr;
+  const float* FPtr = nullptr;
+};
+
 void InsertPointUsingGlobalId(vtkIdType globalId, vtkPoints* newPts,
   std::unordered_map<vtkIdType, vtkIdType>& addedGlobalIdMap, const double* x, vtkIdType& ptId)
 {
@@ -171,6 +239,10 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
     vtkDebugMacro(<< "No data to Operate On!");
     return 1;
   }
+  // Hoist a typed raw-pointer reader for the input coordinates feeding the
+  // merge. Bit-identical to inPts->GetPoint; only the dispatch is removed.
+  const CleanPDPointReader inPtReader(inPts);
+
   vtkIdType* updatedPts = new vtkIdType[input->GetMaxCellSize()];
 
   vtkIdType numNewPts;
@@ -314,7 +386,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
       progressCounter++;
       for (numNewPts = 0, i = 0; i < npts; ++i)
       {
-        inPts->GetPoint(pts[i], x);
+        inPtReader.Read(pts[i], x);
         this->OperateOnPoint(x, newx);
         if ((ptId = pointMap[pts[i]]) == -1)
         {
@@ -369,7 +441,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
       progressCounter++;
       for (numNewPts = 0, i = 0; i < npts; i++)
       {
-        inPts->GetPoint(pts[i], x);
+        inPtReader.Read(pts[i], x);
         this->OperateOnPoint(x, newx);
         if ((ptId = pointMap[pts[i]]) == -1)
         {
@@ -448,7 +520,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
       progressCounter++;
       for (numNewPts = 0, i = 0; i < npts; i++)
       {
-        inPts->GetPoint(pts[i], x);
+        inPtReader.Read(pts[i], x);
         this->OperateOnPoint(x, newx);
         if ((ptId = pointMap[pts[i]]) == -1)
         {
@@ -548,7 +620,7 @@ int vtkCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
       progressCounter++;
       for (numNewPts = 0, i = 0; i < npts; i++)
       {
-        inPts->GetPoint(pts[i], x);
+        inPtReader.Read(pts[i], x);
         this->OperateOnPoint(x, newx);
         if ((ptId = pointMap[pts[i]]) == -1)
         {
