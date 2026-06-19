@@ -8,6 +8,7 @@
 #include "vtkCellData.h"
 #include "vtkDataArray.h"
 #include "vtkDataSet.h"
+#include "vtkFVTKSMPDefaults.h" // fvtk: opt into default multithreading (bit-exact)
 #include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -338,7 +339,8 @@ struct PointDataToCellDataCategoricalWorker
     vtkPointDataToCellData* filter)
   {
     PointDataToCellDataCategoricalFunctor<ArrayType> pd2cd(input, inPD, outCD, scalars, filter);
-    vtkSMPTools::For(0, input->GetNumberOfCells(), pd2cd);
+    fvtk::RunSafeFilterParallel(
+      [&]() { vtkSMPTools::For(0, input->GetNumberOfCells(), pd2cd); });
   }
 };
 } // End anonymous namespace
@@ -504,7 +506,7 @@ int vtkPointDataToCellData::RequestData(
   {
     // Thread the process
     PointDataToCellDataFunctor pd2cd(input, inPD, outCD, this);
-    vtkSMPTools::For(0, numCells, pd2cd);
+    fvtk::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numCells, pd2cd); });
   }
   // Create a threaded fast path for categorical data.
   else

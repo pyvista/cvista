@@ -251,3 +251,85 @@ def test_large_transform_threaded_path_is_deterministic(
         f"large {kind} transform digest at {nthreads} threads ({got[:16]}) != "
         f"1-thread reference ({ref[:16]}) -- threading is non-deterministic"
     )
+
+
+# A large-mesh script that forces the threaded cell<->point data-interpolation
+# paths: vtkCellDataToPointData (For over numPts, each point averages its incident
+# cells via read-only cell links) and vtkPointDataToCellData (For over numCells,
+# each cell averages its points). Both parallelize with grain = vtkSMPTools::
+# THRESHOLD, so per-suite cases (<10k) run serial; this drives ~490k pts / ~980k
+# cells so the multithreaded branch is actually exercised. Each output element is
+# an independent average of read-only input => bit-exact under any thread count.
+# argv[1] selects "cd2pd" or "pd2cd".
+_LARGE_INTERP_SCRIPT = r"""
+import os, sys, hashlib
+sys.path = [p for p in sys.path if p not in ("", os.getcwd())]
+import numpy as np
+from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+from vtkmodules.vtkFiltersSources import vtkSphereSource
+from vtkmodules.vtkFiltersCore import (
+    vtkTriangleFilter, vtkCellDataToPointData, vtkPointDataToCellData)
+
+kind = sys.argv[1]
+s = vtkSphereSource(); s.SetThetaResolution(700); s.SetPhiResolution(700)
+t = vtkTriangleFilter(); t.SetInputConnection(s.GetOutputPort()); t.Update()
+poly = t.GetOutput()
+npts = poly.GetNumberOfPoints(); ncells = poly.GetNumberOfCells()
+assert npts > 100000 and ncells > 100000, (npts, ncells)
+
+if kind == "cd2pd":
+    # non-trivial per-cell scalar (float64) -> averaged onto points
+    poly.GetCellData().SetScalars(
+        numpy_to_vtk(np.linspace(-1, 1, ncells).astype(np.float64), deep=1))
+    f = vtkCellDataToPointData(); f.SetInputData(poly); f.Update()
+    arr = f.GetOutput().GetPointData().GetScalars()
+elif kind == "pd2cd":
+    poly.GetPointData().SetScalars(
+        numpy_to_vtk(np.linspace(-1, 1, npts).astype(np.float64), deep=1))
+    f = vtkPointDataToCellData(); f.SetInputData(poly); f.Update()
+    arr = f.GetOutput().GetCellData().GetScalars()
+else:
+    raise SystemExit("unknown kind " + kind)
+
+h = hashlib.sha256()
+h.update(np.ascontiguousarray(vtk_to_numpy(arr)).tobytes())
+print(h.hexdigest())
+"""
+
+INTERP_KINDS = ["cd2pd", "pd2cd"]
+
+
+@pytest.fixture(scope="module")
+def large_interp_digests(tmp_path_factory):
+    fvtk_py = os.environ.get("BITEXACT_FVTK_PY")
+    if not fvtk_py:
+        pytest.skip("BITEXACT_FVTK_PY not set.")
+    script = tmp_path_factory.mktemp("large_interp") / "large_interp.py"
+    script.write_text(_LARGE_INTERP_SCRIPT)
+    digests = {k: {} for k in INTERP_KINDS}
+    for kind in INTERP_KINDS:
+        for n in THREAD_COUNTS:
+            proc = subprocess.run(
+                [fvtk_py, str(script), kind],
+                env=_env(os.environ.get("BITEXACT_FVTK_LDLP", ""), n),
+                capture_output=True,
+                text=True,
+            )
+            assert proc.returncode == 0, f"{kind} @ {n} threads:\n{proc.stderr}"
+            digests[kind][n] = proc.stdout.strip().splitlines()[-1]
+    return digests
+
+
+@pytest.mark.parametrize("kind", INTERP_KINDS)
+@pytest.mark.parametrize("nthreads", [n for n in THREAD_COUNTS if n != 1])
+def test_large_interp_threaded_path_is_deterministic(
+    large_interp_digests, kind, nthreads
+):
+    """The >THRESHOLD cell<->point data-interpolation paths (genuinely
+    multithreaded) hash identically at 1 vs N threads."""
+    ref = large_interp_digests[kind][1]
+    got = large_interp_digests[kind][nthreads]
+    assert got == ref, (
+        f"large {kind} digest at {nthreads} threads ({got[:16]}) != "
+        f"1-thread reference ({ref[:16]}) -- threading is non-deterministic"
+    )
