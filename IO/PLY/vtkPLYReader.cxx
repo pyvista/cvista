@@ -6,7 +6,6 @@
 #include "vtkCellData.h"
 #include "vtkDataArray.h"
 #include "vtkFloatArray.h"
-#include "vtkIdTypeArray.h"
 #include "vtkIncrementalOctreePointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -20,6 +19,8 @@
 #include "vtkPolygon.h"
 #include "vtkSmartPointer.h"
 #include "vtkStringArray.h"
+#include "vtkTypeInt32Array.h"
+#include "vtkTypeInt64Array.h"
 #include "vtkUnsignedCharArray.h"
 
 #include "miniply.h"
@@ -31,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -1002,25 +1004,57 @@ int vtkPLYReader::ReadPLYFast(vtkPolyData* output)
       {
         return -1;
       }
-      vtkNew<vtkIdTypeArray> offArr;
-      offArr->SetNumberOfValues(static_cast<vtkIdType>(numPolys) + 1);
-      vtkNew<vtkIdTypeArray> connArr;
-      connArr->SetNumberOfValues(static_cast<vtkIdType>(total));
-      vtkIdType* op = offArr->GetPointer(0);
-      vtkIdType* cp = connArr->GetPointer(0);
-      vtkIdType acc = 0;
-      op[0] = 0;
-      for (uint32_t j = 0; j < numPolys; ++j)
-      {
-        acc += static_cast<vtkIdType>(counts[j]);
-        op[j + 1] = acc;
-      }
-      for (uint32_t i = 0; i < total; ++i)
-      {
-        cp[i] = static_cast<vtkIdType>(conn[i]);
-      }
+      // fvtk-wide rule (width-relaxed): default the cell array to 32-bit
+      // offsets/connectivity, widening to 64-bit only when a value cannot fit in
+      // int32 (numPolys/total or an index >= 2^31). Integer VALUES are identical
+      // to stock VTK; only the storage container narrows (stock defaults to
+      // 64-bit). This halves the cell-array footprint for the overwhelmingly
+      // common case. See [[fvtk-int32-default-width-relaxed]].
+      constexpr uint32_t kI32Max = 0x7FFFFFFFu;
+      const bool fits32 = (numPolys <= kI32Max) && (total <= kI32Max);
       polys = vtkSmartPointer<vtkCellArray>::New();
-      polys->SetData(offArr, connArr);
+      if (fits32)
+      {
+        vtkNew<vtkTypeInt32Array> offArr;
+        offArr->SetNumberOfValues(static_cast<vtkIdType>(numPolys) + 1);
+        vtkNew<vtkTypeInt32Array> connArr;
+        connArr->SetNumberOfValues(static_cast<vtkIdType>(total));
+        vtkTypeInt32* op = offArr->GetPointer(0);
+        vtkTypeInt32* cp = connArr->GetPointer(0);
+        vtkTypeInt32 acc = 0;
+        op[0] = 0;
+        for (uint32_t j = 0; j < numPolys; ++j)
+        {
+          acc += static_cast<vtkTypeInt32>(counts[j]);
+          op[j + 1] = acc;
+        }
+        for (uint32_t i = 0; i < total; ++i)
+        {
+          cp[i] = static_cast<vtkTypeInt32>(conn[i]);
+        }
+        polys->SetData(offArr, connArr);
+      }
+      else
+      {
+        vtkNew<vtkTypeInt64Array> offArr;
+        offArr->SetNumberOfValues(static_cast<vtkIdType>(numPolys) + 1);
+        vtkNew<vtkTypeInt64Array> connArr;
+        connArr->SetNumberOfValues(static_cast<vtkIdType>(total));
+        vtkTypeInt64* op = offArr->GetPointer(0);
+        vtkTypeInt64* cp = connArr->GetPointer(0);
+        vtkTypeInt64 acc = 0;
+        op[0] = 0;
+        for (uint32_t j = 0; j < numPolys; ++j)
+        {
+          acc += static_cast<vtkTypeInt64>(counts[j]);
+          op[j + 1] = acc;
+        }
+        for (uint32_t i = 0; i < total; ++i)
+        {
+          cp[i] = static_cast<vtkTypeInt64>(conn[i]);
+        }
+        polys->SetData(offArr, connArr);
+      }
 
       if (intensityAvailable)
       {
@@ -1118,6 +1152,14 @@ int vtkPLYReader::ReadPLYFast(vtkPolyData* output)
   }
 
   vtkDebugMacro(<< "Read (fast): " << numPts << " points, " << numPolys << " polygons");
+  // Optional diagnostic breadcrumb: when FVTK_PLY_FASTPATH_TRACE is set, report
+  // (to stderr) that the fast path handled this file. Off by default -> no cost
+  // and no behavior change; used by the byte-exact validation to confirm which
+  // files engage the fast path vs fall back to the legacy reader.
+  if (std::getenv("FVTK_PLY_FASTPATH_TRACE"))
+  {
+    std::fprintf(stderr, "FVTK_PLY_FAST %s\n", this->FileName ? this->FileName : "");
+  }
   return 1;
 }
 
