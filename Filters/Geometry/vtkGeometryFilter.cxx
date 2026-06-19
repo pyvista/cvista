@@ -2392,18 +2392,19 @@ struct CompositeCells
 }; // CompositeCells
 
 // Composite threads to produce originating cell ids
-template <typename TInputIdType, typename TOutputIdType>
+// fvtk: templated on TOutId so the same scatter drives int32 or int64 storage.
+template <typename TInputIdType, typename TOutputIdType, typename TOutId = vtkIdType>
 struct CompositeCellIds
 {
   ExtractCellBoundaries<TInputIdType>* Extractor;
   ::CompositeCells<TInputIdType, TOutputIdType>* CompositeCells;
   ThreadOutputType<TInputIdType>* Threads;
-  vtkIdType* OrigIds;
+  TOutId* OrigIds;
   vtkGeometryFilter* Filter;
 
   CompositeCellIds(ExtractCellBoundaries<TInputIdType>* extract,
     ::CompositeCells<TInputIdType, TOutputIdType>* compositeCells,
-    ThreadOutputType<TInputIdType>* threads, vtkIdType* origIds, vtkGeometryFilter* filter)
+    ThreadOutputType<TInputIdType>* threads, TOutId* origIds, vtkGeometryFilter* filter)
     : Extractor(extract)
     , CompositeCells(compositeCells)
     , Threads(threads)
@@ -2419,7 +2420,7 @@ struct CompositeCellIds
 
     for (vtkIdType cellId = 0; cellId < numCells; ++cellId)
     {
-      this->OrigIds[globalCellId++] = cat->OrigCellIds[cellId];
+      this->OrigIds[globalCellId++] = static_cast<TOutId>(cat->OrigCellIds[cellId]);
     }
   }
 
@@ -2866,17 +2867,42 @@ void PassCellIds(const char* name, ExtractCellBoundaries<TInputIdType>* extract,
   ThreadOutputType<TInputIdType>* threads, vtkCellData* outCD, vtkGeometryFilter* filter)
 {
   vtkIdType numOutputCells = extract->NumCells;
-  vtkNew<vtkIdTypeArray> origCellIds;
-  origCellIds->SetName(name);
-  origCellIds->SetNumberOfComponents(1);
-  origCellIds->SetNumberOfTuples(numOutputCells);
-  outCD->AddArray(origCellIds);
-  vtkIdType* origIds = origCellIds->GetPointer(0);
 
-  // Now populate the original cell ids
-  CompositeCellIds<TInputIdType, TOutputIdType> compIds(
-    extract, compositeCells, threads, origIds, filter);
-  vtkSMPTools::For(0, static_cast<vtkIdType>(threads->size()), compIds);
+  // fvtk: width-relaxed storage. The values are input cell ids (sacred); the
+  // CONTAINER is int32 when every id fits in 0x7FFFFFFF, else int64. The input
+  // id type TInputIdType is selected by dispatch to vtkTypeInt32 only when the
+  // input cell (and point) count is <= VTK_TYPE_INT32_MAX, so when it is int32
+  // every stored input cell id provably fits int32. The bitexact gate width-
+  // normalizes integer arrays, and the render hardware-selection path reads this
+  // passthrough array width-agnostically (vtkOpenGL*PolyDataMapper).
+  if (sizeof(TInputIdType) <= sizeof(vtkTypeInt32))
+  {
+    vtkNew<vtkTypeInt32Array> origCellIds;
+    origCellIds->SetName(name);
+    origCellIds->SetNumberOfComponents(1);
+    origCellIds->SetNumberOfTuples(numOutputCells);
+    outCD->AddArray(origCellIds);
+    vtkTypeInt32* origIds = origCellIds->GetPointer(0);
+
+    // Now populate the original cell ids
+    CompositeCellIds<TInputIdType, TOutputIdType, vtkTypeInt32> compIds(
+      extract, compositeCells, threads, origIds, filter);
+    vtkSMPTools::For(0, static_cast<vtkIdType>(threads->size()), compIds);
+  }
+  else
+  {
+    vtkNew<vtkIdTypeArray> origCellIds;
+    origCellIds->SetName(name);
+    origCellIds->SetNumberOfComponents(1);
+    origCellIds->SetNumberOfTuples(numOutputCells);
+    outCD->AddArray(origCellIds);
+    vtkIdType* origIds = origCellIds->GetPointer(0);
+
+    // Now populate the original cell ids
+    CompositeCellIds<TInputIdType, TOutputIdType, vtkIdType> compIds(
+      extract, compositeCells, threads, origIds, filter);
+    vtkSMPTools::For(0, static_cast<vtkIdType>(threads->size()), compIds);
+  }
 }
 
 } // anonymous
