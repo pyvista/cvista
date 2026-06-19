@@ -1259,6 +1259,7 @@ def op_maskpoints_stride(dtype, size):
     npts = size * size
     m = vtkMaskPoints()
     m.SetInputData(make_point_cloud_polydata(npts, dtype))
+    m.SetInputData(make_point_cloud_polydata(npts, DTYPES[dtype]))
     m.RandomModeOff()
     m.SetOnRatio(3)
     m.SetOffset(2)
@@ -1349,11 +1350,50 @@ def op_contour_triangulator(dtype, size):
 def op_tube(dtype, size):
     # `size` -> polyline length; a few lines so the per-vertex point-data copy
     # path (the optimized InsertTuple loop) runs over many generated vertices.
+    # VaryRadiusByScalar exercises the devirtualized input scalar read.
     t = vtkTubeFilter()
     t.SetInputData(make_polylines(nlines=6, length=size, dtype=dtype))
     t.SetNumberOfSides(8)
     t.SetRadius(0.2)
     t.SetVaryRadiusToVaryRadiusByScalar()
+    t.SetCapping(1)
+    t.Update()
+    return t.GetOutput()
+
+
+def op_tube_vec(dtype, size):
+    # Variant exercising the OTHER devirtualized input-access paths:
+    #  - VaryRadiusByVector -> typed read of an input VECTORS array,
+    #  - input NORMALS present -> typed read of the input normals (skips the
+    #    GenerateSlidingNormals branch, so inNormals is the input's own array),
+    #  - GenerateTCoordsFromLength -> typed input point reads in
+    #    GenerateTextureCoords.
+    # Deterministic integer-valued normals/vectors keep both backends starting
+    # byte-identical.
+    pd = make_polylines(nlines=6, length=size, dtype=dtype)
+    npts = pd.GetNumberOfPoints()
+    idx = np.arange(npts, dtype=np.int64)
+    vecs = np.empty((npts, 3), dtype=dtype)
+    vecs[:, 0] = (1 + (idx % 4)).astype(dtype)
+    vecs[:, 1] = (1 + (idx % 3)).astype(dtype)
+    vecs[:, 2] = (1 + (idx % 2)).astype(dtype)
+    va = numpy_to_vtk(np.ascontiguousarray(vecs), deep=1)
+    va.SetName("v")
+    pd.GetPointData().SetVectors(va)
+    norms = np.empty((npts, 3), dtype=dtype)
+    norms[:, 0] = 0.0
+    norms[:, 1] = 0.0
+    norms[:, 2] = 1.0
+    na = numpy_to_vtk(np.ascontiguousarray(norms), deep=1)
+    na.SetName("n")
+    pd.GetPointData().SetNormals(na)
+    t = vtkTubeFilter()
+    t.SetInputData(pd)
+    t.SetNumberOfSides(6)
+    t.SetRadius(0.15)
+    t.SetVaryRadiusToVaryRadiusByVector()
+    t.SetGenerateTCoordsToUseLength()
+    t.SetTextureLength(2.0)
     t.SetCapping(1)
     t.Update()
     return t.GetOutput()
@@ -2305,6 +2345,7 @@ OPS = {
     "contour_triangulator": dict(
         fn=op_contour_triangulator, group="filter", dtypes=["float32", "float64"], sizes=[6, 12]),
     "tube": dict(fn=op_tube, group="filter", dtypes=["float32", "float64"], sizes=[16, 32]),
+    "tube_vec": dict(fn=op_tube_vec, group="filter", dtypes=["float32", "float64"], sizes=[16, 32]),
     "gradient": dict(fn=op_gradient, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
     "cutter": dict(fn=op_cutter, group="filter", dtypes=["float64"], sizes=[8, 12]),
     "cutter_polydata": dict(fn=op_cutter_polydata, group="filter", dtypes=["float64"], sizes=[12, 20]),
