@@ -5,6 +5,7 @@
 #include "vtkDataArray.h"
 #include "vtkDebugLeaks.h"
 #include "vtkDoubleArray.h"
+#include "vtkFVTKSMPDefaults.h" // fvtk: opt into default multithreading (bit-exact)
 #include "vtkFloatArray.h"
 #include "vtkIndent.h"
 #include "vtkLinearTransform.h"
@@ -283,16 +284,23 @@ void vtkAbstractTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPts)
   const AbsTransformAOSReader inReader(inPts->GetData());
   const AbsTransformAOSWriter outWriter(outPts->GetData());
 
-  vtkSMPTools::For(0, n,
-    [&](vtkIdType ptId, vtkIdType endPtId)
+  // fvtk: per-point-independent writes to a pre-sized output (InternalTransformPoint
+  // is a read-only function of the post-Update transform state) => bit-exact under
+  // any thread count; run under the default-threading policy.
+  fvtk::RunSafeFilterParallel(
+    [&]()
     {
-      double point[3];
-      for (; ptId < endPtId; ++ptId)
-      {
-        inReader.Read(ptId, point);
-        this->InternalTransformPoint(point, point);
-        outWriter.Write(m + ptId, point);
-      }
+      vtkSMPTools::For(0, n,
+        [&](vtkIdType ptId, vtkIdType endPtId)
+        {
+          double point[3];
+          for (; ptId < endPtId; ++ptId)
+          {
+            inReader.Read(ptId, point);
+            this->InternalTransformPoint(point, point);
+            outWriter.Write(m + ptId, point);
+          }
+        });
     });
 }
 
@@ -353,6 +361,10 @@ void vtkAbstractTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vtkPo
     }
   }
 
+  // fvtk: per-point-independent writes to pre-sized outputs (InternalTransform-
+  // Derivative is a read-only function of the post-Update transform state) =>
+  // bit-exact under any thread count; run under the default-threading policy.
+  fvtk::RunSafeFilterParallel([&]() {
   vtkSMPTools::For(0, n,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {
@@ -389,6 +401,7 @@ void vtkAbstractTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vtkPo
         }
       }
     });
+  }); // fvtk: end RunSafeFilterParallel
 }
 
 //------------------------------------------------------------------------------

@@ -4,6 +4,7 @@
 
 #include "vtkDataArray.h"
 #include "vtkDoubleArray.h"
+#include "vtkFVTKSMPDefaults.h" // fvtk: opt into default multithreading (bit-exact)
 #include "vtkFloatArray.h"
 #include "vtkMath.h"
 #include "vtkMatrix4x4.h"
@@ -235,16 +236,22 @@ void vtkHomogeneousTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPt
   const HomogTransformAOSReader inReader(inPts->GetData());
   const HomogTransformAOSWriter outWriter(outPts->GetData());
 
-  vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
-    [&](vtkIdType ptId, vtkIdType endPtId)
+  // fvtk: per-point-independent writes to a pre-sized output => bit-exact under
+  // any thread count; run under the default-threading policy.
+  fvtk::RunSafeFilterParallel(
+    [&]()
     {
-      double point[3];
-      for (; ptId < endPtId; ++ptId)
-      {
-        inReader.Read(ptId, point);
-        vtkHomogeneousTransformPoint(M, point, point);
-        outWriter.Write(m + ptId, point);
-      }
+      vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
+        [&](vtkIdType ptId, vtkIdType endPtId)
+        {
+          double point[3];
+          for (; ptId < endPtId; ++ptId)
+          {
+            inReader.Read(ptId, point);
+            vtkHomogeneousTransformPoint(M, point, point);
+            outWriter.Write(m + ptId, point);
+          }
+        });
     });
 }
 
@@ -308,6 +315,9 @@ void vtkHomogeneousTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vt
     }
   }
 
+  // fvtk: per-point-independent writes to pre-sized outputs => bit-exact under
+  // any thread count; run under the default-threading policy.
+  fvtk::RunSafeFilterParallel([&]() {
   vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {
@@ -355,6 +365,7 @@ void vtkHomogeneousTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vt
         }
       }
     });
+  }); // fvtk: end RunSafeFilterParallel
 }
 
 //------------------------------------------------------------------------------
