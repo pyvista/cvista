@@ -1258,7 +1258,7 @@ def op_maskpoints_stride(dtype, size):
     keeping input and output point arrays the same concrete AOS type."""
     npts = size * size
     m = vtkMaskPoints()
-    m.SetInputData(make_point_cloud_polydata(npts, DTYPES[dtype]))
+    m.SetInputData(make_point_cloud_polydata(npts, dtype))
     m.RandomModeOff()
     m.SetOnRatio(3)
     m.SetOffset(2)
