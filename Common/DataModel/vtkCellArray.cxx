@@ -568,11 +568,15 @@ vtkCellArray::vtkCellArray()
 vtkCellArray::~vtkCellArray() = default;
 vtkStandardNewMacro(vtkCellArray);
 
-#ifdef VTK_USE_64BIT_IDS
-bool vtkCellArray::DefaultStorageIs64Bit = true;
-#else
+// fvtk width-relaxed rule ([[fvtk-int32-default-width-relaxed]]): default cell
+// arrays to 32-bit offset/connectivity storage regardless of vtkIdType width.
+// This halves the cell-array footprint (and memory bandwidth, the bottleneck on
+// large meshes) vs stock VTK's 64-bit default. Every value-writing path
+// auto-widens to 64-bit when a value cannot fit in int32, so meshes with
+// >2^31 points/cells stay correct. Integer VALUES are identical to stock; only
+// the container narrows. Use vtkCellArray::SetDefaultStorageIs64Bit(true) to
+// restore stock behaviour.
 bool vtkCellArray::DefaultStorageIs64Bit = false;
-#endif
 
 //=================== Begin Legacy Methods ===================================
 // These should be deprecated at some point as they are confusing or very slow
@@ -806,6 +810,25 @@ void vtkCellArray::Append(vtkCellArray* src, vtkIdType pointOffset)
 {
   if (src->GetNumberOfCells() > 0)
   {
+    // After append, the largest offset = our connectivity size + src's, and the
+    // largest connectivity id = src's max id + pointOffset. Widen if either
+    // overflows int32 (GetRange is cached on src; this is a bulk op already).
+    if (this->StorageType == StorageTypes::Int32)
+    {
+      vtkIdType maxVal = this->GetNumberOfConnectivityIds() + src->GetNumberOfConnectivityIds();
+      vtkDataArray* srcConn = src->GetConnectivityArray();
+      if (srcConn && srcConn->GetNumberOfValues() > 0)
+      {
+        double r[2];
+        srcConn->GetRange(r, 0);
+        const vtkIdType m = static_cast<vtkIdType>(r[1]) + pointOffset;
+        if (m > maxVal)
+        {
+          maxVal = m;
+        }
+      }
+      this->WidenStorageForValue(maxVal);
+    }
     this->Dispatch(AppendImpl{}, src, pointOffset);
   }
 }
@@ -1435,6 +1458,19 @@ void vtkCellArray::ReplaceCellAtId(vtkIdType cellId, vtkIdList* list)
 void vtkCellArray::ReplaceCellAtId(
   vtkIdType cellId, vtkIdType cellSize, const vtkIdType cellPoints[])
 {
+  // Replaces connectivity ids in place; widen if any new id overflows int32.
+  if (this->StorageType == StorageTypes::Int32)
+  {
+    vtkIdType maxVal = 0;
+    for (vtkIdType i = 0; i < cellSize; ++i)
+    {
+      if (cellPoints[i] > maxVal)
+      {
+        maxVal = cellPoints[i];
+      }
+    }
+    this->WidenStorageForValue(maxVal);
+  }
   this->Dispatch(ReplaceCellAtIdImpl{}, cellId, cellSize, cellPoints);
 }
 
@@ -1442,6 +1478,7 @@ void vtkCellArray::ReplaceCellAtId(
 void vtkCellArray::ReplaceCellPointAtId(
   vtkIdType cellId, vtkIdType cellPointIndex, vtkIdType newPointId)
 {
+  this->WidenStorageForValue(newPointId);
   this->Dispatch(ReplaceCellPointAtIdImpl{}, cellId, cellPointIndex, newPointId);
 }
 
@@ -1489,6 +1526,27 @@ void vtkCellArray::AppendLegacyFormat(vtkIdTypeArray* data, vtkIdType ptOffset)
 //------------------------------------------------------------------------------
 void vtkCellArray::AppendLegacyFormat(const vtkIdType* data, vtkIdType len, vtkIdType ptOffset)
 {
+  // Legacy data is [npts, id0..., npts2, id0...]. Upper-bound the largest value
+  // this will store: offsets grow by at most `len`, and connectivity ids are
+  // data values + ptOffset. Scanning `data` for its max (incl. the small count
+  // entries -- a harmless overestimate) bounds both. Widen once if needed.
+  if (this->StorageType == StorageTypes::Int32)
+  {
+    vtkIdType maxData = 0;
+    for (vtkIdType i = 0; i < len; ++i)
+    {
+      if (data[i] > maxData)
+      {
+        maxData = data[i];
+      }
+    }
+    vtkIdType maxVal = this->GetNumberOfConnectivityIds() + len;
+    if (maxData + ptOffset > maxVal)
+    {
+      maxVal = maxData + ptOffset;
+    }
+    this->WidenStorageForValue(maxVal);
+  }
   this->Dispatch(AppendLegacyFormatImpl{}, data, len, ptOffset);
 }
 

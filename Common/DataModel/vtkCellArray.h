@@ -333,6 +333,7 @@ public:
    */
   void SetOffset(vtkIdType cellId, vtkIdType offset)
   {
+    this->WidenStorageForValue(offset);
     this->Offsets->SetComponent(cellId, 0, static_cast<double>(offset));
   }
 
@@ -1539,6 +1540,23 @@ protected:
 private:
   vtkCellArray(const vtkCellArray&) = delete;
   void operator=(const vtkCellArray&) = delete;
+
+  // fvtk width-relaxed rule ([[fvtk-int32-default-width-relaxed]]): cell arrays
+  // default to 32-bit offset/connectivity storage (half the footprint of stock
+  // VTK's 64-bit default) and auto-widen to 64-bit only when a value cannot be
+  // represented in int32. This guard is called by every value-writing path
+  // before it stores; on the common path it is a single predicted-not-taken
+  // branch. `maxValue` must be the largest value that path is about to store
+  // (largest offset and/or connectivity id). Out-of-line ConvertTo64BitStorage
+  // runs only on the rare overflow.
+  void WidenStorageForValue(vtkIdType maxValue)
+  {
+    if (this->StorageType == StorageTypes::Int32 &&
+      maxValue > static_cast<vtkIdType>(0x7FFFFFFF))
+    {
+      this->ConvertTo64BitStorage();
+    }
+  }
 };
 
 template <typename ArrayT>
@@ -1841,6 +1859,20 @@ inline vtkIdType vtkCellArray::GetCellPointAtId(vtkIdType cellId, vtkIdType cell
 inline vtkIdType vtkCellArray::InsertNextCell(vtkIdType npts, const vtkIdType* pts)
   VTK_SIZEHINT(pts, npts)
 {
+  // Widen to 64-bit if any stored value (the new offset = current connectivity
+  // size + npts, or any point id in pts) would overflow int32.
+  if (this->StorageType == StorageTypes::Int32)
+  {
+    vtkIdType maxVal = this->GetNumberOfConnectivityIds() + npts;
+    for (vtkIdType i = 0; i < npts; ++i)
+    {
+      if (pts[i] > maxVal)
+      {
+        maxVal = pts[i];
+      }
+    }
+    this->WidenStorageForValue(maxVal);
+  }
   vtkIdType cellId;
   this->Dispatch(vtkCellArray_detail::InsertNextCellImpl{}, npts, pts, cellId);
   return cellId;
@@ -1849,6 +1881,9 @@ inline vtkIdType vtkCellArray::InsertNextCell(vtkIdType npts, const vtkIdType* p
 //----------------------------------------------------------------------------
 inline vtkIdType vtkCellArray::InsertNextCell(int npts)
 {
+  // Incremental API: this writes only the new offset (= connectivity size +
+  // npts); connectivity ids arrive later via InsertCellPoint, guarded there.
+  this->WidenStorageForValue(this->GetNumberOfConnectivityIds() + npts);
   vtkIdType cellId;
   this->Dispatch(vtkCellArray_detail::InsertNextCellImpl{}, npts, cellId);
   return cellId;
@@ -1857,32 +1892,29 @@ inline vtkIdType vtkCellArray::InsertNextCell(int npts)
 //----------------------------------------------------------------------------
 inline void vtkCellArray::InsertCellPoint(vtkIdType id)
 {
+  this->WidenStorageForValue(id);
   this->Dispatch(vtkCellArray_detail::InsertCellPointImpl{}, id);
 }
 
 //----------------------------------------------------------------------------
 inline void vtkCellArray::UpdateCellCount(int npts)
 {
+  // Updates the current cell's end offset (= connectivity size).
+  this->WidenStorageForValue(this->GetNumberOfConnectivityIds());
   this->Dispatch(vtkCellArray_detail::UpdateCellCountImpl{}, npts);
 }
 
 //----------------------------------------------------------------------------
 inline vtkIdType vtkCellArray::InsertNextCell(vtkIdList* pts)
 {
-  vtkIdType cellId;
-  this->Dispatch(
-    vtkCellArray_detail::InsertNextCellImpl{}, pts->GetNumberOfIds(), pts->GetPointer(0), cellId);
-  return cellId;
+  return this->InsertNextCell(pts->GetNumberOfIds(), pts->GetPointer(0));
 }
 
 //----------------------------------------------------------------------------
 inline vtkIdType vtkCellArray::InsertNextCell(vtkCell* cell)
 {
   vtkIdList* pts = cell->GetPointIds();
-  vtkIdType cellId;
-  this->Dispatch(
-    vtkCellArray_detail::InsertNextCellImpl{}, pts->GetNumberOfIds(), pts->GetPointer(0), cellId);
-  return cellId;
+  return this->InsertNextCell(pts->GetNumberOfIds(), pts->GetPointer(0));
 }
 
 //----------------------------------------------------------------------------

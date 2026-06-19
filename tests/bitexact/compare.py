@@ -52,11 +52,23 @@ def compare_case(stock_dir, fvtk_dir, key):
     ok = True
     for name in sorted(names_a):
         x, y = a[name], b[name]
-        equal = bool(
-            x.shape == y.shape
-            and x.dtype == y.dtype
-            and np.array_equal(x, y)
-        )
+        # Width-relaxed comparison for INTEGER arrays (fvtk-wide int32-default
+        # rule): integer VALUES are sacred, but the storage CONTAINER WIDTH is
+        # negotiable -- fvtk defaults topology/index/offset arrays to int32 while
+        # stock VTK uses int64. So for integer-kind arrays compare values
+        # normalized to int64 and ignore the dtype tag. FLOAT (and other) arrays
+        # stay strict: identical dtype + exact bytes (maxULP=0).
+        if x.dtype.kind in "iu" and y.dtype.kind in "iu":
+            equal = bool(
+                x.shape == y.shape
+                and np.array_equal(x.astype(np.int64), y.astype(np.int64))
+            )
+        else:
+            equal = bool(
+                x.shape == y.shape
+                and x.dtype == y.dtype
+                and np.array_equal(x, y)
+            )
         ulp = None
         if x.dtype.kind == "f" and x.shape == y.shape and x.dtype == y.dtype:
             ulp = _ulp_distance(x, y)
