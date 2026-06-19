@@ -1259,7 +1259,6 @@ def op_maskpoints_stride(dtype, size):
     npts = size * size
     m = vtkMaskPoints()
     m.SetInputData(make_point_cloud_polydata(npts, dtype))
-    m.SetInputData(make_point_cloud_polydata(npts, DTYPES[dtype]))
     m.RandomModeOff()
     m.SetOnRatio(3)
     m.SetOffset(2)
