@@ -13,6 +13,7 @@ SPDX_LICENSE_IDENTIFIER
 SPDX_COPYRIGHT_TEXT
   Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
   Copyright (c) 1994 The Board of Trustees of The Leland Stanford
+  Copyright (c) 2019 Vilya Harvey
 DEPENDS
   VTK::CommonCore
   VTK::IOCore

@@ -37,6 +37,7 @@
 #include "vtkResourceStream.h" // For vtkResourceStream
 
 VTK_ABI_NAMESPACE_BEGIN
+class vtkPolyData;
 class vtkStringArray;
 
 class VTKIOPLY_EXPORT vtkPLYReader : public vtkAbstractPolyDataReader
@@ -116,6 +117,18 @@ protected:
 private:
   vtkPLYReader(const vtkPLYReader&) = delete;
   void operator=(const vtkPLYReader&) = delete;
+
+  /**
+   * fvtk fast path: bulk-column read of a binary little-endian PLY using the
+   * vendored miniply parser. Reads only from `FileName` (not stream/string).
+   * Returns 1 if it fully populated `output`, -1 if the file is outside the
+   * fast path's narrow envelope (caller must fall back to the legacy reader),
+   * or 0 on a hard error. The fast path is engaged only when every consumed
+   * property's stored type equals its VTK destination type, so each value is a
+   * verbatim little-endian copy and the output is byte-identical to the legacy
+   * reader (point/face order preserved, polygons not triangulated).
+   */
+  int ReadPLYFast(vtkPolyData* output);
 
   float FaceTextureTolerance;
   bool DuplicatePointsForFaceTexture;

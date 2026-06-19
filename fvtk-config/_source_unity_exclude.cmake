@@ -94,4 +94,8 @@ set(FVTK_SOURCE_UNITY_SKIP_FILES
   vtkMINCImageWriter.cxx
   vtkNIFTIImageWriter.cxx
   vtkPLYWriter.cxx
+  # Vendored third-party miniply parser (its own `namespace miniply`, plus
+  # file-scope helpers); compile standalone so it never shares a batch with the
+  # IOPLY reader/writer TUs.
+  miniply.cxx
   CACHE INTERNAL "fvtk: source .cxx basenames pulled out of UNITY_BUILD batching")

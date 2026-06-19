@@ -6,6 +6,7 @@
 #include "vtkCellData.h"
 #include "vtkDataArray.h"
 #include "vtkFloatArray.h"
+#include "vtkIdTypeArray.h"
 #include "vtkIncrementalOctreePointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -21,11 +22,17 @@
 #include "vtkStringArray.h"
 #include "vtkUnsignedCharArray.h"
 
+#include "miniply.h"
+
 #include <vtksys/SystemTools.hxx>
 
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -131,6 +138,19 @@ int vtkPLYReader::RequestData(vtkInformation* vtkNotUsed(request),
 
   // get the output
   vtkPolyData* output = vtkPolyData::SafeDownCast(outInfo->Get(vtkDataObject::DATA_OBJECT()));
+
+  // fvtk fast path: bulk-column binary-LE read via the vendored miniply parser.
+  // Only when reading from a real file (not a stream/string). Declines (-1) for
+  // anything outside its narrow byte-exact envelope, falling through to legacy.
+  if (!this->ReadFromInputStream && !this->ReadFromInputString && this->FileName &&
+    this->FileName[0] != '\0')
+  {
+    int fastResult = this->ReadPLYFast(output);
+    if (fastResult >= 0)
+    {
+      return fastResult;
+    }
+  }
 
   PlyProperty vertProps[] = {
     { "x", PLY_FLOAT, PLY_FLOAT, static_cast<int>(offsetof(plyVertex, x)), 0, 0, 0, 0 },
@@ -647,6 +667,457 @@ int vtkPLYReader::RequestData(vtkInformation* vtkNotUsed(request),
   // close the PLY file
   vtkPLY::ply_close(ply);
 
+  return 1;
+}
+
+//------------------------------------------------------------------------------
+// fvtk fast binary-PLY bulk reader.
+//
+// Reads a binary little-endian PLY with the vendored miniply parser (MIT,
+// Copyright (c) 2019 Vilya Harvey -- see miniply.h) doing columnar bulk
+// extraction instead of vtkPLY's per-row property dispatch. It engages only
+// when every consumed property's stored type already equals its VTK destination
+// type, so each value is a verbatim little-endian copy: the output is then
+// byte-identical to the legacy reader, with point and face order preserved and
+// polygons left untriangulated (PLY faces index into the point array, so order
+// is load-bearing). Any file outside this narrow envelope returns -1 and the
+// caller falls back to the legacy reader.
+int vtkPLYReader::ReadPLYFast(vtkPolyData* output)
+{
+  using miniply::PLYElement;
+  using miniply::PLYProperty;
+  using miniply::PLYPropertyType;
+  using miniply::PLYReader;
+  constexpr uint32_t kInvalid = miniply::kInvalidIndex;
+
+  PLYReader reader(this->FileName);
+  if (!reader.valid())
+  {
+    return -1; // not openable as PLY; let the legacy path emit the warning
+  }
+  // Binary little-endian only. ASCII float parsing and big-endian byte swaps
+  // risk a last-ULP divergence from vtkPLY, and PLY point positions are sacred
+  // (faces reference them by index), so we will not relax them.
+  if (reader.file_type() != miniply::PLYFileType::Binary)
+  {
+    return -1;
+  }
+
+  auto isFloat = [&](const PLYElement* e, uint32_t i) {
+    return i != kInvalid && e->properties[i].type == PLYPropertyType::Float;
+  };
+  auto isUChar = [&](const PLYElement* e, uint32_t i) {
+    return i != kInvalid && e->properties[i].type == PLYPropertyType::UChar;
+  };
+
+  // ---- required: vertex element with float x, y, z ----
+  uint32_t vIdx = reader.find_element(miniply::kPLYVertexElement);
+  if (vIdx == kInvalid)
+  {
+    return -1; // legacy errors "Cannot read geometry"
+  }
+  PLYElement* vElem = reader.get_element(vIdx);
+  if (!vElem->fixedSize)
+  {
+    return -1; // a list property among vertices -> outside the columnar envelope
+  }
+  uint32_t xi = vElem->find_property("x");
+  uint32_t yi = vElem->find_property("y");
+  uint32_t zi = vElem->find_property("z");
+  if (!isFloat(vElem, xi) || !isFloat(vElem, yi) || !isFloat(vElem, zi))
+  {
+    return -1;
+  }
+
+  // ---- optional vertex texture coords (u,v or texture_u,texture_v), float ----
+  bool texCoordsPointsAvailable = false;
+  uint32_t ui = kInvalid, vi = kInvalid;
+  {
+    uint32_t a = vElem->find_property("u");
+    uint32_t b = vElem->find_property("v");
+    if (a == kInvalid || b == kInvalid)
+    {
+      a = vElem->find_property("texture_u");
+      b = vElem->find_property("texture_v");
+    }
+    if (a != kInvalid && b != kInvalid)
+    {
+      if (!isFloat(vElem, a) || !isFloat(vElem, b))
+      {
+        return -1;
+      }
+      ui = a;
+      vi = b;
+      texCoordsPointsAvailable = true;
+    }
+  }
+
+  // ---- optional vertex normals (nx,ny,nz), float ----
+  bool normalPointsAvailable = false;
+  uint32_t nxi = kInvalid, nyi = kInvalid, nzi = kInvalid;
+  {
+    uint32_t a = vElem->find_property("nx");
+    uint32_t b = vElem->find_property("ny");
+    uint32_t c = vElem->find_property("nz");
+    if (a != kInvalid && b != kInvalid && c != kInvalid)
+    {
+      if (!isFloat(vElem, a) || !isFloat(vElem, b) || !isFloat(vElem, c))
+      {
+        return -1;
+      }
+      nxi = a;
+      nyi = b;
+      nzi = c;
+      normalPointsAvailable = true;
+    }
+  }
+
+  // ---- optional vertex colors (red/green/blue[/alpha] or diffuse_*), uchar ----
+  bool rgbPointsAvailable = false;
+  bool rgbPointsHaveAlpha = false;
+  uint32_t pri = kInvalid, pgi = kInvalid, pbi = kInvalid, pai = kInvalid;
+  {
+    uint32_t r = vElem->find_property("red");
+    uint32_t g = vElem->find_property("green");
+    uint32_t b = vElem->find_property("blue");
+    if (r == kInvalid || g == kInvalid || b == kInvalid)
+    {
+      r = vElem->find_property("diffuse_red");
+      g = vElem->find_property("diffuse_green");
+      b = vElem->find_property("diffuse_blue");
+    }
+    if (r != kInvalid && g != kInvalid && b != kInvalid)
+    {
+      if (!isUChar(vElem, r) || !isUChar(vElem, g) || !isUChar(vElem, b))
+      {
+        return -1;
+      }
+      pri = r;
+      pgi = g;
+      pbi = b;
+      rgbPointsAvailable = true;
+      uint32_t a = vElem->find_property("alpha");
+      if (a != kInvalid)
+      {
+        if (!isUChar(vElem, a))
+        {
+          return -1;
+        }
+        pai = a;
+        rgbPointsHaveAlpha = true;
+      }
+    }
+  }
+
+  // ---- optional face element with an integer vertex_indices list ----
+  bool faceElemPresent = false;
+  PLYElement* fElem = nullptr;
+  uint32_t viIdx = kInvalid;
+  uint32_t fIdx = reader.find_element(miniply::kPLYFaceElement);
+  if (fIdx != kInvalid)
+  {
+    if (fIdx < vIdx)
+    {
+      return -1; // face declared before vertex: outside our ordering assumption
+    }
+    faceElemPresent = true;
+    fElem = reader.get_element(fIdx);
+    viIdx = fElem->find_property("vertex_indices");
+    if (viIdx == kInvalid)
+    {
+      return -1;
+    }
+    const PLYProperty& vp = fElem->properties[viIdx];
+    if (vp.countType == PLYPropertyType::None || vp.type == PLYPropertyType::Float ||
+      vp.type == PLYPropertyType::Double)
+    {
+      return -1; // must be a list of integers (verbatim integer copy)
+    }
+    // The per-face texcoord path duplicates points in the legacy reader; decline
+    // so the legacy reader handles that fidelity-sensitive case.
+    if (fElem->find_property("texcoord") != kInvalid && !texCoordsPointsAvailable)
+    {
+      return -1;
+    }
+  }
+
+  // ---- optional face intensity (uchar) and face colors (uchar) ----
+  bool intensityAvailable = false;
+  uint32_t intensityIdx = kInvalid;
+  bool rgbCellsAvailable = false;
+  bool rgbCellsHaveAlpha = false;
+  uint32_t fri = kInvalid, fgi = kInvalid, fbi = kInvalid, fai = kInvalid;
+  if (faceElemPresent)
+  {
+    uint32_t a = fElem->find_property("intensity");
+    if (a != kInvalid)
+    {
+      if (!isUChar(fElem, a))
+      {
+        return -1;
+      }
+      intensityIdx = a;
+      intensityAvailable = true;
+    }
+    uint32_t r = fElem->find_property("red");
+    uint32_t g = fElem->find_property("green");
+    uint32_t b = fElem->find_property("blue");
+    if (r != kInvalid && g != kInvalid && b != kInvalid)
+    {
+      if (!isUChar(fElem, r) || !isUChar(fElem, g) || !isUChar(fElem, b))
+      {
+        return -1;
+      }
+      fri = r;
+      fgi = g;
+      fbi = b;
+      rgbCellsAvailable = true;
+      uint32_t fa = fElem->find_property("alpha");
+      if (fa != kInvalid)
+      {
+        if (!isUChar(fElem, fa))
+        {
+          return -1;
+        }
+        fai = fa;
+        rgbCellsHaveAlpha = true;
+      }
+    }
+  }
+
+  // ============================================================================
+  // Detection passed: build everything into locals, then attach to `output` only
+  // on success so a partial/corrupt read leaves `output` untouched for fallback.
+  // ============================================================================
+  const uint32_t numPts = vElem->count;
+  const uint32_t numPolys = faceElemPresent ? fElem->count : 0;
+
+  vtkSmartPointer<vtkPoints> pts = vtkSmartPointer<vtkPoints>::New();
+  pts->SetDataTypeToFloat();
+  pts->SetNumberOfPoints(numPts);
+
+  vtkSmartPointer<vtkFloatArray> tcoords;
+  if (texCoordsPointsAvailable)
+  {
+    tcoords = vtkSmartPointer<vtkFloatArray>::New();
+    tcoords->SetName("TCoords");
+    tcoords->SetNumberOfComponents(2);
+    tcoords->SetNumberOfTuples(numPts);
+  }
+  vtkSmartPointer<vtkFloatArray> normals;
+  if (normalPointsAvailable)
+  {
+    normals = vtkSmartPointer<vtkFloatArray>::New();
+    normals->SetName("Normals");
+    normals->SetNumberOfComponents(3);
+    normals->SetNumberOfTuples(numPts);
+  }
+  vtkSmartPointer<vtkUnsignedCharArray> rgbPoints;
+  if (rgbPointsAvailable)
+  {
+    rgbPoints = vtkSmartPointer<vtkUnsignedCharArray>::New();
+    rgbPoints->SetName(rgbPointsHaveAlpha ? "RGBA" : "RGB");
+    rgbPoints->SetNumberOfComponents(rgbPointsHaveAlpha ? 4 : 3);
+    rgbPoints->SetNumberOfTuples(numPts);
+  }
+  vtkSmartPointer<vtkUnsignedCharArray> intensity;
+  if (intensityAvailable)
+  {
+    intensity = vtkSmartPointer<vtkUnsignedCharArray>::New();
+    intensity->SetName("intensity");
+    intensity->SetNumberOfComponents(1);
+    intensity->SetNumberOfTuples(numPolys);
+  }
+  vtkSmartPointer<vtkUnsignedCharArray> rgbCells;
+  if (rgbCellsAvailable)
+  {
+    rgbCells = vtkSmartPointer<vtkUnsignedCharArray>::New();
+    rgbCells->SetName(rgbCellsHaveAlpha ? "RGBA" : "RGB");
+    rgbCells->SetNumberOfComponents(rgbCellsHaveAlpha ? 4 : 3);
+    rgbCells->SetNumberOfTuples(numPolys);
+  }
+  vtkSmartPointer<vtkCellArray> polys;
+
+  bool gotVerts = false;
+  bool gotFaces = false;
+  while (reader.has_element())
+  {
+    if (reader.element_is(miniply::kPLYVertexElement) && !gotVerts)
+    {
+      if (!reader.load_element())
+      {
+        return -1;
+      }
+      uint32_t idx[4];
+      idx[0] = xi;
+      idx[1] = yi;
+      idx[2] = zi;
+      if (!reader.extract_properties(idx, 3, PLYPropertyType::Float, pts->GetVoidPointer(0)))
+      {
+        return -1;
+      }
+      if (texCoordsPointsAvailable)
+      {
+        idx[0] = ui;
+        idx[1] = vi;
+        if (!reader.extract_properties(idx, 2, PLYPropertyType::Float, tcoords->GetPointer(0)))
+        {
+          return -1;
+        }
+      }
+      if (normalPointsAvailable)
+      {
+        idx[0] = nxi;
+        idx[1] = nyi;
+        idx[2] = nzi;
+        if (!reader.extract_properties(idx, 3, PLYPropertyType::Float, normals->GetPointer(0)))
+        {
+          return -1;
+        }
+      }
+      if (rgbPointsAvailable)
+      {
+        idx[0] = pri;
+        idx[1] = pgi;
+        idx[2] = pbi;
+        idx[3] = pai;
+        uint32_t n = rgbPointsHaveAlpha ? 4 : 3;
+        if (!reader.extract_properties(idx, n, PLYPropertyType::UChar, rgbPoints->GetPointer(0)))
+        {
+          return -1;
+        }
+      }
+      gotVerts = true;
+    }
+    else if (faceElemPresent && reader.element_is(miniply::kPLYFaceElement) && !gotFaces)
+    {
+      if (!reader.load_element())
+      {
+        return -1;
+      }
+      const uint32_t* counts = reader.get_list_counts(viIdx);
+      const uint32_t total = reader.sum_of_list_counts(viIdx);
+      std::vector<int32_t> conn(total);
+      if (total > 0 && !reader.extract_list_property(viIdx, PLYPropertyType::Int, conn.data()))
+      {
+        return -1;
+      }
+      vtkNew<vtkIdTypeArray> offArr;
+      offArr->SetNumberOfValues(static_cast<vtkIdType>(numPolys) + 1);
+      vtkNew<vtkIdTypeArray> connArr;
+      connArr->SetNumberOfValues(static_cast<vtkIdType>(total));
+      vtkIdType* op = offArr->GetPointer(0);
+      vtkIdType* cp = connArr->GetPointer(0);
+      vtkIdType acc = 0;
+      op[0] = 0;
+      for (uint32_t j = 0; j < numPolys; ++j)
+      {
+        acc += static_cast<vtkIdType>(counts[j]);
+        op[j + 1] = acc;
+      }
+      for (uint32_t i = 0; i < total; ++i)
+      {
+        cp[i] = static_cast<vtkIdType>(conn[i]);
+      }
+      polys = vtkSmartPointer<vtkCellArray>::New();
+      polys->SetData(offArr, connArr);
+
+      if (intensityAvailable)
+      {
+        uint32_t idx[1] = { intensityIdx };
+        if (!reader.extract_properties(idx, 1, PLYPropertyType::UChar, intensity->GetPointer(0)))
+        {
+          return -1;
+        }
+      }
+      if (rgbCellsAvailable)
+      {
+        uint32_t idx[4] = { fri, fgi, fbi, fai };
+        uint32_t n = rgbCellsHaveAlpha ? 4 : 3;
+        if (!reader.extract_properties(idx, n, PLYPropertyType::UChar, rgbCells->GetPointer(0)))
+        {
+          return -1;
+        }
+      }
+      gotFaces = true;
+    }
+    reader.next_element();
+  }
+
+  if (!gotVerts || (faceElemPresent && !gotFaces))
+  {
+    return -1; // file didn't yield the elements its header advertised
+  }
+
+  // Comments: miniply discards them, so replicate vtkPLY's header handling to
+  // keep GetComments() faithful (a side accessor, not part of the serialized
+  // mesh). Re-scan the short ASCII header for "comment" lines.
+  this->Comments->Reset();
+  if (FILE* hf = vtksys::SystemTools::Fopen(this->FileName, "rb"))
+  {
+    char line[1024];
+    while (std::fgets(line, sizeof(line), hf))
+    {
+      for (char* p = line; *p; ++p)
+      {
+        if (*p == '\t')
+        {
+          *p = ' ';
+        }
+        else if (*p == '\r' || *p == '\n')
+        {
+          *p = '\0';
+          break;
+        }
+      }
+      if (std::strncmp(line, "end_header", 10) == 0)
+      {
+        break;
+      }
+      if (std::strncmp(line, "comment", 7) == 0 && (line[7] == ' ' || line[7] == '\0'))
+      {
+        int i = 7;
+        while (line[i] == ' ')
+        {
+          ++i;
+        }
+        this->Comments->InsertNextValue(line + i);
+      }
+    }
+    std::fclose(hf);
+  }
+
+  // Attach to output in the legacy reader's array order so the result is
+  // structurally identical (same array indices and active attributes).
+  if (intensityAvailable)
+  {
+    output->GetCellData()->AddArray(intensity);
+    output->GetCellData()->SetActiveScalars("intensity");
+  }
+  if (rgbCellsAvailable)
+  {
+    output->GetCellData()->AddArray(rgbCells);
+    output->GetCellData()->SetActiveScalars(rgbCells->GetName());
+  }
+  output->SetPoints(pts);
+  if (rgbPointsAvailable)
+  {
+    output->GetPointData()->SetScalars(rgbPoints);
+  }
+  if (normalPointsAvailable)
+  {
+    output->GetPointData()->SetNormals(normals);
+  }
+  if (texCoordsPointsAvailable)
+  {
+    output->GetPointData()->SetTCoords(tcoords);
+  }
+  if (faceElemPresent)
+  {
+    output->SetPolys(polys);
+  }
+
+  vtkDebugMacro(<< "Read (fast): " << numPts << " points, " << numPolys << " polygons");
   return 1;
 }
 
