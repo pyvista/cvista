@@ -1010,8 +1010,13 @@ int vtkPLYReader::ReadPLYFast(vtkPolyData* output)
       // to stock VTK; only the storage container narrows (stock defaults to
       // 64-bit). This halves the cell-array footprint for the overwhelmingly
       // common case. See [[fvtk-int32-default-width-relaxed]].
+      // Cheap, robust width check: 32-bit storage is safe iff every value that
+      // will be stored fits in int32. Offset values range over [0, total];
+      // connectivity values are point indices in [0, numPts). Bounding those two
+      // counts bounds every stored value (numPolys <= total, so it needs no
+      // separate check). Two unsigned compares -- no per-element scan.
       constexpr uint32_t kI32Max = 0x7FFFFFFFu;
-      const bool fits32 = (numPolys <= kI32Max) && (total <= kI32Max);
+      const bool fits32 = (numPts <= kI32Max) && (total <= kI32Max);
       polys = vtkSmartPointer<vtkCellArray>::New();
       if (fits32)
       {
