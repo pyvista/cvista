@@ -141,6 +141,18 @@ private:
   bool ReadBinarySTL(vtkResourceStream* stream, vtkPoints*, vtkCellArray*);
   bool ReadASCIISTL(
     vtkResourceParser* parser, vtkPoints*, vtkCellArray*, vtkFloatArray* scalars = nullptr);
+
+  /**
+   * fvtk fast path: hash-merge STL reader (binary + ASCII) that produces the
+   * same fundamental mesh as the locator-merge path (same exact-coincident
+   * merged point SET + same triangles, degenerate triangles dropped) but in a
+   * single pass, with point order unconstrained. Used only for the default
+   * configuration (Merging on, default locator, ScalarTags off). Returns 1 on
+   * success, 0 on a hard read error (sets ErrorCode), and -1 if the input is
+   * not handled by the fast path and the caller should fall back to the legacy
+   * locator-merge path. See [[order-relaxed bit-exactness]].
+   */
+  int ReadSTLFast(vtkResourceStream* stream, vtkPolyData* output);
 };
 
 VTK_ABI_NAMESPACE_END

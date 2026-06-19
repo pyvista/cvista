@@ -8,6 +8,7 @@
 #include "vtkErrorCode.h"
 #include "vtkFileResourceStream.h"
 #include "vtkFloatArray.h"
+#include "vtkIdTypeArray.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -25,8 +26,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <vector>
 #include <vtksys/SystemTools.hxx>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -34,6 +38,152 @@ vtkStandardNewMacro(vtkSTLReader);
 
 vtkCxxSetObjectMacro(vtkSTLReader, Locator, vtkIncrementalPointLocator);
 vtkCxxSetObjectMacro(vtkSTLReader, BinaryHeader, vtkUnsignedCharArray);
+
+namespace
+{
+// === fvtk fast binary-STL hash-merge ========================================
+// Ported from the fast STL reader in github.com/pyvista/stl-reader: the libstl
+// 96-bit vertex hash by Aki Nyrhinen (MIT-licensed), with the VTK integration
+// by Alex Kaszynski. The 96-bit Jenkins hash + EXACT 3-word (bitwise float)
+// compare reproduces vtkMergePoints' exact-coincident merge as an order-free
+// SET -- which is all an STL file's (index-less) mesh requires. Binary STL
+// stores raw IEEE-754 float bits, so the merged points are byte-identical to
+// VTK's; only their order may differ (acceptable: STL has no point index array).
+//
+// MIT License, Copyright (c) 2016 Aki Nyrhinen; modifications (c) A. Kaszynski.
+
+inline uint32_t fvtkStlNextPow2(uint32_t v)
+{
+  v--;
+  v |= v >> 1;
+  v |= v >> 2;
+  v |= v >> 4;
+  v |= v >> 8;
+  v |= v >> 16;
+  return ++v;
+}
+
+inline uint32_t fvtkStlFinal96(uint32_t a, uint32_t b, uint32_t c)
+{
+  auto rot = [](uint32_t x, int k) { return (x << k) | (x >> (32 - k)); };
+  c ^= b;
+  c -= rot(b, 14);
+  a ^= c;
+  a -= rot(c, 11);
+  b ^= a;
+  b -= rot(a, 25);
+  c ^= b;
+  c -= rot(b, 16);
+  a ^= c;
+  a -= rot(c, 4);
+  b ^= a;
+  b -= rot(a, 14);
+  c ^= b;
+  c -= rot(b, 24);
+  return c;
+}
+
+// Little-endian 32-bit load (endian-agnostic; matches vtkByteSwap::Swap4LE
+// interpretation of the on-disk float bits on every host).
+inline uint32_t fvtkStlGet32LE(const uint8_t* b)
+{
+  return static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8) |
+    (static_cast<uint32_t>(b[2]) << 16) | (static_cast<uint32_t>(b[3]) << 24);
+}
+
+inline bool fvtkStlWordFinite(uint32_t w)
+{
+  float f;
+  std::memcpy(&f, &w, sizeof(f));
+  return std::isfinite(f);
+}
+
+// vtkMergePoints merges by VALUE (double ==), so it treats -0.0 and +0.0 as the
+// same point. Bit-equality is identical to value-equality for every finite
+// float EXCEPT this one case, so canonicalize -0.0 (0x80000000) to +0.0. The
+// stored coordinate is then +0.0, which is value-identical to either zero.
+inline uint32_t fvtkStlCanonZero(uint32_t w)
+{
+  return w == 0x80000000u ? 0u : w;
+}
+
+// Open-addressing (linear-probe) vertex merge keyed on the exact 3x32-bit
+// pattern (== bitwise float equality). Vertex ids are assigned in first-seen
+// order; Vertices() holds 3 bit-preserved floats per unique vertex.
+class fvtkStlVertexMerger
+{
+public:
+  explicit fvtkStlVertexMerger(size_t estVerts)
+  {
+    const size_t cap =
+      fvtkStlNextPow2(static_cast<uint32_t>(std::max<size_t>(estVerts * 2, 16)));
+    this->Table.assign(cap, 0);
+    this->Mask = static_cast<uint32_t>(cap - 1);
+    this->Verts.reserve(estVerts * 3);
+  }
+
+  // w = the three raw 32-bit words (little-endian float bit patterns).
+  uint32_t Insert(const uint32_t w[3])
+  {
+    if (static_cast<size_t>(this->NVerts + 1) * 2 > this->Table.size())
+    {
+      this->Grow();
+    }
+    const uint32_t hash = fvtkStlFinal96(w[0], w[1], w[2]);
+    for (uint32_t i = 0;; ++i)
+    {
+      uint32_t& slot = this->Table[(hash + i) & this->Mask];
+      if (slot == 0)
+      {
+        slot = this->NVerts + 1;
+        float f[3];
+        std::memcpy(f, w, sizeof(f));
+        this->Verts.push_back(f[0]);
+        this->Verts.push_back(f[1]);
+        this->Verts.push_back(f[2]);
+        return this->NVerts++;
+      }
+      const uint32_t vi = slot - 1;
+      uint32_t e[3];
+      std::memcpy(e, &this->Verts[3 * vi], sizeof(e));
+      if (e[0] == w[0] && e[1] == w[1] && e[2] == w[2])
+      {
+        return vi;
+      }
+    }
+  }
+
+  uint32_t NumberOfVertices() const { return this->NVerts; }
+  std::vector<float>& Vertices() { return this->Verts; }
+
+private:
+  void Grow()
+  {
+    this->Table.assign(this->Table.size() * 2, 0);
+    this->Mask = static_cast<uint32_t>(this->Table.size() - 1);
+    for (uint32_t vi = 0; vi < this->NVerts; ++vi)
+    {
+      uint32_t w[3];
+      std::memcpy(w, &this->Verts[3 * vi], sizeof(w));
+      const uint32_t hash = fvtkStlFinal96(w[0], w[1], w[2]);
+      for (uint32_t i = 0;; ++i)
+      {
+        uint32_t& slot = this->Table[(hash + i) & this->Mask];
+        if (slot == 0)
+        {
+          slot = vi + 1;
+          break;
+        }
+      }
+    }
+  }
+
+  std::vector<float> Verts;
+  std::vector<uint32_t> Table;
+  uint32_t Mask = 0;
+  uint32_t NVerts = 0;
+};
+} // anonymous namespace
 
 //------------------------------------------------------------------------------
 vtkSTLReader::vtkSTLReader() = default;
@@ -97,6 +247,24 @@ int vtkSTLReader::RequestData(vtkInformation* vtkNotUsed(request),
       return 0;
     }
     stream = fileStream;
+  }
+
+  // fvtk fast path: single-pass hash-merge reader for the DEFAULT configuration
+  // (Merging on, default locator, ScalarTags off). It produces the same
+  // fundamental mesh as the locator-merge path below -- same exact-coincident
+  // merged point SET and the same triangles (degenerate triangles dropped) --
+  // but in one pass; point order is left unconstrained (STL carries no index
+  // array, so order is not part of the mesh). For any non-default option, or an
+  // input the fast path declines, it returns -1 and we fall through to the
+  // unchanged legacy locator path.
+  if (this->Merging && this->Locator == nullptr && !this->ScalarTags)
+  {
+    const int fastResult = this->ReadSTLFast(stream, output);
+    if (fastResult >= 0)
+    {
+      return fastResult;
+    }
+    stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
   }
 
   std::string solid;
@@ -216,6 +384,142 @@ int vtkSTLReader::RequestData(vtkInformation* vtkNotUsed(request),
 
   output->Squeeze();
 
+  return 1;
+}
+
+//------------------------------------------------------------------------------
+// fvtk fast path. Returns 1 (handled), 0 (hard error, ErrorCode set), or
+// -1 (decline -> caller uses the legacy locator path). Currently handles BINARY
+// STL only: it stores raw IEEE-754 float bits, so merged points are byte-exact
+// vs the legacy path (positions are sacred). ASCII is declined (-1) because its
+// float parse must round identically to VTK's parser to keep positions exact;
+// that is a follow-up. The merge is exact-coincident (== vtkMergePoints) and
+// degenerate triangles are dropped, matching the legacy result up to point and
+// triangle ORDER -- which an index-less STL mesh does not define.
+int vtkSTLReader::ReadSTLFast(vtkResourceStream* stream, vtkPolyData* output)
+{
+  // Slurp the whole resource into memory (single sequential read).
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+  const vtkTypeInt64 size = stream->Seek(0, vtkResourceStream::SeekDirection::End);
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+  if (size < 84)
+  {
+    return -1; // too short / empty -> let the legacy path emit the right error
+  }
+  std::vector<uint8_t> buf(static_cast<size_t>(size));
+  size_t got = 0;
+  while (got < buf.size())
+  {
+    const std::size_t n = stream->Read(buf.data() + got, buf.size() - got);
+    if (n == 0)
+    {
+      return -1; // short read -> defer to legacy
+    }
+    got += n;
+  }
+
+  // "solid"-prefixed files are (usually) ASCII; decline so the legacy path runs
+  // -- which also handles the malformed-binary-starting-with-"solid" fallback.
+  if (std::memcmp(buf.data(), "solid", 5) == 0)
+  {
+    return -1;
+  }
+
+  const vtkTypeInt64 bodyLen = size - 84;
+  if (bodyLen % 50 != 0)
+  {
+    return -1; // legacy reproduces the exact "Remaining file length bad" error
+  }
+  const vtkTypeInt64 numFile = bodyLen / 50;
+  const uint32_t numField = fvtkStlGet32LE(buf.data() + 80);
+  if (static_cast<vtkTypeInt64>(numField) != numFile && !this->RelaxedConformance)
+  {
+    return -1; // legacy reproduces the strict count-mismatch error
+  }
+
+  // Header (80 bytes), mirroring the legacy ReadBinarySTL bookkeeping.
+  if (!this->BinaryHeader)
+  {
+    vtkNew<vtkUnsignedCharArray> binaryHeader;
+    this->SetBinaryHeader(binaryHeader);
+  }
+  this->BinaryHeader->SetNumberOfValues(80 + 1);
+  this->BinaryHeader->FillValue(0);
+  std::memcpy(this->BinaryHeader->GetPointer(0), buf.data(), 80);
+  this->SetHeader(reinterpret_cast<char*>(this->BinaryHeader->GetPointer(0)));
+  this->BinaryHeader->Resize(80);
+
+  fvtkStlVertexMerger merger(static_cast<size_t>(numFile) * 3);
+
+  // Build the triangle connectivity directly into a contiguous buffer (upper
+  // bound numFile*3) rather than calling InsertNextCell per triangle; offsets
+  // are uniform (stride 3) and filled once at the end.
+  vtkNew<vtkIdTypeArray> connArr;
+  connArr->SetNumberOfValues(numFile * 3);
+  vtkIdType* conn = connArr->GetPointer(0);
+  vtkIdType nKept = 0;
+
+  for (vtkTypeInt64 f = 0; f < numFile; ++f)
+  {
+    const uint8_t* rec = buf.data() + 84 + 50 * f;
+    // Extract the 12 floats (normal + 3 verts) once, validating finiteness as
+    // we go -- matching the legacy reader, which errors on a non-finite value.
+    uint32_t w12[12];
+    for (int k = 0; k < 12; ++k)
+    {
+      const uint32_t x = fvtkStlGet32LE(rec + 4 * k);
+      if (!fvtkStlWordFinite(x))
+      {
+        return -1; // non-finite -> legacy emits the precise error + ErrorCode
+      }
+      w12[k] = x;
+    }
+    vtkIdType nodes[3];
+    for (int v = 0; v < 3; ++v)
+    {
+      const uint32_t w[3] = { fvtkStlCanonZero(w12[3 + 3 * v]),
+        fvtkStlCanonZero(w12[4 + 3 * v]), fvtkStlCanonZero(w12[5 + 3 * v]) };
+      nodes[v] = static_cast<vtkIdType>(merger.Insert(w));
+    }
+    // Drop degenerate triangles (>=2 merged vertices coincide), as the legacy
+    // path does after locator merge.
+    if (nodes[0] != nodes[1] && nodes[0] != nodes[2] && nodes[1] != nodes[2])
+    {
+      conn[3 * nKept + 0] = nodes[0];
+      conn[3 * nKept + 1] = nodes[1];
+      conn[3 * nKept + 2] = nodes[2];
+      ++nKept;
+    }
+  }
+
+  // Finalize the cell array: shrink connectivity to the kept triangles and
+  // synthesize the uniform offset array (0, 3, 6, ...).
+  connArr->SetNumberOfValues(nKept * 3);
+  vtkNew<vtkIdTypeArray> offArr;
+  offArr->SetNumberOfValues(nKept + 1);
+  vtkIdType* off = offArr->GetPointer(0);
+  for (vtkIdType i = 0; i <= nKept; ++i)
+  {
+    off[i] = 3 * i;
+  }
+  vtkNew<vtkCellArray> newPolys;
+  newPolys->SetData(offArr, connArr);
+
+  const vtkIdType numPts = static_cast<vtkIdType>(merger.NumberOfVertices());
+  vtkNew<vtkFloatArray> coords;
+  coords->SetNumberOfComponents(3);
+  coords->SetNumberOfTuples(numPts);
+  if (numPts > 0)
+  {
+    std::memcpy(coords->GetPointer(0), merger.Vertices().data(),
+      static_cast<size_t>(numPts) * 3 * sizeof(float));
+  }
+  vtkNew<vtkPoints> newPts;
+  newPts->SetData(coords);
+
+  output->SetPoints(newPts);
+  output->SetPolys(newPolys);
+  output->Squeeze();
   return 1;
 }
 
