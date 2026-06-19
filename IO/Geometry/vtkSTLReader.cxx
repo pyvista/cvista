@@ -21,6 +21,7 @@
 #include "vtkSmartPointer.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkStringScanner.h"
+#include "vtkTypeInt32Array.h"
 #include "vtkUnsignedCharArray.h"
 
 #include <algorithm>
@@ -493,17 +494,43 @@ int vtkSTLReader::ReadSTLFast(vtkResourceStream* stream, vtkPolyData* output)
   }
 
   // Finalize the cell array: shrink connectivity to the kept triangles and
-  // synthesize the uniform offset array (0, 3, 6, ...).
+  // synthesize the uniform offset array (0, 3, 6, ...). Per the fvtk int32-
+  // default rule ([[fvtk-int32-default-width-relaxed]]), store offsets and
+  // connectivity as int32 when every value fits -- numFile*3 bounds both the
+  // largest offset (nKept*3) and the largest vertex index (numPts <= nKept*3) --
+  // widening to int64 only for >2^31-element meshes. int32 halves the cell-array
+  // footprint; the values are identical.
   connArr->SetNumberOfValues(nKept * 3);
-  vtkNew<vtkIdTypeArray> offArr;
-  offArr->SetNumberOfValues(nKept + 1);
-  vtkIdType* off = offArr->GetPointer(0);
-  for (vtkIdType i = 0; i <= nKept; ++i)
-  {
-    off[i] = 3 * i;
-  }
   vtkNew<vtkCellArray> newPolys;
-  newPolys->SetData(offArr, connArr);
+  if (numFile <= static_cast<vtkTypeInt64>(0x7FFFFFFF) / 3)
+  {
+    vtkNew<vtkTypeInt32Array> conn32;
+    conn32->SetNumberOfValues(nKept * 3);
+    vtkTypeInt32* c32 = conn32->GetPointer(0);
+    for (vtkIdType i = 0; i < nKept * 3; ++i)
+    {
+      c32[i] = static_cast<vtkTypeInt32>(conn[i]);
+    }
+    vtkNew<vtkTypeInt32Array> off32;
+    off32->SetNumberOfValues(nKept + 1);
+    vtkTypeInt32* o32 = off32->GetPointer(0);
+    for (vtkIdType i = 0; i <= nKept; ++i)
+    {
+      o32[i] = static_cast<vtkTypeInt32>(3 * i);
+    }
+    newPolys->SetData(off32, conn32);
+  }
+  else
+  {
+    vtkNew<vtkIdTypeArray> offArr;
+    offArr->SetNumberOfValues(nKept + 1);
+    vtkIdType* off = offArr->GetPointer(0);
+    for (vtkIdType i = 0; i <= nKept; ++i)
+    {
+      off[i] = 3 * i;
+    }
+    newPolys->SetData(offArr, connArr);
+  }
 
   const vtkIdType numPts = static_cast<vtkIdType>(merger.NumberOfVertices());
   vtkNew<vtkFloatArray> coords;
