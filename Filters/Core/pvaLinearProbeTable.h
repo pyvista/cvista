@@ -58,6 +58,13 @@
 #define PVU_LPT_PREFETCH_W(addr) ((void)0)
 #endif
 
+// fvtk portability edit: the upstream source uses GCC/Clang __atomic_* builtins
+// for the int32 atomic-min below; MSVC lacks them, so route through the
+// _Interlocked* intrinsic on MSVC (declared in <intrin.h>).
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace pvu {
 namespace lpt {
 
@@ -140,12 +147,26 @@ inline void free_table(std::atomic<std::uint32_t> *p, void *backing, std::size_t
 
 // Atomic min on int32 via CAS loop. Sets *p = min(*p, v).
 inline void atomic_int32_min(std::int32_t *p, std::int32_t v) {
+#if defined(_MSC_VER)
+    // MSVC: int32 and long are both 32-bit; _InterlockedCompareExchange returns
+    // the prior value, giving a lock-free CAS loop equivalent to the builtin.
+    volatile long *lp = reinterpret_cast<volatile long *>(p);
+    long old = *lp;
+    while (v < old) {
+        long prev = _InterlockedCompareExchange(lp, static_cast<long>(v), old);
+        if (prev == old) {
+            return;
+        }
+        old = prev;
+    }
+#else
     std::int32_t old = __atomic_load_n(p, __ATOMIC_RELAXED);
     while (v < old) {
         if (__atomic_compare_exchange_n(p, &old, v, true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             return;
         }
     }
+#endif
 }
 
 } // namespace lpt

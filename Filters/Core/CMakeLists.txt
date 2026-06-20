@@ -156,9 +156,15 @@ vtk_add_test_mangling(VTK::FiltersCore)
 # compile that one TU with OpenMP when available, and keep it out of the unity
 # build so the vendored header stays isolated. Without OpenMP the adapter
 # compiles to a stub (FastStaticCleanUnstructuredGrid returns false -> standard).
+#
+# The vendored kernel uses OpenMP 4.0 constructs (`for simd`) and GCC/Clang
+# atomic/prefetch builtins; MSVC's default `/openmp` is only 2.0, so we do NOT
+# enable the fast lane on MSVC -- the adapter compiles to the bit-exact stub and
+# Windows falls back to stock vtkCleanPolyData / vtkStaticClean (no behavioural
+# change, the fast lane is opt-in to begin with).
 set_source_files_properties(fvtkFastClean.cxx PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 find_package(OpenMP QUIET)
-if (OpenMP_CXX_FOUND)
+if (OpenMP_CXX_FOUND AND NOT MSVC)
   vtk_module_link(VTK::FiltersCore PRIVATE OpenMP::OpenMP_CXX)
   set_property(SOURCE fvtkFastClean.cxx APPEND PROPERTY COMPILE_DEFINITIONS FVTK_HAVE_OPENMP=1)
 endif ()
