@@ -212,7 +212,7 @@ namespace fvtk
 VTK_ABI_NAMESPACE_BEGIN
 
 bool FastConnectivityAllRegions(vtkDataSet*, vtkIdType, vtkIdType, bool, vtkIdType*, vtkIdType*,
-  vtkFloatArray*, vtkFloatArray*, vtkIdTypeArray*, vtkIdType&, vtkIdType&)
+  vtkIdTypeArray*, vtkIdTypeArray*, vtkIdTypeArray*, vtkIdType&, vtkIdType&)
 {
   return false;
 }

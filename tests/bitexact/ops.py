@@ -1310,6 +1310,82 @@ def op_connectivity(dtype, size):
     return c.GetOutput()
 
 
+def make_multiregion_ugrid(n, nblocks, dtype):
+    """`nblocks` spatially-disjoint copies of an (n-1)^3 hex lattice, translated
+    apart along x so NO points are shared across blocks -> exactly `nblocks`
+    connected regions, each with (n-1)^3 cells. Block b owns cell ids
+    [b*m, (b+1)*m); its minimum cell index is b*m, so a region numbering that
+    ranks regions by increasing minimum cell index assigns region b == b. Point
+    scalar is coordinate-derived (unique per point, no cross-block coincidence)
+    so the points-relaxed canonicalization is unambiguous."""
+    from vtkmodules.vtkCommonDataModel import VTK_HEXAHEDRON
+
+    lin = np.arange(n, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    base = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1).astype(dtype)
+    npts_block = base.shape[0]
+    span = float(n) + 4.0  # gap >> lattice extent: blocks never touch
+
+    all_pts = []
+    for b in range(nblocks):
+        shifted = base.copy()
+        shifted[:, 0] += b * span
+        all_pts.append(shifted)
+    pts = np.ascontiguousarray(np.concatenate(all_pts, axis=0))
+
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    ug = vtkUnstructuredGrid()
+    ug.SetPoints(vp)
+
+    def pid(i, j, k):
+        return i + n * (j + n * k)
+
+    ncells = nblocks * (n - 1) ** 3
+    ug.Allocate(ncells)
+    ids = vtkIdList()
+    for b in range(nblocks):
+        off = b * npts_block
+        for k in range(n - 1):
+            for j in range(n - 1):
+                for i in range(n - 1):
+                    ids.Reset()
+                    for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                        ids.InsertNextId(off + pid(i + di, j + dj, k))
+                    for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                        ids.InsertNextId(off + pid(i + di, j + dj, k + 1))
+                    ug.InsertNextCell(VTK_HEXAHEDRON, ids)
+
+    field = (pts[:, 0] * 100.0 + pts[:, 1] * 10.0 + pts[:, 2]).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("v")
+    ug.GetPointData().SetScalars(arr)
+    cs = numpy_to_vtk(
+        np.ascontiguousarray((1000 + np.arange(ncells, dtype=np.int64)).astype(np.float64)),
+        deep=1)
+    cs.SetName("cs")
+    ug.GetCellData().SetScalars(cs)
+    return ug
+
+
+def op_connectivity_fast(dtype, size):
+    # vtkConnectivityFilter ALL_REGIONS over a multi-region hex UG via the OPT-IN
+    # parallel union-find region labeling (Filters/Core/fvtkFastConnectivity),
+    # reached when fvtk.EnableFast()/FVTK_FAST is set. The kernel reproduces stock's
+    # region ids exactly (both number regions by increasing minimum cell index) but
+    # numbers OUTPUT POINTS in cell-index encounter order rather than BFS order, so
+    # the case is compared POINTS-relaxed: same points (coords + RegionId point
+    # scalar) and same cell multiset (carrying the RegionId cell scalar), point
+    # order negotiable. Stock VTK ignores FVTK_FAST and runs the wave-BFS.
+    c = vtkConnectivityFilter()
+    c.SetInputData(make_multiregion_ugrid(size, 3, dtype))
+    c.SetExtractionModeToAllRegions()
+    c.ColorRegionsOn()
+    with fast_mode():
+        c.Update()
+    return c.GetOutput()
+
+
 def op_connectivity_largest(dtype, size):
     # vtkConnectivityFilter in the default ExtractLargestRegion mode over a hex
     # UG -> the "extract largest region" output branch, whose per-cell
@@ -2561,6 +2637,7 @@ OPS = {
     "shrink": dict(fn=op_shrink, group="filter", dtypes=["float64"], sizes=[16, 24]),
     "connectivity": dict(fn=op_connectivity, group="filter", dtypes=["float64"], sizes=[16, 24]),
     "connectivity_largest": dict(fn=op_connectivity_largest, group="filter", dtypes=["float64"], sizes=[8, 12]),
+    "connectivity_fast": dict(fn=op_connectivity_fast, group="filter", dtypes=["float32", "float64"], sizes=[8, 12], order_relaxed=True, points_relaxed=True),
     "featureedges": dict(fn=op_featureedges, group="filter", dtypes=["float64"], sizes=[24, 40]),
     "stripper": dict(fn=op_stripper, group="filter", dtypes=["float64"], sizes=[24, 40]),
     "vertexglyph": dict(fn=op_vertexglyph, group="filter", dtypes=["float64"], sizes=[24, 40]),
