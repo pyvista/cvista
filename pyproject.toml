@@ -76,8 +76,13 @@ build = "cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "FVTK_IMPORT_NAME=fvtk xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
 # auditwheel repair runs by default; stamp the 2_28 tag explicitly to match the
-# manylinux_2_28 build image (AlmaLinux 8 / glibc 2.28).
-repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel}"
+# manylinux_2_28 build image (AlmaLinux 8 / glibc 2.28). --strip removes the
+# ELF .symtab (local/debug symbols) from the bundled .so's — the shipped build
+# never stripped them, leaving ~47 MB of symbol tables (≈6 MB / 15% of the
+# COMPRESSED wheel: 39→33 MB measured). Bit-exact-safe: only symbol metadata is
+# dropped; .dynsym + the abi3 PyInit entry points stay, so the wheel imports and
+# computes byte-identically (the bit-exact + pixel-exact gates run on this wheel).
+repair-wheel-command = "auditwheel repair --strip --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel}"
 # NOTE on abi3audit: cibuildwheel >=4.0 auto-runs `abi3audit --strict` on
 # abi3-tagged wheels and FAILS the build on any non-abi3 symbol. fvtk's cp312-abi3
 # modules export the wrapper runtime's OWN cross-module symbols (PyVTKObject_New,
