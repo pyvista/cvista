@@ -30,7 +30,10 @@ import compare as _compare  # noqa: E402
 # emission order varies with thread count, so compare_all compares it order-relaxed
 # (same points/point-data + same triangle multiset). The assertion below thus
 # checks thread-count invariance of the MESH, not the byte layout.
-THREADED_OPS = ["warp", "warpvector", "normals", "elevation", "cutter_linear", "contour_linear"]
+THREADED_OPS = [
+    "warp", "warpvector", "normals", "elevation", "cutter_linear", "contour_linear",
+    "threshold",
+]
 
 THREAD_COUNTS = [1, 4, 8]
 
@@ -335,5 +338,83 @@ def test_large_interp_threaded_path_is_deterministic(
     got = large_interp_digests[kind][nthreads]
     assert got == ref, (
         f"large {kind} digest at {nthreads} threads ({got[:16]}) != "
+        f"1-thread reference ({ref[:16]}) -- threading is non-deterministic"
+    )
+
+
+# A large-mesh script that forces the threaded vtkThreshold path: the per-cell
+# EvaluateCellsFunctor runs under vtkSMPTools::For (wrapped in fvtk's
+# RunSafeFilterParallel), so a >100k-cell input genuinely splits across threads.
+# The first threshold turns a large vtkImageData into an unstructured grid; the
+# second thresholds THAT UG, which drives the devirtualized cached-cell-type/
+# connectivity path. The reduce (KeptCellsList) is serial in cellId order, so the
+# output must hash identically at 1 vs N threads.
+_LARGE_THRESHOLD_SCRIPT = r"""
+import os, sys, hashlib
+sys.path = [p for p in sys.path if p not in ("", os.getcwd())]
+import numpy as np
+from vtkmodules.util.numpy_support import vtk_to_numpy
+from vtkmodules.vtkImagingCore import vtkRTAnalyticSource
+from vtkmodules.vtkFiltersCore import vtkThreshold
+from vtkmodules.vtkCommonDataModel import vtkDataObject
+src = vtkRTAnalyticSource(); src.SetWholeExtent(0, 64, 0, 64, 0, 64); src.Update()
+img = src.GetOutput()
+assert img.GetNumberOfCells() > 100000, img.GetNumberOfCells()
+# Pass 1: image input (virtual cell access) -> UG output; keep all cells.
+# BETWEEN keeps cells whose points are in [Lower, Upper]; a very wide band keeps
+# every cell (THRESHOLD_UPPER would test UpperThreshold, default +inf -> 0 cells).
+th1 = vtkThreshold(); th1.SetInputData(img)
+th1.SetInputArrayToProcess(0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_POINTS, "RTData")
+th1.SetThresholdFunction(vtkThreshold.THRESHOLD_BETWEEN)
+th1.SetLowerThreshold(-1e30); th1.SetUpperThreshold(1e30)
+th1.Update()
+ug = th1.GetOutput()
+assert ug.GetNumberOfCells() > 100000, ug.GetNumberOfCells()
+# Pass 2: UG input -> devirtualized cached path; BETWEEN drops some cells so the
+# kept-list reduce has gaps (still deterministic).
+th2 = vtkThreshold(); th2.SetInputData(ug)
+th2.SetInputArrayToProcess(0, 0, 0, vtkDataObject.FIELD_ASSOCIATION_POINTS, "RTData")
+th2.SetThresholdFunction(vtkThreshold.THRESHOLD_BETWEEN)
+th2.SetLowerThreshold(75.0); th2.SetUpperThreshold(250.0)
+th2.Update()
+out = th2.GetOutput()
+h = hashlib.sha256()
+h.update(np.ascontiguousarray(vtk_to_numpy(out.GetPoints().GetData())).tobytes())
+h.update(np.ascontiguousarray(vtk_to_numpy(out.GetCells().GetConnectivityArray())).tobytes())
+h.update(np.ascontiguousarray(vtk_to_numpy(out.GetCells().GetOffsetsArray())).tobytes())
+print(h.hexdigest())
+"""
+
+
+@pytest.fixture(scope="module")
+def large_threshold_digests(tmp_path_factory):
+    fvtk_py = os.environ.get("BITEXACT_FVTK_PY")
+    if not fvtk_py:
+        pytest.skip("BITEXACT_FVTK_PY not set.")
+    script = tmp_path_factory.mktemp("large_threshold") / "large_threshold.py"
+    script.write_text(_LARGE_THRESHOLD_SCRIPT)
+    digests = {}
+    for n in THREAD_COUNTS:
+        proc = subprocess.run(
+            [fvtk_py, str(script)],
+            env=_env(os.environ.get("BITEXACT_FVTK_LDLP", ""), n),
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        digests[n] = proc.stdout.strip().splitlines()[-1]
+    return digests
+
+
+@pytest.mark.parametrize("nthreads", [n for n in THREAD_COUNTS if n != 1])
+def test_large_threshold_threaded_path_is_deterministic(
+    large_threshold_digests, nthreads
+):
+    """The >THRESHOLD vtkThreshold path (genuinely multithreaded) hashes
+    identically at 1 vs N threads."""
+    ref = large_threshold_digests[1]
+    got = large_threshold_digests[nthreads]
+    assert got == ref, (
+        f"large threshold digest at {nthreads} threads ({got[:16]}) != "
         f"1-thread reference ({ref[:16]}) -- threading is non-deterministic"
     )
