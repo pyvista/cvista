@@ -31,8 +31,16 @@ export PATH="$PYBIN:$PATH"
 
 # Version suffix straight from the runtime wheel's backend so the SDK wheel
 # version matches fvtk exactly (it applies the repo's setuptools_scm config:
-# guess-next-dev, no-local-version, the 9.6.2 base and fallback).
-SUFFIX="$("$PYBIN/python" -c "import sys; sys.path.insert(0, '$SRC/ci/cibw'); import fvtk_backend; print(fvtk_backend._version_suffix())")"
+# guess-next-dev, no-local-version, the 9.6.2 base and fallback). _version_suffix()
+# prints a diagnostic to stdout, so capture only the returned value.
+SUFFIX="$("$PYBIN/python" -c "
+import sys, io, contextlib
+sys.path.insert(0, '$SRC/ci/cibw')
+import fvtk_backend
+with contextlib.redirect_stdout(io.StringIO()):
+    s = fvtk_backend._version_suffix()
+print(s)
+")"
 
 # LTO-off / -O2 fast config for the gate (the SDK content is headers + config +
 # tools, not optimizer-sensitive); release uses the same script with FVTK_LTO
