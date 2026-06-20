@@ -110,6 +110,7 @@ try:
         vtkElevationFilter,
         vtkMaskPoints,
         vtkProbeFilter,
+        vtkStaticCleanUnstructuredGrid,
         vtkTubeFilter,
     )
     from vtkmodules.vtkFiltersGeneral import (
@@ -1944,6 +1945,74 @@ def op_datasetsurface_fast(dtype, size):
     return f.GetOutput()
 
 
+def make_exploded_hex_ugrid(n, dtype):
+    """An n*n*n lattice of hexahedra where every hex carries its OWN 8 corner
+    points (duplicated across shared faces), so a coincident-point merge MUST
+    collapse the duplicates back. Point data is COORDINATE-DERIVED, so every
+    coincident copy carries identical values -- this isolates the fast-clean
+    comparison from canonical-point-selection ambiguity (with differing data at
+    coincident points VTK keeps the first-inserted point, which is a genuine
+    non-exactness of the opt-in fast lane, not a correctness bug)."""
+    lin = np.arange(n, dtype=dtype)
+    corners = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+               (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+    coords = []
+    conn = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            for k in range(n - 1):
+                base = len(coords)
+                for (di, dj, dk) in corners:
+                    coords.append((lin[i + di], lin[j + dj], lin[k + dk]))
+                conn.append(tuple(range(base, base + 8)))
+    coords = np.ascontiguousarray(np.array(coords), dtype=dtype)
+
+    ug = vtkUnstructuredGrid()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(coords, deep=1))
+    ug.SetPoints(vp)
+    cells = vtkCellArray()
+    for cell in conn:
+        ids = vtkIdList()
+        for v in cell:
+            ids.InsertNextId(v)
+        cells.InsertNextCell(ids)
+    ug.SetCells(12, cells)  # 12 == VTK_HEXAHEDRON
+
+    # Coordinate-derived point scalar (identical at coincident points).
+    ps = numpy_to_vtk(
+        np.ascontiguousarray(
+            (coords[:, 0] * 100.0 + coords[:, 1] * 10.0 + coords[:, 2]).astype(dtype)),
+        deep=1)
+    ps.SetName("ps")
+    ug.GetPointData().SetScalars(ps)
+
+    # Cell-data scalar (per-cell ramp; cells are kept 1:1 by the merge).
+    ncells = len(conn)
+    cs = numpy_to_vtk(
+        np.ascontiguousarray((1000 + np.arange(ncells, dtype=np.int64)).astype(np.float64)),
+        deep=1)
+    cs.SetName("cs")
+    ug.GetCellData().SetScalars(cs)
+    return ug
+
+
+def op_staticclean_fast(dtype, size):
+    # Coincident-point merge of an exploded hex UG via the OPT-IN vendored parallel
+    # OpenMP kernel (pyvista-algorithms clean), reached when fvtk.EnableFast()/
+    # FVTK_FAST is set. vtkStaticCleanUnstructuredGrid keeps cells 1:1 in input
+    # order and copies (not averages) the canonical point's data; the kernel
+    # renumbers merged points + connectivity in its own hash/thread-dependent
+    # order, so the case is compared POINTS-relaxed: same merged point set
+    # (coords + point-data) and same cell multiset, point order negotiable. Stock
+    # VTK ignores FVTK_FAST and runs the reference merge.
+    f = vtkStaticCleanUnstructuredGrid()
+    f.SetInputData(make_exploded_hex_ugrid(size, dtype))
+    with fast_mode():
+        f.Update()
+    return f.GetOutput()
+
+
 def op_contour_linear(dtype, size):
     # Isocontour of a LARGE linear hex unstructured grid with ComputeNormals OFF.
     # vtkContourFilter routes a linear UG to vtkContour3DLinearGrid -- the threaded
@@ -2446,6 +2515,7 @@ OPS = {
     # Vendored parallel boundary-surface kernel (pyvista-algorithms, MIT) via EnableFast;
     # POINTS-relaxed (surface points + cells both emitted in kernel order).
     "datasetsurface_fast": dict(fn=op_datasetsurface_fast, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True, points_relaxed=True),
+    "staticclean_fast": dict(fn=op_staticclean_fast, group="filter", dtypes=["float32", "float64"], sizes=[8, 12], order_relaxed=True, points_relaxed=True),
     "cutter_polydata": dict(fn=op_cutter_polydata, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cutter_polydata_bycell": dict(fn=op_cutter_polydata_bycell, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cellcenters": dict(fn=op_cellcenters, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
