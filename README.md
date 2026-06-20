@@ -313,6 +313,63 @@ maximum wheel portability.
 Levers 12–14 are validated parity-green: differential PyVista core+plotting (**4,088 tests**),
 **0 regressions** vs the untuned `-O3` build (identical pass/fail/skip outcomes).
 
+### Opt-in fast lane — `fvtk.EnableFast()` (non-bit-exact, off by default)
+
+Levers 15–16 are **default-on** because they are **byte-identical** to stock (maxULP = 0).
+Some of the largest wins, though, come from algorithms that are *correct* but **not
+byte-identical** — parallel topology kernels whose output is the *same mesh* emitted in a
+*different order*, or vendored replacements that compute the same answer a faster way. Those
+are gated behind an explicit, runtime opt-in so the **default build stays a bit-exact drop-in**
+and only callers who ask for speed-over-exactness pay the divergence.
+
+```python
+import fvtk
+fvtk.EnableFast()      # opt in (process-wide); sets env FVTK_FAST=1
+fvtk.IsFastEnabled()   # -> True
+fvtk.DisableFast()     # back to the byte-exact default
+```
+
+The toggle is a single process-global flag read **live** by the native filters
+(`fvtk::FastModeEnabled()`, env `FVTK_FAST`, in `Common/Core/vtkFVTKSMPDefaults.{h,cxx}`) —
+so it can be flipped at runtime, per-section, with no rebuild. When off (the default) every
+filter below runs its stock byte-exact path. Two flavours feed this lane:
+
+- **Order-relaxed threading** — an existing VTK filter's `vtkSMPTools::For` region is wrapped
+  in `fvtk::RunFastFilterParallel()` (the EnableFast analogue of lever 15's
+  `RunSafeFilterParallel`): it threads **only** when fast mode is on, and runs serially
+  (byte-exact) otherwise. Used where the parallel result is the same point set + cell multiset
+  but cell emission order is thread-scheduling-dependent. *Filters:* `vtk3DLinearGridPlaneCutter`,
+  `vtkContour3DLinearGrid` (ComputeNormals-off; normals stay serial/byte-exact because their
+  reduction is order-dependent).
+- **Vendored parallel kernels** — a faster third-party implementation called directly from the
+  filter's fast path, gated on `FastModeEnabled()`. fvtk vendors selected MIT-licensed OpenMP
+  kernels from [pyvista-algorithms](https://github.com/banesullivan/pyvista-algorithms) (kept
+  in their own non-unity translation units, compiled with OpenMP, isolated behind a
+  `FVTK_HAVE_OPENMP` guard so the build degrades to a byte-exact stub without OpenMP). Each
+  adapter validates the input and **falls back to the stock path** for anything it does not
+  handle exactly. *Filters:* `vtkDataSetSurfaceFilter` (UG boundary surface, `extract_surface`
+  kernel), `vtkStaticCleanUnstructuredGrid` and `vtkCleanPolyData` (coincident-point merge,
+  `clean` kernel).
+
+**Validation — the order/points-relaxed gate.** A non-exact filter can't be checked at
+maxULP = 0, so `tests/bitexact/` carries relaxed comparison modes (per-op flags in the
+manifest, see `tests/bitexact/compare.py`):
+
+- `order_relaxed` — points + point-data are compared **strict**; cells are compared as a
+  **multiset** keyed by `(cell-type/group, connectivity)` carrying their cell-data, so cell
+  *order* is negotiable. For threaded filters whose points stay put but cells reorder.
+- `points_relaxed` — additionally canonicalizes **point order** by `(coords, point-data)` on
+  both sides and remaps connectivity through that ranking, so surface/merge kernels that emit
+  points in their own hash/thread order still compare equal. The point **set** and **values**
+  remain sacred; only the order is relaxed.
+
+Both still hold positions and values exact — only *order* is negotiable (the same contract as
+the fast PLY reader; see [Parity & validation](#parity--validation)). A passing relaxed test
+is **necessary but not sufficient**: because a fast adapter falls back to the byte-exact path
+when it bails, a green relaxed test also passes when the kernel never ran. So every EnableFast
+filter additionally carries an **engagement check** — under `EnableFast()` its output order
+must actually differ from the serial path (same set), proving the fast kernel executed.
+
 ### Packaging lever
 
 15. **Stable ABI / abi3 (`FVTK_ABI3`, DEFAULT ON).** The Python wrapper runtime and the wrapper
@@ -477,6 +534,15 @@ How it's run:
 Because source pruning does not change which classes compile (the NOCOMPILE list already
 excluded them), a green configure + compile + import-smoke is sufficient proof a pruning
 step is safe — the resulting wheel is functionally identical.
+
+**Bit-exact gate (`tests/bitexact/`).** Below the PyVista suite sits a finer gate that dumps
+every op's output arrays under both backends (stock `vtk` via `vtkmodules`, and fvtk via the
+import shim) and diffs them. Default bar: **byte-for-byte, maxULP = 0** (integer arrays are
+width-normalized to int64 first — fvtk defaults index/offset storage to int32, a negotiable
+container width, not a value change). Filters in the opt-in fast lane are additionally
+exercised under their `order_relaxed` / `points_relaxed` modes (positions and values stay
+exact; only emission order is negotiable) plus an engagement check that the fast kernel
+actually ran — see [the EnableFast lane](#opt-in-fast-lane--fvtkenablefast-non-bit-exact-off-by-default).
 
 ---
 

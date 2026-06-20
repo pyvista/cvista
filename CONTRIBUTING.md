@@ -1,79 +1,95 @@
-Contributing
-============
+Contributing to fvtk
+====================
 
-This page documents at a very high level how to contribute to VTK.
-Please check our [developer instructions] for a more detailed guide to
-developing and contributing to the project, and our [VTK Git README]
-for additional information.
+**fvtk** is a divergent fork of VTK maintained by [PyVista](https://github.com/pyvista),
+developed on GitHub at **`pyvista/fvtk`** — **not** on the Kitware GitLab, and **not** a
+mirror of upstream VTK. Contributions are GitHub pull requests against `pyvista/fvtk`.
+Read the [README](README.md) first: it is the handoff guide for the build-trim and
+swap-for-faster campaigns and explains every lever referenced below.
 
-1.  The canonical VTK source is maintained on a GitLab instance
-    at https://gitlab.kitware.com/vtk/vtk.<br/>
-    [Create an account] there if you don't have one yet.<br/>
-    **Note:** *If you're reading this document on GitHub,
-    bear in mind that it is just a mirror, so pull requests here aren't merged.
-    But don't worry, the workflow in GitLab is pretty similar
-    and you can even sign up using your GitHub account.*
+fvtk has one overriding contract: **it is a bit-exact drop-in for stock VTK 9.6.2.** PyVista
+runs against fvtk unchanged, and the default build is byte-for-byte identical to stock
+(`maxULP = 0`) save for the one documented abi3 `type.__flags__` divergence. Everything below
+exists to protect that contract while still getting faster.
 
-2.  [Fork VTK] into your user's namespace on GitLab.
+Rules of engagement (performance work)
+--------------------------------------
 
-3.  Follow the [download instructions] to create a
-    local clone of the main VTK repository:
+The fork's whole point is to get faster — but **not at the cost of silently changing what a
+filter returns**. Every speedup falls into exactly one of two buckets, decided by whether its
+output is byte-identical to stock:
 
-        $ git clone https://gitlab.kitware.com/vtk/vtk.git VTK
-        $ cd VTK
-    The main repository will be configured as your `origin` remote.
+1. **Byte-identical speedup → may be default-on.** If the change produces output that is
+   byte-for-byte identical to stock VTK 9.6.2 (`maxULP = 0`, integer arrays width-normalized),
+   it can ship enabled by default. This covers devirtualization, LTO/PGO, SIMD that preserves
+   rounding (`-ffp-contract=off` on the FMV'd kernels), int32 width-relaxation (values sacred,
+   container width negotiable), and *provably* thread-count-invariant parallel loops
+   (`out[i] = f(in[i])`, no append/reduction/order-dependent insert — lever 15). The bar is a
+   **proof of identity**, not a benchmark: it must pass `tests/bitexact/` at maxULP = 0,
+   including the thread-count-determinism check for anything threaded.
 
-    For more information see: [Setup]
+2. **Correct but NOT byte-identical → must be opt-in.** If the change is correct but its output
+   differs from stock in *any* observable way — cells emitted in a different order, points
+   renumbered by a parallel/hash kernel, a vendored algorithm that computes the same answer a
+   different way — it **must** be gated behind the explicit `fvtk.EnableFast()` opt-in
+   (`fvtk::FastModeEnabled()` / env `FVTK_FAST`). The default path stays byte-exact; only
+   callers who opt into speed-over-exactness see the divergence. See
+   [the EnableFast lane](README.md#opt-in-fast-lane--fvtkenablefast-non-bit-exact-off-by-default)
+   for the mechanism (`RunFastFilterParallel` for order-relaxed threading; a `FastModeEnabled()`
+   gated adapter for vendored kernels) and the worked examples (cutter, contour, surface,
+   clean).
 
-4.  Run the [developer setup script] to prepare your VTK work tree and
-    create Git command aliases used below:
+   What "observable difference" admits — and what it never does:
+   - **Order is negotiable; positions and values are sacred.** A relaxed result must be the
+     *same point set* (coordinates + point-data exact) and the *same cell multiset* (carrying
+     the same cell-data) as stock — only emission *order* may differ. Validate with the
+     `order_relaxed` / `points_relaxed` modes in `tests/bitexact/`.
+   - **Different *values* (even last-ULP) are NOT admissible** under these gates. A kernel that
+     changes the math — e.g. area-weighted vs unit-weighted normal averaging, or any
+     reduction-order-dependent floating result — is a *different algorithm*, not a reordering,
+     and a tolerance gate would mask a real divergence. Don't ship it as a drop-in.
+   - **Always prove the kernel actually ran.** A relaxed test passes on the byte-exact fallback
+     too, so a green suite alone does not prove the fast path engaged. Every opt-in filter must
+     carry an **engagement check** (output order differs from the serial path under
+     `EnableFast()`, same set).
+   - **Bail to stock for anything you don't handle exactly.** A fast adapter must validate its
+     input and return false (→ standard path) for every case outside its proven envelope.
 
-        $ ./Utilities/SetupForDevelopment.sh
-    This will prompt for your GitLab user name and configure a remote
-    called `gitlab` to refer to it.
+If you can't put a change in bucket 1 with a maxULP = 0 proof, it belongs in bucket 2 behind
+the opt-in. There is no third bucket where the default build quietly diverges.
 
-    For more information see: [Setup]
+Adding an opt-in fast filter (checklist)
+----------------------------------------
 
-5.  Edit files and create commits (repeat as needed):
+1. Gate the fast path on `fvtk::FastModeEnabled()`; keep the stock path intact and reachable.
+2. For a vendored kernel: keep it in its own non-unity TU, compile under OpenMP behind
+   `FVTK_HAVE_OPENMP` (byte-exact stub without it), preserve the upstream license header, and
+   make the adapter fall back (`return false`) for any unsupported input.
+3. Add a `tests/bitexact/` op for the new path with the right relaxed flag
+   (`order_relaxed` / `points_relaxed`) and coordinate-derived attribute data where canonical
+   selection would otherwise be ambiguous.
+4. Add an engagement check proving the kernel runs under `EnableFast()`.
+5. Confirm the default (fast-off) build stays maxULP = 0 — no regression to existing cases.
 
-        $ edit file1 file2 file3
-        $ git add file1 file2 file3
-        $ git commit
+Build & validate
+----------------
 
-    For more information see: [Create a Topic]
+- Build the wheel with the project's cibuildwheel flow (manylinux, single `cp312-abi3`
+  wheel); see the README [Building](README.md#building) section. Don't hand-roll a local
+  toolchain build for parity claims.
+- Run `tests/bitexact/` (stock-vs-fvtk dump-and-diff) and, for behavioral changes, the PyVista
+  differential suite described in [Parity & validation](README.md#parity--validation). Bar:
+  **zero new failures vs stock `vtk` 9.6.2**.
 
-6.  Push commits in your topic branch to your fork in GitLab:
+Pull requests
+-------------
 
-        $ git gitlab-push
+- Branch from the current development tip; never push to `main`. Stacked PRs are fine (note the
+  base and merge order in the description).
+- A PR that touches runtime behavior must state which bucket it is in and attach its evidence:
+  the maxULP = 0 proof (bucket 1) or the relaxed-gate + engagement result (bucket 2).
+- Keep new code in the style of the surrounding file (it is VTK's C++ style); match comment
+  density and naming.
 
-    For more information see: [Share a Topic]
-
-7.  Visit your fork in GitLab, browse to the "**Merge Requests**" link on the
-    left, and use the "**New Merge Request**" button in the upper right to
-    create a Merge Request.
-
-    For more information see: [Create a Merge Request]
-
-
-VTK uses GitLab for code review and Buildbot to test proposed
-patches before they are merged.
-
-Our [Wiki] is used to document features, flesh out designs and host other
-documentation. Our API is documented using [Doxygen] with updated
-documentation generated nightly. We have a [VTK Discourse] forum
-to coordinate development and to provide support.
-
-[VTK Git README]: Documentation/docs/developers_guide/git/README.md
-[developer instructions]: Documentation/docs/developers_guide/git/develop.md
-[Create an account]: https://gitlab.kitware.com/users/sign_in
-[Fork VTK]: https://gitlab.kitware.com/vtk/vtk/-/forks/new
-[download instructions]: Documentation/docs/developers_guide/git/download.md#clone
-[developer setup script]: /Utilities/SetupForDevelopment.sh
-[Setup]: Documentation/docs/developers_guide/develop_quickstart.md#initial-setup
-[Create a Topic]: Documentation/docs/developers_guide/git/develop.md#create-a-topic
-[Share a Topic]: Documentation/docs/developers_guide/git/develop.md#share-a-topic
-[Create a Merge Request]: Documentation/docs/developers_guide/git/develop.md#create-a-merge-request
-
-[Wiki]: http://www.vtk.org/Wiki/VTK
-[Doxygen]: http://www.vtk.org/doc/nightly/html
-[VTK Discourse]: https://discourse.vtk.org/
+Upstream VTK lives at <https://gitlab.kitware.com/vtk/vtk>; fvtk does not feed changes back
+there and is not affiliated with Kitware.
