@@ -3,18 +3,18 @@ requires = ["pybind11", "scikit-build-core"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "vtk-sdk"
+name = "fvtk-sdk"
 version = "@VTK_WHEEL_SDK_VERSION@"
 authors = [
   { name = "Alexy Pellegrini", email = "alexy.pellegrini@kitware.com" },
   { name = "Jean-Christophe Fillion-Robin", email = "jcfr@lab78.xyz" },
 ]
-description = "Distribution of the VTK wheel SDKs as first-class Python wheels"
+description = "fvtk SDK (headers, CMake config, wrap tools) as a first-class Python wheel"
 readme = "README.md"
 license.file = "LICENSE"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: BSD License",
@@ -22,9 +22,6 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
@@ -34,13 +31,11 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://gitlab.kitware.com/vtk/vtk"
-"Bug Tracker" = "https://gitlab.kitware.com/vtk/vtk/issues"
-Discussions = "https://discourse.vtk.org"
-Changelog = "https://gitlab.kitware.com/vtk/vtk/-/tree/master/Documentation/release"
+Homepage = "https://github.com/pyvista/fvtk"
+"Bug Tracker" = "https://github.com/pyvista/fvtk/issues"
 
 [project.entry-points."cmake.prefix"]
-vtksdk = "vtk_sdk.cmake"
+fvtksdk = "fvtk_sdk.cmake"
 
 [project.optional-dependencies]
 test = [
@@ -52,10 +47,7 @@ test = [
 [tool.scikit-build]
 minimum-version = "0.8.2"
 build-dir = "build/{wheel_tag}"
-wheel.packages = ["src/vtk_sdk"]
+wheel.packages = ["src/fvtk_sdk"]
 
 [tool.scikit-build.cmake.define]
 VTK_INSTALL_DIR = "@VTK_WHEEL_SDK_VTK_INSTALL_DIR@"
-
-[tool.setuptools.packages.find]
-where = ["@CMAKE_SOURCE_DIR@/.gitlab/ci/wheel_sdks"]

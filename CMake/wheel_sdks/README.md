@@ -1,24 +1,29 @@
-# vtk-sdk
+# fvtk-sdk
 
 ## Overview
 
-The Visualization Toolkit (VTK) is a robust and open-source software system that
-provides advanced features in 3D computer graphics, image processing, modeling,
-volume rendering, and scientific visualization. It offers threaded and
-distributed-memory parallel processing for scalability and better performance.
+`fvtk-sdk` distributes the fvtk SDK (the VTK C++ headers, CMake config, and
+Python wrap tools from the same build that produced the `fvtk` runtime wheel) as
+a first-class Python wheel.
 
-This project is intended to distribute the content of the existing VTK wheel
-SDKs as first-class `vtk-sdk` wheels.
+The wheel registers a scikit-build-core `cmake.prefix`
+[entry point][scikit-build-core-entrypoint], so a downstream scikit-build-core
+project that depends on `fvtk-sdk` gets the bundled install tree on
+`CMAKE_PREFIX_PATH` automatically and `find_package(VTK CONFIG)` resolves to it.
+Install the SDK whose version matches your `fvtk` wheel.
 
-Each `vtk-sdk` Python wheel is equipped with a scikit-build-core `cmake.prefix`
-[entrypoint][scikit-build-core-entrypoint], housing the official VTK SDK sourced
-from the corresponding [archive][wheel-sdks-link].
+```bash
+pip install fvtk fvtk-sdk
+```
 
-[wheel-sdks-link]: https://vtk.org/files/wheel-sdks/
+```cmake
+find_package(VTK CONFIG REQUIRED)
+```
+
 [scikit-build-core-entrypoint]:
   https://scikit-build-core.readthedocs.io/en/latest/cmakelists.html#finding-other-packages
 
 ## License
 
-VTK is distributed under the OSI-approved BSD 3-clause License. See
-Copyright.txt for details.
+Distributed under the OSI-approved BSD 3-clause License. See Copyright.txt for
+details.
