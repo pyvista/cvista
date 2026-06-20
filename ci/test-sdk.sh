@@ -13,6 +13,8 @@ PYBIN="${PYBIN:-/opt/python/cp312-cp312/bin}"
 BUILD_DIR="${BUILD_DIR:-${SRC}/build-sdk}"
 OUT="${OUT:-${SRC}/sdk-dist}"
 
+export PATH="$PYBIN:$PATH"
+
 "$PYBIN/pip" install -U pip pytest virtualenv
 
 # package-version parity check (importlib.metadata vs __version__)

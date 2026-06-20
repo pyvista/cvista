@@ -25,17 +25,14 @@ OUT="${OUT:-${SRC}/sdk-dist}"
 
 "$PYBIN/pip" install -U pip cmake ninja "setuptools_scm>=8"
 
-# Version suffix, mirroring ci/cibw/fvtk_backend.py: everything past the base
-# "9.6.2." (e.g. "post0.dev3"); empty on the exact 9.6.2 tag. The SDK wheel
-# version then matches the runtime wheel so consumers pin them together.
-SUFFIX="$("$PYBIN/python" - "$SRC" <<'PY'
-import sys
-from setuptools_scm import get_version
-base = "9.6.2"
-v = get_version(root=sys.argv[1], dist_name="fvtk")
-print("" if v == base else v[len(base) + 1:])
-PY
-)"
+# Put the pip cmake + ninja and the cpython on PATH so CMake's Ninja generator
+# resolves CMAKE_MAKE_PROGRAM and the system compilers.
+export PATH="$PYBIN:$PATH"
+
+# Version suffix straight from the runtime wheel's backend so the SDK wheel
+# version matches fvtk exactly (it applies the repo's setuptools_scm config:
+# guess-next-dev, no-local-version, the 9.6.2 base and fallback).
+SUFFIX="$("$PYBIN/python" -c "import sys; sys.path.insert(0, '$SRC/ci/cibw'); import fvtk_backend; print(fvtk_backend._version_suffix())")"
 
 # LTO-off / -O2 fast config for the gate (the SDK content is headers + config +
 # tools, not optimizer-sensitive); release uses the same script with FVTK_LTO
@@ -45,14 +42,15 @@ export FVTK_GATE_O2="${FVTK_GATE_O2:-1}"
 export CMAKE_C_COMPILER_LAUNCHER="${CMAKE_C_COMPILER_LAUNCHER:-ccache}"
 export CMAKE_CXX_COMPILER_LAUNCHER="${CMAKE_CXX_COMPILER_LAUNCHER:-ccache}"
 
-"$PYBIN/python" -m cmake -S "$SRC" -B "$BUILD_DIR" -G Ninja \
+cmake -S "$SRC" -B "$BUILD_DIR" -G Ninja \
+    -DCMAKE_MAKE_PROGRAM="$(command -v ninja)" \
     -C "$SRC/ci/cmake/linux.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
     -DVTK_VERSION_SUFFIX="$SUFFIX"
 
-"$PYBIN/python" -m cmake --build "$BUILD_DIR" --parallel "${FVTK_BUILD_JOBS:-$(nproc)}"
-"$PYBIN/python" -m cmake --install "$BUILD_DIR"
+cmake --build "$BUILD_DIR" --parallel "${FVTK_BUILD_JOBS:-$(nproc)}"
+cmake --install "$BUILD_DIR"
 
 # Build the fvtk-sdk wheel from the build-tree scaffold (pyproject.toml was
 # configured there by vtkWheelPreparation with the install prefix baked in).
