@@ -1908,6 +1908,24 @@ def op_cutter_linear(dtype, size):
     return cut.GetOutput()
 
 
+def op_contour_linear(dtype, size):
+    # Isocontour of a LARGE linear hex unstructured grid with ComputeNormals OFF.
+    # vtkContourFilter routes a linear UG to vtkContour3DLinearGrid -- the threaded
+    # fast path fvtk runs under the OPT-IN non-exact fast mode (FVTK_FAST, set by
+    # fvtk.EnableFast()). With ComputeNormals OFF the merge path produces
+    # thread-INVARIANT points + interpolated point scalars; only triangle EMISSION
+    # ORDER differs, so the case is compared ORDER-RELAXED. ComputeNormals ON is
+    # NOT order-relaxable (normal averaging is reduction-order-dependent) and the
+    # filter keeps it serial / byte-exact -- this op deliberately leaves it off.
+    os.environ["FVTK_FAST"] = "1"  # fvtk: opt in to the threaded contour; stock: ignored
+    c = vtkContourFilter()
+    c.SetInputData(make_hex_ugrid(size, dtype))
+    c.SetComputeNormals(0)
+    c.SetValue(0, 0.25 * (size ** 2))
+    c.Update()
+    return c.GetOutput()
+
+
 def op_cutter_polydata(dtype, size):
     # vtkCutter on a vtkPolyData (triangle sphere) with GenerateTriangles OFF.
     # A polydata input that is NOT eligible for the plane-cutter fast path routes
@@ -2386,6 +2404,9 @@ OPS = {
     # Large linear-grid plane cut: threaded vtk3DLinearGridPlaneCutter, ORDER-RELAXED
     # (same points/point-data + same triangle multiset; cell order may permute).
     "cutter_linear": dict(fn=op_cutter_linear, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True),
+    # Large linear-grid isocontour (ComputeNormals OFF): threaded vtkContour3DLinearGrid,
+    # ORDER-RELAXED. Normals-ON stays serial/byte-exact (reduction-order-dependent).
+    "contour_linear": dict(fn=op_contour_linear, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True),
     "cutter_polydata": dict(fn=op_cutter_polydata, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cutter_polydata_bycell": dict(fn=op_cutter_polydata_bycell, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cellcenters": dict(fn=op_cellcenters, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),

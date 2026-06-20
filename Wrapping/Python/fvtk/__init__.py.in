@@ -135,6 +135,9 @@ def IsFastEnabled():
     """True if the non-exact fast mode is currently enabled."""
     return _os.environ.get("FVTK_FAST", "").lower() in ("1", "on", "true", "yes")
 
+# Expose the fast-mode toggles for `from fvtk import *` and discoverability.
+__all__ += ["EnableFast", "DisableFast", "IsFastEnabled"]
+
 #------------------------------------------------------------------------------
 # get the version
 __version__ = "@VTK_MAJOR_VERSION@.@VTK_MINOR_VERSION@.@VTK_BUILD_VERSION@"
