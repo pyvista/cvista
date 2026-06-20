@@ -144,6 +144,7 @@ public:
    * Ask each renderer owned by this RenderWindow to render its image and
    * synchronize this process.
    */
+  VTK_UNBLOCKTHREADS
   void Render() override;
 
   /**
