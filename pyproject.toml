@@ -19,17 +19,20 @@ requires = ["setuptools<81", "wheel", "setuptools_scm>=8"]
 build-backend = "fvtk_backend"
 backend-path = ["ci/cibw"]
 
-# Tag-driven PyPI versioning (start at post0). The base is pinned to the VTK
-# version this fork is a drop-in for (9.6.2); git tags add the post segment, so a
-# release tagged `9.6.2.post0` publishes `fvtk 9.6.2.post0`, `9.6.2.post1`, etc.
+# Tag-driven PyPI versioning (start at 9.6.2.0). The base is pinned to the VTK
+# version this fork is a drop-in for (9.6.2); git tags add a 4th release segment
+# (the fvtk iteration), so a release tagged `9.6.2.0` publishes `fvtk 9.6.2.0`,
+# `9.6.2.1`, etc. The 4th segment is a normal PEP 440 release component (NOT a
+# .post — fvtk ships code changes, and a real release segment also unlocks
+# publishable RCs like `9.6.2.1rc1`). See docs/versioning.md for the full scheme.
 # fvtk_backend reads this via setuptools_scm.get_version() and feeds the suffix
 # (everything past `9.6.2.`) to VTK's setup.py.in as VTK_VERSION_SUFFIX. Commits
-# between tags get `9.6.2.postN.devM` (never published — publish runs only on a
+# between tags get `9.6.2.N.devM` (never published — publish runs only on a
 # release tag). local_scheme = no-local-version keeps dev versions PyPI-clean.
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
-fallback_version = "9.6.2.post0.dev0"
+fallback_version = "9.6.2.0.dev0"
 
 [project]
 name = "fvtk"
