@@ -517,6 +517,17 @@ struct vtkStaticFaceHashLinksTemplate<TInputIdType, TFaceIdType>::BuildFaceHashL
     // the cells are to be inserted. Each time a cell is inserted, the offset
     // is decremented. In the end, the offset array is also constructed as it
     // points to the beginning of each cell run.
+    //
+    // fvtk: this loop is invoked serially over all cells (see
+    // BuildHashLinksInternal). Running it single-threaded makes the within-hash
+    // ordering a pure function of the global face index (the faces of a hash end
+    // up in descending global-face-index order, exactly as stock VTK's Sequential
+    // backend produces). The upstream implementation ran this in parallel, so the
+    // atomic fetch_sub resolved in the nondeterministic order in which threads
+    // reached each hash; that permuted faces within a hash bin and made
+    // vtkGeometryFilter's output depend on the active SMP backend. The link build
+    // is a small fraction of the filter's total cost; the expensive boundary
+    // extraction in vtkGeometryFilter remains fully threaded.
     vtkIdType offset;
     TFaceIdType localFaceId;
     TCellOffSetIdType faceId;
@@ -585,7 +596,11 @@ void vtkStaticFaceHashLinksTemplate<TInputIdType, TFaceIdType>::BuildHashLinksIn
     new TFaceIdType[this->NumberOfFaces], std::default_delete<TFaceIdType[]>());
   BuildFaceHashLinks<TCellOffSetIdType> buildFaceHashLinks(cellOffsets, faceHashValues, counts,
     this->FaceOffsets, this->CellIdOfFaceLinks, this->FaceIdOfFaceLinks);
-  vtkSMPTools::For(0, numberOfCells, buildFaceHashLinks);
+  // fvtk: run serially so the within-hash face ordering is deterministic and
+  // identical across SMP backends (matching stock VTK's Sequential backend).
+  // See BuildFaceHashLinks::operator(). Counts still holds the per-hash bin
+  // sizes here (left by CountHashes), which the serial fetch_sub consumes.
+  buildFaceHashLinks(0, numberOfCells);
 
   // Clean up
   cellOffsets.reset();
