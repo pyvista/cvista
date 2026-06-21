@@ -398,6 +398,7 @@ public:
    * Render the scene. Just pass the render call on to the
    * associated vtkRenderWindow.
    */
+  VTK_UNBLOCKTHREADS
   virtual void Render();
 
   ///@{
