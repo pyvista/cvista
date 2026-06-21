@@ -13,6 +13,8 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkTimerLog.h"
@@ -1243,6 +1245,51 @@ void vtkQuadricClustering::EndAppendUsingPoints(vtkPolyData* input, vtkPolyData*
     return;
   }
 
+  // Raw point-coordinate access. inputPoints->GetPoint(id, x) is a virtual call
+  // that reads the AOS point array and casts each component to double. Every
+  // input point's coordinates are read once here purely to hash + evaluate the
+  // quadric error, where the value is consumed as a plain double -- so reading
+  // the contiguous float/double buffer directly is byte-identical (GetPoint does
+  // the same float->double widening, or a plain double copy) and skips the
+  // per-point virtual dispatch. Non-float/double point arrays fall back to
+  // GetPoint().
+  const double* rawPtsD = nullptr;
+  const float* rawPtsF = nullptr;
+  if (vtkDataArray* pa = inputPoints->GetData())
+  {
+    if (pa->GetNumberOfComponents() == 3)
+    {
+      if (pa->GetDataType() == VTK_DOUBLE)
+      {
+        rawPtsD = static_cast<vtkDoubleArray*>(pa)->GetPointer(0);
+      }
+      else if (pa->GetDataType() == VTK_FLOAT)
+      {
+        rawPtsF = static_cast<vtkFloatArray*>(pa)->GetPointer(0);
+      }
+    }
+  }
+  auto fetchPt = [&](vtkIdType id, double* dst) {
+    if (rawPtsD)
+    {
+      const double* s = rawPtsD + 3 * id;
+      dst[0] = s[0];
+      dst[1] = s[1];
+      dst[2] = s[2];
+    }
+    else if (rawPtsF)
+    {
+      const float* s = rawPtsF + 3 * id;
+      dst[0] = static_cast<double>(s[0]);
+      dst[1] = static_cast<double>(s[1]);
+      dst[2] = static_cast<double>(s[2]);
+    }
+    else
+    {
+      inputPoints->GetPoint(id, dst);
+    }
+  };
+
   // Check for misuse of the Append methods.
   if (this->OutputTriangleArray == nullptr || this->OutputLines == nullptr)
   {
@@ -1288,7 +1335,7 @@ void vtkQuadricClustering::EndAppendUsingPoints(vtkPolyData* input, vtkPolyData*
   numPoints = inputPoints->GetNumberOfPoints();
   for (vtkIdType i = 0; i < numPoints; ++i)
   {
-    inputPoints->GetPoint(i, pt);
+    fetchPt(i, pt);
     binId = this->HashPoint(pt);
     outPtId = this->QuadricArray[binId].VertexId;
     // Sanity check.
