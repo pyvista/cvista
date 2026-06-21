@@ -145,8 +145,22 @@ void vtkWrapPython_GenerateProperties(FILE* fp, const char* classname, ClassInfo
   GetSetDefInfo** getSetsInfo = NULL;
   FunctionInfo* theFunc = NULL;
 
+  /* Optional opt-out for the pythonic snake_case property descriptors (e.g.
+   * GetOrigin()/SetOrigin() also becoming obj.origin). When the build defines
+   * FVTK_DISABLE_PYTHON_PROPERTIES the population loop is skipped so propCount
+   * stays 0: no PyVTKGetSet table is emitted and the PyGetSetDef table holds
+   * only the base vtkobject entries plus the sentinel, so the
+   * PyVTKClass_AddCombinedGetSetDefinitions() reference still links. The
+   * camelCase Get/Set methods are wrapped elsewhere and remain available.
+   * Default (macro undefined) preserves the stock generated output exactly. */
+#ifdef FVTK_DISABLE_PYTHON_PROPERTIES
+  const int disableProperties = 1;
+#else
+  const int disableProperties = 0;
+#endif
+
   /* Populate the table of property methods */
-  for (i = 0; i < classInfo->NumberOfFunctions; ++i)
+  for (i = 0; !disableProperties && i < classInfo->NumberOfFunctions; ++i)
   {
     theFunc = classInfo->Functions[i];
     /* Ignore unwrappable methods */

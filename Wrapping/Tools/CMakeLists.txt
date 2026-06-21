@@ -108,6 +108,14 @@ if (NOT TARGET WrapPython)
   target_link_libraries(WrapPython
     PRIVATE
       "${ns}::WrappingTools")
+  # Optionally suppress the pythonic snake_case property descriptors. The flag is
+  # baked into the generator at compile time so the generated wrapper sources are
+  # byte-identical to stock when it is OFF.
+  if (FVTK_DISABLE_PYTHON_PROPERTIES)
+    target_compile_definitions(WrapPython
+      PRIVATE
+        "FVTK_DISABLE_PYTHON_PROPERTIES")
+  endif ()
   add_executable("${ns}::WrapPython" ALIAS
     WrapPython)
 

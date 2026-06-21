@@ -46,6 +46,15 @@ endif()
 cmake_dependent_option(VTK_USE_TK "Build VTK with Tk support" OFF
   "VTK_WRAP_PYTHON" OFF)
 
+# When ON, the Python wrapper generator skips emitting the auto-generated
+# pythonic snake_case @property descriptors (e.g. GetOrigin()/SetOrigin() also
+# becoming obj.origin). The camelCase Get/Set methods are wrapped separately and
+# are unaffected. Default OFF preserves the stock generated output exactly.
+cmake_dependent_option(FVTK_DISABLE_PYTHON_PROPERTIES
+  "Skip generation of pythonic snake_case property descriptors" OFF
+  "VTK_WRAP_PYTHON" OFF)
+mark_as_advanced(FVTK_DISABLE_PYTHON_PROPERTIES)
+
 cmake_dependent_option(VTK_WRAP_JAVA "Should VTK Java wrapping be built?" OFF
   "VTK_ENABLE_WRAPPING;NOT CMAKE_VERSION VERSION_LESS \"3.12\"" OFF)
 if(VTK_WRAP_JAVA)
