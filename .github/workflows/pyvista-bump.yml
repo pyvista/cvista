@@ -1,0 +1,87 @@
+# Self-bumping pin for the PyVista parity gate.
+#
+# Weekly, resolve PyVista's current `main` HEAD and, if it differs from the
+# pinned SHA in tests/pyvista/PYVISTA_REF, open a PR bumping it with the
+# `pyvista-full` label. That label runs the full PyVista suite on the PR (and the
+# merge queue runs it on enqueue regardless), so the pin only advances through a
+# gate that proves fvtk still matches that PyVista revision.
+#
+# NOTE: the default GITHUB_TOKEN cannot trigger CI from a bot-opened PR. Set repo
+# secret PYVISTA_BUMP_TOKEN (a PAT with contents:write + pull-requests:write) to
+# get the suite running on the bump PR's own checks. Without it the merge queue
+# still validates the bump before it lands.
+name: Bump pinned PyVista
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pyvista-bump
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve PyVista main HEAD
+        id: head
+        run: |
+          sha=$(git ls-remote https://github.com/pyvista/pyvista refs/heads/main | cut -f1)
+          [ -n "$sha" ] || { echo "::error::could not resolve pyvista main HEAD"; exit 1; }
+          echo "sha=$sha"            >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:12}"   >> "$GITHUB_OUTPUT"
+
+      - name: Update PYVISTA_REF if changed
+        id: bump
+        run: |
+          cur=$(tr -d '[:space:]' < tests/pyvista/PYVISTA_REF)
+          new="${{ steps.head.outputs.sha }}"
+          if [ "$cur" = "$new" ]; then
+            echo "pin already at $new — nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$new" > tests/pyvista/PYVISTA_REF
+            echo "bumped $cur -> $new"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure pyvista-full label exists
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create pyvista-full \
+            --color 1d76db \
+            --description "Run the full PyVista test suite on this PR" \
+            --force
+
+      - name: Open / update bump PR
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # A PAT (PYVISTA_BUMP_TOKEN) makes the PR able to trigger the `pyvista`
+          # job's checks; falls back to GITHUB_TOKEN (merge queue still gates).
+          token: ${{ secrets.PYVISTA_BUMP_TOKEN || github.token }}
+          branch: chore/pyvista-bump
+          base: main
+          delete-branch: true
+          labels: pyvista-full
+          commit-message: "test(pyvista): bump pinned PyVista to ${{ steps.head.outputs.short }}"
+          title: "test(pyvista): bump pinned PyVista to ${{ steps.head.outputs.short }}"
+          body: |
+            Automated bump of the PyVista revision pinned by the PyVista parity gate.
+
+            `tests/pyvista/PYVISTA_REF` → `${{ steps.head.outputs.sha }}`
+
+            The `pyvista-full` label runs the full PyVista suite against the built
+            fvtk wheel on this PR, so the bump is validated before it lands. If the
+            suite goes red, an upstream change broke parity — fix fvtk, or triage
+            into `tests/pyvista/deselect.txt` with a one-line WHY.

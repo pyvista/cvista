@@ -1,0 +1,33 @@
+# Static deselect list for the PyVista test gate (ci/run-pyvista.sh).
+#
+# One pytest nodeid per line. `#` starts a comment; blank lines ignored. Each
+# entry becomes a `--deselect <nodeid>` passed to BOTH the core and plotting
+# pytest invocations (an unmatched nodeid is simply a no-op for the suite it
+# doesn't belong to).
+#
+# This file is the triage surface for tests that fail against fvtk for reasons
+# that are NOT a real regression — keep it as small as honesty allows:
+#
+#   * Image-regression drift. PyVista's committed image_cache may have been
+#     generated against a VTK build whose pixels differ from stock VTK 9.6.2.
+#     fvtk is pixel-exact to stock 9.6.2 (proven by tests/renderexact), so any
+#     such failure is the cache's VTK, not fvtk — record the nodeid here with a
+#     one-line WHY and a link to the upstream image.
+#   * fvtk EnableFast() reorder paths. Filters that reorder output behind the
+#     opt-in fast path break PyVista assertions that pin element order — only if
+#     the gate ever runs with fast paths engaged (it does not by default).
+#
+# NOT handled here (handled elsewhere, do not duplicate):
+#   * needs_download network-flaky tests   -> skipped via `-m "not needs_download"`
+#   * snake_case opt-out tests             -> deselected at runtime by the script
+#                                             ONLY when the wheel disables
+#                                             VTK_DISABLE_PYTHON_PROPERTIES
+#
+# Every line added here is a coverage hole. Prefer fixing fvtk or bumping the
+# pinned PyVista ref (tests/pyvista/PYVISTA_REF) over a permanent deselect.
+
+# --- image-regression drift -------------------------------------------------
+# (none yet — populated from the first CI run)
+
+# --- other --------------------------------------------------------------------
+# (none yet)

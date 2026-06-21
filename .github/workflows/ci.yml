@@ -67,6 +67,11 @@ on:
   # environment). See the `publish` job at the bottom.
   release:
     types: [published]
+  # The merge queue runs the full gate — including the heavy `pyvista` job — on
+  # the queued commit BEFORE the squash lands, so a red run blocks the merge.
+  # Jobs gated `if: github.event_name != 'pull_request'` (build-lto + *-lto) also
+  # run here, so the merge queue validates the SHIPPED config too.
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -310,6 +315,55 @@ jobs:
         with:
           name: renderexact-output-py${{ matrix.python }}
           path: /tmp/rx-out
+          if-no-files-found: ignore
+
+  pyvista:
+    name: PyVista suite (built fvtk wheel, py3.13)
+    needs: build
+    # PyVista's OWN full test suite driving fvtk (vtkmodules->fvtk shim) — the
+    # downstream contract gate, sister to bitexact/renderexact. HEAVY, so it is
+    # kept OFF the PR fast path: it runs in the merge queue (the blocking gate
+    # before a squash lands), on manual dispatch, and on any PR carrying the
+    # `pyvista-full` label (the pin-bump PR self-labels). Uses the FAST O2 `build`
+    # wheel, NOT build-lto: optimization level is parity-invariant (proven
+    # maxULP=0 by bitexact + bitexact-lto), so PyVista returns the same pass/fail
+    # on either wheel — and the O2 wheel is already built, so this never waits on
+    # the slow LTO link. Mark this check REQUIRED for the merge queue in branch
+    # protection so a red run blocks the merge.
+    if: >-
+      github.event_name == 'merge_group' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'pyvista-full'))
+    runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Mesa software GL/EGL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          # The FAST O2 Linux wheel (fvtk-wheels-linux-*); pip --find-links picks
+          # the cp312-abi3 wheel (tag-compatible on 3.13). macOS/Windows artifacts
+          # are a disjoint prefix and never reach this Linux gate.
+          pattern: fvtk-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: PyVista suite (pinned ref, vtkmodules->fvtk shim)
+        run: ci/run-pyvista.sh dist python
+      - name: Upload pytest logs + junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyvista-output
+          path: /tmp/pv-out
           if-no-files-found: ignore
 
   # === LTO-on-main legs (push-to-main / workflow_dispatch ONLY) ==============
