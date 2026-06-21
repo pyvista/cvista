@@ -48,6 +48,13 @@ test = [
 minimum-version = "0.8.2"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/fvtk_sdk"]
+# The SDK ships headers + CMake config + VTK shared/import libs — platform-
+# specific, but NOT tied to any CPython ABI (there is no extension module). Tag
+# it py3-none so one wheel serves every 3.12+ interpreter; without this scikit-
+# build-core stamps the build interpreter's cp312-cp312 tag and the wheel only
+# installs on 3.12. The platform half (linux_x86_64 -> manylinux_2_28_x86_64) is
+# relabelled in ci/build-sdk.sh.
+wheel.py-api = "py3"
 
 [tool.scikit-build.cmake.define]
 VTK_INSTALL_DIR = "@VTK_WHEEL_SDK_VTK_INSTALL_DIR@"

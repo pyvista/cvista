@@ -23,7 +23,7 @@ BUILD_DIR="${BUILD_DIR:-${SRC}/build-sdk}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/tmp/fvtk-install}"
 OUT="${OUT:-${SRC}/sdk-dist}"
 
-"$PYBIN/pip" install -U pip cmake ninja "setuptools_scm>=8"
+"$PYBIN/pip" install -U pip cmake ninja "setuptools_scm>=8" wheel twine
 
 # Put the pip cmake + ninja and the cpython on PATH so CMake's Ninja generator
 # resolves CMAKE_MAKE_PROGRAM and the system compilers.
@@ -64,5 +64,24 @@ cmake --install "$BUILD_DIR"
 # configured there by vtkWheelPreparation with the install prefix baked in).
 rm -rf "$OUT"
 "$PYBIN/pip" wheel "$BUILD_DIR/wheel_sdks" --no-deps -w "$OUT"
+
+# scikit-build-core emits a raw `linux_x86_64` platform tag, which PyPI rejects
+# (400 "unsupported platform tag"). This script runs inside
+# quay.io/pypa/manylinux_2_28_x86_64, so manylinux_2_28 is the honest tag — just
+# relabel it. We deliberately do NOT `auditwheel repair`: the SDK exposes the VTK
+# shared/import libs unvendored so downstream `find_package(VTK)` links them by
+# their real SONAMEs, and repair would rewrite those with hashed names and break
+# that contract. (The py3-none half of the tag comes from wheel.py-api in
+# CMake/wheel_sdks/pyproject.toml.in.)
+WHEEL="$(ls "$OUT"/fvtk_sdk-*-linux_x86_64.whl)"
+"$PYBIN/python" -m wheel tags --platform-tag manylinux_2_28_x86_64 --remove "$WHEEL"
+
+# Fail loudly if any wheel still carries a PyPI-rejected raw linux tag, then run
+# twine's metadata/tag validation as the publish job will.
+if compgen -G "$OUT/*-linux_x86_64.whl" >/dev/null; then
+    echo "::error::fvtk-sdk wheel still has a raw linux_x86_64 platform tag; PyPI will 400 on upload"
+    exit 1
+fi
+"$PYBIN/python" -m twine check "$OUT"/*.whl
 
 ls -lh "$OUT"
