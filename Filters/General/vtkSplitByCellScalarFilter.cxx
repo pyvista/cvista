@@ -11,6 +11,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPointSet.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkSmartPointer.h"
 #include "vtkUnstructuredGrid.h"
@@ -98,7 +99,30 @@ int vtkSplitByCellScalarFilter::RequestData(vtkInformation* vtkNotUsed(request),
     else
     {
       vtkSmartPointer<vtkPoints> points = vtkSmartPointer<vtkPoints>::New();
-      points->SetDataTypeToDouble();
+      // By default the output points keep the precision of the input points
+      // (DEFAULT_PRECISION); SINGLE/DOUBLE force it. Points are copied verbatim
+      // from the input via GetPoint()/InsertNextPoint(), so DEFAULT preserves
+      // the exact stored coordinate values (the historical behavior hardcoded
+      // double, which widened single-precision input).
+      if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+      {
+        if (inputPS && inputPS->GetPoints())
+        {
+          points->SetDataType(inputPS->GetPoints()->GetDataType());
+        }
+        else
+        {
+          points->SetDataType(VTK_FLOAT);
+        }
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+      {
+        points->SetDataType(VTK_FLOAT);
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+      {
+        points->SetDataType(VTK_DOUBLE);
+      }
       ds->SetPoints(points);
       ds->GetPointData()->CopyGlobalIdsOn();
       ds->GetPointData()->CopyAllocate(inPD);
@@ -226,5 +250,6 @@ void vtkSplitByCellScalarFilter::PrintSelf(ostream& os, vtkIndent indent)
   this->Superclass::PrintSelf(os, indent);
 
   os << indent << "Pass All Points: " << (this->GetPassAllPoints() ? "On" : "Off") << std::endl;
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << std::endl;
 }
 VTK_ABI_NAMESPACE_END

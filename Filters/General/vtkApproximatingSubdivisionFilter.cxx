@@ -10,6 +10,7 @@
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkUnsignedCharArray.h"
@@ -71,6 +72,28 @@ int vtkApproximatingSubdivisionFilter::RequestData(
     // include even points (computed from old points) and
     // odd points (inserted on edges)
     outputPts = vtkPoints::New();
+    // Set the desired precision for the output points. By default match the
+    // precision of the working point set for this level (DEFAULT_PRECISION);
+    // SINGLE/DOUBLE force it.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      if (inputDS->GetPoints())
+      {
+        outputPts->SetDataType(inputDS->GetPoints()->GetDataType());
+      }
+      else
+      {
+        outputPts->SetDataType(VTK_FLOAT);
+      }
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      outputPts->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      outputPts->SetDataType(VTK_DOUBLE);
+    }
     outputPts->Allocate(numPts);
 
     // Copy pointdata structure from input
@@ -245,5 +268,6 @@ void vtkApproximatingSubdivisionFilter::GenerateSubdivisionCells(
 void vtkApproximatingSubdivisionFilter::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

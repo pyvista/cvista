@@ -9,6 +9,8 @@
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
+#include "vtkPoints.h"
 #include "vtkSmartPointer.h"
 #include "vtkUnstructuredGrid.h"
 
@@ -31,6 +33,7 @@ void vtkShrinkFilter::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
   os << indent << "Shrink Factor: " << this->ShrinkFactor << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 
 //------------------------------------------------------------------------------
@@ -71,8 +74,31 @@ int vtkShrinkFilter::RequestData(
   // Allocate approximately the space needed for the output cells.
   output->Allocate(numCells);
 
-  // Allocate space for a new set of points.
+  // Allocate space for a new set of points. By default the output points keep
+  // the precision of the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force
+  // it. For non-vtkPointSet inputs (image/rectilinear: no explicit points) the
+  // default falls back to single precision, matching historical behavior.
   vtkSmartPointer<vtkPoints> newPts = vtkSmartPointer<vtkPoints>::New();
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+    if (inputPointSet && inputPointSet->GetPoints())
+    {
+      newPts->SetDataType(inputPointSet->GetPoints()->GetDataType());
+    }
+    else
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(numPts * 8, numPts);
 
   // Allocate space for data associated with the new set of points.

@@ -143,8 +143,23 @@ int vtkProjectedTerrainPath::RequestData(
   image->GetExtent(this->Extent);
   this->Heights = image->GetPointData()->GetScalars();
 
+  // Allocate the output points. By default the output points keep the
+  // precision of the input polyline points (DEFAULT_PRECISION); SINGLE/DOUBLE
+  // force it. The x/y coordinates of the original points are passed through
+  // verbatim, so matching the input data type preserves them exactly.
   this->Points = vtkPoints::New();
-  this->Points->SetDataTypeToDouble();
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    this->Points->SetDataType(lines->GetPoints()->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    this->Points->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    this->Points->SetDataType(VTK_DOUBLE);
+  }
   this->Points->Allocate(numPts);
   output->SetPoints(this->Points);
   this->Points->Delete(); // ok reference counting
@@ -537,5 +552,6 @@ void vtkProjectedTerrainPath::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Height Offset: " << this->HeightOffset << "\n";
   os << indent << "Height Tolerance: " << this->HeightTolerance << "\n";
   os << indent << "Maximum Number Of Lines: " << this->MaximumNumberOfLines << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

@@ -13,6 +13,7 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkTimerLog.h"
 #include "vtkTriangle.h"
@@ -83,6 +84,8 @@ vtkQuadricClustering::vtkQuadricClustering()
 
   this->InCellCount = this->OutCellCount = 0;
   this->CopyCellData = 0;
+
+  this->OutputPointsPrecision = DEFAULT_PRECISION;
 }
 
 //------------------------------------------------------------------------------
@@ -922,6 +925,29 @@ void vtkQuadricClustering::EndAppend()
 
   // Compute the representative points for each bin
   outputPoints = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION); when the
+  // filter is driven via the Append methods there may be no input, in which
+  // case the default falls back to single precision (historical behavior).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (input && input->GetPoints())
+    {
+      outputPoints->SetDataType(input->GetPoints()->GetDataType());
+    }
+    else
+    {
+      outputPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_DOUBLE);
+  }
   for (vtkIdType i = 0; !abortExecute && i < numBuckets; i++)
   {
     if (cstep > step)
@@ -1232,6 +1258,20 @@ void vtkQuadricClustering::EndAppendUsingPoints(vtkPolyData* input, vtkPolyData*
   }
 
   outputPoints = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    outputPoints->SetDataType(inputPoints->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_DOUBLE);
+  }
 
   // Prepare to copy point data to output
   output->GetPointData()->CopyAllocate(input->GetPointData(), this->NumberOfBinsUsed);
@@ -1532,5 +1572,7 @@ void vtkQuadricClustering::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Copy Cell Data : " << this->CopyCellData << endl;
 
   os << indent << "Prevent Duplicate Cells : " << (this->PreventDuplicateCells ? "On\n" : "Off\n");
+
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

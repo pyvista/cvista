@@ -151,6 +151,18 @@ public:
   vtkGetMacro(MaximumNumberOfLines, vtkIdType);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input polyline points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkProjectedTerrainPath();
   ~vtkProjectedTerrainPath() override;
@@ -171,6 +183,7 @@ protected:
   double HeightOffset;
   double HeightTolerance;
   vtkIdType MaximumNumberOfLines;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   // Bookkeeping arrays
   int Dimensions[3];

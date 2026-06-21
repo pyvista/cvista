@@ -32,6 +32,18 @@ public:
   vtkTypeMacro(vtkApproximatingSubdivisionFilter, vtkSubdivisionFilter);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkApproximatingSubdivisionFilter();
   ~vtkApproximatingSubdivisionFilter() override = default;
@@ -45,6 +57,8 @@ protected:
     vtkIntArray* edgeData, vtkIdList* cellIds);
   vtkIdType InterpolatePosition(
     vtkPoints* inputPts, vtkPoints* outputPts, vtkIdList* stencil, double* weights);
+
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkApproximatingSubdivisionFilter(const vtkApproximatingSubdivisionFilter&) = delete;

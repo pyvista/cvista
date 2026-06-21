@@ -8,6 +8,7 @@
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkStructuredGrid.h"
@@ -149,6 +150,21 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
       if (input->IsPointVisible(startIdx))
       {
         newPts = vtkPoints::New();
+        // Set the desired output point precision. By default the output points
+        // keep the precision of the input points (DEFAULT_PRECISION);
+        // SINGLE/DOUBLE force it.
+        if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+        {
+          newPts->SetDataType(input->GetPoints()->GetData()->GetDataType());
+        }
+        else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+        {
+          newPts->SetDataType(VTK_FLOAT);
+        }
+        else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+        {
+          newPts->SetDataType(VTK_DOUBLE);
+        }
         newPts->Allocate(1);
         newVerts = vtkCellArray::New();
         newVerts->AllocateEstimate(1, 1);
@@ -176,6 +192,21 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
         }
       }
       newPts = vtkPoints::New();
+      // Set the desired output point precision. By default the output points
+      // keep the precision of the input points (DEFAULT_PRECISION);
+      // SINGLE/DOUBLE force it.
+      if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+      {
+        newPts->SetDataType(input->GetPoints()->GetData()->GetDataType());
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+      {
+        newPts->SetDataType(VTK_FLOAT);
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+      {
+        newPts->SetDataType(VTK_DOUBLE);
+      }
       newPts->Allocate(totPoints);
       newLines = vtkCellArray::New();
       newLines->AllocateEstimate(totPoints - 1, 2);
@@ -250,6 +281,21 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
       numPolys = diff[dir[0]] * diff[dir[1]];
 
       newPts = vtkPoints::New();
+      // Set the desired output point precision. By default the output points
+      // keep the precision of the input points (DEFAULT_PRECISION);
+      // SINGLE/DOUBLE force it.
+      if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+      {
+        newPts->SetDataType(input->GetPoints()->GetData()->GetDataType());
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+      {
+        newPts->SetDataType(VTK_FLOAT);
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+      {
+        newPts->SetDataType(VTK_DOUBLE);
+      }
       newPts->Allocate(totPoints);
       newPolys = vtkCellArray::New();
       newPolys->AllocateEstimate(numPolys, 4);
@@ -336,6 +382,21 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
       totPoints = (diff[0] + 1) * (diff[1] + 1) * (diff[2] + 1);
 
       newPts = vtkPoints::New();
+      // Set the desired output point precision. By default the output points
+      // keep the precision of the input points (DEFAULT_PRECISION);
+      // SINGLE/DOUBLE force it.
+      if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+      {
+        newPts->SetDataType(input->GetPoints()->GetData()->GetDataType());
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+      {
+        newPts->SetDataType(VTK_FLOAT);
+      }
+      else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+      {
+        newPts->SetDataType(VTK_DOUBLE);
+      }
       newPts->Allocate(totPoints);
       newVerts = vtkCellArray::New();
       newVerts->AllocateEstimate(totPoints, 1);
@@ -487,5 +548,6 @@ void vtkStructuredGridGeometryFilter::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "  Imin,Imax: (" << this->Extent[0] << ", " << this->Extent[1] << ")\n";
   os << indent << "  Jmin,Jmax: (" << this->Extent[2] << ", " << this->Extent[3] << ")\n";
   os << indent << "  Kmin,Kmax: (" << this->Extent[4] << ", " << this->Extent[5] << ")\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

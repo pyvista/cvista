@@ -131,6 +131,18 @@ public:
   vtkGetMacro(Component, int);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
   /**
    * Get the second output which contains the edges dividing the contour
    * bands. This output is empty unless GenerateContourEdges is enabled.
@@ -166,6 +178,7 @@ protected:
   double ClipTolerance; // specify numerical accuracy during clipping
   // the second output
   vtkTypeBool GenerateContourEdges;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   vtkBandedPolyDataContourFilterInternals* Internal;
 

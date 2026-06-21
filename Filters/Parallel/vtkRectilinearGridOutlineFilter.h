@@ -24,11 +24,25 @@ public:
   vtkTypeMacro(vtkRectilinearGridOutlineFilter, vtkPolyDataAlgorithm);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input coordinate arrays (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkRectilinearGridOutlineFilter() = default;
   ~vtkRectilinearGridOutlineFilter() override = default;
   int RequestData(vtkInformation*, vtkInformationVector**, vtkInformationVector*) override;
   int FillInputPortInformation(int port, vtkInformation* info) override;
+
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkRectilinearGridOutlineFilter(const vtkRectilinearGridOutlineFilter&) = delete;

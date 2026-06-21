@@ -11,6 +11,7 @@
 #include "vtkMergePoints.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkUnstructuredGrid.h"
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -167,6 +168,21 @@ int vtkExtractUnstructuredGrid::RequestData(vtkInformation* vtkNotUsed(request),
 
   // Allocate
   newPts = vtkPoints::New();
+  // Preserve the input point precision by default (the historical behavior
+  // downcast to single precision); SINGLE/DOUBLE force it. This must be set
+  // before the points are filled or handed to the locator below.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(numPts);
   output->Allocate(numCells);
   outputPD->CopyAllocate(pd, numPts, numPts / 2);
@@ -328,5 +344,7 @@ void vtkExtractUnstructuredGrid::PrintSelf(ostream& os, vtkIndent indent)
   {
     os << indent << "Locator: (none)\n";
   }
+
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

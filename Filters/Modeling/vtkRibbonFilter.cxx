@@ -94,6 +94,19 @@ int vtkRibbonFilter::RequestData(vtkInformation* vtkNotUsed(request),
   // Create the geometry and topology
   numNewPts = 2 * numPts;
   newPts = vtkPoints::New();
+  // Set the desired precision for the points in the output.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(numNewPts);
   newNormals = vtkFloatArray::New();
   newNormals->SetNumberOfComponents(3);
@@ -510,5 +523,6 @@ void vtkRibbonFilter::PrintSelf(ostream& os, vtkIndent indent)
 
   os << indent << "Generate TCoords: " << this->GetGenerateTCoordsAsString() << endl;
   os << indent << "Texture Length: " << this->TextureLength << endl;
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

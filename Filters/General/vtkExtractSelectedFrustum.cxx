@@ -17,6 +17,7 @@
 #include "vtkPlane.h"
 #include "vtkPlanes.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
 #include "vtkPoints.h"
 #include "vtkSelection.h"
 #include "vtkSelectionNode.h"
@@ -359,6 +360,30 @@ int vtkExtractSelectedFrustum::RequestData(vtkInformation* vtkNotUsed(request),
   {
     // the output is a new unstructured grid
     outputUG->Allocate(numCells / 4); // allocate storage for geometry/topology
+    // Set the desired precision for the output points. By default match the
+    // precision of the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force it.
+    // Non-vtkPointSet inputs (image/rectilinear: no explicit points) default to
+    // single precision.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+      if (inputPointSet && inputPointSet->GetPoints())
+      {
+        newPts->SetDataType(inputPointSet->GetPoints()->GetDataType());
+      }
+      else
+      {
+        newPts->SetDataType(VTK_FLOAT);
+      }
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      newPts->SetDataType(VTK_DOUBLE);
+    }
     newPts->Allocate(numPts / 4, numPts);
     outputPD->SetCopyGlobalIds(1);
     outputPD->CopyFieldOff("vtkOriginalPointIds");
@@ -1122,5 +1147,7 @@ void vtkExtractSelectedFrustum::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "ShowBounds: " << (this->ShowBounds ? "On\n" : "Off\n");
 
   os << indent << "InsideOut: " << (this->InsideOut ? "On\n" : "Off\n");
+
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

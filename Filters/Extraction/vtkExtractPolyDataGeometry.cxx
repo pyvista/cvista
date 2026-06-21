@@ -10,6 +10,7 @@
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -116,6 +117,20 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
   else
   {
     newPts = vtkPoints::New();
+    // Preserve the input point precision by default (the historical behavior
+    // downcast to single precision); SINGLE/DOUBLE force it.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      newPts->SetDataType(inPts->GetDataType());
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      newPts->SetDataType(VTK_DOUBLE);
+    }
     newPts->Allocate(numPts / 4, numPts);
     pointMap = new vtkIdType[numPts]; // maps old point ids into new
     for (ptId = 0; ptId < numPts; ptId++)
@@ -417,5 +432,6 @@ void vtkExtractPolyDataGeometry::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Extract Inside: " << (this->ExtractInside ? "On\n" : "Off\n");
   os << indent << "Extract Boundary Cells: " << (this->ExtractBoundaryCells ? "On\n" : "Off\n");
   os << indent << "Pass Points: " << (this->PassPoints ? "On\n" : "Off\n");
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

@@ -8,6 +8,7 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkPolyLine.h"
 
@@ -81,6 +82,19 @@ int vtkRuledSurfaceFilter::RequestData(vtkInformation* vtkNotUsed(request),
   if (this->RuledMode == VTK_RULED_MODE_RESAMPLE) // generating new points
   {
     vtkNew<vtkPoints> newPts;
+    // Set the desired precision for the points in the output.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      newPts->SetDataType(inPts->GetDataType());
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      newPts->SetDataType(VTK_DOUBLE);
+    }
     output->SetPoints(newPts);
     outPD->InterpolateAllocate(inPD, numPts);
     if (this->PassLines) // need to copy input points
@@ -545,5 +559,6 @@ void vtkRuledSurfaceFilter::PrintSelf(ostream& os, vtkIndent indent)
      << endl;
   os << indent << "Orient Loops: " << (this->OrientLoops ? "On\n" : "Off\n");
   os << indent << "Pass Lines: " << (this->PassLines ? "On\n" : "Off\n");
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

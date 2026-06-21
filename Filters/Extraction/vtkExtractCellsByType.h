@@ -67,6 +67,18 @@ public:
   bool ExtractCellType(unsigned int type);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points.
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   int RequestData(vtkInformation*, vtkInformationVector**, vtkInformationVector*) override;
   int FillInputPortInformation(int port, vtkInformation* info) override;
@@ -85,6 +97,7 @@ private:
   void operator=(const vtkExtractCellsByType&) = delete;
 
   vtkCellTypeSet* CellTypes;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 };
 
 VTK_ABI_NAMESPACE_END

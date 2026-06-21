@@ -17,6 +17,8 @@
 #include "vtkMergePoints.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
+#include "vtkPoints.h"
 #include "vtkUnsignedCharArray.h"
 #include "vtkUnstructuredGrid.h"
 
@@ -213,6 +215,30 @@ int vtkBoxClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
   }
 
   newPoints = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it. For non-vtkPointSet inputs (image/rectilinear:
+  // no explicit points) the default falls back to single precision.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+    if (inputPointSet && inputPointSet->GetPoints())
+    {
+      newPoints->SetDataType(inputPointSet->GetPoints()->GetDataType());
+    }
+    else
+    {
+      newPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPoints->SetDataType(VTK_DOUBLE);
+  }
   newPoints->Allocate(numPts, numPts / 2);
 
   // locator used to merge potentially duplicate points
@@ -635,6 +661,7 @@ void vtkBoxClipDataSet::PrintSelf(ostream& os, vtkIndent indent)
 
   // os << indent << "Merge Tolerance: " << this->MergeTolerance << "\n";
   os << indent << "Orientation: " << this->Orientation << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 
   if (this->Locator)
   {

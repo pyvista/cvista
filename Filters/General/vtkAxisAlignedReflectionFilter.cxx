@@ -24,6 +24,7 @@
 #include "vtkPartitionedDataSetCollection.h"
 #include "vtkPlane.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkRectilinearGrid.h"
 #include "vtkReflectionUtilities.h"
@@ -409,6 +410,29 @@ void vtkAxisAlignedReflectionFilter::ProcessExplicitStructuredGrid(vtkExplicitSt
   vtkPointData* inPD = input->GetPointData();
   vtkPointData* outPD = output->GetPointData();
 
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (input->GetPoints())
+    {
+      outPoints->SetDataType(input->GetPoints()->GetDataType());
+    }
+    else
+    {
+      outPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_DOUBLE);
+  }
+
   outPoints->Allocate(numPts);
   outPD->CopyAllOn();
   outPD->CopyAllocate(inPD);
@@ -483,6 +507,29 @@ void vtkAxisAlignedReflectionFilter::ProcessStructuredGrid(vtkStructuredGrid* in
   vtkPointData* inPD = input->GetPointData();
   vtkPointData* outPD = output->GetPointData();
 
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (input->GetPoints())
+    {
+      outPoints->SetDataType(input->GetPoints()->GetDataType());
+    }
+    else
+    {
+      outPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_DOUBLE);
+  }
+
   outPoints->Allocate(numPts);
   outPD->CopyAllOn();
   outPD->CopyAllocate(inPD);
@@ -537,6 +584,29 @@ void vtkAxisAlignedReflectionFilter::ProcessPolyData(vtkPolyData* input, vtkPoly
     input->GetNumberOfPolys(), input->GetPolys()->GetNumberOfConnectivityIds());
   outStrips->AllocateExact(
     input->GetNumberOfStrips(), input->GetStrips()->GetNumberOfConnectivityIds());
+
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (input->GetPoints())
+    {
+      outPoints->SetDataType(input->GetPoints()->GetDataType());
+    }
+    else
+    {
+      outPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_DOUBLE);
+  }
 
   outPoints->Allocate(numPts);
   outPD->CopyAllOn();
@@ -1010,7 +1080,8 @@ bool vtkAxisAlignedReflectionFilter::ProcessLeaf(
   {
     auto output = vtkUnstructuredGrid::SafeDownCast(outputDataObject);
     vtkReflectionUtilities::ProcessUnstructuredGrid(ug, output, constant, mirrorDir,
-      mirrorSymmetricTensorDir, mirrorTensorDir, false, this->ReflectAllInputArrays, this);
+      mirrorSymmetricTensorDir, mirrorTensorDir, false, this->ReflectAllInputArrays, this,
+      this->OutputPointsPrecision);
   }
   else if (auto imgData = vtkImageData::SafeDownCast(inputDataObject))
   {
@@ -1103,6 +1174,7 @@ void vtkAxisAlignedReflectionFilter::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "CopyInput: " << (this->CopyInput ? "On" : "Off") << endl;
   os << indent << "ReflectAllInputArrays: " << (this->ReflectAllInputArrays ? "On" : "Off") << endl;
   os << indent << "PlaneMode: " << this->PlaneMode << endl;
+  os << indent << "OutputPointsPrecision: " << this->OutputPointsPrecision << endl;
   this->ReflectionPlane->PrintSelf(os, indent.GetNextIndent());
 }
 

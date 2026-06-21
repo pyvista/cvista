@@ -17,6 +17,7 @@
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkTriangleStrip.h"
 
@@ -439,6 +440,21 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
   // The original set of points and point data are copied. Later on
   // intersection points due to clipping will be created.
   vtkNew<vtkPoints> newPts;
+  // Set the desired precision for the points in the output. Note this only
+  // affects the point coordinates; the output point SCALARS remain double
+  // (required below for numerical correctness of the clipping algorithm).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
 
   // Note: since we use the output scalars in the execution of the algorithm,
   // the output point scalars MUST BE double or bad things happen due to
@@ -955,5 +971,6 @@ void vtkBandedPolyDataContourFilter::PrintSelf(ostream& os, vtkIndent indent)
   }
 
   os << indent << "Clip Tolerance: " << this->ClipTolerance << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

@@ -121,6 +121,21 @@ public:
   vtkBooleanMacro(MergePoints, vtkTypeBool);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points storage.
+   * Note that the tessellation also creates new interpolated points, so this
+   * only controls the storage data type of the output points array.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default; falls back to single precision when the
+   *   input has no explicit points).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkTessellatorFilter();
   ~vtkTessellatorFilter() override;
@@ -154,6 +169,7 @@ protected:
   vtkDataSetEdgeSubdivisionCriterion* Subdivider;
   int OutputDimension;
   vtkTypeBool MergePoints;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
   vtkPointLocator* Locator;
 
   ///@{

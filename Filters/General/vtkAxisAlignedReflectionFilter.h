@@ -120,6 +120,18 @@ public:
   vtkBooleanMacro(ReflectAllInputArrays, bool);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
   /**
    * Get the last modified time of this filter.
    * This time also depends on the modified
@@ -203,6 +215,7 @@ private:
   bool CopyInput = true;
   bool ReflectAllInputArrays = false;
   int PlaneMode = PLANE;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
   vtkSmartPointer<vtkPlane> ReflectionPlane;
 
   PlaneAxis PlaneAxisInternal = X_PLANE;

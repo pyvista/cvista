@@ -15,6 +15,8 @@
 #include "vtkHigherOrderWedge.h"
 #include "vtkIdList.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
+#include "vtkPoints.h"
 
 #include "vtkCellArray.h"
 #include "vtkTypeInt32Array.h"
@@ -476,7 +478,7 @@ vtkIdType vtkReflectionUtilities::ReflectNon3DCellInternal(vtkDataSet* input,
 //------------------------------------------------------------------------------
 void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstructuredGrid* output,
   double constant[3], int mirrorDir[3], int mirrorSymmetricTensorDir[6], int mirrorTensorDir[9],
-  bool copyInput, bool reflectAllInputArrays, vtkAlgorithm* algorithm)
+  bool copyInput, bool reflectAllInputArrays, vtkAlgorithm* algorithm, int outputPointsPrecision)
 {
   vtkPointData* inPD = input->GetPointData();
   vtkPointData* outPD = output->GetPointData();
@@ -487,6 +489,31 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
   double point[3];
   vtkSmartPointer<vtkIdList> ptIds = vtkSmartPointer<vtkIdList>::New();
   vtkSmartPointer<vtkPoints> outPoints = vtkSmartPointer<vtkPoints>::New();
+
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it. For non-vtkPointSet inputs (no explicit points)
+  // the default falls back to single precision.
+  if (outputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+    if (inputPointSet && inputPointSet->GetPoints())
+    {
+      outPoints->SetDataType(inputPointSet->GetPoints()->GetDataType());
+    }
+    else
+    {
+      outPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (outputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (outputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_DOUBLE);
+  }
 
   // Resolve the input UG's typed cell-array offsets/connectivity and cell-types
   // buffers ONCE, so the per-cell loops below read each cell's point ids and type

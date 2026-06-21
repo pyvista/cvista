@@ -29,6 +29,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPentagonalPrism.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkPolyhedron.h"
 #include "vtkPyramid.h"
@@ -949,6 +950,22 @@ int vtkUnstructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(re
 
   vtkIdList* cellIds = vtkIdList::New();
   vtkPoints* newPts = vtkPoints::New();
+  // Set the desired output point precision. By default the output points keep
+  // the precision of the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force
+  // it. This must happen before Allocate and before the locator's
+  // InitPointInsertion below.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetData()->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(numPts);
   output->Allocate(numCells);
   outputPD->CopyAllocate(pd, numPts, numPts / 2);
@@ -1473,6 +1490,7 @@ void vtkUnstructuredGridGeometryFilter::PrintSelf(ostream& os, vtkIndent indent)
   {
     os << indent << "Locator: (none)\n";
   }
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 
 //------------------------------------------------------------------------------

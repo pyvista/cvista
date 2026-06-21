@@ -9,6 +9,7 @@
 #include "vtkMergePoints.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkUnstructuredGrid.h"
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -59,6 +60,19 @@ int vtkSubdivideTetra::RequestData(vtkInformation* vtkNotUsed(request),
 
   // Copy original points and point data
   newPts = vtkPoints::New();
+  // Set the desired precision for the points in the output.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(5 * numPts, numPts);
   outputPD->InterpolateAllocate(pd, 5 * numPts, numPts);
 
@@ -232,5 +246,7 @@ int vtkSubdivideTetra::RequestData(vtkInformation* vtkNotUsed(request),
 void vtkSubdivideTetra::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
+
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

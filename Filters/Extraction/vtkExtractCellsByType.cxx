@@ -134,6 +134,20 @@ void vtkExtractCellsByType::ExtractUnstructuredData(vtkDataSet* inDS, vtkDataSet
     vtkPointSet* outPtSet = vtkPointSet::SafeDownCast(outDS);
     vtkPoints* inPts = inPtSet->GetPoints();
     vtkNew<vtkPoints> outPts;
+    // Preserve the input point precision by default (the historical behavior
+    // downcast to single precision); SINGLE/DOUBLE force it.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      outPts->SetDataType(inPts->GetDataType());
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      outPts->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      outPts->SetDataType(VTK_DOUBLE);
+    }
     outPts->SetNumberOfPoints(numNewPts);
     for (vtkIdType ptId = 0; ptId < numPts; ++ptId)
     {
@@ -498,5 +512,6 @@ void vtkExtractCellsByType::PrintSelf(ostream& os, vtkIndent indent)
 
   // Output the number of types specified
   os << indent << "Number of types specified: " << this->CellTypes->size() << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

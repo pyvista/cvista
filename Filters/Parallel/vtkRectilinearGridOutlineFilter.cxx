@@ -6,6 +6,7 @@
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkRectilinearGrid.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
@@ -25,9 +26,9 @@ int vtkRectilinearGridOutlineFilter::RequestData(vtkInformation* vtkNotUsed(requ
     vtkRectilinearGrid::SafeDownCast(inInfo->Get(vtkDataObject::DATA_OBJECT()));
   vtkPolyData* output = vtkPolyData::SafeDownCast(outInfo->Get(vtkDataObject::DATA_OBJECT()));
 
-  float bounds[6];
+  double bounds[6];
   double* range;
-  float x[3];
+  double x[3];
   vtkIdType pts[2];
   vtkPoints* newPts;
   vtkCellArray* newLines;
@@ -59,6 +60,31 @@ int vtkRectilinearGridOutlineFilter::RequestData(vtkInformation* vtkNotUsed(requ
   // Allocate storage and create outline
   //
   newPts = vtkPoints::New();
+  // Set the desired precision for the points in the output. The input is a
+  // rectilinear grid, which stores its coordinates in the X/Y/Z coordinate
+  // arrays rather than an explicit vtkPoints; for DEFAULT_PRECISION match
+  // those arrays' data type (use double if any axis is double, so coordinate
+  // values are preserved).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (xCoords->GetDataType() == VTK_DOUBLE || yCoords->GetDataType() == VTK_DOUBLE ||
+      zCoords->GetDataType() == VTK_DOUBLE)
+    {
+      newPts->SetDataType(VTK_DOUBLE);
+    }
+    else
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(24);
   newLines = vtkCellArray::New();
   newLines->AllocateEstimate(12, 2);
@@ -240,5 +266,7 @@ int vtkRectilinearGridOutlineFilter::FillInputPortInformation(int, vtkInformatio
 void vtkRectilinearGridOutlineFilter::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
+
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

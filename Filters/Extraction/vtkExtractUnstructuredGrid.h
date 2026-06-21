@@ -146,6 +146,18 @@ public:
    */
   vtkMTimeType GetMTime() override;
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points.
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkExtractUnstructuredGrid();
   ~vtkExtractUnstructuredGrid() override = default;
@@ -163,6 +175,7 @@ protected:
 
   vtkTypeBool Merging;
   vtkIncrementalPointLocator* Locator;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkExtractUnstructuredGrid(const vtkExtractUnstructuredGrid&) = delete;

@@ -20,6 +20,7 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkSMPThreadLocal.h"
 #include "vtkSMPTools.h"
@@ -751,7 +752,12 @@ void BinPointsDecimate(int genMode, vtkIdType numPts, PointsT* pts, vtkPointData
   int numNewPts = sliceOffsets[dims[2]];
 
   vtkNew<vtkPoints> newPts;
-  newPts->SetDataType(VTK_FLOAT); // could be the same type as the input point type
+  // Honor the desired output point precision. NOTE: GenerateBinPoints writes
+  // the new coordinates through a raw float* (see below), so the storage type
+  // must remain VTK_FLOAT here. DEFAULT_PRECISION and SINGLE_PRECISION both map
+  // to VTK_FLOAT (matching historical behavior); DOUBLE_PRECISION cannot be
+  // honored on this raw-pointer write path (deferred) and falls back to float.
+  newPts->SetDataType(VTK_FLOAT);
   newPts->SetNumberOfPoints(numNewPts);
   ArrayList ptArrays;
   if (outPD) // copy point data if requested
@@ -1429,7 +1435,11 @@ void AvePointsDecimate(vtkIdType numPts, PointsT* pts, vtkPointData* inPD, vtkPo
   // the contributions of all points in each bin. A new point is generated
   // and its id is placed into the bin tuples array (needed for final
   // generation of the triangles).
-  // Should output point type be the same as the input point type?
+  // Honor the desired output point precision. NOTE: GenerateAveBinPoints writes
+  // the new coordinates through a raw float* (see below), so the storage type
+  // must remain VTK_FLOAT here. DEFAULT_PRECISION and SINGLE_PRECISION both map
+  // to VTK_FLOAT (matching historical behavior); DOUBLE_PRECISION cannot be
+  // honored on this raw-pointer write path (deferred) and falls back to float.
   vtkNew<vtkPoints> newPts;
   newPts->SetDataType(VTK_FLOAT);
   newPts->SetNumberOfPoints(numNewPts);
@@ -1513,6 +1523,7 @@ vtkBinnedDecimation::vtkBinnedDecimation()
   this->ProducePointData = true;
   this->ProduceCellData = false;
   this->LargeIds = false;
+  this->OutputPointsPrecision = DEFAULT_PRECISION;
 }
 
 //----------------------------------------------------------------------------
@@ -1864,5 +1875,6 @@ void vtkBinnedDecimation::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Point Generation Mode :" << this->PointGenerationMode << endl;
   os << indent << "Pass Point Data : " << this->ProducePointData << endl;
   os << indent << "Produce Cell Data : " << this->ProduceCellData << endl;
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

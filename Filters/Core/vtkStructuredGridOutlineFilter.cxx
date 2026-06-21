@@ -6,6 +6,7 @@
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkStructuredGrid.h"
@@ -17,6 +18,7 @@ vtkStandardNewMacro(vtkStructuredGridOutlineFilter);
 void vtkStructuredGridOutlineFilter::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 
 //------------------------------------------------------------------------------
@@ -55,6 +57,21 @@ int vtkStructuredGridOutlineFilter::RequestData(vtkInformation* vtkNotUsed(reque
 
   newLines = vtkCellArray::New();
   newPts = vtkPoints::New();
+
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
 
   ext = input->GetExtent();
   wExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());

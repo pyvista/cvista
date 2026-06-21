@@ -13,6 +13,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPointSet.h"
+#include "vtkPoints.h"
 #include "vtkUnsignedShortArray.h"
 
 #include <vector>
@@ -426,6 +427,21 @@ int vtkWeightedTransformFilter::RequestData(vtkInformation* vtkNotUsed(request),
   numCells = input->GetNumberOfCells();
 
   newPts = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it. Must be set before Allocate.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate(numPts);
   if (inVectors)
   {
@@ -815,5 +831,6 @@ void vtkWeightedTransformFilter::PrintSelf(ostream& os, vtkIndent indent)
      << (this->TransformIndexArray ? this->TransformIndexArray : "(none)") << "\n";
   os << indent << "CellDataTransformIndexArray: "
      << (this->CellDataTransformIndexArray ? this->CellDataTransformIndexArray : "(none)") << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

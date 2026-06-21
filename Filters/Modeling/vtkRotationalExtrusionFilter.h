@@ -114,6 +114,18 @@ public:
   vtkGetVector3Macro(RotationAxis, double);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkRotationalExtrusionFilter();
   ~vtkRotationalExtrusionFilter() override = default;
@@ -125,6 +137,7 @@ protected:
   double Translation;
   double DeltaRadius;
   double RotationAxis[3] = { 0, 0, 1 };
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkRotationalExtrusionFilter(const vtkRotationalExtrusionFilter&) = delete;

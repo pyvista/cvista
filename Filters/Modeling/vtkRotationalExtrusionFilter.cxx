@@ -11,6 +11,7 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -109,6 +110,19 @@ int vtkRotationalExtrusionFilter::RequestData(vtkInformation* vtkNotUsed(request
   outPD->CopyNormalsOff();
   outPD->CopyAllocate(pd, (this->Resolution + 1) * numPts);
   newPts = vtkPoints::New();
+  // Set the desired precision for the points in the output.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Allocate((this->Resolution + 1) * numPts);
   if ((ncells = inVerts->GetNumberOfCells()) > 0)
   {
@@ -344,5 +358,6 @@ void vtkRotationalExtrusionFilter::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Delta Radius: " << this->DeltaRadius << "\n";
   os << indent << "Rotation axis: (" << this->RotationAxis[0] << ", " << this->RotationAxis[1]
      << ", " << this->RotationAxis[2] << ")\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END
