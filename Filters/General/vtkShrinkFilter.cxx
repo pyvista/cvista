@@ -4,6 +4,8 @@
 
 #include "vtkCell.h"
 #include "vtkCellData.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -122,6 +124,56 @@ int vtkShrinkFilter::RequestData(
   // values and the accumulation/shrink arithmetic order is unchanged: bit-exact.
   std::vector<double> cellPts;
 
+  // Raw point-coordinate access. input->GetPoint(id, x) is a virtual,
+  // cross-library call that, for a vtkPointSet, ultimately reads the AOS point
+  // array and casts each component to double. When the points are stored as a
+  // contiguous float/double AOS array (the universal case for vtkPointSet) we
+  // can read that buffer DIRECTLY, skipping the per-point virtual dispatch and
+  // bounds bookkeeping. The values are byte-identical: GetPoint() does the same
+  // float->double widening this code does (an exact conversion), and for double
+  // storage it is a plain copy. Implicit-point datasets (vtkImageData /
+  // vtkRectilinearGrid: no stored vtkPoints) and any exotic non-float/double
+  // point array fall back to GetPoint(), so behavior is unchanged everywhere.
+  const double* rawPtsD = nullptr;
+  const float* rawPtsF = nullptr;
+  if (vtkPointSet* inPS = vtkPointSet::SafeDownCast(input))
+  {
+    if (vtkDataArray* pa = inPS->GetPoints() ? inPS->GetPoints()->GetData() : nullptr)
+    {
+      if (pa->GetNumberOfComponents() == 3)
+      {
+        if (pa->GetDataType() == VTK_DOUBLE)
+        {
+          rawPtsD = static_cast<vtkDoubleArray*>(pa)->GetPointer(0);
+        }
+        else if (pa->GetDataType() == VTK_FLOAT)
+        {
+          rawPtsF = static_cast<vtkFloatArray*>(pa)->GetPointer(0);
+        }
+      }
+    }
+  }
+  auto fetchPoint = [&](vtkIdType id, double* dst) {
+    if (rawPtsD)
+    {
+      const double* s = rawPtsD + 3 * id;
+      dst[0] = s[0];
+      dst[1] = s[1];
+      dst[2] = s[2];
+    }
+    else if (rawPtsF)
+    {
+      const float* s = rawPtsF + 3 * id;
+      dst[0] = static_cast<double>(s[0]);
+      dst[1] = static_cast<double>(s[1]);
+      dst[2] = static_cast<double>(s[2]);
+    }
+    else
+    {
+      input->GetPoint(id, dst);
+    }
+  };
+
   // Traverse all cells, obtaining node coordinates.  Compute "center"
   // of cell, then create new vertices shrunk towards center.
   for (vtkIdType cellId = 0; cellId < numCells && !abort; ++cellId)
@@ -140,11 +192,12 @@ int vtkShrinkFilter::RequestData(
       abort = this->CheckAbort();
     }
 
-    // Fetch the cell's point coordinates once into the reusable buffer.
+    // Fetch the cell's point coordinates once into the reusable buffer (raw
+    // typed-pointer read when available; GetPoint() fallback otherwise).
     cellPts.resize(static_cast<size_t>(numIds) * 3);
     for (vtkIdType i = 0; i < numIds; ++i)
     {
-      input->GetPoint(ptIds->GetId(i), cellPts.data() + 3 * i);
+      fetchPoint(ptIds->GetId(i), cellPts.data() + 3 * i);
     }
 
     // Compute the center of mass of the cell points.
