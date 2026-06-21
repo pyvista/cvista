@@ -1,9 +1,9 @@
 [build-system]
-requires = ["scikit-build-core", "vtk-sdk"]
+requires = ["scikit-build-core", "fvtk-sdk"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "vtk-sdk-test"
+name = "fvtk-sdk-test"
 version = "1.0.0"
 authors = [
   { name = "Alexy Pellegrini", email = "alexy.pellegrini@kitware.com" },

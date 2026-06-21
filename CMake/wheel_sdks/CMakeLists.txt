@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.14...4.0)
 
 project(
-  vtk-wheel-sdk
+  fvtk-wheel-sdk
   VERSION ${SKBUILD_PROJECT_VERSION}
-  DESCRIPTION "VTK SDK python distributions"
-  HOMEPAGE_URL "https://vtk.org"
+  DESCRIPTION "fvtk SDK python distribution"
+  HOMEPAGE_URL "https://github.com/pyvista/fvtk"
   LANGUAGES NONE
 )
 
@@ -28,13 +28,13 @@ set(VTK_SDK_INSTALL_DIR "content") # used by configure_file too
 # destination, instead of the folder itself.
 install(
   DIRECTORY ${VTK_INSTALL_DIR}/
-  DESTINATION vtk_sdk/${VTK_SDK_INSTALL_DIR}
+  DESTINATION fvtk_sdk/${VTK_SDK_INSTALL_DIR}
   PATTERN "bin/*" EXCLUDE
 )
 
 install(
   DIRECTORY ${VTK_INSTALL_DIR}/bin/
-  DESTINATION vtk_sdk/${VTK_SDK_INSTALL_DIR}/bin
+  DESTINATION fvtk_sdk/${VTK_SDK_INSTALL_DIR}/bin
   PATTERN
     "*"
     PERMISSIONS
@@ -52,24 +52,24 @@ install(
 # but the folder of VTK real config module must be located in a ".data" folder.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake/vtk-config.cmake.in
-  ${CMAKE_CURRENT_BINARY_DIR}/vtk_sdk/cmake/vtk-config.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/fvtk_sdk/cmake/vtk-config.cmake
   @ONLY
 )
 
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake/vtk-config-version.cmake.in
-  ${CMAKE_CURRENT_BINARY_DIR}/vtk_sdk/cmake/vtk-config-version.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/fvtk_sdk/cmake/vtk-config-version.cmake
   @ONLY
 )
 
 install(
   FILES ${CMAKE_CURRENT_BINARY_DIR}/_version.py
-  DESTINATION vtk_sdk
+  DESTINATION fvtk_sdk
 )
 
 install(
-  FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/vtk_sdk/cmake/__init__.py
-        ${CMAKE_CURRENT_BINARY_DIR}/vtk_sdk/cmake/vtk-config.cmake
-        ${CMAKE_CURRENT_BINARY_DIR}/vtk_sdk/cmake/vtk-config-version.cmake
-  DESTINATION vtk_sdk/cmake
+  FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/fvtk_sdk/cmake/__init__.py
+        ${CMAKE_CURRENT_BINARY_DIR}/fvtk_sdk/cmake/vtk-config.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/fvtk_sdk/cmake/vtk-config-version.cmake
+  DESTINATION fvtk_sdk/cmake
 )

@@ -130,10 +130,10 @@ set(wheel_sdks_files
   wheel_sdks/CMakeLists.txt
   wheel_sdks/cmake/vtk-config-version.cmake.in
   wheel_sdks/cmake/vtk-config.cmake.in
-  wheel_sdks/src/vtk_sdk/_version.pyi
-  wheel_sdks/src/vtk_sdk/__init__.py
-  wheel_sdks/src/vtk_sdk/py.typed
-  wheel_sdks/src/vtk_sdk/cmake/__init__.py
+  wheel_sdks/src/fvtk_sdk/_version.pyi
+  wheel_sdks/src/fvtk_sdk/__init__.py
+  wheel_sdks/src/fvtk_sdk/py.typed
+  wheel_sdks/src/fvtk_sdk/cmake/__init__.py
   wheel_sdks/tests/test_package.py
   wheel_sdks/tests/test_find_package.py
   wheel_sdks/tests/packages/find_package/CMakeLists.txt

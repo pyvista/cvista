@@ -1,0 +1,77 @@
+# Builds and publishes the `fvtk-sdk` wheel: the VTK headers + CMake config +
+# wrap tools from the same source as the runtime fvtk wheel, packaged as a
+# scikit-build-core `cmake.prefix` distribution so `pip install fvtk-sdk` +
+# `find_package(VTK)` works downstream. Kept separate from ci.yml and
+# path-scoped so the full SDK build only runs when SDK inputs change (plus on
+# main / release / manual).
+name: SDK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - CMake/wheel_sdks/**
+      - CMake/vtkWheelPreparation.cmake
+      - ci/build-sdk.sh
+      - ci/test-sdk.sh
+      - ci/cmake/linux.cmake
+      - fvtk-config/**
+      - .github/workflows/sdk.yml
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-sdk:
+    name: build fvtk-sdk wheel (manylinux_2_28)
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # setuptools_scm needs full history for the version
+      - name: Install rendering + build deps
+        # Same AlmaLinux 8 package set as the runtime wheel build
+        # (ci.yml -> [tool.cibuildwheel.linux] before-all).
+        run: |
+          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+            mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
+            libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
+            ccache git mold lld
+      - name: Build fvtk-sdk wheel
+        run: ci/build-sdk.sh
+      - name: Smoke-test the SDK (find_package(VTK))
+        run: ci/test-sdk.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-sdk-wheels-linux
+          path: sdk-dist/*.whl
+          if-no-files-found: error
+
+  publish-sdk:
+    name: Publish fvtk-sdk to PyPI (trusted publishing)
+    # Release-only. Requires a PyPI trusted publisher on project `fvtk-sdk`
+    # bound to repo pyvista/fvtk, workflow sdk.yml, environment pypi-sdk.
+    if: github.event_name == 'release'
+    needs: [build-sdk]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-sdk
+      url: https://pypi.org/p/fvtk-sdk
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fvtk-sdk-wheels-linux
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

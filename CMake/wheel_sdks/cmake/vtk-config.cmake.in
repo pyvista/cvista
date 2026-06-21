@@ -1,1 +1,9 @@
-include(${CMAKE_CURRENT_LIST_DIR}/../@VTK_SDK_INSTALL_DIR@/vtk-@SKBUILD_PROJECT_VERSION@.data/headers/cmake/vtk-config.cmake)
+# Locate the bundled VTK install tree's config. The data directory is named for
+# the base VTK version (vtk-<MAJOR>.<MINOR>.<BUILD>.data) and does not carry the
+# fvtk wheel's PEP 440 suffix (e.g. .postN), so glob for it rather than hardcode
+# the package version.
+file(GLOB _fvtk_sdk_data_dir LIST_DIRECTORIES true
+  "${CMAKE_CURRENT_LIST_DIR}/../@VTK_SDK_INSTALL_DIR@/vtk-*.data")
+list(GET _fvtk_sdk_data_dir 0 _fvtk_sdk_data_dir)
+include("${_fvtk_sdk_data_dir}/headers/cmake/vtk-config.cmake")
+unset(_fvtk_sdk_data_dir)
