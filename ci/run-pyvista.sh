@@ -29,17 +29,19 @@ REF="$(tr -d '[:space:]' < "$HERE/PYVISTA_REF")"
 OUT="${PYVISTA_OUTDIR:-/tmp/pv-out}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-# Force Mesa software GL (llvmpipe / surfaceless EGL) for offscreen plotting —
-# the SAME driver knobs as run-renderexact.sh, so plotting tests render headless
-# and deterministically on a runner with no GPU. PYVISTA_OFF_SCREEN keeps every
-# Plotter offscreen even where a test forgets to ask.
-unset DISPLAY || true
+# Headless software GL via Xvfb — the SAME path PyVista's own CI uses to render
+# (and to generate its committed image_cache): an Xvfb virtual display + Mesa
+# llvmpipe over GLX. We deliberately do NOT force surfaceless EGL here (unlike
+# run-renderexact.sh, which drives raw vtkmodules): PyVista warns + segfault-
+# guards when no DISPLAY is present, runs filterwarnings=error, and its image
+# cache is GLX/llvmpipe — so matching that environment is what keeps the suite
+# green. We wrap each pytest invocation in xvfb-run below; here we only pin
+# software rendering and keep every Plotter offscreen.
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
-export EGL_PLATFORM=surfaceless
-export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow
-export VTK_EGL_DEVICE_INDEX="${VTK_EGL_DEVICE_INDEX:-0}"
 export PYVISTA_OFF_SCREEN=true
+# Provides a real DISPLAY (silences _warn_xserver) + a fresh server per call.
+XVFB=(xvfb-run -a -s "-screen 0 1280x1024x24")
 
 # --- fetch PyVista at the pinned SHA (shallow, single commit) ----------------
 # Pinning (not floating main) keeps the gate deterministic; .github/workflows/
@@ -127,7 +129,7 @@ SHARED=(-n auto --tb=short --no-header -ra --color=no -m "not needs_download" --
 
 set +e
 echo "=== core tests ==="
-/tmp/pv/bin/python -m pytest "${SHARED[@]}" "${DESELECT[@]+"${DESELECT[@]}"}" \
+"${XVFB[@]}" /tmp/pv/bin/python -m pytest "${SHARED[@]}" "${DESELECT[@]+"${DESELECT[@]}"}" \
     --ignore=tests/plotting \
     --test_downloads \
     --junitxml="$OUT/junit-core.xml" \
@@ -135,7 +137,7 @@ echo "=== core tests ==="
 STATUS_CORE=${PIPESTATUS[0]}
 
 echo "=== plotting tests ==="
-/tmp/pv/bin/python -m pytest "${SHARED[@]}" "${DESELECT[@]+"${DESELECT[@]}"}" \
+"${XVFB[@]}" /tmp/pv/bin/python -m pytest "${SHARED[@]}" "${DESELECT[@]+"${DESELECT[@]}"}" \
     --disallow_unused_cache \
     --junitxml="$OUT/junit-plotting.xml" \
     tests/plotting 2>&1 | tee "$OUT/pytest-plotting.log"

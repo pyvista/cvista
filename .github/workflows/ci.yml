@@ -372,11 +372,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install Mesa software GL/EGL (llvmpipe)
+      - name: Install Xvfb + Mesa software GL (llvmpipe)
+        # Xvfb gives PyVista a real DISPLAY (its plotting suite warns + segfault-
+        # guards without one, under filterwarnings=error); Mesa llvmpipe does the
+        # software GLX rendering. Mirrors PyVista's own CI render environment.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+            xvfb libgl1-mesa-dri libglx-mesa0 libegl1 libgles2 libosmesa6 libxcb1
       - uses: actions/download-artifact@v4
         with:
           # The FAST O2 Linux wheel (fvtk-wheels-linux-*); pip --find-links picks
