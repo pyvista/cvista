@@ -74,11 +74,12 @@ VTK_BASE_VERSION = "9.6.2"
 
 
 def _version_suffix() -> str:
-    """Tag-driven ``VTK_VERSION_SUFFIX`` via setuptools_scm (start at post0).
+    """Tag-driven ``VTK_VERSION_SUFFIX`` via setuptools_scm (start at 9.6.2.0).
 
-    The PyPI version is driven by git tags: tag ``9.6.2.post0`` -> wheel
-    ``9.6.2.post0``; commits past a tag get ``9.6.2.post1.devN`` (never published,
-    publish only runs on a release tag). setuptools_scm derives the full PEP 440
+    The PyPI version is driven by git tags: tag ``9.6.2.0`` -> wheel ``9.6.2.0``;
+    commits past a tag get ``9.6.2.1.devN`` (never published, publish only runs on
+    a release tag). The 4th segment is a normal PEP 440 release component (NOT a
+    .post; see docs/versioning.md). setuptools_scm derives the full PEP 440
     version from the repo's tags (honouring ``SETUPTOOLS_SCM_PRETEND_VERSION_FOR_FVTK``
     if set); VTK's setup.py.in composes ``{VTK_BASE_VERSION}.{VTK_VERSION_SUFFIX}``,
     so we hand it only the suffix (everything past the base + dot).
@@ -95,7 +96,7 @@ def _version_suffix() -> str:
             dist_name="fvtk",  # so SETUPTOOLS_SCM_PRETEND_VERSION_FOR_FVTK is honoured
             version_scheme="guess-next-dev",
             local_scheme="no-local-version",  # keep dev versions PyPI-upload-clean
-            fallback_version=f"{VTK_BASE_VERSION}.post0.dev0",
+            fallback_version=f"{VTK_BASE_VERSION}.0.dev0",
         )
     except Exception as exc:  # noqa: BLE001 - any scm/git failure -> safe default
         print(
@@ -111,8 +112,8 @@ def _version_suffix() -> str:
     if not version.startswith(prefix):
         raise RuntimeError(
             f"fvtk_backend: scm version {version!r} does not start with the VTK "
-            f"base {VTK_BASE_VERSION!r}; tag releases as {VTK_BASE_VERSION}.postN "
-            f"(e.g. {VTK_BASE_VERSION}.post0)."
+            f"base {VTK_BASE_VERSION!r}; tag releases as {VTK_BASE_VERSION}.N "
+            f"(e.g. {VTK_BASE_VERSION}.0)."
         )
     suffix = version[len(prefix):]
     print(f"fvtk_backend: scm version {version} -> VTK_VERSION_SUFFIX={suffix}", flush=True)
