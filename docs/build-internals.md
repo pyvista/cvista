@@ -466,6 +466,13 @@ one-line edit, no C++ changes.
 - **To drop a new class**: add its name to a list. NOWRAP is zero-risk (C++ still compiles);
   NOCOMPILE needs closure analysis (the build is the oracle — `configure → build -k 0 →
   import-smoke`; undefined `::New()`/typeinfo symbols only surface at `dlopen`, not at link).
+- **To re-include a class without editing the lists** (`FVTK_KEEP_CLASSES`): pass a list of
+  class names at configure time and each is subtracted from both denylists, so it compiles
+  *and* is wrapped — `cmake ... -DFVTK_KEEP_CLASSES="vtkFooBar;vtkBazQux"`. Default empty, so
+  the trim is unchanged for everyone. This is the supported hook for downstream / extension
+  builds that reach a few classes outside the default closure: it leaves the generated
+  `_nowrap_classes.cmake` / `_nocompile_classes.cmake` untouched. Applied in
+  `fvtk-config/minimal.cmake` after both lists are seeded and before the hooks consume them.
 - **Wrapper-unity chunk size**: `FVTK_WRAP_UNITY_CHUNK` in `minimal.cmake` (must be a `CACHE`
   var to reach function scope). Smaller chunks parallelize better on big runners.
 

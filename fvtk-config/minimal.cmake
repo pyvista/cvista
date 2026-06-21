@@ -19,6 +19,35 @@ include("${CMAKE_CURRENT_LIST_DIR}/_modules_minimal.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/_nowrap_classes.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/_nocompile_classes.cmake")
 
+# --- FVTK_KEEP_CLASSES: opt-in re-include of trimmed classes ------------------
+# A list of class names that should be re-included in the build/wrapping even if
+# they appear in the Lever A (NOWRAP) or Lever B (NOCOMPILE) drop lists. Each
+# listed name is removed from both denylists here, before the hooks in
+# CMake/vtkModule.cmake consume them, so a kept class compiles AND is wrapped.
+#
+# Default is empty -> no change for anyone; the trim behaves exactly as before.
+# This lets downstream / extension builds that reach a few classes outside the
+# default closure re-include them without editing the generated denylists:
+#   cmake ... -DFVTK_KEEP_CLASSES="vtkFooBar;vtkBazQux"
+#
+# Both lists are CACHE INTERNAL vars and vtkModule.cmake reads the CACHE value,
+# so REMOVE_ITEM on the plain var is not enough -- re-FORCE the trimmed list
+# back into the cache (same pattern as ci/cmake/windows.cmake).
+set(FVTK_KEEP_CLASSES "" CACHE STRING
+    "fvtk: class names to re-include even if present in the NOWRAP/NOCOMPILE drop lists")
+if (FVTK_KEEP_CLASSES)
+  if (FVTK_NOCOMPILE_CLASSES)
+    list(REMOVE_ITEM FVTK_NOCOMPILE_CLASSES ${FVTK_KEEP_CLASSES})
+    set(FVTK_NOCOMPILE_CLASSES "${FVTK_NOCOMPILE_CLASSES}"
+        CACHE INTERNAL "fvtk: classes dropped from the C++ build (pyvista-unused orphans)" FORCE)
+  endif ()
+  if (FVTK_NOWRAP_CLASSES)
+    list(REMOVE_ITEM FVTK_NOWRAP_CLASSES ${FVTK_KEEP_CLASSES})
+    set(FVTK_NOWRAP_CLASSES "${FVTK_NOWRAP_CLASSES}"
+        CACHE INTERNAL "fvtk: classes to skip Python-wrapping (pyvista-unused, fully closed)" FORCE)
+  endif ()
+endif ()
+
 # --- wrapper-unity: batch generated *Python.cxx into chunked unity TUs ----------
 # ~48% less wrapper-compile CPU at -O3 by amortizing the shared vtkPython*.h parse.
 # CACHE so the value reaches vtk_module_wrap_python's function scope. Emitted code is
