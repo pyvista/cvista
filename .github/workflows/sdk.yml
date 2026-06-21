@@ -4,6 +4,12 @@
 # `find_package(VTK)` works downstream. Kept separate from ci.yml and
 # path-scoped so the full SDK build only runs when SDK inputs change (plus on
 # main / release / manual).
+#
+# Built for every platform the runtime fvtk wheel ships (Linux x86_64, macOS
+# arm64, Windows x64) so downstream consumers can compile against fvtk on the
+# same OSes they can import it on. Each leg mirrors the runtime build's per-OS
+# toolchain (ci.yml -> [tool.cibuildwheel.<os>]); ci/build-sdk.sh picks the
+# matching init-cache and handles the platform-tag details.
 name: SDK
 
 on:
@@ -17,6 +23,8 @@ on:
       - ci/build-sdk.sh
       - ci/test-sdk.sh
       - ci/cmake/linux.cmake
+      - ci/cmake/macos.cmake
+      - ci/cmake/windows.cmake
       - fvtk-config/**
       - .github/workflows/sdk.yml
   release:
@@ -29,17 +37,35 @@ concurrency:
 
 jobs:
   build-sdk:
-    name: build fvtk-sdk wheel (manylinux_2_28)
-    # Heavy C++ compile (same VTK kit as the runtime wheel) → Blacksmith 16-vcpu
-    # when FVTK_RUNNER_LINUX is set, else github ubuntu-latest. The manylinux
-    # container runs identically on either host.
-    runs-on: ${{ vars.FVTK_RUNNER_LINUX || 'ubuntu-latest' }}
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    name: build fvtk-sdk (${{ matrix.os }})
+    # Heavy C++ compile (same VTK kit as the runtime wheel) → Blacksmith runners
+    # when the FVTK_RUNNER_* vars are set, else the github-hosted defaults. The
+    # `os` key is the stable artifact suffix; `runner.os`/uname inside the build
+    # script drives the per-OS toolchain.
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ${{ vars.FVTK_RUNNER_LINUX || 'ubuntu-latest' }}
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - os: macos
+            runner: ${{ vars.FVTK_RUNNER_MACOS || 'macos-14' }}
+            container: ''
+          - os: windows
+            runner: ${{ vars.FVTK_RUNNER_WINDOWS || 'windows-latest' }}
+            container: ''
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # setuptools_scm needs full history for the version
-      - name: Install rendering + build deps
+      - name: Install rendering + build deps (Linux)
+        if: matrix.os == 'linux'
         # Same AlmaLinux 8 package set as the runtime wheel build
         # (ci.yml -> [tool.cibuildwheel.linux] before-all).
         run: |
@@ -47,13 +73,30 @@ jobs:
             mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
             libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
             ccache git mold lld
+      - name: Set up Python (macOS/Windows)
+        # The manylinux container already ships /opt/python/cp312-cp312; the
+        # host runners need cpython 3.12 on PATH for the build script.
+        if: matrix.os != 'linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ccache (macOS)
+        if: matrix.os == 'macos'
+        run: brew install ccache
+      - name: Set up MSVC (vcvars) for the Ninja build (Windows)
+        # ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so cl must be on PATH;
+        # the Ninja generator does not auto-run vcvars.
+        if: matrix.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Build fvtk-sdk wheel
         run: ci/build-sdk.sh
       - name: Smoke-test the SDK (find_package(VTK))
         run: ci/test-sdk.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: fvtk-sdk-wheels-linux
+          name: fvtk-sdk-wheels-${{ matrix.os }}
           path: sdk-dist/*.whl
           if-no-files-found: error
 
@@ -72,8 +115,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: fvtk-sdk-wheels-linux
+          # Collect every per-OS leg's wheel into one dist/ for a single upload.
+          pattern: fvtk-sdk-wheels-*
           path: dist
+          merge-multiple: true
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
