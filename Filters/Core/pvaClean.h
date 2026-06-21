@@ -1376,19 +1376,25 @@ inline void parallel_morton_radix_dedup_identical(const T *points, std::size_t n
             while (j < n_live && (std::uint32_t)(keys[j] >> 32) == h) {
                 ++j;
             }
-            std::size_t s = i;
-            while (s < j) {
-                std::uint32_t rep = (std::uint32_t)(keys[s] & 0xFFFFFFFFu);
-                std::size_t t = s + 1;
-                while (t < j) {
-                    std::uint32_t q = (std::uint32_t)(keys[t] & 0xFFFFFFFFu);
-                    if (!same_point(rep, q))
+            // Within an equal-HASH run the packed keys are ordered by
+            // orig_id, NOT by coordinate, so the copies of one coordinate can
+            // be INTERLEAVED with those of a hash-colliding coordinate
+            // (A B A B ...). A consecutive same_point scan would break at the
+            // first B and overcount every later A/B as its own class. Instead
+            // count a point as a new unique class iff it is the FIRST
+            // occurrence of its coordinate anywhere earlier in this run.
+            for (std::size_t b = i; b < j; ++b) {
+                std::uint32_t qb = (std::uint32_t)(keys[b] & 0xFFFFFFFFu);
+                bool first = true;
+                for (std::size_t a = i; a < b; ++a) {
+                    if (same_point((std::uint32_t)(keys[a] & 0xFFFFFFFFu), qb)) {
+                        first = false;
+                        local_any_dup = true;
                         break;
-                    local_any_dup = true;
-                    ++t;
+                    }
                 }
-                ++count;
-                s = t;
+                if (first)
+                    ++count;
             }
             i = j;
         }
@@ -1447,26 +1453,36 @@ inline void parallel_morton_radix_dedup_identical(const T *points, std::size_t n
             while (j < n_live && (std::uint32_t)(keys[j] >> 32) == h) {
                 ++j;
             }
-            std::size_t s = i;
-            while (s < j) {
-                std::uint32_t rep = (std::uint32_t)(keys[s] & 0xFFFFFFFFu);
-                std::size_t t = s + 1;
-                while (t < j) {
-                    std::uint32_t q = (std::uint32_t)(keys[t] & 0xFFFFFFFFu);
-                    if (!same_point(rep, q))
+            // Interleave-safe grouping (mirrors pass 1): a point starts a new
+            // class iff it is the FIRST occurrence of its coordinate in the
+            // run; otherwise it maps to the new_id of that first occurrence.
+            // Iterating in ascending orig_id order makes the first occurrence
+            // the class min(orig_id) -> the canonical rep, preserving the
+            // determinism contract. Pass 1 counted identically, so new_id
+            // stays within this thread's [thread_count[tid], thread_count[tid+1]).
+            for (std::size_t b = i; b < j; ++b) {
+                std::uint32_t ob = (std::uint32_t)(keys[b] & 0xFFFFFFFFu);
+                std::size_t found = j; // sentinel: no earlier occurrence
+                for (std::size_t a = i; a < b; ++a) {
+                    if (same_point((std::uint32_t)(keys[a] & 0xFFFFFFFFu), ob)) {
+                        found = a;
                         break;
-                    ++t;
+                    }
                 }
-                source_map_out[(std::size_t)new_id] = (std::int32_t)rep;
-                points_out[(std::size_t)new_id * 3 + 0] = points[(std::size_t)rep * 3 + 0];
-                points_out[(std::size_t)new_id * 3 + 1] = points[(std::size_t)rep * 3 + 1];
-                points_out[(std::size_t)new_id * 3 + 2] = points[(std::size_t)rep * 3 + 2];
-                for (std::size_t k = s; k < t; ++k) {
-                    std::uint32_t orig = (std::uint32_t)(keys[k] & 0xFFFFFFFFu);
-                    point_map_out[(std::size_t)orig] = new_id;
+                if (found == j) {
+                    // First occurrence -> canonical rep of a new class.
+                    source_map_out[(std::size_t)new_id] = (std::int32_t)ob;
+                    points_out[(std::size_t)new_id * 3 + 0] = points[(std::size_t)ob * 3 + 0];
+                    points_out[(std::size_t)new_id * 3 + 1] = points[(std::size_t)ob * 3 + 1];
+                    points_out[(std::size_t)new_id * 3 + 2] = points[(std::size_t)ob * 3 + 2];
+                    point_map_out[(std::size_t)ob] = new_id;
+                    ++new_id;
+                } else {
+                    // Duplicate -> same new_id as its first occurrence (already
+                    // assigned, since found < b was processed earlier).
+                    std::uint32_t oa = (std::uint32_t)(keys[found] & 0xFFFFFFFFu);
+                    point_map_out[(std::size_t)ob] = point_map_out[(std::size_t)oa];
                 }
-                ++new_id;
-                s = t;
             }
             i = j;
         }
