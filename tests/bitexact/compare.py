@@ -150,11 +150,21 @@ def _compare_cells(a, b, names, per, ok):
     return ok
 
 
-def _compare_order_relaxed(a, b, relax_points=False):
+def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0):
     """Order-invariant mesh equality. cells are always compared as a multiset
     carrying their cell-data. Points + point-data are STRICT unless relax_points,
     in which case points are canonicalized by (coords, point-data) and connectivity
-    is remapped accordingly (for filters whose surface points are reordered too)."""
+    is remapped accordingly (for filters whose surface points are reordered too).
+
+    point_data_tol > 0 (opt-in, per-op) relaxes ONLY the *interpolated* point-DATA
+    arrays to an absolute/relative tolerance, keeping coords STRICT. This is for
+    the EnableFast clip lane: at points lying ~exactly on the clip plane, several
+    near-coincident edge crossings collapse in an order-dependent way, so the
+    surviving interpolated value (e.g. a near-zero normal component) differs from
+    the serial filter by denormal-scale noise (~1e-21). That is FP merge order,
+    not an algorithmic difference -- a tolerance this tight (default callers pass
+    ~1e-12) still fails any visible divergence (e.g. area- vs unit-weighted
+    normals, which differ by O(0.1))."""
     per = {}
     ok = True
     names = sorted(set(_arr_names(a)) & set(_arr_names(b)))
@@ -169,17 +179,51 @@ def _compare_order_relaxed(a, b, relax_points=False):
         ok = _compare_cells(a, b, names, per, ok)
         return bool(ok), per
     # relax_points: canonicalize points by (coords, point-data) on both sides.
+    # lexsort's primary key is the coordinate columns, which are bit-identical
+    # between stock and fvtk, so the permutation aligns points by COORDS even when
+    # an interpolated point-data column differs by tolerance-scale noise.
     pa_perm, ranka, ka = _point_canonicalization(a, names)
     pb_perm, rankb, kb = _point_canonicalization(b, names)
-    pts_eq = bool(ka.shape == kb.shape and np.array_equal(ka[pa_perm], kb[pb_perm]))
-    per["__points__"] = {"equal": pts_eq, "mode": "points-relaxed", "npoints": int(ka.shape[0])}
-    ok &= pts_eq
+    if not point_data_tol:
+        pts_eq = bool(ka.shape == kb.shape and np.array_equal(ka[pa_perm], kb[pb_perm]))
+        per["__points__"] = {"equal": pts_eq, "mode": "points-relaxed", "npoints": int(ka.shape[0])}
+        ok &= pts_eq
+    else:
+        # Coords STRICT; interpolated point-data within tolerance.
+        ca = np.ascontiguousarray(a["points"]).astype(np.float64)[pa_perm]
+        cb = np.ascontiguousarray(b["points"]).astype(np.float64)[pb_perm]
+        coords_eq = bool(ca.shape == cb.shape and np.array_equal(ca, cb))
+        data_eq = True
+        worst = 0.0
+        for name in names:
+            if not name.startswith("pd:"):
+                continue
+            xa = np.asarray(a[name])[pa_perm]
+            xb = np.asarray(b[name])[pb_perm]
+            if xa.shape != xb.shape:
+                data_eq = False
+                per[name] = {"equal": False, "mode": "points-relaxed", "reason": "shape"}
+                continue
+            if xa.dtype.kind == "f":
+                d = float(np.abs(xa.astype(np.float64) - xb.astype(np.float64)).max()) if xa.size else 0.0
+                worst = max(worst, d)
+                eq = bool(np.allclose(xa, xb, rtol=1e-6, atol=point_data_tol, equal_nan=True))
+            else:
+                eq = bool(xa.dtype == xb.dtype and np.array_equal(xa, xb))
+            per[name] = {"equal": eq, "mode": "points-relaxed-tol", "dtype": str(xa.dtype)}
+            data_eq &= eq
+        pts_eq = coords_eq and data_eq
+        per["__points__"] = {"equal": pts_eq, "mode": "points-relaxed-tol",
+            "npoints": int(ka.shape[0]), "coords_exact": coords_eq,
+            "max_pointdata_abs_diff": worst, "tol": point_data_tol}
+        ok &= pts_eq
     # compare cells on point-remapped connectivity.
     ok = _compare_cells(_remap_conn(a, ranka), _remap_conn(b, rankb), names, per, ok)
     return bool(ok), per
 
 
-def compare_case(stock_dir, fvtk_dir, key, order_relaxed=False, points_relaxed=False):
+def compare_case(stock_dir, fvtk_dir, key, order_relaxed=False, points_relaxed=False,
+                 point_data_tol=0.0):
     """Return (ok: bool, detail: dict) for a single case key."""
     sp = os.path.join(stock_dir, key + ".npz")
     fp = os.path.join(fvtk_dir, key + ".npz")
@@ -199,8 +243,11 @@ def compare_case(stock_dir, fvtk_dir, key, order_relaxed=False, points_relaxed=F
         # cell-data, cell ORDER negotiable. With points_relaxed, surface POINT
         # order is negotiable too (canonicalized by coords+point-data, connectivity
         # remapped) -- for kernels that emit surface points in their own order.
-        ok, per = _compare_order_relaxed(a, b, relax_points=points_relaxed)
-        return ok, {"arrays": per, "order_relaxed": True, "points_relaxed": points_relaxed}
+        # point_data_tol (opt-in) tolerates denormal-scale interpolated-data noise.
+        ok, per = _compare_order_relaxed(
+            a, b, relax_points=points_relaxed, point_data_tol=point_data_tol)
+        return ok, {"arrays": per, "order_relaxed": True, "points_relaxed": points_relaxed,
+                    "point_data_tol": point_data_tol}
     per_array = {}
     ok = True
     for name in sorted(names_a):
@@ -273,8 +320,13 @@ def compare_all(stock_dir, fvtk_dir):
         # A case is order/points-relaxed if EITHER manifest marks it (both agree).
         order_relaxed = bool(cs.get("order_relaxed") or cf.get("order_relaxed"))
         points_relaxed = bool(cs.get("points_relaxed") or cf.get("points_relaxed"))
+        # Opt-in interpolated-point-data tolerance (clip fast lane). Both sides
+        # carry the same flag; take the max so a 0 on one side can't loosen it.
+        point_data_tol = max(
+            float(cs.get("point_data_tol", 0.0)), float(cf.get("point_data_tol", 0.0)))
         ok, detail = compare_case(
-            stock_dir, fvtk_dir, key, order_relaxed=order_relaxed, points_relaxed=points_relaxed)
+            stock_dir, fvtk_dir, key, order_relaxed=order_relaxed, points_relaxed=points_relaxed,
+            point_data_tol=point_data_tol)
         cases[key] = {"ok": ok, "detail": detail, "group": cs.get("group"),
                       "order_relaxed": order_relaxed or points_relaxed}
     return {"provenance": prov, "cases": cases, "keys": keys}

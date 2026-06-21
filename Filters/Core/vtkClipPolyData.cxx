@@ -21,6 +21,8 @@
 #include "vtkTriangle.h"
 #include "vtkTypeInt64Array.h"
 
+#include "fvtkFastClipPoly.h" // fvtk opt-in parallel polys-only clip (EnableFast)
+
 #include <cmath>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -270,6 +272,39 @@ int vtkClipPolyData::RequestData(vtkInformation* vtkNotUsed(request),
 
   cellScalars = vtkFloatArray::New();
   cellScalars->Allocate(VTK_CELL_SIZE);
+
+  // fvtk opt-in parallel fast path (env FVTK_FAST / fvtk.EnableFast()). Engages
+  // only for the single-output, polys-only surface-clip regime; replaces the
+  // serial per-cell Clip loop + shared-locator merge below with a threaded
+  // per-cell clip and a coincident-point merge. POINTS-relaxed (same point set
+  // and polys, different point numbering). When it declines (fast mode off, or
+  // any unsupported feature -- second clipped output, verts/lines/strips) it
+  // returns false and the byte-for-byte stock path below runs unchanged.
+  //
+  // outPD CopyScalars mirrors the On/Off decision made above; the fast path
+  // allocates its interpolated point data the same way.
+  const bool copyScalars = (this->GenerateClipScalars != 0) ||
+    (input->GetPointData()->GetScalars() != nullptr);
+  if (!this->GenerateClippedOutput &&
+    fvtk::FastClipPolyData(
+      input, output, clipScalars, this->Value, this->InsideOut, inPD, inCD, copyScalars))
+  {
+    // The fast path filled `output` (points + polys + interpolated point data +
+    // passed-through cell data). Release everything the stock path allocated and
+    // return, exactly as the stock path would have on completion.
+    if (this->ClipFunction)
+    {
+      clipScalars->Delete(); // the tmpScalars vtkFloatArray::New() above
+      inPD->Delete();        // the shallow-copied vtkPointData::New() above
+    }
+    newVerts->Delete();
+    newLines->Delete();
+    newPolys->Delete();
+    newPoints->Delete();
+    cellScalars->Delete();
+    this->Locator->Initialize(); // release locator memory, as the stock tail does
+    return 1;
+  }
 
   // Resolve the four vtkPolyData cell-array targets to raw Int64-AOS pointers so
   // the per-cell loop below can read each cell's point ids inline instead of

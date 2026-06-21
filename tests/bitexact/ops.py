@@ -103,6 +103,7 @@ try:
         vtkAppendFilter,
         vtkAppendPolyData,
         vtkCleanPolyData,
+        vtkClipPolyData,
         vtkConnectivityFilter,
         vtkContourGrid,
         vtkCutter,
@@ -1386,6 +1387,27 @@ def op_connectivity_fast(dtype, size):
     return c.GetOutput()
 
 
+def op_clippoly_fast(dtype, size):
+    # vtkClipPolyData of a polys-only triangulated sphere by a plane, via the
+    # OPT-IN parallel polys-only clip (Filters/Core/fvtkFastClipPoly), reached when
+    # fvtk.EnableFast()/FVTK_FAST is set. Stock runs the serial per-cell vtkCell::
+    # Clip loop into one shared vtkMergePoints; the fast path threads the per-cell
+    # clip into thread-local outputs and merges coincident points afterwards. The
+    # clipped point SET (coords + interpolated point data) and the output triangle
+    # multiset are identical to stock, but the points are renumbered in a
+    # thread-/merge-dependent order -> compared POINTS-relaxed, point order
+    # negotiable. Stock VTK ignores FVTK_FAST and runs the reference serial loop.
+    p = vtkPlane()
+    p.SetOrigin(0.0, 0.0, 0.0)
+    p.SetNormal(1, 0, 0)
+    c = vtkClipPolyData()
+    c.SetInputData(make_sphere(size, size))
+    c.SetClipFunction(p)
+    with fast_mode():
+        c.Update()
+    return c.GetOutput()
+
+
 def op_connectivity_largest(dtype, size):
     # vtkConnectivityFilter in the default ExtractLargestRegion mode over a hex
     # UG -> the "extract largest region" output branch, whose per-cell
@@ -2663,6 +2685,15 @@ OPS = {
     "datasetsurface_fast": dict(fn=op_datasetsurface_fast, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True, points_relaxed=True),
     "staticclean_fast": dict(fn=op_staticclean_fast, group="filter", dtypes=["float32", "float64"], sizes=[8, 12], order_relaxed=True, points_relaxed=True),
     "cleanpoly_fast": dict(fn=op_cleanpoly_fast, group="filter", dtypes=["float32", "float64"], sizes=[12, 24], order_relaxed=True, points_relaxed=True),
+    # Parallel polys-only clip (Filters/Core/fvtkFastClipPoly) via EnableFast;
+    # POINTS-relaxed (same point set + triangle multiset, threaded point numbering).
+    # Sizes chosen large enough to span multiple SMP batches across thread counts.
+    # point_data_tol: clip interpolates point data (e.g. normals) at new edge
+    # points; at vertices ~exactly on the clip plane, near-coincident crossings
+    # collapse in an order-dependent way, so the surviving interpolated value
+    # differs from the serial filter by denormal-scale (~1e-21) FP merge noise.
+    # Tolerate it on interpolated point-DATA only (coords stay strict).
+    "clippoly_fast": dict(fn=op_clippoly_fast, group="filter", dtypes=["float32", "float64"], sizes=[60, 100], order_relaxed=True, points_relaxed=True, point_data_tol=1e-12),
     "cutter_polydata": dict(fn=op_cutter_polydata, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cutter_polydata_bycell": dict(fn=op_cutter_polydata_bycell, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cellcenters": dict(fn=op_cellcenters, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
