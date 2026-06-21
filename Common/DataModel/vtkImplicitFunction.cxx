@@ -96,10 +96,29 @@ private:
   vtkAbstractTransform* Transform;
 };
 
+// fvtk: the array overloads below evaluate the implicit function in parallel
+// (FunctionWorker -> vtkSMPTools::For -> EvaluateFunction per point). Several
+// implicit functions lazily build internal state on the first EvaluateFunction
+// -- e.g. vtkPolyPlane::ComputeNormals, guarded only by an MTime -- which is a
+// data race (heap corruption / crash) when worker threads hit it concurrently.
+// Force any such lazy build ONCE on the calling thread before the parallel
+// dispatch, so subsequent concurrent evaluations are pure reads. The single
+// extra scalar evaluation is negligible and does not change any result.
+void vtkImplicitFunctionWarmUpLazyState(vtkImplicitFunction* self, vtkDataArray* input)
+{
+  if (input && input->GetNumberOfComponents() >= 3 && input->GetNumberOfTuples() > 0)
+  {
+    double pt[3] = { input->GetComponent(0, 0), input->GetComponent(0, 1),
+      input->GetComponent(0, 2) };
+    self->FunctionValue(pt); // applies Transform (if any) + triggers the lazy build
+  }
+}
+
 } // end anon namespace
 
 void vtkImplicitFunction::FunctionValue(vtkDataArray* input, vtkDataArray* output)
 {
+  vtkImplicitFunctionWarmUpLazyState(this, input);
   if (!this->Transform)
   {
     this->EvaluateFunction(input, output);
@@ -118,6 +137,8 @@ void vtkImplicitFunction::FunctionValue(vtkDataArray* input, vtkDataArray* outpu
 
 void vtkImplicitFunction::EvaluateFunction(vtkDataArray* input, vtkDataArray* output)
 {
+  vtkImplicitFunctionWarmUpLazyState(this, input);
+
   // defend against uninitialized output datasets.
   output->SetNumberOfComponents(1);
   output->SetNumberOfTuples(input->GetNumberOfTuples());

@@ -125,6 +125,16 @@ void vtkPolyPlane::ComputeNormals()
       // Store the normal in our array.
       this->Normals->SetTuple(pIdx, n);
     }
+
+    // Latch the build time. Without this the guard above never trips, so
+    // ComputeNormals() re-deletes and rebuilds this->Normals on EVERY
+    // EvaluateFunction() call -- merely wasteful when single-threaded, but a
+    // use-after-free data race once EvaluateFunction is dispatched across SMP
+    // worker threads (one thread deletes this->Normals while another reads it).
+    // With the latch, the first call (warmed up on the calling thread by
+    // vtkImplicitFunction before its parallel dispatch) builds, and all
+    // subsequent concurrent calls are pure reads.
+    this->NormalComputeTime.Modified();
   }
 }
 
