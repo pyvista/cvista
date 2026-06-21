@@ -317,24 +317,53 @@ jobs:
           path: /tmp/rx-out
           if-no-files-found: ignore
 
+  # Cheap detector so a PR that BUMPS the pin (tests/pyvista/PYVISTA_REF) runs the
+  # PyVista gate without needing the `pyvista-full` label — the pin must never
+  # advance unvalidated. Plain git diff (no third-party action). Only meaningful
+  # on pull_request; merge_group / dispatch satisfy the `pyvista` if on their own.
+  changes:
+    name: detect PyVista pin change
+    runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    outputs:
+      pyvista_ref: ${{ steps.f.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # need the PR base commit in history for the diff
+      - id: f
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=false
+          if [ "$EVENT" = "pull_request" ] && \
+             git diff --name-only "$BASE" "$HEAD" | grep -qx 'tests/pyvista/PYVISTA_REF'; then
+            changed=true
+          fi
+          echo "PYVISTA_REF changed on this PR: $changed"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
   pyvista:
     name: PyVista suite (built fvtk wheel, py3.13)
-    needs: build
+    needs: [build, changes]
     # PyVista's OWN full test suite driving fvtk (vtkmodules->fvtk shim) — the
     # downstream contract gate, sister to bitexact/renderexact. HEAVY, so it is
     # kept OFF the PR fast path: it runs in the merge queue (the blocking gate
-    # before a squash lands), on manual dispatch, and on any PR carrying the
-    # `pyvista-full` label (the pin-bump PR self-labels). Uses the FAST O2 `build`
-    # wheel, NOT build-lto: optimization level is parity-invariant (proven
-    # maxULP=0 by bitexact + bitexact-lto), so PyVista returns the same pass/fail
-    # on either wheel — and the O2 wheel is already built, so this never waits on
-    # the slow LTO link. Mark this check REQUIRED for the merge queue in branch
-    # protection so a red run blocks the merge.
+    # before a squash lands), on manual dispatch, and on any PR that either carries
+    # the `pyvista-full` label OR bumps the pin (tests/pyvista/PYVISTA_REF — so the
+    # pin can never advance unvalidated). Uses the FAST O2 `build` wheel, NOT
+    # build-lto: optimization level is parity-invariant (proven maxULP=0 by
+    # bitexact + bitexact-lto), so PyVista returns the same pass/fail on either
+    # wheel — and the O2 wheel is already built, so this never waits on the slow
+    # LTO link. Mark this check REQUIRED for the merge queue in branch protection
+    # so a red run blocks the merge.
     if: >-
       github.event_name == 'merge_group' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'pyvista-full'))
+        (contains(github.event.pull_request.labels.*.name, 'pyvista-full') ||
+         needs.changes.outputs.pyvista_ref == 'true'))
     runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5

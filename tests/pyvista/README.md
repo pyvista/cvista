@@ -40,6 +40,9 @@ job triggers on:
   Mark `pyvista` a **required check for the merge queue** in branch protection.
 - **`workflow_dispatch`** — manual run (used while iterating on the harness).
 - **`pull_request` labeled `pyvista-full`** — opt-in early signal on a PR.
+- **`pull_request` that bumps `PYVISTA_REF`** — auto-detected by the `changes`
+  job (a plain git diff), so the pin can never advance unvalidated even without
+  the label.
 
 It uses the fast **O2 `build` wheel**, not the LTO wheel: optimization level is
 parity-invariant (proven `maxULP=0` by `bitexact` + `bitexact-lto`), so PyVista
@@ -54,10 +57,10 @@ reproducible.
 
 [`.github/workflows/pyvista-bump.yml`](../../.github/workflows/pyvista-bump.yml)
 runs weekly: it resolves PyVista's current `main` HEAD and, if it differs, opens
-a PR bumping `PYVISTA_REF` with the `pyvista-full` label. The label runs the full
-suite on that PR (or, with the merge queue, on enqueue), so the pin only advances
-through a gate that proves fvtk still matches that PyVista revision — including
-any upstream `image_cache` regeneration.
+a PR bumping `PYVISTA_REF` with the `pyvista-full` label. Either the label or the
+pin change itself runs the full suite on that PR (and the merge queue runs it on
+enqueue), so the pin only advances through a gate that proves fvtk still matches
+that PyVista revision — including any upstream `image_cache` regeneration.
 
 > Auto-running the suite on the bump PR's checks needs a token that can trigger
 > workflows (the default `GITHUB_TOKEN` cannot trigger CI from a bot-opened PR).
