@@ -79,7 +79,7 @@ export PATH="$PYBIN:$PATH"
 # prints a diagnostic to stdout, so capture only the returned value.
 SUFFIX="$("$PYBIN/python" -c "
 import sys, io, contextlib
-sys.path.insert(0, '$SRC/ci/cibw')
+sys.path.insert(0, r'$(cmpath "$SRC")/ci/cibw')
 import fvtk_backend
 with contextlib.redirect_stdout(io.StringIO()):
     s = fvtk_backend._version_suffix()
@@ -107,7 +107,8 @@ cmake -S "$(cmpath "$SRC")" -B "$(cmpath "$BUILD_DIR")" -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$(cmpath "$INSTALL_PREFIX")" \
     -DVTK_VERSION_SUFFIX="$SUFFIX"
 
-cmake --build "$(cmpath "$BUILD_DIR")" --parallel "${FVTK_BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
+JOBS="${FVTK_BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")}"
+cmake --build "$(cmpath "$BUILD_DIR")" --parallel "$JOBS"
 cmake --install "$(cmpath "$BUILD_DIR")"
 
 # Build the fvtk-sdk wheel from the build-tree scaffold (pyproject.toml was
