@@ -74,6 +74,35 @@ public:
   //--------------------------------------------------------------------------------
   int GetInternalDesiredNumberOfThread() { return this->DesiredNumberOfThread; }
 
+  ///@{
+  /**
+   * fvtk GIL-release hook (Python deadlock avoidance).
+   *
+   * When fvtk runs under Python with a threaded SMP backend (STDThread/TBB/
+   * OpenMP), the calling (master) thread holds the Python GIL across
+   * vtkSMPTools::For and blocks on the worker join barrier. If a worker thread
+   * then invokes a Python observer (a progress/error/warning event routed
+   * through vtkPythonCommand -> vtkPythonScopeGilEnsurer -> PyGILState_Ensure),
+   * it blocks forever waiting for the GIL the parked master holds -> deadlock.
+   *
+   * To break this, the Python layer (vtkPythonUtil::Initialize) registers a
+   * release/acquire callback pair implemented with PyEval_SaveThread /
+   * PyEval_RestoreThread (guarded by PyGILState_Check). For() then drops the GIL
+   * around the threaded dispatch so workers can acquire it for callbacks, and
+   * restores it afterward. Common/Core stays Python-free: these are plain
+   * function pointers, null (and zero-overhead) in non-Python use, and never
+   * invoked for the Sequential backend. Releasing the GIL has no effect on the
+   * computed result, so byte-exactness is preserved.
+   *
+   * GilRelease returns an opaque token (null if the caller did not hold the GIL,
+   * e.g. nested For or a non-Python thread); GilAcquire(token) is a no-op on a
+   * null token.
+   */
+  using GilReleaseFn = void* (*)();
+  using GilAcquireFn = void (*)(void*);
+  static void SetGilCallbacks(GilReleaseFn release, GilAcquireFn acquire);
+  ///@}
+
   //------------------------------------------------------------------------------
   template <typename Config, typename T>
   void LocalScope(Config const& config, T&& lambda)
@@ -96,6 +125,10 @@ public:
   template <typename FunctorInternal>
   void For(vtkIdType first, vtkIdType last, vtkIdType grain, FunctorInternal& fi)
   {
+    // Drop the Python GIL (if held) while a threaded backend runs and the master
+    // thread blocks on the worker join, so workers can take the GIL to invoke
+    // Python observer callbacks. No-op for Sequential and outside Python.
+    GilReleaseScope gilScope(this->ActivatedBackend != BackendType::Sequential);
     switch (this->ActivatedBackend)
     {
       case BackendType::Sequential:
@@ -237,6 +270,36 @@ private:
 
   //--------------------------------------------------------------------------------
   void RefreshNumberOfThread();
+
+  // fvtk GIL-release hook (see SetGilCallbacks). Null unless the Python layer
+  // registered them; never touched for the Sequential backend.
+  static GilReleaseFn GilRelease;
+  static GilAcquireFn GilAcquire;
+
+  // RAII helper: on construction (for a threaded backend, when a release
+  // callback is registered) drop the GIL and stash the token; on destruction
+  // restore it. Keyed entirely on the token so nested For() calls -- where the
+  // caller no longer holds the GIL and GilRelease returns null -- are no-ops.
+  struct GilReleaseScope
+  {
+    void* State = nullptr;
+    explicit GilReleaseScope(bool threaded)
+    {
+      if (threaded && vtkSMPToolsAPI::GilRelease)
+      {
+        this->State = vtkSMPToolsAPI::GilRelease();
+      }
+    }
+    ~GilReleaseScope()
+    {
+      if (this->State && vtkSMPToolsAPI::GilAcquire)
+      {
+        vtkSMPToolsAPI::GilAcquire(this->State);
+      }
+    }
+    GilReleaseScope(const GilReleaseScope&) = delete;
+    GilReleaseScope& operator=(const GilReleaseScope&) = delete;
+  };
 
   //--------------------------------------------------------------------------------
   // This operator overload is used to unpack Config parameters and set them

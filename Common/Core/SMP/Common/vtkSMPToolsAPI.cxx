@@ -56,6 +56,20 @@ vtkSMPToolsAPI& vtkSMPToolsAPI::GetInstance()
 }
 
 //------------------------------------------------------------------------------
+// fvtk GIL-release hook. Plain function pointers (null in non-Python use); they
+// are static members, independent of the singleton, so registration is valid
+// even before/without GetInstance().
+vtkSMPToolsAPI::GilReleaseFn vtkSMPToolsAPI::GilRelease = nullptr;
+vtkSMPToolsAPI::GilAcquireFn vtkSMPToolsAPI::GilAcquire = nullptr;
+
+//------------------------------------------------------------------------------
+void vtkSMPToolsAPI::SetGilCallbacks(GilReleaseFn release, GilAcquireFn acquire)
+{
+  vtkSMPToolsAPI::GilRelease = release;
+  vtkSMPToolsAPI::GilAcquire = acquire;
+}
+
+//------------------------------------------------------------------------------
 void vtkSMPToolsAPI::ClassInitialize()
 {
   if (!vtkSMPToolsAPIInstanceAsPointer)

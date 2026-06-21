@@ -28,6 +28,14 @@ void vtkSMPTools::Initialize(int numThreads)
 }
 
 //------------------------------------------------------------------------------
+void vtkSMPTools::SetGilCallbacks(void* (*release)(), void (*acquire)(void*))
+{
+  // Static members on the API; no singleton required, so this is safe at any
+  // point during/after Python interpreter init.
+  vtk::detail::smp::vtkSMPToolsAPI::SetGilCallbacks(release, acquire);
+}
+
+//------------------------------------------------------------------------------
 int vtkSMPTools::GetEstimatedNumberOfThreads()
 {
   auto& SMPToolsAPI = vtk::detail::smp::vtkSMPToolsAPI::GetInstance();

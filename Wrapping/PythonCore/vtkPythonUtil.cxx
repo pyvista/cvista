@@ -10,6 +10,7 @@
 
 #include "vtkObject.h"
 #include "vtkPythonCommand.h"
+#include "vtkSMPTools.h" // fvtk: register GIL release/acquire hook for threaded SMP
 #ifdef PY_LIMITED_API
 #include "vtkSmartPyObject.h"
 #endif
@@ -295,10 +296,68 @@ vtkPythonUtil::~vtkPythonUtil()
 }
 
 //------------------------------------------------------------------------------
+#if defined(Py_LIMITED_API)
+// PyGILState_Check() is a long-standing exported CPython symbol (since 3.4),
+// present in every interpreter this abi3 wheel can load, but the limited-API
+// headers do not declare it. Declare it ourselves so the threaded-SMP GIL hook
+// can ask "does this thread currently hold the GIL?" -- the one question that
+// makes the release safe for nested For() and non-Python worker threads.
+extern "C" int PyGILState_Check(void);
+#endif
+
+namespace
+{
+// fvtk GIL-release hook for threaded SMP backends. Registered with
+// vtkSMPTools::SetGilCallbacks so that, when a parallel vtkSMPTools::For runs,
+// the calling (master) thread drops the GIL while it blocks on the worker join.
+// This lets a worker thread acquire the GIL (via vtkPythonScopeGilEnsurer) to
+// run a Python observer callback -- progress/error/warning events -- instead of
+// deadlocking against the GIL the parked master would otherwise hold.
+void* vtkPythonSMPGilRelease()
+{
+  // Only release if THIS thread currently holds the GIL (PyGILState_Check). For
+  // nested For() or non-Python worker threads it returns null -> caller no-op.
+  if (Py_IsInitialized() != 0 && PyGILState_Check() != 0)
+  {
+    return PyEval_SaveThread(); // releases the GIL, returns the saved thread state
+  }
+  return nullptr;
+}
+
+void vtkPythonSMPGilAcquire(void* state)
+{
+  if (state != nullptr)
+  {
+    PyEval_RestoreThread(static_cast<PyThreadState*>(state)); // re-acquires the GIL
+  }
+}
+
+// Register the hook the moment this Python wrapping translation unit is loaded
+// (i.e. as soon as any wrapped fvtk module is imported), independent of whether
+// vtkPythonUtil::Initialize() is invoked. SetGilCallbacks only stores two
+// function pointers -- no Python C-API call, no singleton -- so running it
+// during dynamic static-init is safe; the callbacks themselves touch Python
+// only later, at For() time, fully guarded by Py_IsInitialized/PyGILState_Check.
+struct vtkPythonSMPGilRegistrar
+{
+  vtkPythonSMPGilRegistrar()
+  {
+    vtkSMPTools::SetGilCallbacks(&vtkPythonSMPGilRelease, &vtkPythonSMPGilAcquire);
+  }
+};
+static vtkPythonSMPGilRegistrar vtkPythonSMPGilRegistrarInstance;
+}
+
+//------------------------------------------------------------------------------
 void vtkPythonUtil::Initialize()
 {
   // create the singleton
   vtkPythonUtilCreateIfNeeded();
+
+  // fvtk: install the GIL release/acquire hook so a threaded SMP backend
+  // (STDThread/TBB/OpenMP) does not deadlock when a worker thread invokes a
+  // Python observer callback. Idempotent; harmless for the Sequential backend.
+  vtkSMPTools::SetGilCallbacks(&vtkPythonSMPGilRelease, &vtkPythonSMPGilAcquire);
   // finalize our custom MethodDescriptor type
 #if defined(Py_LIMITED_API)
   PyVTKMethodDescriptor_BuildType();

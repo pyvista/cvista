@@ -403,6 +403,21 @@ public:
   static void Initialize(int numThreads = 0);
 
   /**
+   * fvtk: register a Python GIL release/acquire callback pair so that a threaded
+   * SMP backend can drop the GIL on the calling thread while it blocks on the
+   * worker join, letting worker threads acquire the GIL to run Python observer
+   * callbacks (progress/error/warning). Without this, fvtk-under-Python with a
+   * threaded backend deadlocks the moment a parallel filter invokes such an
+   * observer. Registered automatically by vtkPythonUtil::Initialize(); a no-op
+   * (and never invoked) for the Sequential backend or in non-Python use.
+   * `release` returns an opaque token (null if the caller did not hold the GIL);
+   * `acquire` restores from that token and ignores a null token. Passing nullptr
+   * for both disables the hook. Releasing the GIL does not alter computed
+   * results, so byte-exactness is preserved.
+   */
+  static void SetGilCallbacks(void* (*release)(), void (*acquire)(void*));
+
+  /**
    * Get the estimated number of threads being used by the backend.
    * This should be used as just an estimate since the number of threads may
    * vary dynamically and a particular task may not be executed on all the
