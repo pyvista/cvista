@@ -208,8 +208,11 @@ CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 
 # ===========================================================================
 # Windows x86_64 — MSVC /GL+/LTCG (ci/cmake/windows.cmake). delvewheel repair.
-# vcvars must be on PATH (set up in the workflow via ilammy/msvc-dev-cmd before
-# cibuildwheel, or rely on cibuildwheel's MSVC autodetection).
+# vcvars MUST be on PATH, set up in the workflow via ilammy/msvc-dev-cmd BEFORE
+# cibuildwheel. Do NOT rely on cibuildwheel's MSVC autodetection: it puts
+# cl/link on PATH but NOT the SDK resource toolchain (rc.exe / mt.exe), so the
+# Ninja compiler probe fails its link step ("RC Pass 1: no such file or
+# directory", CMAKE_MT-NOTFOUND). Every Windows-building workflow runs that step.
 # ===========================================================================
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]

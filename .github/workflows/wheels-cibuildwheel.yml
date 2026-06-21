@@ -70,6 +70,21 @@ jobs:
         if: runner.os == 'Linux'
         run: mkdir -p /tmp/fvtk-cibw-ccache && chmod 0777 /tmp/fvtk-cibw-ccache
 
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for the whole job. The Ninja
+      # generator does NOT auto-run vcvars, so cibuildwheel's MSVC autodetect
+      # leaves the SDK resource toolchain (rc.exe / mt.exe) off PATH — the C
+      # compiler probe then fails its link step ("RC Pass 1: no such file or
+      # directory", CMAKE_MT-NOTFOUND) and cmake declares cl "broken". This
+      # mirrors ci.yml's build-other-os, wheels-legacy.yml, and wheels-test.yml,
+      # which all run this step; this release workflow was the only Windows
+      # builder missing it. ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so
+      # cl must be on PATH regardless.
+      - name: Set up MSVC (vcvars) for the Ninja build
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.1.4
         # All config lives in pyproject.toml [tool.cibuildwheel]; per-OS
