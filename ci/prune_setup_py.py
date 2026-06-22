@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Prune UI-interactor subpackages from the generated wheel build tree.
+"""Prune dead UI-interactor subpackages from the generated wheel build tree.
 
-PyVista never imports the gtk/qt/tk/wx/test helper subpackages (its Qt path is
-the separate pyvistaqt package), but VTK's generated setup.py hardcodes them in
-``packages=[...]``. Remove both the directories and the setup.py references so
-``setup.py bdist_wheel`` doesn't fail on missing dirs. Mirrors the same step in
-build-fvtk.sh.
+PyVista never imports the gtk/tk/wx/test helper subpackages, but VTK's generated
+setup.py hardcodes them in ``packages=[...]``. Remove both the directories and the
+setup.py references so ``setup.py bdist_wheel`` doesn't fail on missing dirs.
+Mirrors the same step in build-fvtk.sh.
+
+The ``qt`` subpackage is deliberately KEPT: pyvistaqt imports ``vtkmodules.qt``
+(redirected to ``fvtk.qt``) for ``PyQtImpl`` / ``QVTKRenderWindowInteractor``, and
+dropping it breaks pyvistaqt at import time (gh-142). It is pure Python and pulls
+in no Qt binding unless one is already imported, so shipping it is free.
 
 Usage:  python ci/prune_setup_py.py <build_dir>
 """
@@ -16,7 +20,7 @@ import re
 import shutil
 import sys
 
-SUBPACKAGES = ("gtk", "qt", "tk", "wx", "test")
+SUBPACKAGES = ("gtk", "tk", "wx", "test")
 
 
 def main(build_dir: str) -> int:
@@ -38,7 +42,7 @@ def main(build_dir: str) -> int:
         with open(setup_py, "r", encoding="utf-8") as fh:
             text = fh.read()
         pat = re.compile(
-            r"^.*'(?:vtkmodules|fvtk)\.(?:gtk|qt|tk|wx|test)',?.*$\n?",
+            r"^.*'(?:vtkmodules|fvtk)\.(?:gtk|tk|wx|test)',?.*$\n?",
             re.MULTILINE,
         )
         new_text, n = pat.subn("", text)

@@ -33,9 +33,18 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"smoke: WARNING could not read VTK version: {exc}")
 
+    from importlib import import_module
+
+    # The qt helper subpackage must ship: pyvistaqt imports vtkmodules.qt
+    # (redirected to fvtk.qt) at import time, so a wheel that drops it breaks
+    # pyvistaqt (gh-142). It is pure Python and binds no Qt unless one is already
+    # imported, so this import is safe with no Qt installed.
+    qt = import_module(f"{IMPORT_NAME}.qt")
+    assert hasattr(qt, "PyQtImpl"), f"{IMPORT_NAME}.qt missing PyQtImpl"
+    print(f"smoke: {IMPORT_NAME}.qt present (PyQtImpl={qt.PyQtImpl})")
+
     # Offscreen render: prove the OpenGL/render-window stack is importable and
     # can produce a frame headlessly.
-    from importlib import import_module
 
     # autoinit wires the rendering factory overrides.
     import_module(f"{IMPORT_NAME}.vtkRenderingOpenGL2")
