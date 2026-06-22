@@ -1541,14 +1541,14 @@ private:
   vtkCellArray(const vtkCellArray&) = delete;
   void operator=(const vtkCellArray&) = delete;
 
-  // fvtk width-relaxed rule ([[fvtk-int32-default-width-relaxed]]): cell arrays
-  // default to 32-bit offset/connectivity storage (half the footprint of stock
-  // VTK's 64-bit default) and auto-widen to 64-bit only when a value cannot be
-  // represented in int32. This guard is called by every value-writing path
-  // before it stores; on the common path it is a single predicted-not-taken
-  // branch. `maxValue` must be the largest value that path is about to store
-  // (largest offset and/or connectivity id). Out-of-line ConvertTo64BitStorage
-  // runs only on the rare overflow.
+  // fvtk [[fvtk-int32-default-width-relaxed]]: guard for value-writing paths
+  // that operate on 32-bit storage (either because the platform default is
+  // int32 via DefaultStorageIs64Bit==false, or because the caller has
+  // explicitly opted into int32 via SetData(int32Off, int32Conn) and a
+  // subsequent mutation). Widens to 64-bit storage when a value cannot be
+  // represented in int32. Called before every store; on the common 64-bit path
+  // (StorageType != Int32) it is a no-op eliminated by the branch predictor.
+  // `maxValue` must be the largest value about to be stored (offset or id).
   void WidenStorageForValue(vtkIdType maxValue)
   {
     if (this->StorageType == StorageTypes::Int32 &&
