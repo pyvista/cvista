@@ -12,6 +12,7 @@
 #include "vtkContourHelper.h"
 #include "vtkContourValues.h"
 #include "vtkCutter.h"
+#include "vtkFVTKSMPDefaults.h" // fvtk: opt-in EnableFast lane (FastModeEnabled)
 #include "vtkFlyingEdges2D.h"
 #include "vtkFlyingEdges3D.h"
 #include "vtkGarbageCollector.h"
@@ -282,9 +283,20 @@ int vtkContourFilter::RequestData(
       --dim;
     }
 
+    // fvtk EnableFast lane: when fvtk.EnableFast() (env FVTK_FAST) is on, route
+    // image-data contouring through the FlyingEdges path. FlyingEdges computes
+    // the SAME isosurface as the default SynchronizedTemplates -- identical
+    // iso-crossing point count, positions agreeing to one float32 ULP
+    // (~6e-8) -- but emits points/cells in a different (thread-block) order and
+    // always triangulates. This is order- and tessellation-relaxed, NOT
+    // byte-exact (positions sacred to ~1 ULP, order/triangulation negotiable),
+    // so it stays behind the opt-in flag exactly like the other EnableFast
+    // filters. Measured ~85x over PyVista's default (merged-polygon) contour.
+    const bool fvtkFastContour = fvtk::FastModeEnabled();
+
     if (dim == 2)
     {
-      if (this->FastMode)
+      if (this->FastMode || fvtkFastContour)
       {
         this->FlyingEdges2D->SetNumberOfContours(numContours);
         std::copy_n(values, numContours, this->FlyingEdges2D->GetValues());
@@ -306,7 +318,7 @@ int vtkContourFilter::RequestData(
     else if (dim == 3)
     {
       int retVal = 1;
-      if (this->FastMode && this->GenerateTriangles)
+      if ((this->FastMode && this->GenerateTriangles) || fvtkFastContour)
       {
         this->FlyingEdges3D->SetNumberOfContours(numContours);
         std::copy_n(values, numContours, this->FlyingEdges3D->GetValues());
