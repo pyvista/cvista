@@ -21,11 +21,16 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR holds the single cp312-abi3
 # wheel (Python 3.11 dropped); let pip pick the tag-compatible wheel via the local
 # dir instead of globbing (robust if other artifacts are ever co-located).
-# --find-links points pip at
-# the local dir to resolve `fvtk` (tag-compatible pick) while PyPI stays available
-# for fvtk's own declared deps (matplotlib/numpy/...) — so NO --no-index.
+# Install the freshly built wheel FIRST with --no-index: WHEELDIR holds a
+# pre-release (.devN) wheel, and a bare `fvtk` requirement lets pip prefer a
+# published PyPI release (e.g. 9.6.2.0) over it — silently testing the released
+# version instead of this build. --no-index forces the local wheel (pip still
+# tag-matches it); --no-deps defers deps. The second install then resolves
+# fvtk's own deps (matplotlib/numpy/...) from PyPI; fvtk is already satisfied,
+# so the published release is never pulled.
 "$BASE_PY" -m venv /tmp/fvtk
 /tmp/fvtk/bin/pip -q install --upgrade pip "numpy==2.4.6"
+/tmp/fvtk/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" fvtk
 /tmp/fvtk/bin/pip -q install --find-links "$WHEELDIR" fvtk
 SP=$(/tmp/fvtk/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 cp "$SRC/tools/fvtk_shim.py" "$SP/_fvtk_shim.py"
