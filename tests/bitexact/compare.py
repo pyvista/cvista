@@ -90,18 +90,24 @@ def _arr_names(x):
     return list(x.files) if hasattr(x, "files") else list(x)
 
 
-def _point_canonicalization(arrays, names):
+def _point_canonicalization(arrays, names, exclude=()):
     """Return (perm, rank, key) canonicalizing POINTS by (coords, point-data).
 
     perm = argsort of points into canonical order; rank[old_id] = canonical index
     (used to remap connectivity); key = the per-point sort-key matrix. Lets us
     compare meshes whose surface points are emitted in a different order (e.g. the
     vendored extract_surface kernel's hash/thread-dependent compaction order).
+
+    `exclude` is a tuple of substrings; any pd: array whose name contains one is
+    left OUT of the sort key. Used by the contour points-only gate to keep
+    *computed* normals/gradients (which differ by a few ULP between FlyingEdges
+    and SynchronizedTemplates) out of the canonicalization, so points still align
+    by their byte-exact coordinates + interpolated data.
     """
     pts = np.ascontiguousarray(arrays["points"]).astype(np.float64)
     cols = [pts.reshape(len(pts), -1)]
     for name in names:
-        if name.startswith("pd:"):
+        if name.startswith("pd:") and not any(s in name for s in exclude):
             arr = np.asarray(arrays[name])
             cols.append(arr.reshape(len(arr), -1).astype(np.float64))
     key = np.concatenate(cols, axis=1)
@@ -150,7 +156,118 @@ def _compare_cells(a, b, names, per, ok):
     return ok
 
 
-def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0):
+def _compare_cell_count_only(a, b, per, ok):
+    """Topology check for the contour EnableFast lane: assert only that both
+    meshes have the SAME number of cells, NOT that the cell multiset matches.
+
+    vtkFlyingEdges3D (the EnableFast image-data contour) produces the SAME
+    isosurface as the stock vtkSynchronizedTemplates3D -- identical iso-crossing
+    point set (coords byte-exact after fvtk's double-precision interpolation fix)
+    and identical triangle COUNT -- but at the ~2% of cases where the marching
+    cube emits a planar quad the two algorithms split it along the OPPOSITE
+    diagonal. Same surface, same points, same cell count; a fraction of triangles
+    carry a different (equally valid) diagonal. So the cell *multiset* legitimately
+    differs and is not the right oracle; the point-set byte-equality (checked by
+    the caller) plus equal cell count is. Cells are otherwise un-compared."""
+    ra, rb = _cell_records(a), _cell_records(b)
+    if ra is None or rb is None:
+        per["__cells__"] = {"equal": False, "reason": "no topology to canonicalize"}
+        return False
+    na, nb = len(ra[0]), len(rb[0])
+    eq = bool(na == nb)
+    per["__cells__"] = {"equal": eq, "mode": "points-only-count",
+                        "ncells_stock": na, "ncells_fvtk": nb}
+    return ok and eq
+
+
+# pd: arrays whose name contains one of these are *computed* (gradient-derived)
+# rather than interpolated, so FlyingEdges and SynchronizedTemplates produce them
+# from different (equally valid) arithmetic -> compared ULP-tolerant, not strict.
+_COMPUTED_PD = ("Normals", "Gradients")
+# Max float32 ULP distance allowed for those computed arrays. FlyingEdges'
+# gradient estimate differs from SynchronizedTemplates' by ~1 ULP; 8 is a snug
+# bound that still fails any real divergence (a wrong normal is ~1e6+ ULP).
+_NORMAL_ULP_TOL = 8
+
+
+def _wide_float_eq(x, y):
+    """Values-preserved equality tolerant to a float WIDTH difference (fvtk may
+    preserve input float64 where stock downcasts to float32). Same dtype -> strict
+    byte-equal; differing float widths -> the wider array downcast to the narrower
+    width must be byte-identical (only storage widened, no value changed); integers
+    -> width-relaxed int. Returns (equal, note)."""
+    if x.shape != y.shape:
+        return False, "shape"
+    if x.dtype == y.dtype:
+        return bool(np.array_equal(x, y)), "strict"
+    if x.dtype.kind == "f" and y.dtype.kind == "f":
+        narrow = x.dtype if x.dtype.itemsize <= y.dtype.itemsize else y.dtype
+        return bool(np.array_equal(x.astype(narrow), y.astype(narrow))), "width-relaxed-float"
+    if x.dtype.kind in "iu" and y.dtype.kind in "iu":
+        return bool(np.array_equal(x.astype(np.int64), y.astype(np.int64))), "width-relaxed-int"
+    return False, "dtype"
+
+
+def _compare_points_only(a, b, names):
+    """Contour EnableFast gate (vtkFlyingEdges3D vs stock SynchronizedTemplates).
+
+    FlyingEdges produces the SAME isosurface, but: points/cells are emitted in
+    thread-block order; planar quads are split on the opposite diagonal; surface
+    NORMALS come from a different (equally valid) gradient estimate (~1 float32
+    ULP); and fvtk preserves the input attribute precision where stock downcasts
+    (float64 in -> float64 out vs stock's float32, values preserved on downcast).
+    The iso-crossing COORDINATES are byte-exact. So:
+
+      * canonicalize points by COORDS only -- byte-exact and unique per active
+        edge, so the ordering is unambiguous (asserted: no duplicate coords);
+      * assert COORDS byte-exact under that ordering;
+      * assert INTERPOLATED point-data values-preserved (width-relaxed: fvtk's
+        float64 downcast to stock's float32 is byte-identical);
+      * assert COMPUTED normals/gradients within a snug ULP tolerance;
+      * assert equal cell COUNT (the cell multiset is negotiable: quad diagonal).
+    """
+    per = {}
+    ok = True
+    ca = np.ascontiguousarray(a["points"]).astype(np.float64)
+    cb = np.ascontiguousarray(b["points"]).astype(np.float64)
+    pa = np.lexsort([ca[:, j] for j in range(ca.shape[1] - 1, -1, -1)])
+    pb = np.lexsort([cb[:, j] for j in range(cb.shape[1] - 1, -1, -1)])
+    # coords-only canonicalization is unambiguous only if coords are unique.
+    dup_a = len(ca) - len(np.unique(ca, axis=0))
+    dup_b = len(cb) - len(np.unique(cb, axis=0))
+    coords_eq = bool(a["points"].shape == b["points"].shape and
+                     np.array_equal(a["points"][pa], b["points"][pb]))
+    per["__points__"] = {"equal": coords_eq and dup_a == 0 and dup_b == 0,
+                         "mode": "points-only", "npoints": int(ca.shape[0]),
+                         "coords_byte_exact": coords_eq,
+                         "dup_coords_stock": dup_a, "dup_coords_fvtk": dup_b}
+    ok &= per["__points__"]["equal"]
+    for name in names:
+        if not name.startswith("pd:"):
+            continue
+        xa = np.asarray(a[name])[pa]
+        xb = np.asarray(b[name])[pb]
+        if any(s in name for s in _COMPUTED_PD):
+            # computed (gradient-derived) -> ULP tolerant, requires same dtype.
+            if xa.shape != xb.shape or xa.dtype != xb.dtype or xa.dtype.kind != "f":
+                eq, ulp = False, None
+            else:
+                ulp = _ulp_distance(xa, xb)
+                eq = ulp <= _NORMAL_ULP_TOL
+            per[name] = {"equal": bool(eq), "mode": "points-only-ulp",
+                         "ulp": ulp, "ulp_tol": _NORMAL_ULP_TOL}
+        else:
+            # interpolated -> values preserved (width-relaxed float/int).
+            eq, note = _wide_float_eq(xa, xb)
+            per[name] = {"equal": bool(eq), "mode": "points-only-" + note,
+                         "dtype_stock": str(xa.dtype), "dtype_fvtk": str(xb.dtype)}
+        ok &= per[name]["equal"]
+    # cells: count only (quad-diagonal split differs; same surface, same count).
+    ok = _compare_cell_count_only(a, b, per, ok)
+    return bool(ok), per
+
+
+def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0, points_only=False):
     """Order-invariant mesh equality. cells are always compared as a multiset
     carrying their cell-data. Points + point-data are STRICT unless relax_points,
     in which case points are canonicalized by (coords, point-data) and connectivity
@@ -168,6 +285,8 @@ def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0):
     per = {}
     ok = True
     names = sorted(set(_arr_names(a)) & set(_arr_names(b)))
+    if points_only:
+        return _compare_points_only(a, b, names)
     if not relax_points:
         # points + point-data STRICT (cutter/contour keep point order identical).
         for name in names:
@@ -278,7 +397,8 @@ def _compare_corrects_stock(a, b, input_dtype):
 
 
 def compare_case(stock_dir, fvtk_dir, key, order_relaxed=False, points_relaxed=False,
-                 point_data_tol=0.0, corrects_stock=False, input_dtype=None):
+                 point_data_tol=0.0, corrects_stock=False, input_dtype=None,
+                 points_only=False):
     """Return (ok: bool, detail: dict) for a single case key."""
     sp = os.path.join(stock_dir, key + ".npz")
     fp = os.path.join(fvtk_dir, key + ".npz")
@@ -306,9 +426,10 @@ def compare_case(stock_dir, fvtk_dir, key, order_relaxed=False, points_relaxed=F
         # remapped) -- for kernels that emit surface points in their own order.
         # point_data_tol (opt-in) tolerates denormal-scale interpolated-data noise.
         ok, per = _compare_order_relaxed(
-            a, b, relax_points=points_relaxed, point_data_tol=point_data_tol)
+            a, b, relax_points=points_relaxed, point_data_tol=point_data_tol,
+            points_only=points_only)
         return ok, {"arrays": per, "order_relaxed": True, "points_relaxed": points_relaxed,
-                    "point_data_tol": point_data_tol}
+                    "point_data_tol": point_data_tol, "points_only": points_only}
     per_array = {}
     ok = True
     for name in sorted(names_a):
@@ -387,10 +508,14 @@ def compare_all(stock_dir, fvtk_dir):
         # carry the same flag; take the max so a 0 on one side can't loosen it.
         point_data_tol = max(
             float(cs.get("point_data_tol", 0.0)), float(cf.get("point_data_tol", 0.0)))
+        # Contour EnableFast lane: point set byte-exact + order-relaxed, but the
+        # triangulation may differ on planar-quad diagonals, so the cell multiset
+        # is checked by COUNT only (see _compare_cell_count_only).
+        points_only = bool(cs.get("points_only") or cf.get("points_only"))
         ok, detail = compare_case(
             stock_dir, fvtk_dir, key, order_relaxed=order_relaxed, points_relaxed=points_relaxed,
             point_data_tol=point_data_tol, corrects_stock=corrects_stock,
-            input_dtype=cs.get("dtype"))
+            input_dtype=cs.get("dtype"), points_only=points_only)
         cases[key] = {"ok": ok, "detail": detail, "group": cs.get("group"),
                       "order_relaxed": order_relaxed or points_relaxed,
                       "corrects_stock": corrects_stock}

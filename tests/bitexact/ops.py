@@ -698,6 +698,27 @@ def op_contour(dtype, size):
     return c.GetOutput()
 
 
+def op_contour_fast(dtype, size):
+    # vtkContourFilter on a vtkImageData volume with fvtk.EnableFast()/FVTK_FAST
+    # set: the image-data 3D path is routed to vtkFlyingEdges3D (the threaded
+    # marching-cubes), reached when fvtk.EnableFast() is on. FlyingEdges computes
+    # the SAME isosurface as the default vtkSynchronizedTemplates3D; fvtk
+    # interpolates FlyingEdges' coordinates in DOUBLE and downcasts once (matching
+    # SynchronizedTemplates' single rounding), so the iso-crossing point SET is
+    # BYTE-EXACT with stock -- but emitted in a different (thread-block) order, and
+    # where a marching cube yields a planar quad the two algorithms split it along
+    # the OPPOSITE diagonal. Compared POINTS-only: same point set (coords +
+    # scalars, order negotiable) and same cell COUNT; the cell multiset is NOT
+    # compared (the quad diagonal is an equally-valid, negotiable choice). Stock
+    # VTK ignores FVTK_FAST and runs the reference SynchronizedTemplates path.
+    c = vtkContourFilter()
+    c.SetInputData(make_volume(size, dtype))
+    c.GenerateValues(8, 0.2 * size, 0.45 * size)
+    with fast_mode():
+        c.Update()
+    return c.GetOutput()
+
+
 def op_clip(dtype, size):
     p = vtkPlane()
     p.SetOrigin(size / 2.0, size / 2.0, size / 2.0)
@@ -2763,6 +2784,12 @@ OPS = {
     # Large linear-grid isocontour (ComputeNormals OFF): threaded vtkContour3DLinearGrid,
     # ORDER-RELAXED. Normals-ON stays serial/byte-exact (reduction-order-dependent).
     "contour_linear": dict(fn=op_contour_linear, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True),
+    # Image-data isocontour routed to threaded vtkFlyingEdges3D via EnableFast.
+    # POINTS-only: iso-crossing point set is byte-exact with stock (FlyingEdges
+    # interpolates in double + downcasts once, matching SynchronizedTemplates) but
+    # emitted thread-block-ordered, and planar quads split on the opposite diagonal
+    # -> same point set + same cell count, cell multiset NOT compared. See op body.
+    "contour_fast": dict(fn=op_contour_fast, group="filter", dtypes=["float32", "float64"], sizes=[20, 32], order_relaxed=True, points_relaxed=True, points_only=True),
     # Vendored parallel boundary-surface kernel (pyvista-algorithms, MIT) via EnableFast;
     # POINTS-relaxed (surface points + cells both emitted in kernel order).
     "datasetsurface_fast": dict(fn=op_datasetsurface_fast, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True, points_relaxed=True),
