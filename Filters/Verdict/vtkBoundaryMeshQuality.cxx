@@ -4,11 +4,11 @@
 
 #include "vtkCellCenters.h"
 #include "vtkCellData.h"
+#include "vtkDataArray.h"
 #include "vtkDataSet.h"
 #include "vtkDoubleArray.h"
 #include "vtkFloatArray.h"
 #include "vtkGeometryFilter.h"
-#include "vtkIdTypeArray.h"
 #include "vtkImageData.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -106,8 +106,12 @@ int vtkBoundaryMeshQuality::RequestData(vtkInformation* vtkNotUsed(request),
   geometryFilter->Update();
   output->ShallowCopy(geometryFilter->GetOutput());
 
-  const auto originalCellIds = vtkIdTypeArray::FastDownCast(
-    output->GetCellData()->GetArray(geometryFilter->GetOriginalCellIdsName()));
+  // Use vtkDataArray* (not vtkIdTypeArray*) so the lookup is width-agnostic:
+  // fvtk's geometry filter may store vtkOriginalCellIds as vtkTypeInt32Array
+  // when the mesh is small enough to fit int32 (parity-equivalent values,
+  // narrower container). GetComponent(i,0) handles any integer/floating width.
+  vtkDataArray* const originalCellIds =
+    output->GetCellData()->GetArray(geometryFilter->GetOriginalCellIdsName());
   if (!originalCellIds)
   {
     vtkErrorMacro("Failed to get original cell ids.");
@@ -186,7 +190,8 @@ int vtkBoundaryMeshQuality::RequestData(vtkInformation* vtkNotUsed(request),
               break;
             }
           }
-          const auto originalCellId = originalCellIds->GetValue(cellId);
+          const auto originalCellId =
+            static_cast<vtkIdType>(originalCellIds->GetComponent(cellId, 0));
           const auto faceCenter = outputCellCenters->GetPointer(3 * cellId);
           const auto cellCenter = inputCellCenters->GetPointer(3 * originalCellId);
           distanceArray[cellId] =
@@ -254,7 +259,8 @@ int vtkBoundaryMeshQuality::RequestData(vtkInformation* vtkNotUsed(request),
               break;
             }
           }
-          const auto originalCellId = originalCellIds->GetValue(cellId);
+          const auto originalCellId =
+            static_cast<vtkIdType>(originalCellIds->GetComponent(cellId, 0));
           outputNormals->GetTuple(cellId, faceNormal);
           const auto faceCenter = outputCellCenters->GetPointer(3 * cellId);
           const auto cellCenter = inputCellCenters->GetPointer(3 * originalCellId);
@@ -305,7 +311,8 @@ int vtkBoundaryMeshQuality::RequestData(vtkInformation* vtkNotUsed(request),
               break;
             }
           }
-          const auto originalCellId = originalCellIds->GetValue(cellId);
+          const auto originalCellId =
+            static_cast<vtkIdType>(originalCellIds->GetComponent(cellId, 0));
           const auto faceCenter = outputCellCenters->GetPointer(3 * cellId);
           const auto cellCenter = inputCellCenters->GetPointer(3 * originalCellId);
           outputNormals->GetTuple(cellId, normal);
