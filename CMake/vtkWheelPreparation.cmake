@@ -136,9 +136,17 @@ set(wheel_sdks_files
   wheel_sdks/src/fvtk_sdk/cmake/__init__.py
   wheel_sdks/tests/test_package.py
   wheel_sdks/tests/test_find_package.py
+  wheel_sdks/tests/test_wrap_module.py
   wheel_sdks/tests/packages/find_package/CMakeLists.txt
   wheel_sdks/tests/packages/find_package/pyproject.toml
-  wheel_sdks/tests/packages/src/vtk_simple/__init__.py)
+  wheel_sdks/tests/packages/src/vtk_simple/__init__.py
+  wheel_sdks/tests/packages/wrap_module/pyproject.toml
+  wheel_sdks/tests/packages/wrap_module/CMakeLists.txt
+  wheel_sdks/tests/packages/wrap_module/sdk_example/vtk.module
+  wheel_sdks/tests/packages/wrap_module/sdk_example/CMakeLists.txt
+  wheel_sdks/tests/packages/wrap_module/sdk_example/vtkSDKExamplePassThrough.h
+  wheel_sdks/tests/packages/wrap_module/sdk_example/vtkSDKExamplePassThrough.cxx
+  wheel_sdks/tests/packages/wrap_module/sdk_example/__init__.py)
 
 set(wheel_sdk_copied_files)
 foreach (wheel_sdk_file IN LISTS wheel_sdks_files)
@@ -174,6 +182,23 @@ elseif ("$ENV{CI_COMMIT_TAG}" MATCHES "\.rc")
 endif ()
 
 set(VTK_WHEEL_SDK_VTK_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}") # location to copy into the SDK
+
+# Capture the abi3 wrapping settings so the SDK can re-export them: a downstream
+# `find_package(VTK)` then drives `vtk_module_wrap_python` with the same stable-
+# ABI configuration this build used, so its wrappers inherit abi3 too. Mirror
+# the VTK_WHEEL_SDK_* pattern above and default defensively in case the cache
+# option is not yet defined in this scope.
+if (NOT DEFINED FVTK_ABI3)
+  set(VTK_WHEEL_SDK_ABI3 ON)
+else ()
+  set(VTK_WHEEL_SDK_ABI3 "${FVTK_ABI3}")
+endif ()
+if (NOT DEFINED FVTK_ABI3_VERSION)
+  set(VTK_WHEEL_SDK_ABI3_VERSION "0x030c0000")
+else ()
+  set(VTK_WHEEL_SDK_ABI3_VERSION "${FVTK_ABI3_VERSION}")
+endif ()
+
 configure_file(
   "${CMAKE_CURRENT_LIST_DIR}/wheel_sdks/pyproject.toml.in"
   "${CMAKE_BINARY_DIR}/wheel_sdks/pyproject.toml"
