@@ -404,6 +404,31 @@ jobs:
           path: /tmp/pv-out
           if-no-files-found: ignore
 
+  # Single stable required check for the PyVista gate. The `pyvista` job above is
+  # SKIPPED on normal PRs (it only runs in the merge queue, on dispatch, or on a
+  # PR that is labeled `pyvista-full` or bumps the pin) — and a required check
+  # whose job is skipped BLOCKS the PR. So require THIS always()-reporting gate,
+  # never `pyvista` directly (same pattern as `sdk-gate`, see #109): it passes
+  # when the suite succeeded OR was skipped, and fails only when the suite ran and
+  # failed. In the merge queue the suite runs for real, so this gates the merge;
+  # on normal PRs it passes instantly without running the heavy suite.
+  pyvista-gate:
+    name: PyVista gate
+    needs: pyvista
+    if: ${{ always() }}
+    runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Require the PyVista suite to pass or be skipped
+        run: |
+          r='${{ needs.pyvista.result }}'
+          echo "pyvista suite result: $r"
+          if [ "$r" = success ] || [ "$r" = skipped ]; then
+            echo "PyVista gate OK ($r)"
+          else
+            echo "::error::PyVista suite $r"
+            exit 1
+          fi
+
   # === LTO-on-main legs (push-to-main / workflow_dispatch ONLY) ==============
   # The PR gate above builds the FAST Linux wheel (FVTK_LTO=0 + -O2) so PRs stay
   # cheap — but that means the configuration we actually SHIP (the tag-gated
