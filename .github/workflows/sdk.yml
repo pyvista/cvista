@@ -13,20 +13,15 @@
 name: SDK
 
 on:
+  # The workflow ALWAYS triggers on PRs (no top-level `paths:` filter) so the
+  # `sdk-gate` job below always reports a status — that is what lets it be a
+  # required check without deadlocking PRs that don't touch the SDK. The heavy
+  # build legs are skipped for those PRs via the `changes` filter, not by
+  # suppressing the whole workflow. See issue #109.
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    paths:
-      - CMake/wheel_sdks/**
-      - CMake/vtkWheelPreparation.cmake
-      - ci/build-sdk.sh
-      - ci/test-sdk.sh
-      - ci/cmake/linux.cmake
-      - ci/cmake/macos.cmake
-      - ci/cmake/windows.cmake
-      - fvtk-config/**
-      - .github/workflows/sdk.yml
   release:
     types: [published]
   workflow_dispatch:
@@ -36,8 +31,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # PR-only: decide whether the SDK inputs actually changed, so the heavy build
+  # legs run only when relevant. On push/release/dispatch this job is skipped and
+  # build-sdk runs unconditionally (see its `if`).
+  changes:
+    name: detect SDK changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      sdk: ${{ steps.filter.outputs.sdk }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sdk:
+              - 'CMake/wheel_sdks/**'
+              - 'CMake/vtkWheelPreparation.cmake'
+              - 'ci/build-sdk.sh'
+              - 'ci/test-sdk.sh'
+              - 'ci/cmake/linux.cmake'
+              - 'ci/cmake/macos.cmake'
+              - 'ci/cmake/windows.cmake'
+              - 'fvtk-config/**'
+              - '.github/workflows/sdk.yml'
+
   build-sdk:
     name: build fvtk-sdk (${{ matrix.os }})
+    # On PRs: run only when the SDK inputs changed. On push/release/dispatch:
+    # always (the `changes` job is skipped there, so the second clause carries it;
+    # `!cancelled()` lets this run despite that skipped dependency).
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.sdk == 'true') }}
     # Heavy C++ compile (same VTK kit as the runtime wheel) → Blacksmith runners
     # when the FVTK_RUNNER_* vars are set, else the github-hosted defaults. The
     # `os` key is the stable artifact suffix; `runner.os`/uname inside the build
@@ -102,6 +128,28 @@ jobs:
           name: fvtk-sdk-wheels-${{ matrix.os }}
           path: sdk-dist/*.whl
           if-no-files-found: error
+
+  # Single stable required check. Runs on every event (always()), so it always
+  # reports — make THIS the required status in the branch ruleset, never the
+  # per-OS `build fvtk-sdk (...)` legs (their names change with the matrix, and
+  # they don't run on SDK-irrelevant PRs). Passes when build-sdk succeeded OR was
+  # skipped (SDK inputs unchanged); fails on any leg failure/cancellation. See #109.
+  sdk-gate:
+    name: SDK gate
+    needs: build-sdk
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require build-sdk to pass or be skipped
+        run: |
+          r='${{ needs.build-sdk.result }}'
+          echo "build-sdk result: $r"
+          if [ "$r" = success ] || [ "$r" = skipped ]; then
+            echo "SDK gate OK ($r)"
+          else
+            echo "::error::SDK build $r"
+            exit 1
+          fi
 
   publish-sdk:
     name: Publish fvtk-sdk to PyPI (trusted publishing)
