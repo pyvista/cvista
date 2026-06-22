@@ -38,12 +38,15 @@ export VTK_EGL_DEVICE_INDEX="${VTK_EGL_DEVICE_INDEX:-0}"
 /tmp/rx-stock/bin/pip -q install --upgrade pip
 /tmp/rx-stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
 
-# fvtk wheel + vtkmodules->fvtk redirect shim. WHEELDIR holds the single cp312-abi3
-# wheel (Python 3.11 dropped); let pip pick the tag-compatible wheel from the local
-# dir rather than globbing. --find-links points pip at the local dir for
-# `fvtk` while PyPI stays available for fvtk's own deps — so NO --no-index.
+# Install the freshly built wheel FIRST with --no-index: WHEELDIR holds a
+# pre-release (.devN) wheel, and a bare `fvtk` requirement lets pip prefer a
+# published PyPI release over it — silently testing the released version instead
+# of this build. --no-index forces the local wheel (pip still tag-matches it);
+# the second install resolves fvtk's deps from PyPI without pulling the published
+# release (fvtk is already satisfied).
 "$BASE_PY" -m venv /tmp/rx-fvtk
 /tmp/rx-fvtk/bin/pip -q install --upgrade pip "numpy==2.4.6"
+/tmp/rx-fvtk/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" fvtk
 /tmp/rx-fvtk/bin/pip -q install --find-links "$WHEELDIR" fvtk
 SP=$(/tmp/rx-fvtk/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 cp "$SRC/tools/fvtk_shim.py" "$SP/_fvtk_shim.py"

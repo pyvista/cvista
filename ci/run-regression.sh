@@ -26,11 +26,15 @@ export EGL_PLATFORM=surfaceless
 export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow
 export VTK_EGL_DEVICE_INDEX="${VTK_EGL_DEVICE_INDEX:-0}"
 
-# fvtk wheel in its own venv. --find-links points pip at the local dir to
-# resolve `fvtk` (tag-compatible pick) while PyPI stays available for fvtk's
-# declared deps — so NO --no-index. The tests import `fvtk` directly (no shim).
+# Install the freshly built wheel FIRST with --no-index: WHEELDIR holds a
+# pre-release (.devN) wheel, and a bare `fvtk` requirement lets pip prefer a
+# published PyPI release over it — silently testing the released version instead
+# of this build. --no-index forces the local wheel (pip still tag-matches it);
+# the second install resolves fvtk's deps from PyPI without pulling the published
+# release (fvtk is already satisfied). The tests import `fvtk` directly (no shim).
 "$BASE_PY" -m venv /tmp/fvtk-reg
 /tmp/fvtk-reg/bin/pip -q install --upgrade pip "numpy==2.4.6" pytest
+/tmp/fvtk-reg/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" fvtk
 /tmp/fvtk-reg/bin/pip -q install --find-links "$WHEELDIR" fvtk
 
 cd "$SRC/tests/regression"

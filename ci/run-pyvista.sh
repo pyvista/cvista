@@ -68,8 +68,13 @@ echo ">>> PyVista @ $(git -C "$PVDIR" rev-parse --short HEAD) (pinned $REF)"
 # PyVista's `test` dependency-group (pytest, pytest-xdist, pytest-pyvista, ...).
 # pytest-timeout is NOT in that group, so add it explicitly for --timeout.
 /tmp/pv/bin/pip -q install --group "$PVDIR/pyproject.toml:test" pytest-timeout
-# Built fvtk wheel. --find-links resolves `fvtk` from the local dir while PyPI
-# stays available for fvtk's own deps (matplotlib/numpy/...) — so NO --no-index.
+# Built fvtk wheel. Install it FIRST with --no-index: WHEELDIR holds a pre-release
+# (.devN) wheel, and a bare `fvtk` requirement lets pip prefer a published PyPI
+# release over it — silently testing the released version instead of this build.
+# --no-index forces the local wheel (pip still tag-matches it); the second install
+# resolves fvtk's own deps (matplotlib/numpy/...) from PyPI without pulling the
+# published release (fvtk is already satisfied).
+/tmp/pv/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" fvtk
 /tmp/pv/bin/pip -q install --find-links "$WHEELDIR" fvtk
 # vtkmodules.* -> fvtk.* redirect, active at interpreter startup via sitecustomize
 # (.pth). Same shim the bit-exact / PGO harnesses use.
