@@ -568,15 +568,22 @@ vtkCellArray::vtkCellArray()
 vtkCellArray::~vtkCellArray() = default;
 vtkStandardNewMacro(vtkCellArray);
 
-// fvtk width-relaxed rule ([[fvtk-int32-default-width-relaxed]]): default cell
-// arrays to 32-bit offset/connectivity storage regardless of vtkIdType width.
-// This halves the cell-array footprint (and memory bandwidth, the bottleneck on
-// large meshes) vs stock VTK's 64-bit default. Every value-writing path
-// auto-widens to 64-bit when a value cannot fit in int32, so meshes with
-// >2^31 points/cells stay correct. Integer VALUES are identical to stock; only
-// the container narrows. Use vtkCellArray::SetDefaultStorageIs64Bit(true) to
-// restore stock behaviour.
+// fvtk [[fvtk-int32-default-width-relaxed]]: the global default matches stock
+// VTK 9.6.2 (64-bit on VTK_USE_64BIT_IDS platforms, 32-bit otherwise). An
+// earlier fvtk patch unconditionally forced false here for a memory footprint
+// win, but that changed the dtype exported by vtk_to_numpy from int64 to int32,
+// and made the XML writer output Int32 connectivity/offsets arrays instead of
+// Int64 — breaking the PyVista test_save_compression 4x ratio assertion (#117)
+// and the zero-copy regular_faces path in trimesh (#118). The per-reader int32
+// optimisations in vtkPLYReader and vtkSTLReader use SetData() directly and are
+// unaffected by this default; WidenStorageForValue() guards remain active for
+// 32-bit platforms and for callers that explicitly opt into 32-bit storage via
+// SetDefaultStorageIs64Bit(false).
+#ifdef VTK_USE_64BIT_IDS
+bool vtkCellArray::DefaultStorageIs64Bit = true;
+#else
 bool vtkCellArray::DefaultStorageIs64Bit = false;
+#endif
 
 //=================== Begin Legacy Methods ===================================
 // These should be deprecated at some point as they are confusing or very slow
