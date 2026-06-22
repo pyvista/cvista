@@ -153,16 +153,17 @@ if [ "${FVTK_STRIP:-0}" = "1" ]; then
     echo "WARN: no strip binary found; wheel ships unstripped" >&2
   fi
 fi
-# Drop the GTK/Qt/Tk/wx UI-interactor helper packages — pyvista never imports
-# them (its Qt path is the separate pyvistaqt package). They're pure-Python so
-# they cost nothing to build, but they're junk for a pyvista wheel. The
-# generated setup.py hardcodes them in packages=[...]; remove both the dirs and
-# the setup.py references so bdist_wheel doesn't fail on the missing dirs.
-for sub in gtk qt test tk wx; do
+# Drop the GTK/Tk/wx/test UI-interactor helper packages — pyvista never imports
+# them. They're pure-Python so they cost nothing to build, but they're junk for a
+# pyvista wheel. The generated setup.py hardcodes them in packages=[...]; remove
+# both the dirs and the setup.py references so bdist_wheel doesn't fail on the
+# missing dirs. KEEP qt: pyvistaqt imports vtkmodules.qt (-> fvtk.qt) at import
+# time, so dropping it breaks pyvistaqt (gh-142).
+for sub in gtk test tk wx; do
   rm -rf "$BUILD/fvtk/$sub" "$BUILD"/build/lib.*/fvtk/$sub 2>/dev/null || true
 done
 if [ -f "$BUILD/setup.py" ]; then
-  sed -i -E "/'fvtk\.(gtk|qt|tk|wx|test)',?/d" "$BUILD/setup.py"
+  sed -i -E "/'fvtk\.(gtk|tk|wx|test)',?/d" "$BUILD/setup.py"
 fi
 
 echo "=== wheel ==="

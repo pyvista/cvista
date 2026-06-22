@@ -32,6 +32,13 @@ def main() -> int:
     cc = import_module(f"{IMPORT_NAME}.vtkCommonCore")
     print(f"smoke_min: VTK_VERSION = {cc.vtkVersion.GetVTKVersion()}")
 
+    # The qt helper subpackage must ship so pyvistaqt (imports vtkmodules.qt ->
+    # fvtk.qt) keeps working (gh-142). Pure Python; binds no Qt unless one is
+    # already imported.
+    qt = import_module(f"{IMPORT_NAME}.qt")
+    assert hasattr(qt, "PyQtImpl"), f"{IMPORT_NAME}.qt missing PyQtImpl"
+    print(f"smoke_min: {IMPORT_NAME}.qt present")
+
     # Non-rendering filter pipeline: sphere -> triangulate. Exercises the
     # Filters/Sources + Filters/Core kits and the Python wrapper bridge without
     # touching OpenGL.
