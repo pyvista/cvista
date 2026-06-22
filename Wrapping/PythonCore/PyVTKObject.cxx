@@ -850,7 +850,15 @@ PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtk
 
   if ((PyType_GetFlags(pytype) & Py_TPFLAGS_HEAPTYPE) != 0)
   {
-    // Incref if class was declared in python (see PyType_GenericAlloc).
+    // In abi3/heap-type mode the object-factory may resolve a more-derived
+    // concrete class (e.g. vtkOpenGLSkybox for a vtkSkybox request).  Mirror
+    // the static-type behaviour: switch pytype to the registered Python type
+    // for the actual class so the returned object has the correct derived type.
+    if (cls->py_type != pytype)
+    {
+      pytype = cls->py_type;
+    }
+    // Incref so PyObject_GC_New can take ownership of the type reference.
     Py_INCREF(reinterpret_cast<PyObject*>(pytype));
   }
   else
