@@ -155,7 +155,11 @@ jobs:
     name: Publish fvtk-sdk to PyPI (trusted publishing)
     # Release-only. Requires a PyPI trusted publisher on project `fvtk-sdk`
     # bound to repo pyvista/fvtk, workflow sdk.yml, environment pypi-sdk.
-    if: github.event_name == 'release'
+    # always() is REQUIRED: the PR-only `changes` job is skipped on release, and
+    # without a status function that skip propagates down the needs chain and
+    # silently skips this publish (it did, on 9.6.2.0rc2). Gate explicitly on the
+    # release event AND build-sdk success instead.
+    if: ${{ always() && github.event_name == 'release' && needs.build-sdk.result == 'success' }}
     needs: [build-sdk]
     runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
     environment:
