@@ -25,9 +25,14 @@ except ImportError:
     raise ImportError("This module depends on the pickle, copyreg, and numpy modules.\
  Please make sure that it is installed properly.")
 
-from ..vtkParallelCore import vtkCommunicator
 from ..vtkCommonCore import vtkCharArray
 from .. import vtkCommonDataModel
+
+# vtkCommunicator lives in vtkParallelCore, whose wrapped-module import is ~10-15ms
+# of dlopen + class registration. It is only needed inside the (un)marshal
+# functions below, which run at pickle/unpickle time -- never at import. Deferring
+# it to first use keeps `import fvtk.util.pickle_support` (and the pyvista import
+# chain that reaches vtkCommonDataModel) from eagerly loading vtkParallelCore.
 
 def unserialize_VTK_data_object(state):
     """Takes a state dictionary with entries:
@@ -36,6 +41,8 @@ def unserialize_VTK_data_object(state):
 
       and transforms it into a data object.
     """
+
+    from ..vtkParallelCore import vtkCommunicator
 
     if ("Type" not in state.keys()) or ("Serialized" not in state.keys()):
         raise RuntimeError("State dictionary passed to unpickle does not have Type and/or\
@@ -63,6 +70,8 @@ def serialize_VTK_data_object(data_object):
 
       This is exactly the state dictionary that unserialize_VTK_data_object expects.
     """
+
+    from ..vtkParallelCore import vtkCommunicator
 
     if not data_object.IsA("vtkDataObject"):
         raise TypeError("Object passed to pickling should be a vtkDataObject")
