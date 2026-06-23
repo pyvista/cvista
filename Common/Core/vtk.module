@@ -29,6 +29,7 @@ DEPENDS
   VTK::vtksys
 OPTIONAL_DEPENDS
   VTK::loguru
+  VTK::mimalloc
 TEST_DEPENDS
   VTK::cli11
   VTK::CommonDataModel

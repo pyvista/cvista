@@ -521,6 +521,41 @@ else ()
   set(VTK_USE_X True CACHE BOOL "")
 endif ()
 
+# --- Lever: mimalloc allocator (FVTK_MIMALLOC) — DEFAULT ON -------------------
+# Route VTK's own C++ allocations (global operator new/new[]/delete/delete[],
+# sized + aligned variants) to a vendored, statically-linked mimalloc
+# (ThirdParty/mimalloc, pinned v2.3.2 -> libvtkmimalloc.a) via fvtk's own
+# override TU (Common/Core/vtkFVTKAllocator.cxx). The override is defined with
+# fvtk's global hidden visibility (CMAKE_CXX_VISIBILITY_PRESET=hidden) +
+# -fno-semantic-interposition, so it binds WITHIN fvtk's own .so and is NEVER
+# exported -- it does not interpose the host CPython allocator or any other
+# extension's malloc/free/operator new (enforced by the nm -D CI guard in
+# ci/check-no-alloc-exports.sh). No LD_PRELOAD / mi_override / redirect: it
+# "just works" on `pip install fvtk` with nothing from the user.
+#
+# Byte-exact by construction: an allocator only changes the ADDRESSES returned,
+# never any value, count, or emission order, so the bitexact (maxULP=0),
+# renderexact, and pyvista gates stay green. Expected win is on alloc-heavy
+# threaded filters (now that STDThread is the default backend).
+#
+# Linux-first (the only published wheel); builds the same way on macOS (the
+# override TU references mi_* directly so the linker pulls the needed objects out
+# of the static archive on both ELF and Mach-O -- no per-toolchain whole-archive
+# spelling needed). Windows is cleanly skipped (no wheel shipped there). Turn OFF
+# for an A/B baseline with -DFVTK_MIMALLOC=OFF.
+option(FVTK_MIMALLOC "fvtk: route VTK's C++ operator new/delete to a vendored static mimalloc (default ON; Linux/macOS only, skipped on Windows). See Common/Core/vtkFVTKAllocator.cxx." ON)
+# CommonCore lists VTK::mimalloc under OPTIONAL_DEPENDS, which only links the
+# module when it is enabled, so force-enable the vendored module whenever the
+# lever is ON and we are not building the Windows wheel. YES (hard enable) is
+# safe here: mimalloc has no external/blocking dependencies, so it always builds
+# on Linux/macOS. On Windows (no shipped wheel) force NO so the module is never
+# built and the override TU is never compiled (Windows is cleanly skipped).
+if (FVTK_MIMALLOC AND NOT WIN32 AND NOT FVTK_FORCE_MSVC)
+  set(VTK_MODULE_ENABLE_VTK_mimalloc "YES" CACHE STRING "")
+else ()
+  set(VTK_MODULE_ENABLE_VTK_mimalloc "NO" CACHE STRING "")
+endif ()
+
 # Independent `fvtk` distribution: the Python package installs as `fvtk/` (not
 # `vtkmodules/`) and the wheel's dist name is `fvtk` (set in setup.py.in), so it
 # coexists with a stock `vtk`/`vtkmodules` install instead of clobbering it.

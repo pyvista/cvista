@@ -1,0 +1,5 @@
+NAME
+  VTK::mimalloc
+LIBRARY_NAME
+  vtkmimalloc
+THIRD_PARTY

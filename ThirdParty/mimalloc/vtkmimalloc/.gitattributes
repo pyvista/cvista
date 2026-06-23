@@ -1,0 +1,2 @@
+# fvtk: vendored mimalloc -- ignore upstream whitespace.
+* -whitespace
