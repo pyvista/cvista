@@ -120,12 +120,16 @@ struct VertexEval
 // struct. No live vtkDecimatePro method is ever called from a thread.
 struct DecimateLocal
 {
-  vtkPolyData* Mesh;
-  double CosAngle;
-  double Tolerance;     // VTK_TOLERANCE * input->GetLength()  (L169)
-  double Error;         // MaximumError-derived cap (L160-168)
-  bool BoundaryDeletion;
-  vtkPolyDataEdgeNeighbors::FastEdgeNeighbors EdgeNeighbors;
+  vtkPolyData* Mesh = nullptr;
+  double CosAngle = 0.0;
+  double Tolerance = 0.0; // VTK_TOLERANCE * input->GetLength()  (L169)
+  double Error = 0.0;     // MaximumError-derived cap (L160-168)
+  bool BoundaryDeletion = false;
+  // NOTE: vtkPolyDataEdgeNeighbors::FastEdgeNeighbors is NOT held as a member --
+  // its ctor dereferences the mesh, so it cannot be default-constructed, and
+  // vtkSMPThreadLocal<DecimateLocal> requires DecimateLocal to be default-
+  // constructible + copy-assignable. It is cheap and reads links fresh, so it is
+  // constructed locally where used (matching vtkDecimatePro.cxx:532,914).
 
   // Owned scratch (one set per thread).
   std::vector<LocalVertex> V; // V->Array, indices 0..VMaxId
@@ -142,13 +146,14 @@ struct DecimateLocal
   double Pt[3];
   double LoopArea = 0.0;
 
+  DecimateLocal() = default;
+
   DecimateLocal(vtkPolyData* mesh, double cosAngle, double tol, double err, bool bdel)
     : Mesh(mesh)
     , CosAngle(cosAngle)
     , Tolerance(tol)
     , Error(err)
     , BoundaryDeletion(bdel)
-    , EdgeNeighbors(mesh)
   {
     this->V.resize(FVTK_DECIM_MAX_TRIS_PER_VERTEX + 2);
     this->T.resize(FVTK_DECIM_MAX_TRIS_PER_VERTEX + 2);
@@ -165,14 +170,35 @@ struct DecimateLocal
     , Tolerance(o.Tolerance)
     , Error(o.Error)
     , BoundaryDeletion(o.BoundaryDeletion)
-    , EdgeNeighbors(o.EdgeNeighbors)
   {
     this->V.resize(FVTK_DECIM_MAX_TRIS_PER_VERTEX + 2);
     this->T.resize(FVTK_DECIM_MAX_TRIS_PER_VERTEX + 2);
     this->Neighbors = vtkSmartPointer<vtkIdList>::New();
     this->Neighbors->Allocate(FVTK_DECIM_MAX_TRIS_PER_VERTEX);
   }
-  DecimateLocal& operator=(const DecimateLocal&) = delete;
+
+  // Copy-assignment is required by vtkSMPThreadLocal's Sequential backend (it
+  // assigns the exemplar into each per-thread slot). Like the copy ctor, every
+  // copy gets its OWN fresh scratch + vtkIdList so no buffer is ever shared
+  // across threads.
+  DecimateLocal& operator=(const DecimateLocal& o)
+  {
+    if (this != &o)
+    {
+      this->Mesh = o.Mesh;
+      this->CosAngle = o.CosAngle;
+      this->Tolerance = o.Tolerance;
+      this->Error = o.Error;
+      this->BoundaryDeletion = o.BoundaryDeletion;
+      this->V.assign(FVTK_DECIM_MAX_TRIS_PER_VERTEX + 2, LocalVertex{});
+      this->T.assign(FVTK_DECIM_MAX_TRIS_PER_VERTEX + 2, LocalTri{});
+      this->VMaxId = -1;
+      this->TMaxId = -1;
+      this->Neighbors = vtkSmartPointer<vtkIdList>::New();
+      this->Neighbors->Allocate(FVTK_DECIM_MAX_TRIS_PER_VERTEX);
+    }
+    return *this;
+  }
 
   vtkIdType VCount() const { return this->VMaxId + 1; }
   vtkIdType TCount() const { return this->TMaxId + 1; }
@@ -191,6 +217,10 @@ struct DecimateLocal
     const vtkIdType* verts;
     double *x1, *x2, *normal;
     double v1[3], v2[3], center[3];
+
+    // Constructed locally (cheap, reads links fresh, thread-safe) rather than
+    // held as a member -- see the note on the DecimateLocal members above.
+    const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(this->Mesh);
 
     // High vertex degree -- L515-518. (Conservatively not-removable.)
     if (numTris >= FVTK_DECIM_MAX_TRIS_PER_VERTEX)
@@ -244,7 +274,7 @@ struct DecimateLocal
       sn.id = nextVertex;
       this->Mesh->GetPoint(sn.id, sn.x);
       this->V[++this->VMaxId] = sn;
-      this->EdgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
+      edgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
       numNei = this->Neighbors->GetNumberOfIds();
     }
 
@@ -307,7 +337,7 @@ struct DecimateLocal
         sn.id = nextVertex;
         this->Mesh->GetPoint(sn.id, sn.x);
         this->V[++this->VMaxId] = sn;
-        this->EdgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
+        edgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
         numNei = this->Neighbors->GetNumberOfIds();
       }
 
