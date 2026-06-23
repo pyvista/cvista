@@ -147,9 +147,10 @@ vtk_module_add_module(VTK::FiltersCore
   CLASSES ${classes}
   HEADERS ${headers}
   SOURCES fvtkFastClean.cxx fvtkFastCleanPoly.cxx fvtkFastConnectivity.cxx fvtkFastClipPoly.cxx
+    fvtkFastOrient.cxx
   PRIVATE_HEADERS ${private_headers}
-    fvtkFastClean.h fvtkFastCleanPoly.h fvtkFastConnectivity.h fvtkFastClipPoly.h
-    pvaClean.h pvaHash96.h pvaLinearProbeTable.h pvaParallelRadixSort.h)
+    fvtkFastClean.h fvtkFastCleanPoly.h fvtkFastConnectivity.h fvtkFastClipPoly.h fvtkFastOrient.h
+    pvaClean.h pvaHash96.h pvaLinearProbeTable.h pvaParallelRadixSort.h pvaOrient.h)
 
 vtk_add_test_mangling(VTK::FiltersCore)
 
@@ -164,11 +165,13 @@ vtk_add_test_mangling(VTK::FiltersCore)
 # change, the fast lane is opt-in to begin with).
 set_source_files_properties(
   fvtkFastClean.cxx fvtkFastCleanPoly.cxx fvtkFastConnectivity.cxx fvtkFastClipPoly.cxx
+  fvtkFastOrient.cxx
   PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 find_package(OpenMP QUIET)
 if (OpenMP_CXX_FOUND AND NOT MSVC)
   vtk_module_link(VTK::FiltersCore PRIVATE OpenMP::OpenMP_CXX)
   set_property(
     SOURCE fvtkFastClean.cxx fvtkFastCleanPoly.cxx fvtkFastConnectivity.cxx fvtkFastClipPoly.cxx
+      fvtkFastOrient.cxx
     APPEND PROPERTY COMPILE_DEFINITIONS FVTK_HAVE_OPENMP=1)
 endif ()

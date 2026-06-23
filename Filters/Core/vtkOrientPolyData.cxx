@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkOrientPolyData.h"
 
+#include "fvtkFastOrient.h"      // fvtk opt-in parallel orientation pass
+#include "vtkFVTKSMPDefaults.h"  // fvtk::FastModeEnabled
+
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkIdList.h"
@@ -182,6 +185,24 @@ int vtkOrientPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   output->SetLinks(links);
   links->SetDataSet(output);
   links->ShallowCopy(input->GetLinks());
+
+  // fvtk opt-in fast lane: replace the serial single-threaded BFS wave
+  // (TraverseAndOrder), the last fully serial order-locked stage in the default
+  // vtkPolyDataNormals (Consistency=1) pipeline, with a deterministic parallel
+  // orientation kernel. Restricted to the MANIFOLD, consistency-only case; the
+  // AutoOrientNormals / NonManifoldTraversal / non-manifold paths fall through to
+  // the byte-exact serial code below. The only relaxation is the per-connected-
+  // component winding CHOICE, resolved by the component's lowest cell id so the
+  // result is thread-count invariant. No-op unless fvtk::FastModeEnabled().
+  if (fvtk::FastModeEnabled())
+  {
+    if (fvtk::FastOrientPolyData(input, output, this->Consistency, this->FlipNormals,
+          this->AutoOrientNormals, this->NonManifoldTraversal))
+    {
+      this->UpdateProgress(1.00);
+      return 1;
+    }
+  }
 
   ///////////////////////////////////////////////////////////////////
   //  Traverse all polygons insuring proper direction of ordering.  This
