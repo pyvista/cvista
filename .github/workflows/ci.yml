@@ -601,10 +601,16 @@ jobs:
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
           # Build aarch64 (overrides the pyproject [tool.cibuildwheel.linux]
           # x86_64 archs/image/repair-plat) on the manylinux_2_28 aarch64 image.
-          # Optimized ship config (no FVTK_LTO=0 / FVTK_GATE_O2 override).
           CIBW_ARCHS_LINUX: aarch64
           CIBW_MANYLINUX_AARCH64_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
-          CIBW_ENVIRONMENT: FVTK_SOURCE_UNITY=1
+          # On a PR this aarch64 wheel is never published and is consumed by no
+          # numeric gate (only `publish`, which is release-gated, needs it), so the
+          # full LTO+O3 link cost buys nothing on the PR critical path -- it is
+          # frequently the gate long-pole. De-opt PR builds to LTO-off/-O2 (matching
+          # the x86_64 `build` job above); push/release/merge_group keep the
+          # optimized -O3+LTO ship config so published wheels are unchanged.
+          # FVTK_SOURCE_UNITY=1 (byte-identical objects) is retained on both paths.
+          CIBW_ENVIRONMENT: ${{ github.event_name == 'pull_request' && 'FVTK_LTO=0 FVTK_GATE_O2=1 FVTK_SOURCE_UNITY=1' || 'FVTK_SOURCE_UNITY=1' }}
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --strip --plat manylinux_2_28_aarch64 -w {dest_dir} {wheel}"
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/fvtk-cibw-ccache-arm:/ccache"
       - uses: actions/upload-artifact@v4
