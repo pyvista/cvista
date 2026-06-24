@@ -111,6 +111,7 @@ try:
         vtkDecimatePro,
         vtkElevationFilter,
         vtkMaskPoints,
+        vtkOrientPolyData,
         vtkProbeFilter,
         vtkStaticCleanUnstructuredGrid,
         vtkTubeFilter,
@@ -1505,6 +1506,114 @@ def op_clippoly_fast(dtype, size):
     return c.GetOutput()
 
 
+def make_scrambled_winding_surface(size, dtype):
+    """A multi-component MANIFOLD triangle surface with deliberately INCONSISTENT
+    initial winding: `size` triangulated spheres translated apart along x (so no
+    points are shared -> `size` independent connected components, each a closed
+    2-manifold), with a deterministic subset of triangles per component reversed.
+
+    This is the exact regime vtkOrientPolyData's Consistency pass is built to
+    repair (and the fvtk parallel orientation kernel accelerates): every edge is
+    shared by exactly two triangles, but neighbours disagree on winding until the
+    pass runs. Point scalar is coordinate-derived so the points-relaxed
+    canonicalization is unambiguous."""
+    ap = vtkAppendPolyData()
+    span = 6.0
+    for b in range(size):
+        s = vtkSphereSource()
+        s.SetThetaResolution(12)
+        s.SetPhiResolution(12)
+        s.SetCenter(b * span, 0.0, 0.0)
+        t = vtkTriangleFilter()
+        t.SetInputConnection(s.GetOutputPort())
+        t.Update()
+        ap.AddInputData(t.GetOutput())
+    ap.Update()
+    merged = ap.GetOutput()
+
+    # Rebuild points at the requested precision (vtkSphereSource emits float32),
+    # and scramble winding by reversing every 3rd triangle deterministically.
+    pts_np = vtk_to_numpy(merged.GetPoints().GetData()).astype(dtype)
+    pa = numpy_to_vtk(np.ascontiguousarray(pts_np), deep=1)
+    newpts = vtkPoints()
+    newpts.SetData(pa)
+    out = vtkPolyData()
+    out.SetPoints(newpts)
+    out.SetPolys(merged.GetPolys())
+    out.BuildCells()
+    for cid in range(0, out.GetNumberOfCells(), 3):
+        out.ReverseCell(cid)
+
+    field = (pts_np[:, 0] * 7.0 + pts_np[:, 1] * 11.0 + pts_np[:, 2] * 13.0).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("v")
+    out.GetPointData().SetScalars(arr)
+    return out
+
+
+def op_orient_fast(dtype, size):
+    # vtkOrientPolyData (the sub-filter vtkPolyDataNormals builds internally when
+    # Consistency=1, i.e. the default .compute_normals() pipeline) over a
+    # multi-component manifold surface with deliberately inconsistent initial
+    # winding, via the OPT-IN parallel orientation kernel (Filters/Core/
+    # fvtkFastOrient + pvaOrient.h), reached when fvtk.EnableFast()/FVTK_FAST is
+    # set. Stock runs the serial single-threaded BFS wave (TraverseAndOrder); the
+    # fast path labels components with a parallel union-find, computes per-edge
+    # winding-consistency bits in parallel, then resolves each component's
+    # absolute winding by a deterministic BFS from its LOWEST cell id. That
+    # canonical seed equals stock's own seed (stock's Consistency loop seeds the
+    # first unvisited cell in ascending id order), so the chosen winding matches
+    # stock; the relaxation bucket is orientation/order (a whole-component winding
+    # flip is the only thing ever negotiable). vtkOrientPolyData never moves, adds
+    # or deletes points/cells and keeps cells in slot order -> compared
+    # ORDER-RELAXED: identical point set (coords + 'v' scalar) and identical cell
+    # multiset; adjacent cells are always mutually consistent. Stock VTK ignores
+    # FVTK_FAST and runs the reference serial wave.
+    #
+    # ENGAGEMENT CHECK: the relaxed gate also passes if fvtk silently fell back to
+    # the stock serial path, so prove the parallel kernel actually ran. The kernel
+    # touches the file named by FVTK_FAST_ORIENT_SENTINEL the first time it
+    # executes; we point that at a fresh temp path, clear it, and (on the fvtk
+    # backend only) assert it appears. Stock VTK has no such symbol and ignores the
+    # env var, so the assertion is scoped to the fvtk interpreter.
+    inp = make_scrambled_winding_surface(size, dtype)
+    f = vtkOrientPolyData()
+    f.SetInputData(inp)
+    f.SetConsistency(True)
+    f.SetAutoOrientNormals(False)
+    f.SetNonManifoldTraversal(False)
+    f.SetFlipNormals(False)
+
+    import vtkmodules as _vtkmodules
+    is_fvtk = "fvtk" in str(getattr(_vtkmodules, "__file__", "")).lower()
+    with tempfile.NamedTemporaryFile(suffix=".orient", delete=False) as tf:
+        sentinel = tf.name
+    try:
+        os.remove(sentinel)
+    except OSError:
+        pass
+    prev_sentinel = os.environ.get("FVTK_FAST_ORIENT_SENTINEL")
+    os.environ["FVTK_FAST_ORIENT_SENTINEL"] = sentinel
+    try:
+        with fast_mode():
+            f.Update()
+        if is_fvtk and not os.path.exists(sentinel):
+            raise AssertionError(
+                "fvtk fast orientation kernel did not engage under FVTK_FAST "
+                "(sentinel not written) -- the relaxed gate would otherwise pass "
+                "on the stock serial fallback")
+    finally:
+        if prev_sentinel is None:
+            os.environ.pop("FVTK_FAST_ORIENT_SENTINEL", None)
+        else:
+            os.environ["FVTK_FAST_ORIENT_SENTINEL"] = prev_sentinel
+        try:
+            os.remove(sentinel)
+        except OSError:
+            pass
+    return f.GetOutput()
+
+
 def op_connectivity_largest(dtype, size):
     # vtkConnectivityFilter in the default ExtractLargestRegion mode over a hex
     # UG -> the "extract largest region" output branch, whose per-cell
@@ -2809,6 +2918,14 @@ OPS = {
     # differs from the serial filter by denormal-scale (~1e-21) FP merge noise.
     # Tolerate it on interpolated point-DATA only (coords stay strict).
     "clippoly_fast": dict(fn=op_clippoly_fast, group="filter", dtypes=["float32", "float64"], sizes=[60, 100], order_relaxed=True, points_relaxed=True, point_data_tol=1e-12),
+    # Parallel polygon-orientation kernel (Filters/Core/fvtkFastOrient + pvaOrient.h)
+    # via EnableFast, replacing vtkOrientPolyData's serial BFS (the last serial,
+    # order-locked stage in the default .compute_normals() pipeline). ORDER-RELAXED:
+    # points byte-identical (never moved/reordered), cell multiset identical;
+    # whole-component winding is the only relaxation, and the lowest-cell-id seed
+    # makes it match stock + be thread-count invariant. Engagement is asserted in
+    # the op body via a sentinel file the kernel writes when it runs.
+    "orient_fast": dict(fn=op_orient_fast, group="filter", dtypes=["float32", "float64"], sizes=[2, 4], order_relaxed=True),
     "cutter_polydata": dict(fn=op_cutter_polydata, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cutter_polydata_bycell": dict(fn=op_cutter_polydata_bycell, group="filter", dtypes=["float64"], sizes=[12, 20]),
     "cellcenters": dict(fn=op_cellcenters, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
