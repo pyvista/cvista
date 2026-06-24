@@ -77,7 +77,7 @@ jobs:
       # leaves the SDK resource toolchain (rc.exe / mt.exe) off PATH — the C
       # compiler probe then fails its link step ("RC Pass 1: no such file or
       # directory", CMAKE_MT-NOTFOUND) and cmake declares cl "broken". This
-      # mirrors ci.yml's build-other-os, wheels-legacy.yml, and wheels-test.yml,
+      # mirrors ci.yml's build-other-os + build-legacy-windows and wheels-test.yml,
       # which all run this step; this release workflow was the only Windows
       # builder missing it. ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so
       # cl must be on PATH regardless.
