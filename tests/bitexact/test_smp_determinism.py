@@ -32,7 +32,7 @@ import compare as _compare  # noqa: E402
 # checks thread-count invariance of the MESH, not the byte layout.
 THREADED_OPS = [
     "warp", "warpvector", "normals", "elevation", "cutter_linear", "contour_linear",
-    "threshold",
+    "threshold", "cell2point",
 ]
 
 THREAD_COUNTS = [1, 4, 8]
