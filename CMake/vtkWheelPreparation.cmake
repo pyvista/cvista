@@ -74,10 +74,11 @@ else ()
     "${setup_py_build_dir}/fvtk")
 endif ()
 set(VTK_PYTHON_SITE_PACKAGES_SUFFIX ".")
-if (WIN32)
-  set(VTK_CUSTOM_LIBRARY_SUFFIX "${VTK_MAJOR_VERSION}.${VTK_MINOR_VERSION}.${VTK_BUILD_VERSION}")
-else()
-  set(VTK_CUSTOM_LIBRARY_SUFFIX "")
+# fvtk: give shipped libraries an fvtk-distinct suffix so the wheel's native
+# libs do NOT collide (same SONAME) with a stock VTK loaded in the same process.
+# Allow an external -DVTK_CUSTOM_LIBRARY_SUFFIX=... to win; default to "fvtk".
+if (NOT DEFINED VTK_CUSTOM_LIBRARY_SUFFIX OR VTK_CUSTOM_LIBRARY_SUFFIX STREQUAL "" OR VTK_CUSTOM_LIBRARY_SUFFIX STREQUAL "<DEFAULT>")
+  set(VTK_CUSTOM_LIBRARY_SUFFIX "fvtk")
 endif()
 if(NOT DEFINED VTK_INSTALL_SDK)
   set(VTK_INSTALL_SDK OFF)
