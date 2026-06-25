@@ -47,14 +47,20 @@
 #              bit-exact-validated on every merge — without paying LTO's ~2-3x
 #              build cost on PRs. Separate ccache namespace + artifact prefix
 #              (…-lto-…) so they never perturb the fast PR build or its seed.
+#   build-legacy-{linux,windows,macos} : the cp310 + cp311 version-specific
+#              (non-abi3) wheels. 3.10/3.11 cannot be abi3 (stable-ABI member
+#              constants are 3.12+), so they ship as six per-version wheels across
+#              the three desktop OSes. RELEASE-ONLY: built only when a Release is
+#              published (where `publish` ships them), so they add nothing to
+#              per-merge CI cost. FVTK_ABI3=0 selects the legacy path.
 #   publish : RELEASE-ONLY (if: github.event_name == 'release'). Uploads the
 #              SHIPPED wheels to PyPI via trusted publishing (OIDC, no stored
-#              token) — the LTO Linux wheel (build-lto) plus the optimized macOS +
-#              Windows wheels (build-other-os) — gated on the LTO bit-exact +
-#              pixel-exact legs being green. A final step then attaches those same
-#              wheels to the GitHub Release (gh release upload) so every wheel is
-#              downloadable from the Release page too, not only PyPI. Wheels-only
-#              (fvtk_backend has no sdist).
+#              token) — the four abi3 wheels (LTO Linux x86_64 + aarch64 + macOS +
+#              Windows) PLUS the six legacy cp310/cp311 wheels — gated on the LTO
+#              bit-exact + pixel-exact legs and the legacy legs being green. A final
+#              step then attaches those same ten wheels to the GitHub Release (gh
+#              release upload) so every wheel is downloadable from the Release page
+#              too, not only PyPI. Wheels-only (fvtk_backend has no sdist).
 name: CI
 
 on:
@@ -616,16 +622,157 @@ jobs:
           path: wheelhouse/*.whl
           if-no-files-found: error
 
+  # === Legacy version-specific wheels (cp310 + cp311) ========================
+  # 3.10/3.11 CANNOT be abi3: PyMemberDef + the Py_T_*/Py_READONLY member
+  # constants the heap-type wrappers emit only entered the stable ABI in 3.12
+  # (gh-93274). So they ship as version-specific (non-abi3) wheels — six in all:
+  # cp310 + cp311 x {Linux, Windows, macOS}. The backend emits the legacy static
+  # per-version wheel automatically when the build interpreter is < 3.12 or
+  # FVTK_ABI3=0 (set belt-and-suspenders below), so there is NO new build logic.
+  #
+  # RELEASE-ONLY: these build only when a Release is published — where `publish`
+  # collects their artifacts and ships them to PyPI + the Release alongside the four
+  # abi3 wheels. They are deliberately kept off push-to-main / PRs / workflow_dispatch
+  # / merge_group so they add nothing to per-merge CI cost (validated at release
+  # time; the cibuildwheel smoke import per leg is the validation, not a numeric gate).
+  build-legacy-linux:
+    name: build legacy linux (manylinux2014, cp310+cp311)
+    # RELEASE-ONLY: the legacy cp310/cp311 wheels build only when a Release is
+    # published (where `publish` ships them). Kept off push-to-main / PRs / dispatch
+    # so they never add to per-merge CI cost; they are validated at release time.
+    if: github.event_name == 'release'
+    # Two non-abi3 cp legs + LTO link is the heaviest build; generous cap, still
+    # well below the 360-min default so a hung leg can't drain paid runners.
+    runs-on: ${{ vars.FVTK_RUNNER_LINUX || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # VTK derives its version from full history
+      - name: Build wheels + offscreen smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          # Version-specific wheels for 3.10 + 3.11 (each builds + tests on its own
+          # interpreter; no abi3 dedup). musllinux skipped (Alpine not a target).
+          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_SKIP: "*-musllinux_*"
+          # Broader baseline than the shipped abi3 wheel (manylinux_2_28):
+          # manylinux2014 == CentOS 7 == glibc 2.17, matching stock vtk's wheels.
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux2014"
+          CIBW_ARCHS_LINUX: "x86_64"
+          # OVERRIDE the pyproject before-all (AlmaLinux-8/dnf specific, installs
+          # mold+lld that do NOT exist on CentOS 7). On el7 we use yum, drop
+          # mold/lld, and rely on the gold linker (FVTK_FAST_LINKER below). EPEL is
+          # enabled first for xvfb + a couple of mesa devel packages.
+          CIBW_BEFORE_ALL_LINUX: >-
+            yum install -y epel-release &&
+            yum install -y
+            mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel
+            mesa-libGLU-devel libglvnd-devel
+            libX11-devel libXcursor-devel libXt-devel libXext-devel
+            mesa-dri-drivers xorg-x11-server-Xvfb ccache git &&
+            mkdir -p /ccache && chmod 0777 /ccache
+          CIBW_BEFORE_BUILD_LINUX: "{project}/ci/cibw/before-build.sh"
+          # Toolchain accommodations for CentOS 7 / GCC 10.2.1: FVTK_ABI3=0 forces
+          # the legacy per-version path; gold linker (mold absent on el7); LTO + -O3
+          # kept (GCC 10 OK); the GCC>=12 unity/array-split levers auto-disable.
+          CIBW_ENVIRONMENT_LINUX: >-
+            FVTK_ABI3=0
+            FVTK_FAST_LINKER=gold
+            CCACHE_DIR=/ccache
+            CMAKE_C_COMPILER_LAUNCHER=ccache
+            CMAKE_CXX_COMPILER_LAUNCHER=ccache
+            CCACHE_MAXSIZE=30G
+          # Default repair stamps manylinux_2_28; legacy wheels are manylinux2014.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-wheels-legacy-linux
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-legacy-windows:
+    name: build legacy windows (cp310+cp311)
+    # RELEASE-ONLY: the legacy cp310/cp311 wheels build only when a Release is
+    # published (where `publish` ships them). Kept off push-to-main / PRs / dispatch
+    # so they never add to per-merge CI cost; they are validated at release time.
+    if: github.event_name == 'release'
+    runs-on: ${{ vars.FVTK_RUNNER_WINDOWS || 'windows-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Ninja does NOT auto-run vcvars; ci/cmake/windows.cmake pins cl, so cl must
+      # be discoverable (same as the abi3 Windows leg).
+      - name: Set up MSVC (vcvars) for the Ninja build
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build wheels + smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp310-* cp311-*"
+          # CIBW_ENVIRONMENT REPLACES the pyproject [tool.cibuildwheel.windows.
+          # environment] table, so re-declare the Windows build vars: the MSVC
+          # init-cache (link-closure restore for trimmed render classes), the MSVC
+          # toolchain gate, and FVTK_ABI3=0 for the legacy per-version path.
+          CIBW_ENVIRONMENT: "FVTK_ABI3=0 FVTK_CMAKE_INIT=ci/cmake/windows.cmake FVTK_FORCE_MSVC=ON"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-wheels-legacy-windows
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-legacy-macos:
+    name: build legacy macos (cp310+cp311)
+    # RELEASE-ONLY: the legacy cp310/cp311 wheels build only when a Release is
+    # published (where `publish` ships them). Kept off push-to-main / PRs / dispatch
+    # so they never add to per-merge CI cost; they are validated at release time.
+    if: github.event_name == 'release'
+    runs-on: ${{ vars.FVTK_RUNNER_MACOS || 'macos-14' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build wheels + smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp310-* cp311-*"
+          # CIBW_ENVIRONMENT REPLACES the pyproject [tool.cibuildwheel.macos.
+          # environment] table, so re-declare every macOS build var (init-cache,
+          # target OS, deployment target + host-platform tag, ccache launchers) and
+          # add FVTK_ABI3=0. archs/before-build/repair/test-command are NOT in the
+          # environment table, so they survive from pyproject (arm64, delocate+strip
+          # repair, smoke_min) unchanged.
+          CIBW_ENVIRONMENT: >-
+            FVTK_ABI3=0
+            FVTK_CMAKE_INIT=ci/cmake/macos.cmake
+            FVTK_TARGET_OS=macos
+            MACOSX_DEPLOYMENT_TARGET=11.0
+            _PYTHON_HOST_PLATFORM=macosx-11.0-arm64
+            CMAKE_C_COMPILER_LAUNCHER=ccache
+            CMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fvtk-wheels-legacy-macos
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
   publish:
     name: Publish to PyPI (trusted publishing)
     # Only on a published GitHub Release, and only after the SHIPPED-config legs
     # are green: build-lto (the -O3 + LTO Linux x86_64 wheel that ships) validated
     # by bitexact-lto + renderexact-lto, plus the optimized macOS/Windows wheels
-    # from build-other-os and the aarch64 wheel from build-arm. The fast non-LTO
-    # gate (build/bitexact/renderexact) is not a dependency — its wheel is never
-    # published.
+    # from build-other-os and the aarch64 wheel from build-arm. Also waits on the
+    # three legacy legs (build-legacy-linux/windows/macos) so the cp310/cp311
+    # version-specific wheels ship in the same release as the abi3 wheels. The fast
+    # non-LTO gate (build/bitexact/renderexact) is not a dependency — its wheel is
+    # never published.
     if: github.event_name == 'release'
-    needs: [build-lto, build-arm, build-other-os, bitexact-lto, renderexact-lto]
+    needs: [build-lto, build-arm, build-other-os, bitexact-lto, renderexact-lto,
+            build-legacy-linux, build-legacy-windows, build-legacy-macos]
     runs-on: ${{ vars.FVTK_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
     # Artifact download + PyPI upload only; cap low.
     timeout-minutes: 15
@@ -666,12 +813,32 @@ jobs:
         with:
           name: fvtk-wheels-windows-latest
           path: dist
+      # The six legacy (cp310 + cp311) wheels — Linux, Windows, macOS — into the
+      # SAME dist/. They ship to PyPI and (via the attach step below) to the Release
+      # alongside the four abi3 wheels. Distinct artifact names, no glob collision.
+      - name: Download legacy Linux wheels (cp310+cp311)
+        uses: actions/download-artifact@v4
+        with:
+          name: fvtk-wheels-legacy-linux
+          path: dist
+      - name: Download legacy Windows wheels (cp310+cp311)
+        uses: actions/download-artifact@v4
+        with:
+          name: fvtk-wheels-legacy-windows
+          path: dist
+      - name: Download legacy macOS wheels (cp310+cp311)
+        uses: actions/download-artifact@v4
+        with:
+          name: fvtk-wheels-legacy-macos
+          path: dist
       - name: List + sanity-check the release wheels
         run: |
           ls -l dist
           n=$(ls dist/*.whl 2>/dev/null | wc -l)
           echo "collected $n wheel(s)"
-          test "$n" -ge 1 || { echo "::error::no wheels to publish"; exit 1; }
+          # 4 abi3 (linux x86_64 + aarch64, macOS, Windows) + 6 legacy
+          # (cp310/cp311 x linux/windows/macos) == 10 expected.
+          test "$n" -ge 10 || { echo "::error::expected >=10 wheels (4 abi3 + 6 legacy), found $n"; exit 1; }
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

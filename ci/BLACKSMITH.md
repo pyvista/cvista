@@ -37,13 +37,13 @@ has had availability incidents; the fallback is deliberate).
 
 ## Where each variable is used
 
-- `FVTK_RUNNER_LINUX` — `ci.yml` (`build`, `build-lto`), `sdk.yml` (`build-sdk`),
-  `wheels-cibuildwheel.yml` (linux leg), `wheels-legacy.yml` (linux leg),
+- `FVTK_RUNNER_LINUX` — `ci.yml` (`build`, `build-lto`, `build-legacy-linux`),
+  `sdk.yml` (`build-sdk`), `wheels-cibuildwheel.yml` (linux leg),
   `wheels-test.yml` (linux leg).
-- `FVTK_RUNNER_WINDOWS` — `ci.yml` (`build-other-os`), the wheels workflows'
-  Windows legs.
-- `FVTK_RUNNER_MACOS` — `ci.yml` (`build-other-os`), the wheels workflows' macOS
-  legs.
+- `FVTK_RUNNER_WINDOWS` — `ci.yml` (`build-other-os`, `build-legacy-windows`),
+  the wheels workflows' Windows legs.
+- `FVTK_RUNNER_MACOS` — `ci.yml` (`build-other-os`, `build-legacy-macos`), the
+  wheels workflows' macOS legs.
 - `FVTK_RUNNER_LINUX_SMALL` — `ci.yml` gates (`bitexact`, `regression`,
   `renderexact`, `*-lto`, `publish`), `sdk.yml` (`publish-sdk`).
 

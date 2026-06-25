@@ -9,10 +9,9 @@ variables is defined, and fall back to GitHub-hosted runners when they are not.
 
 | File | Trigger | What it does |
 |------|---------|--------------|
-| `ci.yml` | PR + push to `main` + release | Build the cp312-abi3 wheel (Linux/macOS/Windows), the bit-exact / pixel-exact / regression gates, the main-only LTO legs, and the release publish. |
+| `ci.yml` | PR + push to `main` + release | Build the cp312-abi3 wheel (Linux/macOS/Windows), the cp310/cp311 legacy wheels (`build-legacy-*`, all three OSes), the bit-exact / pixel-exact / regression gates, the main-only LTO legs, and the release publish (abi3 + legacy → PyPI + Release). |
 | `sdk.yml` | path-scoped PR + `main` + release | Build + publish the `fvtk-sdk` wheel. |
 | `wheels-cibuildwheel.yml` | tag + dispatch | Full release wheel matrix. |
-| `wheels-legacy.yml` | `main` + dispatch | cp310/cp311 non-abi3 wheels (Linux + Windows). |
 | `wheels-test.yml` | dispatch | Manual cross-OS build smoke. |
 
 ## Changing the runners (the only knob)
