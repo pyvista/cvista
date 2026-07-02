@@ -327,7 +327,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkEarthSource
   vtkEdgeCenters
   vtkEdgePoints
-  vtkEGLRenderWindow
   vtkEllipsoidTensorProbeRepresentation
   vtkEmptyRepresentation
   vtkEndFor
@@ -605,7 +604,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkInteractorStyleDrawPolygon
   vtkInteractorStyleRubberBand3D
   vtkInteractorStyleUnicam
-  vtkInteractorStyleUser
   vtkInterpolateDataSetAttributes
   vtkInvoker
   vtkIOCellGrid

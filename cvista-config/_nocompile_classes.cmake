@@ -372,7 +372,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkInteractorStyleDrawPolygon
   vtkInteractorStyleRubberBand3D
   vtkInteractorStyleUnicam
-  vtkInteractorStyleUser
   vtkInterpolateDataSetAttributes
   vtkInvoker
   vtkISIReader
