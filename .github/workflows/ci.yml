@@ -171,8 +171,12 @@ jobs:
   # PR labeled `wheel-split`. Dispatch it on a branch to iterate the tier tables.
   split:
     name: 3-wheel tier split (linux)
+    # On-demand only (60-min full build) — NOT on every main push / merge_group.
+    # Run via `gh workflow run ci.yml --ref <branch>` (workflow_dispatch) or by
+    # adding the `wheel-split` label to a PR. Becomes part of the release flow once
+    # cross-platform partitioning + publishing lands.
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'wheel-split')
     runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 75

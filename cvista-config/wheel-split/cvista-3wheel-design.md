@@ -111,3 +111,37 @@ vtkTexture.h). Always grep sources for rendering #includes, not just nm the obje
 ## Open sub-items
 - IOGeometry/IOParallel/CGNS sit on a Rendering-coupled chain (IOGeometry→RenderingCore via vtkOBJImporter). For a clean io tier that depends only on core, IOGeometry needs the same RenderingCore-optional decouple as FiltersHybrid (PR #165 pattern), OR it rides in the rendering tier. Until then: IOParallel/CGNS → rendering tier or excluded.
 - InfovisCore DEPENDS RenderingFreeType → rendering tier (already noted in core.cmake).
+
+## Status (validated on main)
+
+**Linux x86_64 abi3: PROVEN in CI** (`split` job, PR #172). A real tiered build
+(`ci/cmake/linux-tiered.cmake`) → `partition_wheels.py` → self-containment AUDIT
+**PASS** → `pack_tier_wheels.py` → `validate_stacking.sh` **PASS**, producing:
+
+| wheel | size (unstripped) | Requires-Dist |
+|---|---|---|
+| cvista (core)     | 25.0 MB | — (extras: `[rendering]`/`[io]`/`[all]`) |
+| cvista-rendering  |  8.3 MB | `cvista==<ver>` |
+| cvista-io         |  1.0 MB | `cvista==<ver>` |
+
+`cvista-io` is tiny because hdf5/netcdf are shared with rendering-tier IOMINC and
+therefore land in core (the link-graph closure assigns a shared dep to the lowest
+common tier). Version/tag are derived from the built wheel at pack time.
+
+Publish model (maintainer decision): **`cvista` = the core tier**; full
+functionality via `pip install cvista[all]`. Breaking change for users who
+`pip install cvista` and use rendering — flag in the changelog/README on cutover.
+
+## Remaining for full live publishing (follow-up)
+- **Cross-platform partition tooling.** `partition_wheels.py` is linux-only
+  (readelf/patchelf). Needs macOS (otool/install_name_tool or delocate) and
+  Windows (DLL dep graph; DLLs resolve from the package dir — no RUNPATH) analogues,
+  plus the aarch64 leg (same readelf/patchelf, different runner). The release ships
+  abi3 for linux-x64/aarch64/macOS/Windows + 6 legacy cp310/cp311 wheels — every
+  one must be partitioned for `cvista` to be core-only universally.
+- **Release wiring.** Extend the `publish` job to build tiered per platform,
+  partition, and trusted-publish to the 3 PyPI projects (each tier
+  `Requires-Dist: cvista==<exact ver>`). Validate on TestPyPI / a pre-release tag
+  before the first real release (PyPI is immutable).
+- **PyPI setup (maintainer).** Pending trusted publishers for `cvista-rendering`
+  and `cvista-io`: owner `pyvista`, repo `cvista`, workflow `ci.yml`, environment `pypi`.
