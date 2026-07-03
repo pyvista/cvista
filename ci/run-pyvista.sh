@@ -40,6 +40,12 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 export PYVISTA_OFF_SCREEN=true
+# Pin the hash seed so every pytest-xdist worker enumerates set/dict-backed
+# parametrizations in the SAME order. Without this, workers collect e.g.
+# test_cells.py::test_celltype_deprecated[PARAMETRIC_*] in hash-randomized order
+# and xdist aborts the whole run with "Different tests were collected between
+# gw0 and gw1" (surfaced by the pin bump to a pyvista rev with such a test).
+export PYTHONHASHSEED=0
 # Provides a real DISPLAY (silences _warn_xserver) + a fresh server per call.
 XVFB=(xvfb-run -a -s "-screen 0 1280x1024x24")
 
