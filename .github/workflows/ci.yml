@@ -221,15 +221,16 @@ jobs:
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           python3 -m wheel unpack "$whl" -d /tmp/unpack
-          pkgdir=$(dirname "$(find /tmp/unpack -maxdepth 3 -name __init__.py -path '*/cvista/__init__.py' | head -1)")
-          echo "pkgdir=$pkgdir" >> "$GITHUB_OUTPUT"
-          echo "=== unpacked top-level (watch for a sibling cvista.libs/) ==="
-          ls -la "$(dirname "$pkgdir")"
+          initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+          root=$(dirname "$(dirname "$initpy")")     # wheel ROOT: holds cvista/ + cvista.libs/
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "=== unpacked wheel root (expect cvista/ AND the vendored cvista.libs/) ==="
+          ls -la "$root"
       - name: Partition + self-containment AUDIT (hard gate)
         run: |
           set -euo pipefail
           python3 cvista-config/wheel-split/partition_wheels.py \
-            "${{ steps.unpack.outputs.pkgdir }}" /tmp/tiers
+            "${{ steps.unpack.outputs.root }}" /tmp/tiers
       - name: Pack 3 tier wheels
         env:
           CVISTA_WHEEL_VERSION: ${{ steps.unpack.outputs.ver }}
@@ -238,16 +239,123 @@ jobs:
           set -euo pipefail
           python3 cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
           ls -la /tmp/tier-wheels
-      - name: Stacking smoke (best-effort while tables are tuned)
-        continue-on-error: true
+      - name: Stacking smoke (hard gate — core offline, +io, +rendering)
         run: |
+          set -euo pipefail
           sudo apt-get install -y -qq libgl1 libglx-mesa0 libxt6 libx11-6 libglu1-mesa || true
           WD=/tmp/tier-wheels PYBIN=python3 bash cvista-config/wheel-split/validate_stacking.sh
       - uses: actions/upload-artifact@v4
+        if: always()          # keep artifacts even if the stacking gate fails, for inspection
         with:
           name: cvista-tier-wheels-linux
           path: /tmp/tier-wheels/*.whl
-          if-no-files-found: error
+          if-no-files-found: warn
+
+  split-macos:
+    name: 3-wheel tier split (macOS)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'wheel-split')
+    runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Restore ccache (cross-run)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache
+          key: cvista-cibw-ccache-macos-tiered-${{ github.sha }}
+          restore-keys: |
+            cvista-cibw-ccache-macos-tiered-
+            cvista-cibw-ccache-macos-14-
+      - name: Build TIERED wheel (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # Replicate pyproject [tool.cibuildwheel.macos.environment] but point the
+          # init-cache at the tiered variant (module disables + macos.cmake).
+          CIBW_ENVIRONMENT_MACOS: >-
+            CVISTA_CMAKE_INIT=ci/cmake/macos-tiered.cmake CVISTA_TARGET_OS=macos
+            MACOSX_DEPLOYMENT_TARGET=11.0 _PYTHON_HOST_PLATFORM=macosx-11.0-arm64
+            CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Partition + pack + stack (otool link graph; delocate .dylibs)
+        run: |
+          set -euo pipefail
+          python3 -m pip -q install wheel
+          whl=$(ls wheelhouse/cvista-*.whl | head -1); echo "built: $whl"
+          base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
+          python3 -m wheel unpack "$whl" -d /tmp/unpack
+          initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+          root=$(dirname "$(dirname "$initpy")")
+          echo "=== wheel root (expect cvista/ + delocate cvista/.dylibs/) ==="; ls -la "$root"; ls -la "$root/cvista/.dylibs" 2>/dev/null || true
+          python3 cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+          CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
+            python3 cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
+          ls -la /tmp/tier-wheels
+          WD=/tmp/tier-wheels PYBIN=python3 bash cvista-config/wheel-split/validate_stacking.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cvista-tier-wheels-macos
+          path: /tmp/tier-wheels/*.whl
+          if-no-files-found: warn
+
+  split-windows:
+    name: 3-wheel tier split (Windows)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'wheel-split')
+    runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Set up MSVC (vcvars) for the Ninja build
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build TIERED wheel (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # Replicate pyproject [tool.cibuildwheel.windows.environment] + tiered init-cache.
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON
+      - name: Partition + pack + AUDIT (pefile link graph; delvewheel cvista.libs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip -q install wheel pefile
+          whl=$(ls wheelhouse/cvista-*.whl | head -1); echo "built: $whl"
+          base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
+          python -m wheel unpack "$whl" -d /tmp/unpack
+          initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+          root=$(dirname "$(dirname "$initpy")")
+          echo "=== wheel root (expect cvista/ + delvewheel cvista.libs/) ==="; ls -la "$root"
+          python cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+          CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
+            python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
+          ls -la /tmp/tier-wheels
+      - name: Core import smoke (native)
+        shell: pwsh
+        run: |
+          $core = Get-ChildItem /tmp/tier-wheels/cvista-9.6.2*.whl | Select-Object -First 1
+          python -m venv C:\v
+          C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
+          C:\v\Scripts\python.exe -c "import cvista; from cvista.vtkFiltersSources import vtkSphereSource; s=vtkSphereSource(); s.Update(); print('win core import OK, pts:', s.GetOutput().GetNumberOfPoints())"
+          $ok = $true
+          try { C:\v\Scripts\python.exe -c "import cvista.vtkRenderingCore" ; $ok=$false } catch {}
+          if (-not $ok) { Write-Error 'vtkRenderingCore present in core-only (unexpected)'; exit 1 }
+          Write-Host 'vtkRenderingCore absent in core-only [OK]'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cvista-tier-wheels-windows
+          path: /tmp/tier-wheels/*.whl
+          if-no-files-found: warn
 
   build-other-os:
     name: build ${{ matrix.os }}

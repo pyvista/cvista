@@ -59,8 +59,17 @@ def main(srcroot, outdir):
         stage = Path(f"/tmp/_pack_{tier}");
         if stage.exists(): shutil.rmtree(stage)
         stage.mkdir(parents=True)
-        # copy cvista/ payload
-        shutil.copytree(Path(srcroot)/tier/"cvista", stage/"cvista")
+        # copy the whole tier root — cvista/ AND any vendored-runtime dir the platform
+        # repair created (auditwheel cvista.libs/, delocate cvista/.dylibs/, delvewheel
+        # cvista.libs/). partition_wheels.py assigns each vendored lib to a tier, so a
+        # tier may or may not carry a cvista.libs/ (core carries libgomp etc.).
+        src_tier = Path(srcroot)/tier
+        for item in sorted(src_tier.iterdir()):
+            dst = stage/item.name
+            if item.is_dir():
+                shutil.copytree(item, dst)
+            else:
+                shutil.copy2(item, dst)
         di = stage/f"{dist}-{VER}.dist-info"; di.mkdir()
         (di/"METADATA").write_text(metadata(dist, reqs))
         (di/"WHEEL").write_text(WHEEL)

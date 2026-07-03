@@ -20,8 +20,10 @@
 #   - IOCGNSReader               : DEPENDS IOGeometry chain + rides the Parallel kit.
 #   - IOInfovis                  : DEPENDS InfovisCore -> RenderingFreeType (pulls
 #                                  rendering into what would be an io-tier module).
+# This file is a COMPOSABLE module-disable layer, NOT a standalone init-cache. A
+# per-OS tiered init-cache (ci/cmake/{linux,macos,windows}-tiered.cmake) includes
+# THIS first (cache-first-wins over the WANT in _modules_minimal.cmake), then the
+# normal per-OS init-cache (which carries the Cocoa/MSVC/arch settings + minimal.cmake).
 foreach(_m IOParallel IOParallelXML IOCGNSReader IOInfovis)
   set(VTK_MODULE_ENABLE_VTK_${_m} NO CACHE STRING "")
 endforeach()
-
-include("${CMAKE_CURRENT_LIST_DIR}/minimal.cmake")
