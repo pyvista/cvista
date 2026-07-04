@@ -32,7 +32,11 @@ SHLIB_RE = re.compile(r"\.(so|dylib|pyd|dll)$|\.so\.\d")
 
 # ---- kit lib basename (without lib/.so/suffix) -> tier --------------------
 KIT_TIER = {
-    "vtkCommon": "core", "vtkFilters": "core", "vtkImaging": "core", "vtkIO": "core",
+    "vtkCommon": "core", "vtkFilters": "core", "vtkImaging": "core",
+    # The VTK::IO kit (IOCore/IOXML/IOXMLParser/IOLegacy/IOImage/IOGeometry/IOPLY/
+    # IOCellGrid) rides the io tier: after the IO-out-of-core decoupling no core
+    # module links any IO module, so the whole IO kit lib lives in io.
+    "vtkIO": "io",
     "vtkRendering": "rendering", "vtkInteraction": "rendering",
     "vtkChartsCore": "rendering", "vtkViews": "rendering",
     "vtkIOExtra": "io",
@@ -53,13 +57,20 @@ def module_tier(mod):
         return "rendering"
     if m == "vtkFiltersHybridRendering":       # the 3 view-classes split out of FiltersHybrid
         return "rendering"
-    # NOTE: vtkIOGeometry is core now — #168 relocated its rendering-coupled classes
-    # (vtkGLTFReader/vtkGLTFTexture) into vtkIOImport, so IOGeometry is rendering-free
-    # and rides the core VTK::IO kit. vtkIOImport carries them and stays rendering.
+    if m == "vtkImagingHybridIO":              # vtkSliceCubes split out of ImagingHybrid (needs IOImage)
+        return "io"
+    # Rendering-coupled IO modules: they DEPEND on RenderingCore (import/export scene
+    # graph, chemistry). They stay in the rendering tier; since rendering may depend on
+    # io (see ALLOW), any IO they pull resolves within rendering∪io∪core.
+    # NOTE: vtkIOImport carries the glTF reader/texture relocated in #168.
     if m in ("vtkIOExport","vtkIOExportGL2PS","vtkIOImport","vtkIOMINC",
              "vtkIOChemistry","vtkInfovisCore","vtkInfovisLayout"):
         return "rendering"
-    if m in ("vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIOInfovis","vtkIONetCDF",
+    # The VTK::IO kit modules are now rendering-free and ride the io tier, together
+    # with the standalone io-only readers/writers.
+    if m in ("vtkIOCore","vtkIOXML","vtkIOXMLParser","vtkIOLegacy","vtkIOImage",
+             "vtkIOGeometry","vtkIOPLY","vtkIOCellGrid",
+             "vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIOInfovis","vtkIONetCDF",
              "vtkIOVeraOut","vtkIOSegY","vtkIOFLUENTCFF","vtkIOCGNSReader",
              "vtkIOParallel","vtkIOParallelXML","vtkIOParallelExodus","vtkIOCONVERGECFD"):
         return "io"
@@ -178,7 +189,11 @@ def main(rootdir, outdir):
     if not outdir:
         return
 
-    ALLOW = {"core": {"core"}, "rendering": {"rendering", "core"}, "io": {"io", "core"}}
+    # Tier dependency DAG: core (standalone) <- io (needs core) <- rendering (needs
+    # io + core). Rendering may depend on io because scene import/export and molecule
+    # rendering pull IO: e.g. vtkIOExport -> vtkDomainsChemistry -> vtkIOXMLParser, and
+    # texture/image loading via vtkIOImage. Core stays pure (no io, no rendering).
+    ALLOW = {"core": {"core"}, "rendering": {"rendering", "io", "core"}, "io": {"io", "core"}}
     tier_of_name = {f.name: tier[f] for f in tier if is_shlib(f.name)}
 
     for t in ("core", "rendering", "io"):

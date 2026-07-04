@@ -59,5 +59,8 @@ set(private_templates
 
 vtk_module_add_module(VTK::IOXML
   CLASSES ${classes}
+  # Non-wrapped: installs vtkDIYUtilities' dataset XML (de)serialization handler at
+  # load time so VTK::ParallelDIY need not depend on any IO module.
+  SOURCES vtkDIYDataSetMarshal.cxx
   PRIVATE_TEMPLATES ${private_templates})
 vtk_add_test_mangling(VTK::IOXML)

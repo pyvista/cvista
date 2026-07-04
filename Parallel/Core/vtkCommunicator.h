@@ -1300,6 +1300,12 @@ public:
    * Convert a data object into a string that can be transmitted and vice versa.
    * Returns 1 for success and 0 for failure.
    * WARNING: This will only work for types that have a vtkDataWriter class.
+   *
+   * NOTE: The serialization itself is performed by a handler that VTK::IOLegacy
+   * registers when it is loaded. VTK::ParallelCore is intentionally free of any
+   * dependency on the IO modules, so if VTK::IOLegacy has not been loaded (e.g.
+   * `import vtkmodules.vtkIOLegacy`) these methods emit a warning and return 0 /
+   * nullptr. See RegisterMarshalDataObjectHandlers().
    */
   static int MarshalDataObject(vtkDataObject* object, vtkCharArray* buffer);
   static int UnMarshalDataObject(vtkCharArray* buffer, vtkDataObject* object);
@@ -1312,6 +1318,20 @@ public:
    * if \c buffer is nullptr or empty.
    */
   static vtkSmartPointer<vtkDataObject> UnMarshalDataObject(vtkCharArray* buffer);
+
+  ///@{
+  /**
+   * Install the data-object (de)serialization implementation used by
+   * MarshalDataObject()/UnMarshalDataObject(). This is called automatically by
+   * VTK::IOLegacy when its shared library is loaded and is not intended to be
+   * called directly. Keeping the implementation out of VTK::ParallelCore lets
+   * this module remain free of any IO dependency.
+   */
+  using MarshalDataObjectHandler = int (*)(vtkDataObject* object, vtkCharArray* buffer);
+  using UnMarshalDataObjectHandler = vtkSmartPointer<vtkDataObject> (*)(vtkCharArray* buffer);
+  static void RegisterMarshalDataObjectHandlers(
+    MarshalDataObjectHandler marshal, UnMarshalDataObjectHandler unmarshal);
+  ///@}
 
 protected:
   int WriteDataArray(vtkDataArray* object);

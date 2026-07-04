@@ -1,0 +1,23 @@
+NAME
+  VTK::ImagingHybridIO
+LIBRARY_NAME
+  vtkImagingHybridIO
+DESCRIPTION
+  vtkSliceCubes split out of ImagingHybrid: it isosurfaces volume slices read
+  through a vtkVolumeReader (VTK::IOImage). Kept in its own module so that
+  VTK::ImagingHybrid stays free of any IO dependency.
+GROUPS
+  Imaging
+  StandAlone
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+PRIVATE_DEPENDS
+  VTK::CommonDataModel
+  VTK::IOImage
+TEST_DEPENDS
+  VTK::IOImage
+  VTK::TestingCore

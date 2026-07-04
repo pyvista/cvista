@@ -1,10 +1,23 @@
 # cvista 3-wheel split — design & partition manifest
 
 ## Goal
-Ship three stackable PyPI wheels that share the `cvista/` import namespace:
-- **cvista** (core): VTK Common + Filters + Imaging + native-format IO. Rendering-clean. Tiny, fast import. Offline processing.
-- **cvista-rendering**: the rendering tier (OpenGL2, FreeType, Charts, Views, Interaction) + rendering-coupled IO. `Requires-Dist: cvista==<ver>`.
-- **cvista-io**: heavy / third-party data IO (HDF, Exodus, CGNS, EnSight, NetCDF, SegY, FLUENT, …) + vendored hdf5/netcdf/cgns/exodus. `Requires-Dist: cvista==<ver>`.
+Ship three stackable PyPI wheels that share the `cvista/` import namespace, forming a
+dependency DAG **core ← io ← rendering**:
+- **cvista** (core): VTK Common + Filters + Imaging compute kernels only. **IO-free** and rendering-free. Tiny, fast import. Pure in-memory offline processing.
+- **cvista-io**: *every* VTK reader/writer — the `VTK::IO` kit (XML/Legacy/PLY/Image/Geometry/Core/XMLParser/CellGrid) plus the heavy/third-party formats (HDF, Exodus, CGNS, EnSight, NetCDF, SegY, FLUENT, …) + vendored hdf5/netcdf/cgns/exodus. `Requires-Dist: cvista==<ver>`.
+- **cvista-rendering**: the rendering tier (OpenGL2, FreeType, Charts, Views, Interaction) + rendering-coupled IO (Export/Import/Chemistry). Rendering pulls IO (scene import/export → chemistry → XML parser; texture/image loading), so `Requires-Dist: cvista==<ver>, cvista-io==<ver>`.
+
+### "Every last IO module out of core" (`feat/io-out-of-core`)
+The `VTK::IO` kit used to ride the **core** tier because a handful of core modules linked it.
+Those couplings were removed so the whole IO kit could move to the **io** tier:
+- **vtkCommunicator** (ParallelCore): `Marshal/UnMarshalDataObject` delegate to a handler that `VTK::IOLegacy` registers at load; the legacy reader/writer impl moved into IOLegacy.
+- **vtkDIYUtilities** (ParallelDIY): dataset `Save/Load` delegate to a handler that `VTK::IOXML` registers at load; the XML reader/writer impl moved into IOXML.
+- **vtkParticleTracerBase** (FiltersFlowPaths): the `vtkAbstractParticleWriter` member is type-erased through `vtkObjectBase` (dropped the IOCore include).
+- **vtkSliceCubes** (ImagingHybrid → new **VTK::ImagingHybridIO**, io tier): relocated, since it reads volumes via `vtkVolumeReader` (IOImage).
+- Declared-but-unused IO deps dropped from FiltersParallel (IOLegacy), FiltersParallelDIY2 (IOXML — its only user is MPI-gated/never built), InfovisCore (IOImage).
+- **IOParallel/IOParallelXML/IOCGNSReader** un-kitted from `VTK::Parallel` (they are IO modules) so the core Parallel kit no longer depends on the IO kit — otherwise `VTK::IO → VTK::Parallel` (the new back-edges) would form a kit cycle in the full build.
+
+Result: no core-tier module links any IO module; the core Parallel kit is IO-free; module + kit dependency graphs stay acyclic; core wheel carries zero readers/writers.
 
 ## Why a single build can partition (after the IOExtra kit split)
 All three wheels install files into the same `cvista/` directory; the shipped libs carry `RUNPATH=$ORIGIN`, so a lib in cvista-rendering resolves `libvtkCommon-cvista.so` from the core wheel sitting in the same dir. SONAMEs are identical because it is ONE build.

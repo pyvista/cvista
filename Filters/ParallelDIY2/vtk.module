@@ -27,7 +27,6 @@ PRIVATE_DEPENDS
   VTK::CommonDataModel
   VTK::CommonExecutionModel
   VTK::ImagingCore
-  VTK::IOXML
   VTK::ParallelCore
   VTK::FiltersTemporal
 TEST_DEPENDS
