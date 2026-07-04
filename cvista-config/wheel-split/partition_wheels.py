@@ -48,6 +48,24 @@ KIT_TIER = {
 
 PATCHELF = shutil.which("patchelf") or "patchelf"  # from PATH (CI + Nix); no hardcoded store path
 
+# ---- deterministic tier for VTK's vendored third-party libs (lowercased keys) ----
+# The link-graph closure below is reliable on Linux/macOS (readelf/otool) but NOT on
+# Windows, where delvewheel hash-mangles the vendored DLLs and pefile's import table
+# yields an incomplete/scrambled graph (e.g. vtknetcdf resolved to `rendering`,
+# vtkhdf5/vtkexodusII sunk into `core`). For the libs whose consuming tier is
+# unambiguous we pin it, so placement is platform-independent and correct. Genuinely
+# SHARED libs (zlib/png/jpeg/tiff/expat/lz4/lzma/pugixml/fmt/sys/...), used by both io
+# readers and rendering textures, are intentionally omitted: they fall to closure and
+# land in `core`, the common base every tier already has.
+THIRDPARTY_TIER = {
+    # heavy data formats -> io tier only
+    "vtkhdf5": "io", "vtkhdf5_hl": "io", "vtknetcdf": "io", "vtknetcdfcpp": "io",
+    "vtkcgns": "io", "vtkexodusii": "io", "vtkioss": "io",
+    # GL loader / vector export / font stack -> rendering tier only
+    "vtkglad": "rendering", "vtkgl2ps": "rendering", "vtkopengl": "rendering",
+    "vtkfreetype": "rendering",
+}
+
 
 def module_tier(mod):
     m = mod
@@ -157,8 +175,10 @@ def main(rootdir, outdir):
                 tier[f] = KIT_TIER[stem]                   # kit lib -> kit tier
             elif stem in module_names:
                 tier[f] = module_tier(stem)                # standalone module lib -> module tier (deterministic)
+            elif stem.lower() in THIRDPARTY_TIER:
+                tier[f] = THIRDPARTY_TIER[stem.lower()]     # unambiguous 3rd-party lib -> pinned tier (deterministic)
             else:
-                thirdparty.append(f)                       # vtk 3rd-party (vtkhdf5/png/...) -> closure
+                thirdparty.append(f)                       # shared 3rd-party (zlib/png/...) -> closure -> core
         elif b.startswith("vtk") and is_shlib(b) and pkg in f.parents:
             tier[f] = module_tier(module_name(b))          # python module ext -> module tier
         else:
