@@ -27,6 +27,14 @@ safety net (linux only) and is expected to be a no-op.
 import os, re, sys, shutil, subprocess, json, platform
 from pathlib import Path
 
+# Windows consoles default to cp1252; force UTF-8 so any non-ASCII in output can
+# never raise UnicodeEncodeError (the audit summary once tripped on U+222A).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 SUFFIX = "-cvista"  # VTK_CUSTOM_LIBRARY_SUFFIX
 SHLIB_RE = re.compile(r"\.(so|dylib|pyd|dll)$|\.so\.\d")
 
@@ -278,11 +286,11 @@ def main(rootdir, outdir):
                 if nt and nt not in ALLOW[t]:
                     violations.append(f"{t}: {f.name} -> {n} ({nt})")
     if violations:
-        print("AUDIT FAILED — cross-tier dependencies survive:")
+        print("AUDIT FAILED - cross-tier dependencies survive:")
         for v in violations:
             print("  " + v)
         sys.exit(1)
-    print("AUDIT PASSED — every tier lib resolves within {own tier} ∪ core")
+    print("AUDIT PASSED - every tier lib resolves within own-tier + core")
 
 
 if __name__ == "__main__":
