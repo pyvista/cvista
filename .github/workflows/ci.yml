@@ -283,7 +283,9 @@ jobs:
       - name: Partition + pack + stack (otool link graph; delocate .dylibs)
         run: |
           set -euo pipefail
-          python3 -m pip -q install wheel
+          # macos-14 runner python3 is Homebrew (PEP 668 externally-managed); the
+          # runner venv is disposable so installing into it directly is fine.
+          python3 -m pip -q install --break-system-packages wheel
           whl=$(ls wheelhouse/cvista-*.whl | head -1); echo "built: $whl"
           base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
           python3 -m wheel unpack "$whl" -d /tmp/unpack

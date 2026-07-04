@@ -129,6 +129,15 @@ def main(rootdir, outdir):
              and not any(p.endswith(".dist-info") for p in f.relative_to(root).parts)]
     sos = [f for f in files if is_shlib(f.name)]
 
+    # Authoritative module-name set, taken from the python extensions inside the
+    # cvista/ package (vtkIOHDF.abi3.so / vtkIOHDF.pyd -> "vtkIOHDF"). A standalone
+    # module lib is then tiered DETERMINISTICALLY via module_tier() rather than via
+    # link-graph closure -- which is fragile on Windows/macOS where delvewheel /
+    # delocate hash-mangle the built libs (vtkIOHDF-cvista-<hash>.dll) and move them
+    # to a sibling vendor dir, so the .pyd -> lib NEEDED edge is easy to miss.
+    module_names = {module_name(f.name) for f in sos
+                    if is_python_ext(f.name) and pkg in f.parents}
+
     tier = {}            # path -> tier
     thirdparty = []      # libs resolved by link-graph closure
     libname = {}         # soname/basename -> path (for closure)
@@ -143,11 +152,13 @@ def main(rootdir, outdir):
         # (libgomp, msvcp, delocate .dylibs) carry neither vtk-name nor -cvista.
         if SUFFIX in b:                                     # a built vtk shared lib
             stem = b[len("lib"):] if b.startswith("lib") else b
-            stem = stem.split(SUFFIX)[0]                    # vtkCommon / vtkIOExtra / vtkhdf5
+            stem = stem.split(SUFFIX)[0]                    # vtkCommon / vtkIOExtra / vtkIOHDF / vtkhdf5
             if stem in KIT_TIER:
-                tier[f] = KIT_TIER[stem]
+                tier[f] = KIT_TIER[stem]                   # kit lib -> kit tier
+            elif stem in module_names:
+                tier[f] = module_tier(stem)                # standalone module lib -> module tier (deterministic)
             else:
-                thirdparty.append(f)                       # standalone module lib / vtk 3rd-party -> closure
+                thirdparty.append(f)                       # vtk 3rd-party (vtkhdf5/png/...) -> closure
         elif b.startswith("vtk") and is_shlib(b) and pkg in f.parents:
             tier[f] = module_tier(module_name(b))          # python module ext -> module tier
         else:
