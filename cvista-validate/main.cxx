@@ -194,12 +194,17 @@ int main(int argc, char* argv[])
         }
         else
         {
-          std::string diff = smpparity::CompareDataObjects(first, out);
+          // Run-to-run stability. Byte-exact filters must be byte-identical
+          // across runs; order-relaxed filters need only the same geometry set
+          // (their emission order is thread-scheduling dependent by design).
+          std::string diff = c.orderRelaxed ? smpparity::CompareGeometrySet(first, out)
+                                            : smpparity::CompareDataObjects(first, out);
           if (!diff.empty())
           {
             ok = false;
-            verdict = "FAIL nondeterministic @T=" + std::to_string(nthreads) + " rep " +
-              std::to_string(r) + ": " + diff;
+            verdict = std::string("FAIL ") +
+              (c.orderRelaxed ? "geometry unstable run-to-run" : "nondeterministic") +
+              " @T=" + std::to_string(nthreads) + " rep " + std::to_string(r) + ": " + diff;
             break;
           }
         }
@@ -207,7 +212,8 @@ int main(int argc, char* argv[])
     }
 
     if (ok)
-      verdict = c.orderRelaxed ? "PASS (order-relaxed: same set, run-to-run stable)" : "PASS";
+      verdict = c.orderRelaxed ? "PASS (order-relaxed: geometry stable & == serial, order nondeterministic)"
+                               : "PASS";
     else
       ++failed;
 

@@ -309,25 +309,78 @@ std::string cellDataKey(vtkDataSet* ds, vtkIdType i)
   return key;
 }
 
-// Sorted-by-key point keys + the inverse permutation (origId -> sorted rank).
-void canonicalPoints(vtkDataSet* ds, std::vector<std::string>& sortedKeys,
-  std::vector<vtkIdType>& rankOf)
+// Smallest cyclic rotation of a vertex ring, ORIENTATION-preserving (no reflect).
+// Makes a triangle emitted as (A,B,C), (B,C,A) or (C,A,B) compare identically --
+// same triangle, different start vertex from thread batching -- while a flipped
+// winding (A,C,B) stays distinct. Vertices are identified by their point key
+// (coords+point-data), so duplicate/coincident points are unambiguous.
+std::string canonicalRing(const std::vector<std::string>& verts)
+{
+  const std::size_t n = verts.size();
+  if (n == 0)
+    return "";
+  std::size_t best = 0;
+  for (std::size_t s = 1; s < n; ++s)
+  {
+    for (std::size_t k = 0; k < n; ++k)
+    {
+      const std::string& vs = verts[(s + k) % n];
+      const std::string& vb = verts[(best + k) % n];
+      if (vs < vb)
+      {
+        best = s;
+        break;
+      }
+      if (vb < vs)
+        break;
+    }
+  }
+  std::string out;
+  for (std::size_t k = 0; k < n; ++k)
+  {
+    out += verts[(best + k) % n];
+    out.push_back('|');
+  }
+  return out;
+}
+
+// The multiset of cell descriptors: cell type + orientation-canonical ring of
+// vertex point-keys + cell-data key. Independent of point IDs and of the order
+// cells/points are stored in.
+std::vector<std::string> cellDescriptors(vtkDataSet* ds)
+{
+  const vtkIdType np = ds->GetNumberOfPoints();
+  std::vector<std::string> pkey(np);
+  for (vtkIdType i = 0; i < np; ++i)
+    pkey[i] = pointKey(ds, i);
+
+  const vtkIdType nc = ds->GetNumberOfCells();
+  std::vector<std::string> descs(nc);
+  vtkNew<vtkIdList> ids;
+  for (vtkIdType i = 0; i < nc; ++i)
+  {
+    ds->GetCellPoints(i, ids);
+    std::vector<std::string> verts(ids->GetNumberOfIds());
+    for (vtkIdType j = 0; j < ids->GetNumberOfIds(); ++j)
+      verts[j] = pkey[ids->GetId(j)];
+    std::string d;
+    pushBytes(d, ds->GetCellType(i));
+    d += canonicalRing(verts);
+    d += cellDataKey(ds, i);
+    descs[i] = std::move(d);
+  }
+  std::sort(descs.begin(), descs.end());
+  return descs;
+}
+
+std::vector<std::string> sortedPointKeys(vtkDataSet* ds)
 {
   const vtkIdType np = ds->GetNumberOfPoints();
   std::vector<std::string> keys(np);
-  std::vector<vtkIdType> order(np);
-  std::iota(order.begin(), order.end(), 0);
   for (vtkIdType i = 0; i < np; ++i)
     keys[i] = pointKey(ds, i);
-  std::sort(order.begin(), order.end(),
-    [&keys](vtkIdType x, vtkIdType y) { return keys[x] < keys[y]; });
-  sortedKeys.resize(np);
-  rankOf.assign(np, 0);
-  for (vtkIdType r = 0; r < np; ++r)
-  {
-    sortedKeys[r] = keys[order[r]];
-    rankOf[order[r]] = r;
-  }
+  std::sort(keys.begin(), keys.end());
+  return keys;
 }
 
 } // namespace
@@ -349,33 +402,11 @@ std::string CompareGeometrySet(vtkDataObject* a, vtkDataObject* b)
       std::to_string(dsb->GetNumberOfCells());
 
   // Points (with point data) must match as a multiset.
-  std::vector<std::string> ka, kb;
-  std::vector<vtkIdType> rankA, rankB;
-  canonicalPoints(dsa, ka, rankA);
-  canonicalPoints(dsb, kb, rankB);
-  if (ka != kb)
+  if (sortedPointKeys(dsa) != sortedPointKeys(dsb))
     return "point set differs (same count, different points/point-data)";
 
-  // Cells: rewrite each cell's connectivity through the point rank so IDs are
-  // order-independent, tag with cell type + cell data, then compare as a multiset.
-  const vtkIdType nc = dsa->GetNumberOfCells();
-  auto cellKeys = [nc](vtkDataSet* ds, std::vector<vtkIdType>& rank) {
-    std::vector<std::string> keys(nc);
-    vtkNew<vtkIdList> ids;
-    for (vtkIdType i = 0; i < nc; ++i)
-    {
-      std::string key;
-      pushBytes(key, ds->GetCellType(i));
-      ds->GetCellPoints(i, ids);
-      for (vtkIdType j = 0; j < ids->GetNumberOfIds(); ++j)
-        pushBytes(key, rank[ids->GetId(j)]);
-      key += cellDataKey(ds, i);
-      keys[i] = std::move(key);
-    }
-    std::sort(keys.begin(), keys.end());
-    return keys;
-  };
-  if (cellKeys(dsa, rankA) != cellKeys(dsb, rankB))
+  // Cells (orientation-canonical, key-based) must match as a multiset.
+  if (cellDescriptors(dsa) != cellDescriptors(dsb))
     return "cell set differs (same count, different cells/connectivity/cell-data)";
 
   return "";
