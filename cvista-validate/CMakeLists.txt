@@ -14,6 +14,18 @@ project(cvista_smp_parity CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# cvista's installed VTK object-targets leak OpenMP::OpenMP_CXX / Threads::Threads
+# into their link interface (the toolchain found OpenMP at build time) but the
+# SDK's vtk-config.cmake does not find_dependency() them, so a downstream
+# find_package(VTK) errors with "target OpenMP::OpenMP_CXX not found". Resolve
+# them here first; if OpenMP is genuinely absent (SMP backend is STDThread, so it
+# is not actually used) stub an empty imported target so the interface resolves.
+find_package(Threads QUIET)
+find_package(OpenMP QUIET COMPONENTS CXX)
+if(NOT TARGET OpenMP::OpenMP_CXX)
+  add_library(OpenMP::OpenMP_CXX INTERFACE IMPORTED)
+endif()
+
 find_package(VTK REQUIRED COMPONENTS
   CommonCore
   CommonDataModel
