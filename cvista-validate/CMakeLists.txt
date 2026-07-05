@@ -32,10 +32,17 @@ find_package(VTK REQUIRED COMPONENTS
   CommonExecutionModel
   CommonTransforms
   FiltersCore
+  FiltersExtraction
   FiltersGeneral
   FiltersGeometry
+  FiltersModeling
+  FiltersParallel
+  FiltersPoints
   FiltersSources
-  ImagingCore)
+  FiltersStatistics
+  FiltersVerdict
+  ImagingCore
+  ImagingHybrid)
 
 add_executable(cvista_smp_parity
   main.cxx

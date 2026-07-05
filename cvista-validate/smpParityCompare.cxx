@@ -16,6 +16,7 @@
 #include <vtkPointSet.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
+#include <vtkTable.h>
 #include <vtkUnstructuredGrid.h>
 
 #include <algorithm>
@@ -193,6 +194,16 @@ std::string CompareDataObjects(vtkDataObject* a, vtkDataObject* b)
   if (std::strcmp(a->GetClassName(), b->GetClassName()) != 0)
     return std::string("class mismatch: ") + a->GetClassName() + " (serial) vs " +
       b->GetClassName() + " (parallel)";
+
+  // Tables: compare the row-data columns byte-exact.
+  if (auto* ta = vtkTable::SafeDownCast(a))
+  {
+    auto* tb = vtkTable::SafeDownCast(b);
+    if (ta->GetNumberOfRows() != tb->GetNumberOfRows())
+      return "table rows " + std::to_string(ta->GetNumberOfRows()) + " vs " +
+        std::to_string(tb->GetNumberOfRows());
+    return compareAttributes("rowdata", ta->GetRowData(), tb->GetRowData());
+  }
 
   // Geometry: point coordinates for any point set.
   if (auto* pa = vtkPointSet::SafeDownCast(a))

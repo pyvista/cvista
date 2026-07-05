@@ -16,6 +16,7 @@
 class vtkAlgorithm;
 class vtkImageData;
 class vtkPolyData;
+class vtkTable;
 class vtkUnstructuredGrid;
 
 namespace smpparity
@@ -23,9 +24,18 @@ namespace smpparity
 
 struct Inputs
 {
-  vtkSmartPointer<vtkImageData> image;       // vtkRTAnalyticSource wavelet, "RTData"
-  vtkSmartPointer<vtkPolyData> poly;         // sphere + scalars/vectors/normals/cell data
+  vtkSmartPointer<vtkImageData> image;        // 3D vtkRTAnalyticSource wavelet, "RTData"
+  vtkSmartPointer<vtkImageData> image2d;      // 2D single-slice wavelet
+  vtkSmartPointer<vtkImageData> labelImage;   // 3D integer-label image ("labels")
+  vtkSmartPointer<vtkImageData> labelImage2d; // 2D integer-label image
+  vtkSmartPointer<vtkPolyData> poly;          // sphere + scalars/vectors/cell data
+  vtkSmartPointer<vtkPolyData> polyNT;        // sphere + point Normals + TCoords
+  vtkSmartPointer<vtkPolyData> poly2;         // translated sphere (2nd surface)
+  vtkSmartPointer<vtkPolyData> cloud;         // point cloud (verts) + "scalars"
+  vtkSmartPointer<vtkPolyData> cloudPlanar;   // coplanar point cloud (z=0)
   vtkSmartPointer<vtkUnstructuredGrid> ugrid; // thresholded wavelet + cell data
+  vtkSmartPointer<vtkTable> table;            // numeric columns A,B
+  vtkSmartPointer<vtkTable> table2;           // numeric columns A,B (2nd)
 };
 
 // Build the shared inputs. MUST be called with the SMP backend forced serial so
