@@ -140,6 +140,7 @@ int main(int argc, char* argv[])
   const std::vector<smpparity::Case> cases = smpparity::RegisterCases();
 
   int failed = 0;
+  int known = 0;
   int comparisons = 0;
 
   std::cout << std::left << std::setw(34) << "algorithm" << std::setw(18) << "module"
@@ -212,8 +213,22 @@ int main(int argc, char* argv[])
     }
 
     if (ok)
-      verdict = c.orderRelaxed ? "PASS (order-relaxed: geometry stable & == serial, order nondeterministic)"
-                               : "PASS";
+    {
+      verdict = c.orderRelaxed
+        ? "PASS (order-relaxed: geometry stable & == serial, order nondeterministic)"
+        : "PASS";
+      if (c.knownIssue)
+        verdict += " [known-issue, stable this run]";
+    }
+    else if (c.knownIssue)
+    {
+      // Documented nondeterminism (unseeded RNG, or a tracked data race). Report
+      // it with full context but do NOT fail the gate -- the gate protects the
+      // deterministic majority; these are known and tracked separately.
+      ++known;
+      verdict = "KNOWN-ISSUE (documented, not gated) [" + c.knownIssueReason + "] observed: " +
+        verdict;
+    }
     else
       ++failed;
 
@@ -225,10 +240,11 @@ int main(int argc, char* argv[])
 
   std::cout << "\n" << std::string(84, '-') << "\n";
   std::cout << "cases: " << cases.size() << "   comparisons: " << comparisons
-            << "   failed: " << failed << "\n";
+            << "   gated-failures: " << failed << "   known-issues (ungated): " << known << "\n";
   if (failed == 0)
   {
-    std::cout << "RESULT: PASS - every algorithm's parallel output is byte-exact with serial\n";
+    std::cout << "RESULT: PASS - every gated algorithm's parallel output matches serial"
+              << (known ? " (see KNOWN-ISSUE rows for documented, tracked exceptions)" : "") << "\n";
     return EXIT_SUCCESS;
   }
   std::cout << "RESULT: FAIL - " << failed

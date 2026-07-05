@@ -65,6 +65,15 @@ struct Case
   // byte-exact. It must still be byte-exact run-to-run (deterministic); the
   // driver checks that separately. Default false = strict byte-exact vs serial.
   bool orderRelaxed = false;
+  // When true, this filter is KNOWN to be nondeterministic under threading for a
+  // documented reason (knownIssueReason). The driver still runs it and reports the
+  // divergence + magnitude, but does NOT count it as a gate failure -- so the CI
+  // gate keeps protecting the deterministic majority while transparently tracking
+  // the known exceptions. Two distinct kinds live here: (a) inherently random
+  // filters whose SERIAL output is already nondeterministic (an unseeded RNG), and
+  // (b) genuine threading bugs (a data race) recorded pending a fix.
+  bool knownIssue = false;
+  std::string knownIssueReason;
 };
 
 std::vector<Case> RegisterCases();

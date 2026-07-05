@@ -45,6 +45,37 @@ So an order-relaxed filter passes only if it is deterministic *and* produces the
 identical geometry — just possibly renumbered. A genuine nondeterminism or a
 changed point/cell set still fails the gate.
 
+When a geometry/table divergence is reported it is annotated with a **magnitude**
+— the symmetric max nearest-point coordinate deviation (via
+`vtkStaticPointLocator`), or for tables the max gap between the two sorted value
+multisets — so floating-point noise (`~1e-13`, benign reduction-order jitter) is
+distinguishable at a glance from a macroscopic, genuinely-different result.
+
+### Known-issue filters (reported, not gated)
+
+Three of the ~65 filters are **not** byte-exact and are tagged `knownIssue`: the
+validator still runs them and prints the divergence + magnitude, but does not
+count them as gate failures (the gate protects the deterministic majority; these
+are tracked separately). They fall into two distinct kinds:
+
+- **Inherently random — not a threading defect.** `vtkLengthDistribution` samples
+  cells and vertex pairs from a `vtkReservoirSampler` seeded from
+  `std::random_device` on *every call*, so its output is nondeterministic even
+  single-threaded — the serial reference is itself random. A parallel-vs-serial
+  gate simply cannot apply (it should take a fixed seed to be testable).
+- **Genuine threading bug — tracked, pending fix.** `vtkDiscreteFlyingEdgesClipper2D`
+  shares one `vtkLabelMapLookup` across all threads, whose cache
+  (`CachedValue`/`CachedOutValue`) is written unsynchronized — a data race that
+  yields garbage point coordinates under threads (measured max coord dev `~3.4e37`
+  on Linux vs `~1.2e10` on macOS: a platform-varying uninitialized read). The fix
+  mirrors `vtkSurfaceNets3D`, which avoids this exact race with a per-thread
+  `vtkSMPThreadLocal` lookup. Until fixed, threading this filter is unsafe.
+
+This distinction is the whole point of the validator: it separates "parallel is
+fine" (the large majority, byte-exact), "parallel reorders but is otherwise
+identical" (order-relaxed), "not a threading question" (random), and "parallel is
+genuinely broken here" (the one real race) — with evidence for each.
+
 Coverage spans every SMP risk class — per-element (`vtkWarpVector`,
 `vtkElevationFilter`, `vtkTransformFilter`, `vtkThreshold`, …), reduction
 (`vtkCellDataToPointData`, `vtkGradientFilter`, `vtkPolyDataNormals`, …),

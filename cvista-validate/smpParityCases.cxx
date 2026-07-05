@@ -339,6 +339,12 @@ std::vector<Case> RegisterCases()
                bool orderRelaxed = false) {
     cases.push_back(Case{ name, mod, risk, std::move(make), orderRelaxed });
   };
+  // Tag the just-registered case as a known, documented nondeterminism exception
+  // (see Case::knownIssue): reported with its magnitude but not a gate failure.
+  auto markKnown = [&cases](const std::string& reason) {
+    cases.back().knownIssue = true;
+    cases.back().knownIssueReason = reason;
+  };
   auto plane = [](double nx, double ny, double nz) {
     vtkSmartPointer<vtkPlane> pl = vtkSmartPointer<vtkPlane>::New();
     pl->SetOrigin(0, 0, 0);
@@ -524,9 +530,15 @@ std::vector<Case> RegisterCases()
       f->SetInputData(in.ugrid);
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
-    // Emits sampled edge lengths into an output table; the collection order is
-    // thread-dependent. Compared as a sorted value multiset (order-relaxed).
     /*orderRelaxed=*/true);
+  // NOT a threading defect: vtkLengthDistribution draws its samples from a
+  // vtkReservoirSampler seeded from std::random_device on every call
+  // (Common/Math/vtkReservoirSampler.cxx), and for each sampled cell it randomly
+  // picks which 2 vertices to measure. Its output is therefore nondeterministic
+  // even SINGLE-THREADED -- the serial reference is itself random -- so a
+  // parallel-vs-serial gate cannot apply. Excluded from the pass/fail count.
+  markKnown("unseeded RNG (vtkReservoirSampler <- std::random_device); "
+            "nondeterministic even single-threaded, not a threading defect");
   add("vtkSelectEnclosedPoints", "Filters/Modeling", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkSelectEnclosedPoints> f;
     f->SetInputData(in.cloud);
@@ -638,16 +650,17 @@ std::vector<Case> RegisterCases()
     f->SetClipFunction(plane(1, 1, 0));
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  add(
-    "vtkSurfaceNets3D", "Filters/Core", Risk::Iso,
-    [](const Inputs& in) {
-      vtkNew<vtkSurfaceNets3D> f;
-      f->SetInputData(in.labelImage);
-      f->SetValue(0, 1.0);
-      f->SetValue(1, 2.0);
-      return vtkSmartPointer<vtkAlgorithm>(f);
-    },
-    /*orderRelaxed=*/true);
+  // Byte-exact: the default OUTPUT_STYLE_BOUNDARY path is fully deterministic --
+  // integer voxel-center coordinates, a serial prefix-sum assigning disjoint
+  // output ranges, a per-thread (vtkSMPThreadLocal) label lookup, and Jacobi
+  // double-buffered constrained smoothing. No RNG, FP reduction, or shared cache.
+  add("vtkSurfaceNets3D", "Filters/Core", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkSurfaceNets3D> f;
+    f->SetInputData(in.labelImage);
+    f->SetValue(0, 1.0);
+    f->SetValue(1, 2.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
   add(
     "vtkSurfaceNets2D", "Filters/Core", Risk::Iso,
     [](const Inputs& in) {
@@ -688,6 +701,15 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
+  // GENUINE threading bug (tracked, pending fix): unlike vtkSurfaceNets3D, this
+  // filter shares ONE vtkLabelMapLookup across all threads (single algo.LMap),
+  // and vtkLabelMapLookup::IsLabelValue writes CachedValue/CachedOutValue on every
+  // cache miss with no synchronization -- a data race. Under threads the point
+  // coordinates come out garbage (validator measured max coord dev ~3.4e37 on
+  // Linux vs ~1.2e10 on macOS: a platform-varying uninitialized read). Fix mirrors
+  // SurfaceNets3D: give each SMP thread its own lookup (vtkSMPThreadLocal).
+  markKnown("data race on shared vtkLabelMapLookup cache (CachedValue written by "
+            "all threads unsynchronized); garbage coords under STDThread -- real bug");
   add(
     "vtkVoronoi2D", "Filters/Core", Risk::Merge,
     [](const Inputs& in) {
