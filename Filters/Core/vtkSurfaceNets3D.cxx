@@ -2018,25 +2018,38 @@ struct SelectWorker
     std::vector<vtkIdType> selectedCells(numCells);
 
     // If extracting the boundary of selected regions, then need to
-    // set up a fast lookup with vtkLabelMapLookup.
-    vtkLabelMapLookup<T>* lMap = nullptr;
+    // set up a fast lookup with vtkLabelMapLookup. The lookup caches results,
+    // so to avoid a data race an instance is created per thread (rather than
+    // sharing one across the threaded For below).
+    std::vector<double> labels;
+    vtkSMPThreadLocal<vtkLabelMapLookup<T>*> tlLMap(nullptr);
     if (outputStyle == vtkSurfaceNets3D::OUTPUT_STYLE_SELECTED)
     {
-      std::vector<double> labels;
       labels.reserve(static_cast<size_t>(self->GetNumberOfSelectedLabels()));
       for (auto i = 0; i < self->GetNumberOfSelectedLabels(); ++i)
       {
         labels.push_back(self->GetSelectedLabel(i));
       }
-      lMap =
-        vtkLabelMapLookup<T>::CreateLabelLookup(labels.data(), self->GetNumberOfSelectedLabels());
     }
+    vtkIdType numSelectedLabels = self->GetNumberOfSelectedLabels();
 
     // Traverse all existing cells and mark those satisfying outputStyle
     // criterion for extraction.
     vtkSMPTools::For(0, numCells,
-      [&newScalars, outputStyle, &selectedCells, self, lMap](vtkIdType cellId, vtkIdType endCellId)
+      [&newScalars, outputStyle, &selectedCells, self, &tlLMap, &labels, numSelectedLabels](
+        vtkIdType cellId, vtkIdType endCellId)
       {
+        // Grab (or lazily create) this thread's own label map lookup.
+        vtkLabelMapLookup<T>* lMap = nullptr;
+        if (outputStyle == vtkSurfaceNets3D::OUTPUT_STYLE_SELECTED)
+        {
+          lMap = tlLMap.Local();
+          if (lMap == nullptr)
+          {
+            lMap = vtkLabelMapLookup<T>::CreateLabelLookup(labels.data(), numSelectedLabels);
+            tlLMap.Local() = lMap;
+          }
+        }
         const auto inTuples = vtk::DataArrayTupleRange<2>(newScalars);
         T backgroundLabel = static_cast<T>(self->GetBackgroundLabel());
         for (; cellId < endCellId; ++cellId)
@@ -2055,7 +2068,11 @@ struct SelectWorker
           }
         }
       }); // end lambda
-    delete lMap;
+    // Delete all the per-thread label map lookups.
+    for (auto lmItr = tlLMap.begin(); lmItr != tlLMap.end(); ++lmItr)
+    {
+      delete *lmItr;
+    }
 
     // (Sequential) prefix sum to determine the output cell id.
     vtkIdType numOutCells = 0;

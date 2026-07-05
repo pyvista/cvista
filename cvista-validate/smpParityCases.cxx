@@ -706,15 +706,27 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
-  // GENUINE threading bug (tracked, pending fix): unlike vtkSurfaceNets3D, this
-  // filter shares ONE vtkLabelMapLookup across all threads (single algo.LMap),
-  // and vtkLabelMapLookup::IsLabelValue writes CachedValue/CachedOutValue on every
-  // cache miss with no synchronization -- a data race. Under threads the point
-  // coordinates come out garbage (validator measured max coord dev ~3.4e37 on
-  // Linux vs ~1.2e10 on macOS: a platform-varying uninitialized read). Fix mirrors
-  // SurfaceNets3D: give each SMP thread its own lookup (vtkSMPThreadLocal).
-  markKnown("data race on shared vtkLabelMapLookup cache (CachedValue written by "
-            "all threads unsynchronized); garbage coords under STDThread -- real bug");
+  // FIXED (gated). Two distinct defects were addressed:
+  //   1. A shared vtkLabelMapLookup cache race (CachedValue/CachedOutValue written
+  //      unsynchronized) -- now given a per-thread lookup (vtkSMPThreadLocal,
+  //      created in Pass1::Initialize, freed in Pass1::Reduce). This was NOT the
+  //      cause of the garbage-coordinate symptom (the validator proved the garbage
+  //      persisted unchanged after it).
+  //   2. The real symptom: uninitialized output point coordinates. Pass1/Pass2
+  //      COUNT points per-dyad (Inside origins, x/y edge splits, interior points)
+  //      independent of whether the surrounding pixel forms a non-empty (manifold)
+  //      case. When every pixel touching a counted dyad has an empty case (e.g. an
+  //      isolated single-label pixel -> case 1 (1,0,0,0), numPolys==0), Pass4's
+  //      numPolys>0 branch never runs for that dyad, so the reserved point slot is
+  //      never written. Serial masks it (fresh allocation reads reproducible
+  //      zeros); under STDThread the buffer lands on dirtied heap pages so those
+  //      phantom slots read wild uninitialized floats (~3.4e37 Linux / ~1.2e10
+  //      macOS) that vary run-to-run. Fix: zero-initialize NewPoints after
+  //      allocation (ContourImage), so unwritten phantom slots are deterministic
+  //      and match serial. orderRelaxed stays true because -- like the sibling
+  //      vtkDiscreteFlyingEdges2D/3D -- threaded emission ORDER is still
+  //      nondeterministic; the gate requires run-to-run stability plus an
+  //      order-insensitive match to serial.
   add(
     "vtkVoronoi2D", "Filters/Core", Risk::Merge,
     [](const Inputs& in) {
