@@ -1,0 +1,137 @@
+# SMP parallel-vs-serial parity gate.
+#
+# cvista defaults the library-wide vtkSMPTools backend to STDThread
+# (cvista-config/minimal.cmake), so filters run multithreaded out of the box.
+# This workflow builds the cvista C++ tree and a standalone validator
+# (cvista-validate/) that re-runs every SMP-using filter under Sequential vs
+# STDThread (multiple thread counts, repeated) and asserts the output is
+# BYTE-EXACT. A divergence fails the job -- that is the guard on the "threaded ==
+# serial" claim, across GCC (linux), AppleClang (macos), and MSVC (windows).
+#
+# Structured like sdk.yml: always triggers so `SMP parity gate` always reports
+# (safe as a required check), but the heavy per-OS build only runs when code
+# that could affect threading changes.
+name: SMP parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: smp-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: detect SMP-relevant changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - 'Common/**'
+              - 'Filters/**'
+              - 'Imaging/**'
+              - 'cvista-config/**'
+              - 'cvista-validate/**'
+              - 'ci/build-sdk.sh'
+              - 'ci/run-smp-parity.sh'
+              - 'ci/cmake/**'
+              - '.github/workflows/smp-parity.yml'
+
+  parity:
+    name: SMP parity (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true') }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - os: macos
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+            container: ''
+          - os: windows
+            runner: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+            container: ''
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # setuptools_scm version for the SDK build
+      - name: Install rendering + build deps (Linux)
+        if: startsWith(matrix.os, 'linux')
+        run: |
+          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+            mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
+            libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
+            ccache git mold lld
+      - name: Set up Python (macOS/Windows)
+        if: matrix.os == 'macos' || matrix.os == 'windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ccache (macOS)
+        if: matrix.os == 'macos'
+        run: brew install ccache
+      - name: Set up MSVC (vcvars) for the Ninja build (Windows)
+        if: matrix.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure ccache dir
+        if: matrix.os != 'windows'
+        run: |
+          if [ -n "${{ matrix.container }}" ]; then
+            echo "CCACHE_DIR=/ccache" >> "$GITHUB_ENV"
+          else
+            echo "CCACHE_DIR=$HOME/.cache/cvista-smp-ccache" >> "$GITHUB_ENV"
+          fi
+      - name: Restore ccache (cross-run)
+        if: matrix.os != 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cvista-smp-ccache-${{ matrix.os }}-${{ github.run_id }}
+          restore-keys: |
+            cvista-smp-ccache-${{ matrix.os }}-
+      - name: Build + install cvista (find_package tree)
+        run: ci/build-sdk.sh
+      - name: SMP parallel-vs-serial parity
+        run: ci/run-smp-parity.sh
+
+  smp-parity-gate:
+    name: SMP parity gate
+    needs: parity
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require parity to pass or be skipped
+        run: |
+          r='${{ needs.parity.result }}'
+          echo "parity result: $r"
+          if [ "$r" = success ] || [ "$r" = skipped ]; then
+            echo "SMP parity gate OK ($r)"
+          else
+            echo "::error::SMP parity $r"
+            exit 1
+          fi
