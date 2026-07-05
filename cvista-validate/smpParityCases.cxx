@@ -341,7 +341,7 @@ std::vector<Case> RegisterCases()
   };
   // Tag the just-registered case as a known, documented nondeterminism exception
   // (see Case::knownIssue): reported with its magnitude but not a gate failure.
-  auto markKnown = [&cases](const std::string& reason) {
+  [[maybe_unused]] auto markKnown = [&cases](const std::string& reason) {
     cases.back().knownIssue = true;
     cases.back().knownIssueReason = reason;
   };
@@ -523,22 +523,17 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.ugrid);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  add(
-    "vtkLengthDistribution", "Filters/Statistics", Risk::Reduce,
-    [](const Inputs& in) {
-      vtkNew<vtkLengthDistribution> f;
-      f->SetInputData(in.ugrid);
-      return vtkSmartPointer<vtkAlgorithm>(f);
-    },
-    /*orderRelaxed=*/true);
-  // NOT a threading defect: vtkLengthDistribution draws its samples from a
-  // vtkReservoirSampler seeded from std::random_device on every call
-  // (Common/Math/vtkReservoirSampler.cxx), and for each sampled cell it randomly
-  // picks which 2 vertices to measure. Its output is therefore nondeterministic
-  // even SINGLE-THREADED -- the serial reference is itself random -- so a
-  // parallel-vs-serial gate cannot apply. Excluded from the pass/fail count.
-  markKnown("unseeded RNG (vtkReservoirSampler <- std::random_device); "
-            "nondeterministic even single-threaded, not a threading defect");
+  add("vtkLengthDistribution", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkLengthDistribution> f;
+    f->SetInputData(in.ugrid);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Now GATED byte-exact: vtkLengthDistribution used to seed its
+  // vtkReservoirSampler from std::random_device on every call, making the
+  // output nondeterministic even single-threaded. The sampler is now seedable
+  // and the filter seeds it (default Seed=0), so both the sampled cell subset
+  // and the per-cell vertex picks are deterministic; each sample writes its own
+  // table row, so serial and threaded output are byte-identical.
   add("vtkSelectEnclosedPoints", "Filters/Modeling", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkSelectEnclosedPoints> f;
     f->SetInputData(in.cloud);
@@ -650,15 +645,16 @@ std::vector<Case> RegisterCases()
     f->SetClipFunction(plane(1, 1, 0));
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  // Expected byte-exact: the GEOMETRY of the default OUTPUT_STYLE_BOUNDARY path is
+  // GATED byte-exact: the GEOMETRY of the default OUTPUT_STYLE_BOUNDARY path is
   // deterministic (integer voxel-center coords, serial prefix-sum offsets,
-  // per-thread label lookup, Jacobi double-buffered smoothing) -- and indeed the
-  // validator measures points + connectivity byte-identical. HOWEVER the
-  // "BoundaryLabels" cell-data comes out as garbage (~9e8, far outside the 0..3
-  // label range) that changes every run -- an uninitialized/wild read that is
-  // nondeterministic even SINGLE-THREADED. The serial-vs-serial pre-check catches
-  // this and reports it as SERIAL-UNSTABLE (a real defect, but orthogonal to
-  // threading), so it is not charged against the parallel-vs-serial gate.
+  // per-thread label lookup, Jacobi double-buffered smoothing) -- points +
+  // connectivity are byte-identical. The "BoundaryLabels" cell-data used to come
+  // out as garbage (~9e8, far outside the 0..3 label range) that changed every
+  // run: the quad count is a padded upper bound, so an isolated boundary case
+  // could reserve a scalar tuple GenerateQuads never wrote, and SetNumberOfTuples
+  // left that storage uninitialized. The scalar buffer is now zero-initialized at
+  // allocation, so any padding tuple is deterministic and every emitted quad
+  // overwrites its own -- BoundaryLabels is now byte-identical serial-vs-parallel.
   add("vtkSurfaceNets3D", "Filters/Core", Risk::Iso, [](const Inputs& in) {
     vtkNew<vtkSurfaceNets3D> f;
     f->SetInputData(in.labelImage);

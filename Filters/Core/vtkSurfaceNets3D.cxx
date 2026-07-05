@@ -20,6 +20,7 @@
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkTriangle.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 
@@ -1411,7 +1412,16 @@ void SurfaceNets<TArray>::ConfigureOutput(
 
     // Scalars, which are of type T and 2-components
     newScalars->SetNumberOfTuples(outputEMD.NumQuads);
-    this->NewScalars = vtk::DataArrayValueRange<2>(newScalars).begin();
+    // The quad count is a padded upper bound: an isolated boundary case can
+    // reserve a scalar tuple that GenerateQuads never writes (the connectivity
+    // array zero-fills on ResizeExact, but SetNumberOfTuples leaves the scalar
+    // storage uninitialized). Those never-written BoundaryLabels tuples read
+    // back as garbage -- run-to-run nondeterministic under threading, and even
+    // serially unstable on a dirtied heap. Zero-init so any padding slot is
+    // deterministic; every genuinely-emitted quad overwrites its own tuple.
+    auto scalarRange = vtk::DataArrayValueRange<2>(newScalars);
+    std::fill(scalarRange.begin(), scalarRange.end(), 0);
+    this->NewScalars = scalarRange.begin();
 
     // Smoothing stencils, which are represented by a vtkCellArray
     stencils->ResizeExact(outputEMD.NumPoints, outputEMD.NumStencilEdges);
