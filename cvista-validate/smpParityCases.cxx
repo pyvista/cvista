@@ -706,18 +706,22 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
-  // FIXED (per-thread lookup): this filter used to share ONE vtkLabelMapLookup
-  // across all threads (single algo.LMap), and vtkLabelMapLookup::IsLabelValue
-  // writes CachedValue/CachedOutValue on every cache miss with no
-  // synchronization -- a data race that produced garbage point coordinates
-  // under STDThread (validator once measured max coord dev ~3.4e37 on Linux vs
-  // ~1.2e10 on macOS: a platform-varying uninitialized read). The fix mirrors
-  // vtkSurfaceNets3D: each SMP thread now builds its own vtkLabelMapLookup
-  // (vtkSMPThreadLocal, created in Pass1::Initialize, freed in Pass1::Reduce),
-  // so the case is now gated. It stays orderRelaxed=true because -- like the
-  // sibling vtkDiscreteFlyingEdges2D/3D -- the threaded emission ORDER is still
-  // nondeterministic; the gate requires run-to-run stability AND an
-  // order-insensitive geometry match against serial.
+  // STILL a genuine threading bug (partially hardened, root cause OPEN). This PR
+  // gives each thread its own vtkLabelMapLookup (vtkSMPThreadLocal, created in
+  // Pass1::Initialize, freed in Pass1::Reduce), removing a real shared-cache data
+  // race (CachedValue/CachedOutValue written unsynchronized). BUT the validator
+  // proves that race is NOT the cause of this filter's symptom: with the
+  // per-thread lookup the garbage point coordinates PERSIST at the identical
+  // magnitude (max coord dev ~1.2e10 on macOS, unchanged) -- consistent with the
+  // original analysis that a label-cache flip changes point COUNT, not point
+  // VALUES. The garbage coords (same count, different values, thread-only: the
+  // serial-vs-serial pre-check passes) come from a SEPARATE threading defect --
+  // an uninitialized/racy write into the output point array -- that is still
+  // under investigation. Kept as a documented, ungated known-issue until the real
+  // race is found and fixed.
+  markKnown("shared-LMap cache race hardened (now per-thread), but a SEPARATE "
+            "threading defect still yields garbage output point coords under "
+            "STDThread (max dev ~1.2e10, unchanged by the LMap fix); root cause open");
   add(
     "vtkVoronoi2D", "Filters/Core", Risk::Merge,
     [](const Inputs& in) {
