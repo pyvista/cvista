@@ -338,13 +338,18 @@ jobs:
           root=$(dirname "$(dirname "$initpy")")
           echo "=== wheel root (expect cvista/ + delvewheel cvista.libs/) ==="; ls -la "$root"
           python cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+          # NOTE: write the packed wheels to a WORKSPACE-RELATIVE dir, not /tmp.
+          # The pack step is bash (MSYS: /tmp -> C:\Users\...\AppData\Local\Temp)
+          # but the smoke + upload steps are pwsh/node (/tmp -> drive-root C:\tmp).
+          # A relative path resolves to $GITHUB_WORKSPACE identically in all shells.
           CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
-            python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
-          ls -la /tmp/tier-wheels
+            python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers tier-wheels
+          ls -la tier-wheels
       - name: Core import smoke (native)
         shell: pwsh
         run: |
-          $core = Get-ChildItem /tmp/tier-wheels/cvista-9.6.2*.whl | Select-Object -First 1
+          $core = Get-ChildItem tier-wheels/cvista-9.6.2*.whl | Select-Object -First 1
+          if (-not $core) { Write-Error 'core tier wheel not found in tier-wheels/'; exit 1 }
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
           C:\v\Scripts\python.exe -c "import cvista; from cvista.vtkFiltersSources import vtkSphereSource; s=vtkSphereSource(); s.Update(); print('win core import OK, pts:', s.GetOutput().GetNumberOfPoints())"
@@ -355,7 +360,7 @@ jobs:
         if: always()
         with:
           name: cvista-tier-wheels-windows
-          path: /tmp/tier-wheels/*.whl
+          path: tier-wheels/*.whl
           if-no-files-found: warn
 
   build-other-os:
