@@ -45,6 +45,8 @@ struct ValueEqWorker
 {
   bool Equal = true;
   vtkIdType FirstBad = -1;
+  double BadA = 0.0; // serial value at FirstBad (as double, for the message)
+  double BadB = 0.0; // parallel value at FirstBad
 
   // Dispatch2SameValueType guarantees the two arrays share a value type, but they
   // may be different array *classes* (AOS vs implicit), so take two type params.
@@ -67,6 +69,8 @@ struct ValueEqWorker
       {
         this->Equal = false;
         this->FirstBad = i;
+        this->BadA = static_cast<double>(va);
+        this->BadB = static_cast<double>(vb);
         return;
       }
     }
@@ -90,7 +94,7 @@ std::string compareViaComponents(const std::string& what, vtkDataArray* a, vtkDa
       const double vb = b->GetComponent(i, c);
       if (std::memcmp(&va, &vb, sizeof(double)) != 0)
         return what + ": values differ (tuple " + std::to_string(i) + ", comp " +
-          std::to_string(c) + ")";
+          std::to_string(c) + ") serial=" + std::to_string(va) + " parallel=" + std::to_string(vb);
     }
   }
   return "";
@@ -136,6 +140,7 @@ std::string compareArray(const std::string& what, vtkDataArray* a, vtkDataArray*
       if (comps > 0)
         os << " (tuple " << worker.FirstBad / comps << ", comp " << worker.FirstBad % comps
            << ")";
+      os << " serial=" << worker.BadA << " parallel=" << worker.BadB;
     }
     return os.str();
   }
