@@ -353,9 +353,13 @@ jobs:
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
           C:\v\Scripts\python.exe -c "import cvista; from cvista.vtkFiltersSources import vtkSphereSource; s=vtkSphereSource(); s.Update(); print('win core import OK, pts:', s.GetOutput().GetNumberOfPoints())"
+          if ($LASTEXITCODE -ne 0) { Write-Error 'core import/compute failed'; exit 1 }
           C:\v\Scripts\python.exe -c "import cvista.vtkRenderingCore" 2>$null
           if ($LASTEXITCODE -eq 0) { Write-Error 'vtkRenderingCore present in core-only (unexpected)'; exit 1 }
           Write-Host 'vtkRenderingCore absent in core-only [OK]'
+          # The intentional import failure above leaves $LASTEXITCODE=1; GitHub's
+          # pwsh wrapper ends the step with `exit $LASTEXITCODE`, so reset it.
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
