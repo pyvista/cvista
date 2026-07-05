@@ -12,20 +12,12 @@
 #   - ci.yml `split` job     — on-demand tier-split validation (dispatch / label)
 #   - release-tiers.yml      — the build stage of the publish pipeline
 #
-# `scm_pretend_version` forces a clean PEP 440 version (no +local segment) so the
-# TestPyPI dry run in release-tiers.yml can upload dev builds (PyPI rejects local
-# versions). Empty (the default, and the release path) lets setuptools-scm derive
-# the version from the git tag.
+# The wheel version comes from the git tag via setuptools-scm (on a release), or
+# a dev version off the branch (on a build-only dispatch — never published).
 name: _tier-wheels (reusable)
 
 on:
   workflow_call:
-    inputs:
-      scm_pretend_version:
-        description: Force setuptools-scm version (clean PEP440, no local segment). Empty = derive from the git tag.
-        type: string
-        required: false
-        default: ''
 
 jobs:
   linux:
@@ -53,11 +45,9 @@ jobs:
           # Same fast bit-exact-gate flags as the full leg, PLUS the tiered
           # init-cache (disables the kit-mixing niche IO readers so the tree
           # partitions cleanly). CVISTA_CMAKE_INIT is read by ci/cibw/cvista_backend.py.
-          # SETUPTOOLS_SCM_PRETEND_VERSION is appended only for the TestPyPI dry run.
           CIBW_ENVIRONMENT: >-
             CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
             CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
-            ${{ inputs.scm_pretend_version && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', inputs.scm_pretend_version) || '' }}
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache:/ccache"
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
         run: |
@@ -131,7 +121,6 @@ jobs:
             CVISTA_CMAKE_INIT=ci/cmake/macos-tiered.cmake CVISTA_TARGET_OS=macos
             MACOSX_DEPLOYMENT_TARGET=11.0 _PYTHON_HOST_PLATFORM=macosx-11.0-arm64
             CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
-            ${{ inputs.scm_pretend_version && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', inputs.scm_pretend_version) || '' }}
       - name: Partition + pack + stack (otool link graph; delocate .dylibs)
         run: |
           set -euo pipefail
@@ -175,7 +164,6 @@ jobs:
           # Replicate pyproject [tool.cibuildwheel.windows.environment] + tiered init-cache.
           CIBW_ENVIRONMENT_WINDOWS: >-
             CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON
-            ${{ inputs.scm_pretend_version && format('SETUPTOOLS_SCM_PRETEND_VERSION={0}', inputs.scm_pretend_version) || '' }}
       - name: Partition + pack + AUDIT (pefile link graph; delvewheel cvista.libs)
         shell: bash
         run: |
