@@ -26,6 +26,7 @@
 #include "smpParityCases.h"
 #include "smpParityCompare.h"
 
+#include <vtkAlgorithm.h>
 #include <vtkDataObject.h>
 #include <vtkNew.h>
 #include <vtkSMPTools.h>
