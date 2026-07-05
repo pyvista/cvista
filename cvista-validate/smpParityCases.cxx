@@ -706,22 +706,27 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
-  // STILL a genuine threading bug (partially hardened, root cause OPEN). This PR
-  // gives each thread its own vtkLabelMapLookup (vtkSMPThreadLocal, created in
-  // Pass1::Initialize, freed in Pass1::Reduce), removing a real shared-cache data
-  // race (CachedValue/CachedOutValue written unsynchronized). BUT the validator
-  // proves that race is NOT the cause of this filter's symptom: with the
-  // per-thread lookup the garbage point coordinates PERSIST at the identical
-  // magnitude (max coord dev ~1.2e10 on macOS, unchanged) -- consistent with the
-  // original analysis that a label-cache flip changes point COUNT, not point
-  // VALUES. The garbage coords (same count, different values, thread-only: the
-  // serial-vs-serial pre-check passes) come from a SEPARATE threading defect --
-  // an uninitialized/racy write into the output point array -- that is still
-  // under investigation. Kept as a documented, ungated known-issue until the real
-  // race is found and fixed.
-  markKnown("shared-LMap cache race hardened (now per-thread), but a SEPARATE "
-            "threading defect still yields garbage output point coords under "
-            "STDThread (max dev ~1.2e10, unchanged by the LMap fix); root cause open");
+  // FIXED (gated). Two distinct defects were addressed:
+  //   1. A shared vtkLabelMapLookup cache race (CachedValue/CachedOutValue written
+  //      unsynchronized) -- now given a per-thread lookup (vtkSMPThreadLocal,
+  //      created in Pass1::Initialize, freed in Pass1::Reduce). This was NOT the
+  //      cause of the garbage-coordinate symptom (the validator proved the garbage
+  //      persisted unchanged after it).
+  //   2. The real symptom: uninitialized output point coordinates. Pass1/Pass2
+  //      COUNT points per-dyad (Inside origins, x/y edge splits, interior points)
+  //      independent of whether the surrounding pixel forms a non-empty (manifold)
+  //      case. When every pixel touching a counted dyad has an empty case (e.g. an
+  //      isolated single-label pixel -> case 1 (1,0,0,0), numPolys==0), Pass4's
+  //      numPolys>0 branch never runs for that dyad, so the reserved point slot is
+  //      never written. Serial masks it (fresh allocation reads reproducible
+  //      zeros); under STDThread the buffer lands on dirtied heap pages so those
+  //      phantom slots read wild uninitialized floats (~3.4e37 Linux / ~1.2e10
+  //      macOS) that vary run-to-run. Fix: zero-initialize NewPoints after
+  //      allocation (ContourImage), so unwritten phantom slots are deterministic
+  //      and match serial. orderRelaxed stays true because -- like the sibling
+  //      vtkDiscreteFlyingEdges2D/3D -- threaded emission ORDER is still
+  //      nondeterministic; the gate requires run-to-run stability plus an
+  //      order-insensitive match to serial.
   add(
     "vtkVoronoi2D", "Filters/Core", Risk::Merge,
     [](const Inputs& in) {

@@ -1501,6 +1501,20 @@ void vtkDiscreteClipperAlgorithm<TArray>::ContourImage(vtkDiscreteFlyingEdgesCli
   {
     newPts->GetData()->WriteVoidPointer(0, 3 * totalPts);
     algo.NewPoints = vtkAOSDataArrayTemplate<float>::FastDownCast(newPts->GetData())->GetPointer(0);
+    // Zero-initialize the (uninitialized) point buffer. Pass1/Pass2 classify and
+    // COUNT points per-dyad (Inside origins, x/y edge splits, interior points)
+    // independent of whether the surrounding pixel forms a non-empty (manifold)
+    // case. When every pixel touching a counted dyad has an empty case (e.g. an
+    // isolated single-label pixel -> case 1 (1,0,0,0), numPolys==0), Pass4 never
+    // enters its numPolys>0 branch for that dyad, so the reserved point slot is
+    // never written. Serial execution masks this: the fresh allocation reads back
+    // as reproducible zeros. Under the STDThread SMP backend the buffer lands on
+    // heap pages dirtied by worker scratch, so those phantom slots read wild
+    // uninitialized floats (~3.4e37 on Linux / ~1.2e10 on macOS) that vary
+    // run-to-run. Explicitly zeroing makes the unwritten slots deterministic and
+    // identical to the serial result. (The genuinely-used points are always
+    // written; see GenerateDyadPoints and the per-row disjoint output partitions.)
+    std::fill_n(algo.NewPoints, 3 * totalPts, 0.0f);
     newPolys->ResizeExact(numOutPolys, outConnLen - numOutPolys);
     newPolys->Dispatch(FinalizePolysImpl{}, numOutPolys, outConnLen - numOutPolys);
     algo.NewPolys = newPolys;
