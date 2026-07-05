@@ -517,11 +517,16 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.ugrid);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  add("vtkLengthDistribution", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
-    vtkNew<vtkLengthDistribution> f;
-    f->SetInputData(in.ugrid);
-    return vtkSmartPointer<vtkAlgorithm>(f);
-  });
+  add(
+    "vtkLengthDistribution", "Filters/Statistics", Risk::Reduce,
+    [](const Inputs& in) {
+      vtkNew<vtkLengthDistribution> f;
+      f->SetInputData(in.ugrid);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    // Emits sampled edge lengths into an output table; the collection order is
+    // thread-dependent. Compared as a sorted value multiset (order-relaxed).
+    /*orderRelaxed=*/true);
   add("vtkSelectEnclosedPoints", "Filters/Modeling", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkSelectEnclosedPoints> f;
     f->SetInputData(in.cloud);

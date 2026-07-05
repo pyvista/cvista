@@ -11,15 +11,18 @@
 #include <vtkDataSetAttributes.h>
 #include <vtkImageData.h>
 #include <vtkIdList.h>
+#include <vtkMath.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkPointSet.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
+#include <vtkStaticPointLocator.h>
 #include <vtkTable.h>
 #include <vtkUnstructuredGrid.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <numeric>
 #include <sstream>
@@ -394,12 +397,106 @@ std::vector<std::string> sortedPointKeys(vtkDataSet* ds)
   return keys;
 }
 
+// Max over every point of `from` of the distance to its nearest point in `to`.
+// Symmetrized by the caller. This quantifies a "same count, different points"
+// divergence: ~1e-12 means the two point clouds are the SAME geometry to
+// floating-point noise (benign nondeterministic reduction order); a macroscopic
+// value means genuinely different geometry (a real bug). Only invoked on the
+// (rare) failure path, so the O(n log n) locator build is not a hot cost.
+double maxNearestDeviation(vtkDataSet* from, vtkDataSet* to)
+{
+  if (from->GetNumberOfPoints() == 0 || to->GetNumberOfPoints() == 0)
+    return 0.0;
+  vtkNew<vtkStaticPointLocator> loc;
+  loc->SetDataSet(to);
+  loc->BuildLocator();
+  double maxd = 0.0;
+  double p[3], q[3];
+  for (vtkIdType i = 0, n = from->GetNumberOfPoints(); i < n; ++i)
+  {
+    from->GetPoint(i, p);
+    const vtkIdType j = loc->FindClosestPoint(p);
+    to->GetPoint(j, q);
+    const double d = std::sqrt(vtkMath::Distance2BetweenPoints(p, q));
+    if (d > maxd)
+      maxd = d;
+  }
+  return maxd;
+}
+
+// Symmetric Hausdorff-style point deviation, formatted for a diagnostic message.
+std::string pointDeviation(vtkDataSet* a, vtkDataSet* b)
+{
+  const double dev = std::max(maxNearestDeviation(a, b), maxNearestDeviation(b, a));
+  std::ostringstream os;
+  os << " [max coord dev=" << std::scientific << dev << "]";
+  return os.str();
+}
+
+// Order-insensitive table comparison: each column's VALUES compared as a sorted
+// multiset. If a filter collects rows in a thread-dependent order but the value
+// set is identical, this passes. On mismatch it reports the largest gap between
+// the two sorted value sequences so FP-noise (~1e-12) is distinguishable from a
+// genuine value divergence.
+std::string compareTableUnordered(vtkTable* ta, vtkTable* tb)
+{
+  const vtkIdType nra = ta->GetNumberOfRows();
+  const vtkIdType nrb = tb->GetNumberOfRows();
+  if (nra != nrb)
+    return "table rows " + std::to_string(nra) + " vs " + std::to_string(nrb);
+  vtkDataSetAttributes* ra = ta->GetRowData();
+  vtkDataSetAttributes* rb = tb->GetRowData();
+  if (ra->GetNumberOfArrays() != rb->GetNumberOfArrays())
+    return "table column count differs";
+  for (int a = 0; a < ra->GetNumberOfArrays(); ++a)
+  {
+    vtkDataArray* ca = ra->GetArray(a);
+    if (!ca)
+      continue;
+    const char* nm = ca->GetName();
+    vtkDataArray* cb = nm ? rb->GetArray(nm) : rb->GetArray(a);
+    const std::string label = std::string("column[") + (nm ? nm : "#") + "]";
+    if (!cb)
+      return label + ": missing on parallel side";
+    if (ca->GetNumberOfComponents() != cb->GetNumberOfComponents())
+      return label + ": ncomp differs";
+    const int nc = ca->GetNumberOfComponents();
+    std::vector<double> va, vb;
+    va.reserve(nra * nc);
+    vb.reserve(nrb * nc);
+    for (vtkIdType i = 0; i < nra; ++i)
+      for (int c = 0; c < nc; ++c)
+      {
+        va.push_back(ca->GetComponent(i, c));
+        vb.push_back(cb->GetComponent(i, c));
+      }
+    std::sort(va.begin(), va.end());
+    std::sort(vb.begin(), vb.end());
+    double maxGap = 0.0;
+    for (std::size_t i = 0; i < va.size(); ++i)
+      maxGap = std::max(maxGap, std::abs(va[i] - vb[i]));
+    if (maxGap != 0.0)
+    {
+      std::ostringstream os;
+      os << label << ": value multiset differs [max sorted gap=" << std::scientific << maxGap
+         << "]";
+      return os.str();
+    }
+  }
+  return "";
+}
+
 } // namespace
 
 std::string CompareGeometrySet(vtkDataObject* a, vtkDataObject* b)
 {
   if (!a || !b)
     return "null output object";
+
+  // Tables (statistics filters): compare column values as sorted multisets.
+  if (auto* ta = vtkTable::SafeDownCast(a))
+    return compareTableUnordered(ta, vtkTable::SafeDownCast(b));
+
   vtkDataSet* dsa = vtkDataSet::SafeDownCast(a);
   vtkDataSet* dsb = vtkDataSet::SafeDownCast(b);
   if (!dsa || !dsb)
@@ -412,13 +509,18 @@ std::string CompareGeometrySet(vtkDataObject* a, vtkDataObject* b)
     return "cell count " + std::to_string(dsa->GetNumberOfCells()) + " vs " +
       std::to_string(dsb->GetNumberOfCells());
 
-  // Points (with point data) must match as a multiset.
+  // Points (with point data) must match as a multiset. On mismatch, report the
+  // max coordinate deviation so FP-noise is distinguishable from real divergence.
   if (sortedPointKeys(dsa) != sortedPointKeys(dsb))
-    return "point set differs (same count, different points/point-data)";
+    return "point set differs (same count, different points/point-data)" +
+      pointDeviation(dsa, dsb);
 
-  // Cells (orientation-canonical, key-based) must match as a multiset.
+  // Cells (orientation-canonical, key-based) must match as a multiset. A cell
+  // mismatch is usually downstream of a point-coordinate mismatch, so annotate
+  // with the point deviation magnitude too.
   if (cellDescriptors(dsa) != cellDescriptors(dsb))
-    return "cell set differs (same count, different cells/connectivity/cell-data)";
+    return "cell set differs (same count, different cells/connectivity/cell-data)" +
+      pointDeviation(dsa, dsb);
 
   return "";
 }
