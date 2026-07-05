@@ -48,6 +48,8 @@ set(VTK_MODULE_ENABLE_VTK_ImagingCore WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ImagingFourier WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ImagingGeneral WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ImagingHybrid WANT CACHE STRING "")
+# vtkSliceCubes relocated here so ImagingHybrid stays IO-free (rides the io tier).
+set(VTK_MODULE_ENABLE_VTK_ImagingHybridIO WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ImagingMorphological WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ImagingSources WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_ImagingStencil WANT CACHE STRING "")

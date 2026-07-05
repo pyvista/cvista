@@ -3,7 +3,6 @@
 
 #include "vtkParticleTracerBase.h"
 
-#include "vtkAbstractParticleWriter.h"
 #include "vtkAppendDataSets.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
@@ -58,7 +57,32 @@ using namespace vtkParticleTracerBaseNamespace;
 using IDStates = vtkTemporalInterpolatedVelocityField::IDStates;
 
 //------------------------------------------------------------------------------
-vtkCxxSetObjectMacro(vtkParticleTracerBase, ParticleWriter, vtkAbstractParticleWriter);
+// vtkAbstractParticleWriter lives in VTK::IOCore. To keep VTK::FiltersFlowPaths
+// free of any IO dependency, the writer is held as an incomplete type and its
+// reference counting is routed through vtkObjectBase (every VTK object derives
+// from vtkObjectBase at offset 0). The base class only stores the user-supplied
+// writer; subclasses that actually emit particles include the concrete header.
+void vtkParticleTracerBase::SetParticleWriter(vtkAbstractParticleWriter* pw)
+{
+  if (this->ParticleWriter == pw)
+  {
+    return;
+  }
+  vtkObjectBase* newWriter = reinterpret_cast<vtkObjectBase*>(pw);
+  vtkObjectBase* oldWriter = reinterpret_cast<vtkObjectBase*>(this->ParticleWriter);
+  if (newWriter)
+  {
+    newWriter->Register(this);
+  }
+  this->ParticleWriter = pw;
+  if (oldWriter)
+  {
+    oldWriter->UnRegister(this);
+  }
+  this->Modified();
+}
+
+//------------------------------------------------------------------------------
 vtkCxxSetObjectMacro(vtkParticleTracerBase, Integrator, vtkInitialValueProblemSolver);
 vtkCxxSetObjectMacro(vtkParticleTracerBase, Controller, vtkMultiProcessController);
 

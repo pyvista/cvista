@@ -283,7 +283,9 @@ jobs:
       - name: Partition + pack + stack (otool link graph; delocate .dylibs)
         run: |
           set -euo pipefail
-          python3 -m pip -q install wheel
+          # macos-14 runner python3 is Homebrew (PEP 668 externally-managed); the
+          # runner venv is disposable so installing into it directly is fine.
+          python3 -m pip -q install --break-system-packages wheel
           whl=$(ls wheelhouse/cvista-*.whl | head -1); echo "built: $whl"
           base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
           python3 -m wheel unpack "$whl" -d /tmp/unpack
@@ -336,25 +338,33 @@ jobs:
           root=$(dirname "$(dirname "$initpy")")
           echo "=== wheel root (expect cvista/ + delvewheel cvista.libs/) ==="; ls -la "$root"
           python cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+          # NOTE: write the packed wheels to a WORKSPACE-RELATIVE dir, not /tmp.
+          # The pack step is bash (MSYS: /tmp -> C:\Users\...\AppData\Local\Temp)
+          # but the smoke + upload steps are pwsh/node (/tmp -> drive-root C:\tmp).
+          # A relative path resolves to $GITHUB_WORKSPACE identically in all shells.
           CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
-            python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
-          ls -la /tmp/tier-wheels
+            python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers tier-wheels
+          ls -la tier-wheels
       - name: Core import smoke (native)
         shell: pwsh
         run: |
-          $core = Get-ChildItem /tmp/tier-wheels/cvista-9.6.2*.whl | Select-Object -First 1
+          $core = Get-ChildItem tier-wheels/cvista-9.6.2*.whl | Select-Object -First 1
+          if (-not $core) { Write-Error 'core tier wheel not found in tier-wheels/'; exit 1 }
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
           C:\v\Scripts\python.exe -c "import cvista; from cvista.vtkFiltersSources import vtkSphereSource; s=vtkSphereSource(); s.Update(); print('win core import OK, pts:', s.GetOutput().GetNumberOfPoints())"
-          $ok = $true
-          try { C:\v\Scripts\python.exe -c "import cvista.vtkRenderingCore" ; $ok=$false } catch {}
-          if (-not $ok) { Write-Error 'vtkRenderingCore present in core-only (unexpected)'; exit 1 }
+          if ($LASTEXITCODE -ne 0) { Write-Error 'core import/compute failed'; exit 1 }
+          C:\v\Scripts\python.exe -c "import cvista.vtkRenderingCore" 2>$null
+          if ($LASTEXITCODE -eq 0) { Write-Error 'vtkRenderingCore present in core-only (unexpected)'; exit 1 }
           Write-Host 'vtkRenderingCore absent in core-only [OK]'
+          # The intentional import failure above leaves $LASTEXITCODE=1; GitHub's
+          # pwsh wrapper ends the step with `exit $LASTEXITCODE`, so reset it.
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cvista-tier-wheels-windows
-          path: /tmp/tier-wheels/*.whl
+          path: tier-wheels/*.whl
           if-no-files-found: warn
 
   build-other-os:

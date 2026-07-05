@@ -27,12 +27,24 @@ safety net (linux only) and is expected to be a no-op.
 import os, re, sys, shutil, subprocess, json, platform
 from pathlib import Path
 
+# Windows consoles default to cp1252; force UTF-8 so any non-ASCII in output can
+# never raise UnicodeEncodeError (the audit summary once tripped on U+222A).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 SUFFIX = "-cvista"  # VTK_CUSTOM_LIBRARY_SUFFIX
 SHLIB_RE = re.compile(r"\.(so|dylib|pyd|dll)$|\.so\.\d")
 
 # ---- kit lib basename (without lib/.so/suffix) -> tier --------------------
 KIT_TIER = {
-    "vtkCommon": "core", "vtkFilters": "core", "vtkImaging": "core", "vtkIO": "core",
+    "vtkCommon": "core", "vtkFilters": "core", "vtkImaging": "core",
+    # The VTK::IO kit (IOCore/IOXML/IOXMLParser/IOLegacy/IOImage/IOGeometry/IOPLY/
+    # IOCellGrid) rides the io tier: after the IO-out-of-core decoupling no core
+    # module links any IO module, so the whole IO kit lib lives in io.
+    "vtkIO": "io",
     "vtkRendering": "rendering", "vtkInteraction": "rendering",
     "vtkChartsCore": "rendering", "vtkViews": "rendering",
     "vtkIOExtra": "io",
@@ -44,6 +56,24 @@ KIT_TIER = {
 
 PATCHELF = shutil.which("patchelf") or "patchelf"  # from PATH (CI + Nix); no hardcoded store path
 
+# ---- deterministic tier for VTK's vendored third-party libs (lowercased keys) ----
+# The link-graph closure below is reliable on Linux/macOS (readelf/otool) but NOT on
+# Windows, where delvewheel hash-mangles the vendored DLLs and pefile's import table
+# yields an incomplete/scrambled graph (e.g. vtknetcdf resolved to `rendering`,
+# vtkhdf5/vtkexodusII sunk into `core`). For the libs whose consuming tier is
+# unambiguous we pin it, so placement is platform-independent and correct. Genuinely
+# SHARED libs (zlib/png/jpeg/tiff/expat/lz4/lzma/pugixml/fmt/sys/...), used by both io
+# readers and rendering textures, are intentionally omitted: they fall to closure and
+# land in `core`, the common base every tier already has.
+THIRDPARTY_TIER = {
+    # heavy data formats -> io tier only
+    "vtkhdf5": "io", "vtkhdf5_hl": "io", "vtknetcdf": "io", "vtknetcdfcpp": "io",
+    "vtkcgns": "io", "vtkexodusii": "io", "vtkioss": "io",
+    # GL loader / vector export / font stack -> rendering tier only
+    "vtkglad": "rendering", "vtkgl2ps": "rendering", "vtkopengl": "rendering",
+    "vtkfreetype": "rendering",
+}
+
 
 def module_tier(mod):
     m = mod
@@ -53,13 +83,20 @@ def module_tier(mod):
         return "rendering"
     if m == "vtkFiltersHybridRendering":       # the 3 view-classes split out of FiltersHybrid
         return "rendering"
-    # NOTE: vtkIOGeometry is core now — #168 relocated its rendering-coupled classes
-    # (vtkGLTFReader/vtkGLTFTexture) into vtkIOImport, so IOGeometry is rendering-free
-    # and rides the core VTK::IO kit. vtkIOImport carries them and stays rendering.
+    if m == "vtkImagingHybridIO":              # vtkSliceCubes split out of ImagingHybrid (needs IOImage)
+        return "io"
+    # Rendering-coupled IO modules: they DEPEND on RenderingCore (import/export scene
+    # graph, chemistry). They stay in the rendering tier; since rendering may depend on
+    # io (see ALLOW), any IO they pull resolves within rendering∪io∪core.
+    # NOTE: vtkIOImport carries the glTF reader/texture relocated in #168.
     if m in ("vtkIOExport","vtkIOExportGL2PS","vtkIOImport","vtkIOMINC",
              "vtkIOChemistry","vtkInfovisCore","vtkInfovisLayout"):
         return "rendering"
-    if m in ("vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIOInfovis","vtkIONetCDF",
+    # The VTK::IO kit modules are now rendering-free and ride the io tier, together
+    # with the standalone io-only readers/writers.
+    if m in ("vtkIOCore","vtkIOXML","vtkIOXMLParser","vtkIOLegacy","vtkIOImage",
+             "vtkIOGeometry","vtkIOPLY","vtkIOCellGrid",
+             "vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIOInfovis","vtkIONetCDF",
              "vtkIOVeraOut","vtkIOSegY","vtkIOFLUENTCFF","vtkIOCGNSReader",
              "vtkIOParallel","vtkIOParallelXML","vtkIOParallelExodus","vtkIOCONVERGECFD"):
         return "io"
@@ -118,6 +155,15 @@ def main(rootdir, outdir):
              and not any(p.endswith(".dist-info") for p in f.relative_to(root).parts)]
     sos = [f for f in files if is_shlib(f.name)]
 
+    # Authoritative module-name set, taken from the python extensions inside the
+    # cvista/ package (vtkIOHDF.abi3.so / vtkIOHDF.pyd -> "vtkIOHDF"). A standalone
+    # module lib is then tiered DETERMINISTICALLY via module_tier() rather than via
+    # link-graph closure -- which is fragile on Windows/macOS where delvewheel /
+    # delocate hash-mangle the built libs (vtkIOHDF-cvista-<hash>.dll) and move them
+    # to a sibling vendor dir, so the .pyd -> lib NEEDED edge is easy to miss.
+    module_names = {module_name(f.name) for f in sos
+                    if is_python_ext(f.name) and pkg in f.parents}
+
     tier = {}            # path -> tier
     thirdparty = []      # libs resolved by link-graph closure
     libname = {}         # soname/basename -> path (for closure)
@@ -132,11 +178,15 @@ def main(rootdir, outdir):
         # (libgomp, msvcp, delocate .dylibs) carry neither vtk-name nor -cvista.
         if SUFFIX in b:                                     # a built vtk shared lib
             stem = b[len("lib"):] if b.startswith("lib") else b
-            stem = stem.split(SUFFIX)[0]                    # vtkCommon / vtkIOExtra / vtkhdf5
+            stem = stem.split(SUFFIX)[0]                    # vtkCommon / vtkIOExtra / vtkIOHDF / vtkhdf5
             if stem in KIT_TIER:
-                tier[f] = KIT_TIER[stem]
+                tier[f] = KIT_TIER[stem]                   # kit lib -> kit tier
+            elif stem in module_names:
+                tier[f] = module_tier(stem)                # standalone module lib -> module tier (deterministic)
+            elif stem.lower() in THIRDPARTY_TIER:
+                tier[f] = THIRDPARTY_TIER[stem.lower()]     # unambiguous 3rd-party lib -> pinned tier (deterministic)
             else:
-                thirdparty.append(f)                       # standalone module lib / vtk 3rd-party -> closure
+                thirdparty.append(f)                       # shared 3rd-party (zlib/png/...) -> closure -> core
         elif b.startswith("vtk") and is_shlib(b) and pkg in f.parents:
             tier[f] = module_tier(module_name(b))          # python module ext -> module tier
         else:
@@ -178,7 +228,11 @@ def main(rootdir, outdir):
     if not outdir:
         return
 
-    ALLOW = {"core": {"core"}, "rendering": {"rendering", "core"}, "io": {"io", "core"}}
+    # Tier dependency DAG: core (standalone) <- io (needs core) <- rendering (needs
+    # io + core). Rendering may depend on io because scene import/export and molecule
+    # rendering pull IO: e.g. vtkIOExport -> vtkDomainsChemistry -> vtkIOXMLParser, and
+    # texture/image loading via vtkIOImage. Core stays pure (no io, no rendering).
+    ALLOW = {"core": {"core"}, "rendering": {"rendering", "io", "core"}, "io": {"io", "core"}}
     tier_of_name = {f.name: tier[f] for f in tier if is_shlib(f.name)}
 
     for t in ("core", "rendering", "io"):
@@ -232,11 +286,11 @@ def main(rootdir, outdir):
                 if nt and nt not in ALLOW[t]:
                     violations.append(f"{t}: {f.name} -> {n} ({nt})")
     if violations:
-        print("AUDIT FAILED — cross-tier dependencies survive:")
+        print("AUDIT FAILED - cross-tier dependencies survive:")
         for v in violations:
             print("  " + v)
         sys.exit(1)
-    print("AUDIT PASSED — every tier lib resolves within {own tier} ∪ core")
+    print("AUDIT PASSED - every tier lib resolves within own-tier + core")
 
 
 if __name__ == "__main__":

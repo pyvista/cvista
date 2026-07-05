@@ -16,13 +16,15 @@ VER = os.environ.get("CVISTA_WHEEL_VERSION", "9.6.2.dev0")
 PYTAG = os.environ.get("CVISTA_WHEEL_TAG", "cp312-abi3-manylinux_2_28_x86_64")
 TIERS = {
     "core":      ("cvista",           []),
-    "rendering": ("cvista_rendering", [f"cvista=={VER}"]),
+    # Rendering depends on io (scene import/export, molecule rendering, image/texture
+    # loading pull IO), so cvista-rendering requires BOTH cvista and cvista-io.
+    "rendering": ("cvista_rendering", [f"cvista=={VER}", f"cvista-io=={VER}"]),
     "io":        ("cvista_io",        [f"cvista=={VER}"]),
 }
 SUMMARY = {
-    "core": "cvista core: VTK Common/Filters/Imaging + native-format IO (rendering-free, offline).",
-    "rendering": "cvista rendering tier (OpenGL2/FreeType/Charts/Views). Requires cvista.",
-    "io": "cvista heavy data IO tier (HDF/Exodus/EnSight/NetCDF/...). Requires cvista.",
+    "core": "cvista core: VTK Common/Filters/Imaging compute kernels (rendering-free, IO-free, offline).",
+    "rendering": "cvista rendering tier (OpenGL2/FreeType/Charts/Views). Requires cvista + cvista-io.",
+    "io": "cvista IO tier: every VTK reader/writer (XML/legacy/PLY/image/HDF/Exodus/...). Requires cvista.",
 }
 
 def metadata(dist, reqs):

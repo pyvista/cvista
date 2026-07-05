@@ -2,8 +2,6 @@ NAME
   VTK::IOCGNSReader
 LIBRARY_NAME
   vtkIOCGNSReader
-KIT
-  VTK::Parallel
 GROUPS
   StandAlone
 SPDX_LICENSE_IDENTIFIER

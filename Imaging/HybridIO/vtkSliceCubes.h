@@ -37,13 +37,13 @@
 #ifndef vtkSliceCubes_h
 #define vtkSliceCubes_h
 
-#include "vtkImagingHybridModule.h" // For export macro
+#include "vtkImagingHybridIOModule.h" // For export macro
 #include "vtkObject.h"
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkVolumeReader;
 
-class VTKIMAGINGHYBRID_EXPORT vtkSliceCubes : public vtkObject
+class VTKIMAGINGHYBRIDIO_EXPORT vtkSliceCubes : public vtkObject
 {
 public:
   static vtkSliceCubes* New();
