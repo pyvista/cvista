@@ -16,6 +16,7 @@
 
 #include <map>    // For Link
 #include <set>    // For Link
+#include <string> // For serialization handler signature
 #include <vector> // For GetDataSets
 
 // clang-format off
@@ -58,9 +59,32 @@ public:
   ///@{
   /**
    * Load/Save a vtkDataSet in a diy::BinaryBuffer.
+   *
+   * NOTE: A vtkDataSet is serialized through the XML data-object (de)serializer,
+   * which lives in VTK::IOXML. VTK::ParallelDIY is intentionally free of any IO
+   * dependency, so the (de)serialization is provided by a handler that
+   * VTK::IOXML installs when it is loaded (see RegisterDataSetSerializationHandlers).
+   * If no handler has been registered (i.e. VTK::IOXML has not been loaded) these
+   * abort, matching the historical behavior on an unserializable dataset.
    */
   static void Save(diy::BinaryBuffer& bb, vtkDataSet*);
   static void Load(diy::BinaryBuffer& bb, vtkDataSet*&);
+  ///@}
+
+  ///@{
+  /**
+   * Install the dataset XML (de)serialization implementation used by
+   * Save()/Load() for vtkDataSet. Called automatically by VTK::IOXML when its
+   * shared library is loaded; not intended to be called directly. Keeping the
+   * implementation out of VTK::ParallelDIY lets this module remain free of any
+   * IO dependency. The serializer returns 1 and fills \a output on success, 0 if
+   * the dataset type is unsupported; the deserializer returns nullptr for an
+   * unsupported type.
+   */
+  using SaveDataSetHandler = int (*)(vtkDataSet* input, std::string& output);
+  using LoadDataSetHandler = vtkSmartPointer<vtkDataSet> (*)(int type, const std::string& input);
+  static void RegisterDataSetSerializationHandlers(
+    SaveDataSetHandler save, LoadDataSetHandler load);
   ///@}
 
   ///@{

@@ -20,7 +20,6 @@ DEPENDS
   VTK::CommonDataModel
   VTK::CommonExecutionModel
   VTK::CommonColor
-  VTK::IOImage
   VTK::ImagingCore
   VTK::ImagingSources
   VTK::RenderingFreeType

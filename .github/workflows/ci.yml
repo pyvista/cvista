@@ -160,6 +160,20 @@ jobs:
           path: wheelhouse/*.whl
           if-no-files-found: error
 
+  # === 3-wheel tier split =====================================================
+  # Build + partition + pack + stack-validate the three tier wheels (cvista /
+  # cvista-rendering / cvista-io) on linux/macOS/Windows. The build logic lives in
+  # the reusable workflow `_tier-wheels.yml` — the SAME one the release pipeline
+  # (release-tiers.yml) calls — so there is one source of truth. Heavy (full
+  # build), gated off normal PRs: on-demand via `gh workflow run ci.yml --ref
+  # <branch>` (workflow_dispatch) or by adding the `wheel-split` label to a PR.
+  split:
+    name: 3-wheel tier split
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'wheel-split')
+    uses: ./.github/workflows/_tier-wheels.yml
+
   build-other-os:
     name: build ${{ matrix.os }}
     # macOS/Windows build on EVERY PR (and main + workflow_dispatch). We accept a

@@ -41,6 +41,9 @@ _RELOCATED = {
     "vtkIOGeometry": [
         ("vtkIOImport", ("vtkGLTFReader", "vtkGLTFTexture")),
     ],
+    "vtkImagingHybrid": [
+        ("vtkImagingHybridIO", ("vtkSliceCubes",)),
+    ],
 }
 
 

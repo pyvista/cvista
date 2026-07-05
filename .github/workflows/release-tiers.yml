@@ -1,0 +1,90 @@
+# Publish the 3-wheel tier split — cvista (core) / cvista-rendering / cvista-io —
+# to PyPI via Trusted Publishing (OIDC; no stored API token).
+#
+#   workflow_dispatch  ->  BUILD ONLY: build + partition + pack + stack-validate
+#                          all three tiers (no upload). A safe way to exercise the
+#                          pipeline without cutting a release.
+#   release: published ->  PUBLISH: build the tiers at the release tag's version
+#                          and upload each project to PyPI.
+#
+# ── Trusted-publisher setup (one per project; DISTINCT environment each) ────────
+# PyPI keys a (pending) publisher by owner/repo/workflow/ENVIRONMENT, so the three
+# projects cannot share one environment under the same workflow. Give each its own:
+#
+#   Project            Owner=pyvista  Repo=cvista  Workflow=release-tiers.yml  Env
+#   cvista             ..............................................  pypi-core
+#   cvista-rendering   ..............................................  pypi-rendering
+#   cvista-io          ..............................................  pypi-io
+#
+# All three are new projects -> register each as a PyPI "pending publisher" (the
+# first upload creates the project). Also create the three GitHub Environments
+# (Settings -> Environments): pypi-core, pypi-rendering, pypi-io — names must match
+# the PyPI "Environment name" field exactly. Add release approvers to them if you
+# want a manual gate before a publish.
+name: Release tier wheels (core / rendering / io)
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  # Never cancel an in-flight publish — a half-uploaded release is worse than a wait.
+  group: release-tiers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Build the 3 tier wheels on linux/macOS/Windows (uploads cvista-tier-wheels-*).
+  # On a release the version comes from the git tag via setuptools-scm.
+  build:
+    uses: ./.github/workflows/_tier-wheels.yml
+
+  # One publish job per project, each running in the project's OWN environment so
+  # its OIDC token carries the environment PyPI expects. Each job uploads ONLY its
+  # project's wheels (3 — one per OS). Release-only.
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    strategy:
+      fail-fast: false          # a failure publishing one tier must not abort the others
+      matrix:
+        include:
+          - project: cvista
+            environment: pypi-core
+            glob: cvista-*.whl            # core: 'cvista-' (hyphen) never matches cvista_rendering/_io
+          - project: cvista-rendering
+            environment: pypi-rendering
+            glob: cvista_rendering-*.whl
+          - project: cvista-io
+            environment: pypi-io
+            glob: cvista_io-*.whl
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    environment:
+      name: ${{ matrix.environment }}
+      url: https://pypi.org/p/${{ matrix.project }}
+    permissions:
+      # id-token: write mints the short-lived OIDC token PyPI exchanges for an
+      # upload token — no stored secret. PyPI matches repo + this workflow file +
+      # the environment above to the project's trusted-publisher config.
+      id-token: write
+    steps:
+      - name: Collect all tier wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-tier-wheels-*
+          path: all
+          merge-multiple: true
+      - name: Isolate ${{ matrix.project }} wheels into dist/
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp all/${{ matrix.glob }} dist/
+          echo "=== ${{ matrix.project }} wheels to publish ==="; ls -l dist
+          n=$(ls dist/*.whl 2>/dev/null | wc -l)
+          # 3 OSes (linux/macOS/Windows) -> expect 3 wheels for this project.
+          test "$n" -ge 3 || { echo "::error::expected >=3 ${{ matrix.project }} wheels, found $n"; exit 1; }
+      - name: Publish ${{ matrix.project }} to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
