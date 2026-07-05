@@ -10,16 +10,21 @@
 #include <vtkDataSet.h>
 #include <vtkDataSetAttributes.h>
 #include <vtkImageData.h>
+#include <vtkIdList.h>
+#include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkPointSet.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkUnstructuredGrid.h>
 
+#include <algorithm>
 #include <cstring>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace smpparity
 {
@@ -254,6 +259,125 @@ std::string CompareDataObjects(vtkDataObject* a, vtkDataObject* b)
     if (!d.empty())
       return d;
   }
+  return "";
+}
+
+namespace
+{
+
+// Append the raw bytes of a value to a key buffer.
+template <typename T>
+void pushBytes(std::string& key, T v)
+{
+  key.append(reinterpret_cast<const char*>(&v), sizeof(T));
+}
+
+// Per-point canonical key: coordinates (as double, exact-widened from float) plus
+// every point-data component. Two points are "the same" iff their keys are equal.
+std::string pointKey(vtkDataSet* ds, vtkIdType i)
+{
+  std::string key;
+  double p[3];
+  ds->GetPoint(i, p);
+  pushBytes(key, p[0]);
+  pushBytes(key, p[1]);
+  pushBytes(key, p[2]);
+  vtkPointData* pd = ds->GetPointData();
+  for (int a = 0; a < pd->GetNumberOfArrays(); ++a)
+  {
+    vtkDataArray* arr = pd->GetArray(a);
+    if (!arr)
+      continue;
+    for (int c = 0; c < arr->GetNumberOfComponents(); ++c)
+      pushBytes(key, arr->GetComponent(i, c));
+  }
+  return key;
+}
+
+std::string cellDataKey(vtkDataSet* ds, vtkIdType i)
+{
+  std::string key;
+  vtkCellData* cd = ds->GetCellData();
+  for (int a = 0; a < cd->GetNumberOfArrays(); ++a)
+  {
+    vtkDataArray* arr = cd->GetArray(a);
+    if (!arr)
+      continue;
+    for (int c = 0; c < arr->GetNumberOfComponents(); ++c)
+      pushBytes(key, arr->GetComponent(i, c));
+  }
+  return key;
+}
+
+// Sorted-by-key point keys + the inverse permutation (origId -> sorted rank).
+void canonicalPoints(vtkDataSet* ds, std::vector<std::string>& sortedKeys,
+  std::vector<vtkIdType>& rankOf)
+{
+  const vtkIdType np = ds->GetNumberOfPoints();
+  std::vector<std::string> keys(np);
+  std::vector<vtkIdType> order(np);
+  std::iota(order.begin(), order.end(), 0);
+  for (vtkIdType i = 0; i < np; ++i)
+    keys[i] = pointKey(ds, i);
+  std::sort(order.begin(), order.end(),
+    [&keys](vtkIdType x, vtkIdType y) { return keys[x] < keys[y]; });
+  sortedKeys.resize(np);
+  rankOf.assign(np, 0);
+  for (vtkIdType r = 0; r < np; ++r)
+  {
+    sortedKeys[r] = keys[order[r]];
+    rankOf[order[r]] = r;
+  }
+}
+
+} // namespace
+
+std::string CompareGeometrySet(vtkDataObject* a, vtkDataObject* b)
+{
+  if (!a || !b)
+    return "null output object";
+  vtkDataSet* dsa = vtkDataSet::SafeDownCast(a);
+  vtkDataSet* dsb = vtkDataSet::SafeDownCast(b);
+  if (!dsa || !dsb)
+    return CompareDataObjects(a, b); // non-datasets: fall back to byte-exact
+
+  if (dsa->GetNumberOfPoints() != dsb->GetNumberOfPoints())
+    return "point count " + std::to_string(dsa->GetNumberOfPoints()) + " vs " +
+      std::to_string(dsb->GetNumberOfPoints());
+  if (dsa->GetNumberOfCells() != dsb->GetNumberOfCells())
+    return "cell count " + std::to_string(dsa->GetNumberOfCells()) + " vs " +
+      std::to_string(dsb->GetNumberOfCells());
+
+  // Points (with point data) must match as a multiset.
+  std::vector<std::string> ka, kb;
+  std::vector<vtkIdType> rankA, rankB;
+  canonicalPoints(dsa, ka, rankA);
+  canonicalPoints(dsb, kb, rankB);
+  if (ka != kb)
+    return "point set differs (same count, different points/point-data)";
+
+  // Cells: rewrite each cell's connectivity through the point rank so IDs are
+  // order-independent, tag with cell type + cell data, then compare as a multiset.
+  const vtkIdType nc = dsa->GetNumberOfCells();
+  auto cellKeys = [nc](vtkDataSet* ds, std::vector<vtkIdType>& rank) {
+    std::vector<std::string> keys(nc);
+    vtkNew<vtkIdList> ids;
+    for (vtkIdType i = 0; i < nc; ++i)
+    {
+      std::string key;
+      pushBytes(key, ds->GetCellType(i));
+      ds->GetCellPoints(i, ids);
+      for (vtkIdType j = 0; j < ids->GetNumberOfIds(); ++j)
+        pushBytes(key, rank[ids->GetId(j)]);
+      key += cellDataKey(ds, i);
+      keys[i] = std::move(key);
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
+  };
+  if (cellKeys(dsa, rankA) != cellKeys(dsb, rankB))
+    return "cell set differs (same count, different cells/connectivity/cell-data)";
+
   return "";
 }
 

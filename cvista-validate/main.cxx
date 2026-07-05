@@ -20,8 +20,12 @@
 //                       T in {2,4,8,oversubscribed}, each repeated N times
 //                       (repeats catch scheduling-dependent nondeterminism)
 //
-// Exit code is nonzero if ANY algorithm's parallel output differs from its
-// serial output. That makes this a CI gate on the "threaded == serial" claim.
+// Most filters must be BYTE-EXACT parallel-vs-serial. A few (parallel cut/
+// contour extraction) emit the same geometry in a thread-dependent ORDER; those
+// are tagged orderRelaxed and instead must be (a) run-to-run deterministic
+// (repeated parallel runs byte-identical -- the real instability check) and
+// (b) equal to serial as an order-insensitive geometry set. Exit code is nonzero
+// if any algorithm fails its policy -- a CI gate on the "threaded == serial" claim.
 
 #include "smpParityCases.h"
 #include "smpParityCompare.h"
@@ -159,24 +163,51 @@ int main(int argc, char* argv[])
     {
       const int nthreads = threadCounts[t];
       forceParallel(nthreads);
-      for (int r = 0; r < repeats; ++r)
+      vtkSmartPointer<vtkDataObject> first; // first parallel output at this count
+      for (int r = 0; ok && r < repeats; ++r)
       {
         vtkSmartPointer<vtkDataObject> out = runOnce(c, inputs);
         ++comparisons;
-        std::string diff = out ? smpparity::CompareDataObjects(ref, out)
-                               : std::string("parallel run produced no output");
-        if (!diff.empty())
+        if (!out)
         {
           ok = false;
-          verdict = "FAIL @T=" + std::to_string(nthreads) + " rep " + std::to_string(r) +
-            ": " + diff;
+          verdict = "FAIL: no output @T=" + std::to_string(nthreads);
           break;
+        }
+
+        // (1) run-to-run determinism: every parallel run at a fixed thread count
+        // must be byte-identical to the first. This is the real "instability"
+        // check -- it must hold even for order-relaxed filters.
+        if (r == 0)
+        {
+          first = out;
+          // (2) vs serial: byte-exact, or (order-relaxed) same geometry set.
+          std::string diff = c.orderRelaxed ? smpparity::CompareGeometrySet(ref, out)
+                                            : smpparity::CompareDataObjects(ref, out);
+          if (!diff.empty())
+          {
+            ok = false;
+            verdict = std::string("FAIL ") + (c.orderRelaxed ? "geometry" : "byte-exact") +
+              " vs serial @T=" + std::to_string(nthreads) + ": " + diff;
+            break;
+          }
+        }
+        else
+        {
+          std::string diff = smpparity::CompareDataObjects(first, out);
+          if (!diff.empty())
+          {
+            ok = false;
+            verdict = "FAIL nondeterministic @T=" + std::to_string(nthreads) + " rep " +
+              std::to_string(r) + ": " + diff;
+            break;
+          }
         }
       }
     }
 
     if (ok)
-      verdict = "PASS";
+      verdict = c.orderRelaxed ? "PASS (order-relaxed: same set, run-to-run stable)" : "PASS";
     else
       ++failed;
 

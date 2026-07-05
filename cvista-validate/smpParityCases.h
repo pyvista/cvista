@@ -49,6 +49,12 @@ struct Case
   // Build a fresh, fully-configured algorithm reading the shared inputs; its
   // GetOutputDataObject(0) after Update() is the result to compare.
   std::function<vtkSmartPointer<vtkAlgorithm>(const Inputs&)> make;
+  // When true, this filter's threaded path emits the same geometry in a
+  // thread-dependent ORDER (parallel cut/contour extraction), so parallel output
+  // is compared to serial ORDER-INSENSITIVELY (same point/cell set) rather than
+  // byte-exact. It must still be byte-exact run-to-run (deterministic); the
+  // driver checks that separately. Default false = strict byte-exact vs serial.
+  bool orderRelaxed = false;
 };
 
 std::vector<Case> RegisterCases();

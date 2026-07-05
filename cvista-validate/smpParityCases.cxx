@@ -148,8 +148,9 @@ std::vector<Case> RegisterCases()
 {
   std::vector<Case> cases;
   auto add = [&cases](const char* name, const char* mod, Risk risk,
-               std::function<vtkSmartPointer<vtkAlgorithm>(const Inputs&)> make) {
-    cases.push_back(Case{ name, mod, risk, std::move(make) });
+               std::function<vtkSmartPointer<vtkAlgorithm>(const Inputs&)> make,
+               bool orderRelaxed = false) {
+    cases.push_back(Case{ name, mod, risk, std::move(make), orderRelaxed });
   };
 
   // ---- per-element (the audited opt-in / RunSafeFilterParallel set) ----------
@@ -239,32 +240,41 @@ std::vector<Case> RegisterCases()
     f->SetValue(0, 150.0);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  add("vtkContour3DLinearGrid", "Filters/Core", Risk::Iso, [](const Inputs& in) {
-    vtkNew<vtkContour3DLinearGrid> f;
-    f->SetInputData(in.ugrid);
-    f->SetInputArrayToProcess(
-      0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
-    f->SetValue(0, 130.0);
-    return vtkSmartPointer<vtkAlgorithm>(f);
-  });
-  add("vtkCutter", "Filters/Core", Risk::Iso, [](const Inputs& in) {
-    vtkNew<vtkPlane> pl;
-    pl->SetOrigin(0, 0, 0);
-    pl->SetNormal(1, 1, 1);
-    vtkNew<vtkCutter> f;
-    f->SetInputData(in.ugrid);
-    f->SetCutFunction(pl);
-    return vtkSmartPointer<vtkAlgorithm>(f);
-  });
-  add("vtkPlaneCutter", "Filters/Core", Risk::Iso, [](const Inputs& in) {
-    vtkNew<vtkPlane> pl;
-    pl->SetOrigin(0, 0, 0);
-    pl->SetNormal(1, 0.5, 0.25);
-    vtkNew<vtkPlaneCutter> f;
-    f->SetInputData(in.ugrid);
-    f->SetPlane(pl);
-    return vtkSmartPointer<vtkAlgorithm>(f);
-  });
+  add(
+    "vtkContour3DLinearGrid", "Filters/Core", Risk::Iso,
+    [](const Inputs& in) {
+      vtkNew<vtkContour3DLinearGrid> f;
+      f->SetInputData(in.ugrid);
+      f->SetInputArrayToProcess(
+        0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
+      f->SetValue(0, 130.0);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  add(
+    "vtkCutter", "Filters/Core", Risk::Iso,
+    [](const Inputs& in) {
+      vtkNew<vtkPlane> pl;
+      pl->SetOrigin(0, 0, 0);
+      pl->SetNormal(1, 1, 1);
+      vtkNew<vtkCutter> f;
+      f->SetInputData(in.ugrid);
+      f->SetCutFunction(pl);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  add(
+    "vtkPlaneCutter", "Filters/Core", Risk::Iso,
+    [](const Inputs& in) {
+      vtkNew<vtkPlane> pl;
+      pl->SetOrigin(0, 0, 0);
+      pl->SetNormal(1, 0.5, 0.25);
+      vtkNew<vtkPlaneCutter> f;
+      f->SetInputData(in.ugrid);
+      f->SetPlane(pl);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
   add("vtkTableBasedClipDataSet", "Filters/General", Risk::Iso, [](const Inputs& in) {
     vtkNew<vtkPlane> pl;
     pl->SetOrigin(0, 0, 0);

@@ -26,6 +26,25 @@ point/cell data arrays — each value via `memcmp` so `NaN==NaN` and `+0.0!=-0.0
 behave as an on-disk comparison would. The process exits nonzero if any
 algorithm diverges.
 
+### Order-relaxed filters
+
+A few filters (parallel cut/contour extraction — `vtkPlaneCutter`, `vtkCutter`,
+`vtkContour3DLinearGrid`) emit the *same* geometry in a **thread-dependent
+order**, so their threaded output is not byte-exact with serial. These are
+tagged `orderRelaxed` and validated with a weaker-but-still-strict pair:
+
+1. **run-to-run determinism** — repeated parallel runs at a fixed thread count
+   must be byte-identical to each other (this is the real *instability* check; it
+   holds even for order-relaxed filters), and
+2. **same geometry set** — the parallel output must equal serial as an
+   order-insensitive multiset of points (with point data) and cells (with cell
+   data): `CompareGeometrySet` canonicalizes point order by sorting on
+   coordinates+data and rewrites cell connectivity through that ranking.
+
+So an order-relaxed filter passes only if it is deterministic *and* produces the
+identical geometry — just possibly renumbered. A genuine nondeterminism or a
+changed point/cell set still fails the gate.
+
 Coverage spans every SMP risk class — per-element (`vtkWarpVector`,
 `vtkElevationFilter`, `vtkTransformFilter`, `vtkThreshold`, …), reduction
 (`vtkCellDataToPointData`, `vtkGradientFilter`, `vtkPolyDataNormals`, …),
