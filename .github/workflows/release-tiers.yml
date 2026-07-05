@@ -1,0 +1,151 @@
+# Publish the 3-wheel tier split — cvista (core) / cvista-rendering / cvista-io —
+# via PyPI Trusted Publishing (OIDC; no stored API token).
+#
+#   workflow_dispatch  ->  DRY RUN: build all tiers with a clean dev version,
+#                          publish to TestPyPI, then install `cvista[all]` back
+#                          FROM TestPyPI and run the stacking smoke. Proves the
+#                          SDKs both PUBLISH and are drop-in COMPATIBLE end to end.
+#   release: published ->  REAL: build all tiers at the release tag's version and
+#                          publish to PyPI.
+#
+# ── Trusted-publisher setup (do this once, per project, on each index) ──────────
+# Each of the THREE projects needs a trusted publisher pointing at this workflow:
+#   Owner:            pyvista
+#   Repository name:  cvista
+#   Workflow name:    release-tiers.yml
+#   Environment:      pypi        (on https://pypi.org)
+#                     testpypi    (on https://test.pypi.org)
+# Add it for: cvista, cvista-rendering, cvista-io. For projects that don't exist
+# yet (cvista-rendering, cvista-io) use PyPI's "pending publisher" — the first
+# upload creates the project. For `cvista` (already published as the monolith) ADD
+# a second trusted publisher (this workflow + env) alongside the existing ci.yml
+# one. The GitHub repo also needs Environments named `pypi` and `testpypi`
+# (Settings → Environments); put release approvers on `pypi` if you want a gate.
+name: Release tier wheels (core / rendering / io)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dev_version:
+        description: "TestPyPI dev version (clean PEP 440, e.g. 9.6.2.0.dev7). Blank = 9.6.2.0.dev<run_number>."
+        type: string
+        required: false
+        default: ''
+  release:
+    types: [published]
+
+concurrency:
+  # Never cancel an in-flight publish — a half-uploaded release is worse than a wait.
+  group: release-tiers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Decide the version once. Release: empty -> setuptools-scm uses the git tag.
+  # Dry run: a clean PEP 440 dev version (PyPI/TestPyPI reject +local segments,
+  # which setuptools-scm would otherwise produce off a branch).
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      pretend: ${{ steps.v.outputs.pretend }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "pretend=" >> "$GITHUB_OUTPUT"
+            echo "release build: version from the git tag via setuptools-scm"
+          else
+            v="${{ inputs.dev_version }}"
+            [ -n "$v" ] || v="9.6.2.0.dev${{ github.run_number }}"
+            echo "pretend=$v" >> "$GITHUB_OUTPUT"
+            echo "dry-run build: TestPyPI version $v"
+          fi
+
+  # Build the 3 tier wheels on linux/macOS/Windows (uploads cvista-tier-wheels-*).
+  build:
+    needs: setup
+    uses: ./.github/workflows/_tier-wheels.yml
+    with:
+      scm_pretend_version: ${{ needs.setup.outputs.pretend }}
+
+  # Trusted-publishing upload. Target + environment switch on the trigger:
+  # release -> PyPI/pypi, dispatch -> TestPyPI/testpypi.
+  publish:
+    needs: build
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    environment:
+      name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
+      url: ${{ github.event_name == 'release' && 'https://pypi.org/p/cvista' || 'https://test.pypi.org/p/cvista' }}
+    permissions:
+      # id-token: write mints the short-lived OIDC token the index exchanges for an
+      # upload token — no stored secret. PyPI matches it to the trusted-publisher
+      # config (repo + this workflow file + the environment name above).
+      id-token: write
+    steps:
+      - name: Collect all tier wheels into dist/
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-tier-wheels-*
+          path: dist
+          merge-multiple: true
+      - name: List + sanity-check the tier wheels
+        run: |
+          set -euo pipefail
+          ls -l dist
+          n=$(ls dist/*.whl 2>/dev/null | wc -l)
+          echo "collected $n tier wheel(s)"
+          # 3 tiers (core/rendering/io) x 3 OSes (linux/macOS/Windows) = 9 expected.
+          test "$n" -ge 9 || { echo "::error::expected >=9 tier wheels, found $n"; exit 1; }
+      - name: Publish to TestPyPI (dry run)
+        if: github.event_name != 'release'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true      # idempotent re-runs of the same dev version
+      - name: Publish to PyPI (release)
+        if: github.event_name == 'release'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  # Dry-run only: prove the just-published tiers install FROM TestPyPI and stack.
+  # This is the end-to-end "the SDKs publish AND are compatible" check — it
+  # resolves cvista[all] (core + rendering + io) straight off the index.
+  verify:
+    if: github.event_name != 'release'
+    needs: [setup, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install cvista[all] FROM TestPyPI + stack-verify
+        run: |
+          set -euo pipefail
+          V='${{ needs.setup.outputs.pretend }}'
+          echo "resolving cvista[all]==$V off TestPyPI"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgl1 libglx-mesa0 libxt6 libx11-6 libglu1-mesa || true
+          # cvista tiers from TestPyPI; numpy & friends from real PyPI (extra-index).
+          # Retry: the simple index can lag ~a minute behind the upload.
+          ok=0
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if pip install \
+                 --index-url https://test.pypi.org/simple/ \
+                 --extra-index-url https://pypi.org/simple/ \
+                 "cvista[all]==$V"; then ok=1; break; fi
+            echo "attempt $attempt: index not ready, sleeping 20s..."; sleep 20
+          done
+          test "$ok" = 1 || { echo "::error::cvista[all]==$V never resolved from TestPyPI"; exit 1; }
+          python - <<'PY'
+          import cvista
+          from cvista.vtkFiltersSources import vtkSphereSource
+          from cvista.vtkIOXML import vtkXMLPolyDataWriter          # io tier
+          import cvista.vtkRenderingCore                            # rendering tier
+          s = vtkSphereSource(); s.Update()
+          print("cvista[all] installed-from-TestPyPI, all tiers import; sphere pts:",
+                s.GetOutput().GetNumberOfPoints())
+          PY
