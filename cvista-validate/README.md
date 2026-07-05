@@ -51,30 +51,46 @@ When a geometry/table divergence is reported it is annotated with a **magnitude*
 multisets — so floating-point noise (`~1e-13`, benign reduction-order jitter) is
 distinguishable at a glance from a macroscopic, genuinely-different result.
 
-### Known-issue filters (reported, not gated)
+### Serial-vs-serial pre-check
 
-Three of the ~65 filters are **not** byte-exact and are tagged `knownIssue`: the
-validator still runs them and prints the divergence + magnitude, but does not
-count them as gate failures (the gate protects the deterministic majority; these
-are tracked separately). They fall into two distinct kinds:
+Before any parallel comparison, each filter's serial run is done **twice** and
+the two are compared byte-exact. A single-threaded filter must be deterministic;
+if it isn't, its output is nondeterministic *regardless* of threading and a
+parallel-vs-serial comparison against a moving reference is meaningless. Such a
+filter is reported **SERIAL-UNSTABLE** (a real defect, but orthogonal to the
+threading question) and is not charged against the gate. This auto-classifies
+inherently-nondeterministic filters instead of the harness having to hard-code
+them.
 
-- **Inherently random — not a threading defect.** `vtkLengthDistribution` samples
-  cells and vertex pairs from a `vtkReservoirSampler` seeded from
-  `std::random_device` on *every call*, so its output is nondeterministic even
-  single-threaded — the serial reference is itself random. A parallel-vs-serial
-  gate simply cannot apply (it should take a fixed seed to be testable).
+### Not-gated exceptions (reported with evidence)
+
+A few of the ~65 filters are **not** byte-exact. The validator still runs them,
+prints the divergence + magnitude, and classifies each — but does not count them
+as gate failures (the gate protects the deterministic majority). The observed
+exceptions fall into three kinds:
+
+- **Nondeterministic even single-threaded (SERIAL-UNSTABLE) — not a threading
+  question.**
+  - `vtkLengthDistribution` samples cells and vertex pairs from a
+    `vtkReservoirSampler` seeded from `std::random_device` on *every call*, so its
+    output is random even serially (it should take a fixed seed to be testable).
+  - `vtkSurfaceNets3D` produces byte-identical **geometry** (points +
+    connectivity), but its `BoundaryLabels` cell-data is an uninitialized/wild
+    read — garbage (`~9e8`, far outside the 0..3 label range) that changes every
+    run, single-threaded included. A genuine bug, just not a threading one.
 - **Genuine threading bug — tracked, pending fix.** `vtkDiscreteFlyingEdgesClipper2D`
-  shares one `vtkLabelMapLookup` across all threads, whose cache
-  (`CachedValue`/`CachedOutValue`) is written unsynchronized — a data race that
-  yields garbage point coordinates under threads (measured max coord dev `~3.4e37`
-  on Linux vs `~1.2e10` on macOS: a platform-varying uninitialized read). The fix
-  mirrors `vtkSurfaceNets3D`, which avoids this exact race with a per-thread
-  `vtkSMPThreadLocal` lookup. Until fixed, threading this filter is unsafe.
+  is serial-stable but shares one `vtkLabelMapLookup` across all threads, whose
+  cache (`CachedValue`/`CachedOutValue`) is written unsynchronized — a data race
+  that yields garbage point coordinates under threads (measured max coord dev
+  `~3.4e37` on Linux vs `~1.2e10` on macOS: a platform-varying uninitialized
+  read). The fix mirrors `vtkSurfaceNets3D`'s geometry path, which uses a
+  per-thread `vtkSMPThreadLocal` lookup. Until fixed, threading it is unsafe.
 
-This distinction is the whole point of the validator: it separates "parallel is
-fine" (the large majority, byte-exact), "parallel reorders but is otherwise
-identical" (order-relaxed), "not a threading question" (random), and "parallel is
-genuinely broken here" (the one real race) — with evidence for each.
+This separation is the whole point of the validator: it distinguishes "parallel
+is fine" (the large majority, byte-exact), "parallel reorders but is otherwise
+identical" (order-relaxed), "unstable regardless of threading" (SERIAL-UNSTABLE),
+and "parallel is genuinely broken here" (the one real race) — with evidence for
+each.
 
 Coverage spans every SMP risk class — per-element (`vtkWarpVector`,
 `vtkElevationFilter`, `vtkTransformFilter`, `vtkThreshold`, …), reduction

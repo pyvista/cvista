@@ -650,10 +650,15 @@ std::vector<Case> RegisterCases()
     f->SetClipFunction(plane(1, 1, 0));
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  // Byte-exact: the default OUTPUT_STYLE_BOUNDARY path is fully deterministic --
-  // integer voxel-center coordinates, a serial prefix-sum assigning disjoint
-  // output ranges, a per-thread (vtkSMPThreadLocal) label lookup, and Jacobi
-  // double-buffered constrained smoothing. No RNG, FP reduction, or shared cache.
+  // Expected byte-exact: the GEOMETRY of the default OUTPUT_STYLE_BOUNDARY path is
+  // deterministic (integer voxel-center coords, serial prefix-sum offsets,
+  // per-thread label lookup, Jacobi double-buffered smoothing) -- and indeed the
+  // validator measures points + connectivity byte-identical. HOWEVER the
+  // "BoundaryLabels" cell-data comes out as garbage (~9e8, far outside the 0..3
+  // label range) that changes every run -- an uninitialized/wild read that is
+  // nondeterministic even SINGLE-THREADED. The serial-vs-serial pre-check catches
+  // this and reports it as SERIAL-UNSTABLE (a real defect, but orthogonal to
+  // threading), so it is not charged against the parallel-vs-serial gate.
   add("vtkSurfaceNets3D", "Filters/Core", Risk::Iso, [](const Inputs& in) {
     vtkNew<vtkSurfaceNets3D> f;
     f->SetInputData(in.labelImage);

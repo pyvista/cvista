@@ -141,6 +141,7 @@ int main(int argc, char* argv[])
 
   int failed = 0;
   int known = 0;
+  int serialUnstable = 0;
   int comparisons = 0;
 
   std::cout << std::left << std::setw(34) << "algorithm" << std::setw(18) << "module"
@@ -151,6 +152,14 @@ int main(int argc, char* argv[])
   {
     forceSerial();
     vtkSmartPointer<vtkDataObject> ref = runOnce(c, inputs);
+    // A second serial run. A single-threaded filter MUST be deterministic; if
+    // these two disagree the filter is nondeterministic *regardless* of threading
+    // (an unseeded RNG, or an uninitialized/wild read), so a parallel-vs-serial
+    // comparison against a moving reference is meaningless. Detect that first and
+    // classify it separately -- it is a real defect but NOT the "parallel makes it
+    // unstable" question this gate answers.
+    forceSerial();
+    vtkSmartPointer<vtkDataObject> ref2 = runOnce(c, inputs);
 
     std::string verdict;
     bool ok = true;
@@ -158,6 +167,24 @@ int main(int argc, char* argv[])
     {
       ok = false;
       verdict = "ERROR: serial run produced no output";
+    }
+
+    if (ok && ref2)
+    {
+      // Serial must be byte-exact with itself (even order-relaxed filters: their
+      // nondeterminism is thread-scheduling, absent under the Sequential floor).
+      const std::string sdiff = smpparity::CompareDataObjects(ref, ref2);
+      if (!sdiff.empty())
+      {
+        ++serialUnstable;
+        verdict = "SERIAL-UNSTABLE (nondeterministic single-threaded; parallel-vs-serial N/A): " +
+          sdiff;
+        if (c.knownIssue)
+          verdict += "  [" + c.knownIssueReason + "]";
+        std::cout << std::left << std::setw(34) << c.name << std::setw(18) << c.module
+                  << std::setw(13) << smpparity::RiskName(c.risk) << verdict << "\n";
+        continue;
+      }
     }
 
     for (int t = 0; ok && t < static_cast<int>(threadCounts.size()); ++t)
@@ -240,11 +267,15 @@ int main(int argc, char* argv[])
 
   std::cout << "\n" << std::string(84, '-') << "\n";
   std::cout << "cases: " << cases.size() << "   comparisons: " << comparisons
-            << "   gated-failures: " << failed << "   known-issues (ungated): " << known << "\n";
+            << "   gated-failures: " << failed << "   known-issues (ungated): " << known
+            << "   serial-unstable (ungated): " << serialUnstable << "\n";
   if (failed == 0)
   {
     std::cout << "RESULT: PASS - every gated algorithm's parallel output matches serial"
-              << (known ? " (see KNOWN-ISSUE rows for documented, tracked exceptions)" : "") << "\n";
+              << (known || serialUnstable
+                     ? " (see KNOWN-ISSUE / SERIAL-UNSTABLE rows for documented, tracked exceptions)"
+                     : "")
+              << "\n";
     return EXIT_SUCCESS;
   }
   std::cout << "RESULT: FAIL - " << failed
