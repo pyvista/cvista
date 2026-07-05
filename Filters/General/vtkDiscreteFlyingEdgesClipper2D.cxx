@@ -14,6 +14,7 @@
 #include "vtkLabelMapLookup.h"
 #include "vtkObjectFactory.h"
 #include "vtkPolyData.h"
+#include "vtkSMPThreadLocal.h"
 #include "vtkSMPTools.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 
@@ -78,7 +79,11 @@ public:
   // Output data. Threads write to partitioned memory.
   using TPtr = typename vtk::detail::ValueRange<TArray, 1>::iterator;
   using T = vtk::GetAPIType<TArray>;
-  vtkLabelMapLookup<T>* LMap;
+  // The contour label values used to build the label map lookup. The lookup
+  // itself caches information, so to avoid a data race, a separate instance is
+  // created per thread (see Pass1) rather than sharing one on this algorithm.
+  const double* Values;
+  vtkIdType NumContours;
   TPtr Scalars;
   vtkCellArray* NewPolys;
   float* NewPoints;
@@ -89,7 +94,7 @@ public:
   vtkDiscreteClipperAlgorithm();
 
   // The three threaded passes of the algorithm.
-  void ClassifyXEdges(TPtr inPtr, vtkIdType row); // PASS 1
+  void ClassifyXEdges(TPtr inPtr, vtkIdType row, vtkLabelMapLookup<T>* lMap); // PASS 1
   void ClassifyYEdges(TPtr inPtr, vtkIdType row); // PASS 2
   void GenerateOutput(TPtr inPtr, vtkIdType row); // PASS 4
 
@@ -227,8 +232,17 @@ public:
     }
     vtkDiscreteClipperAlgorithm* Algo;
     vtkDiscreteFlyingEdgesClipper2D* Filter;
+    // The label map lookup caches information, so to avoid race conditions an
+    // instance per thread must be created (mirrors vtkSurfaceNets3D).
+    vtkSMPThreadLocal<vtkLabelMapLookup<T>*> LMap;
+    void Initialize()
+    {
+      this->LMap.Local() =
+        vtkLabelMapLookup<T>::CreateLabelLookup(this->Algo->Values, this->Algo->NumContours);
+    }
     void operator()(vtkIdType row, vtkIdType end)
     {
+      vtkLabelMapLookup<T>* lMap = this->LMap.Local();
       TPtr rowPtr = this->Algo->Scalars + row * this->Algo->Inc1;
       bool isFirst = vtkSMPTools::GetSingleThread();
       for (; row < end; ++row)
@@ -241,9 +255,17 @@ public:
         {
           break;
         }
-        this->Algo->ClassifyXEdges(rowPtr, row);
+        this->Algo->ClassifyXEdges(rowPtr, row, lMap);
         rowPtr += this->Algo->Inc1;
       } // for all rows in this batch
+    }
+    void Reduce()
+    {
+      // Delete all the per-thread label map lookups.
+      for (auto lmItr = this->LMap.begin(); lmItr != this->LMap.end(); ++lmItr)
+      {
+        delete *lmItr;
+      } // over all threads
     }
   };
   class Pass2
@@ -1072,7 +1094,8 @@ void vtkDiscreteClipperAlgorithm<TArray>::GenerateScalars(
 // and trim intersections along the row. Note that dyads at the +x,y
 // boundaries are partial and must be treated appropriately.
 template <class TArray>
-void vtkDiscreteClipperAlgorithm<TArray>::ClassifyXEdges(TPtr inPtr, vtkIdType row)
+void vtkDiscreteClipperAlgorithm<TArray>::ClassifyXEdges(
+  TPtr inPtr, vtkIdType row, vtkLabelMapLookup<T>* lMap)
 {
   vtkIdType nxcells = this->Dims[0];
   vtkIdType minInt = nxcells, maxInt = 0;
@@ -1080,7 +1103,7 @@ void vtkDiscreteClipperAlgorithm<TArray>::ClassifyXEdges(TPtr inPtr, vtkIdType r
   vtkIdType* eMD = this->EdgeMetaData + row * 6;
   unsigned char* dPtr = this->DyadCases + row * nxcells;
   T s0, sx = (*inPtr);
-  bool isCV0, isCVx = this->LMap->IsLabelValue(sx);
+  bool isCV0, isCVx = lMap->IsLabelValue(sx);
 
   // run along the entire x-edge classifying dyad x and y axes
   std::fill_n(eMD, 6, 0);
@@ -1097,7 +1120,7 @@ void vtkDiscreteClipperAlgorithm<TArray>::ClassifyXEdges(TPtr inPtr, vtkIdType r
     else
     {
       sx = static_cast<T>(*(inPtr + (i + 1) * this->Inc0));
-      isCVx = this->LMap->IsLabelValue(sx);
+      isCVx = lMap->IsLabelValue(sx);
     }
 
     // Is the current vertex a contour value?
@@ -1415,8 +1438,11 @@ void vtkDiscreteClipperAlgorithm<TArray>::ContourImage(vtkDiscreteFlyingEdgesCli
   // This algorithm executes just once no matter how many contour values,
   // requiring a fast lookup as to whether a data value is a contour value.
   // Depending on the number of contours, different lookup strategies are
-  // used.
-  algo.LMap = vtkLabelMapLookup<T>::CreateLabelLookup(values, numContours);
+  // used. The lookup caches results, so a separate instance is created per
+  // thread (in Pass1) to avoid a data race; here we simply record the label
+  // values used to construct those per-thread lookups.
+  algo.Values = values;
+  algo.NumContours = numContours;
 
   // The algorithm is separated into multiple passes. The first pass detects
   // intersections on row edges, counting the number of intersected edges as
@@ -1494,7 +1520,6 @@ void vtkDiscreteClipperAlgorithm<TArray>::ContourImage(vtkDiscreteFlyingEdgesCli
   // Clean up and return
   delete[] algo.DyadCases;
   delete[] algo.EdgeMetaData;
-  delete algo.LMap;
 }
 
 struct vtkDiscreteFlyingEdgesClipper2DWorker

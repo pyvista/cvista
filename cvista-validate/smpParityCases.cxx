@@ -706,15 +706,18 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
-  // GENUINE threading bug (tracked, pending fix): unlike vtkSurfaceNets3D, this
-  // filter shares ONE vtkLabelMapLookup across all threads (single algo.LMap),
-  // and vtkLabelMapLookup::IsLabelValue writes CachedValue/CachedOutValue on every
-  // cache miss with no synchronization -- a data race. Under threads the point
-  // coordinates come out garbage (validator measured max coord dev ~3.4e37 on
-  // Linux vs ~1.2e10 on macOS: a platform-varying uninitialized read). Fix mirrors
-  // SurfaceNets3D: give each SMP thread its own lookup (vtkSMPThreadLocal).
-  markKnown("data race on shared vtkLabelMapLookup cache (CachedValue written by "
-            "all threads unsynchronized); garbage coords under STDThread -- real bug");
+  // FIXED (per-thread lookup): this filter used to share ONE vtkLabelMapLookup
+  // across all threads (single algo.LMap), and vtkLabelMapLookup::IsLabelValue
+  // writes CachedValue/CachedOutValue on every cache miss with no
+  // synchronization -- a data race that produced garbage point coordinates
+  // under STDThread (validator once measured max coord dev ~3.4e37 on Linux vs
+  // ~1.2e10 on macOS: a platform-varying uninitialized read). The fix mirrors
+  // vtkSurfaceNets3D: each SMP thread now builds its own vtkLabelMapLookup
+  // (vtkSMPThreadLocal, created in Pass1::Initialize, freed in Pass1::Reduce),
+  // so the case is now gated. It stays orderRelaxed=true because -- like the
+  // sibling vtkDiscreteFlyingEdges2D/3D -- the threaded emission ORDER is still
+  // nondeterministic; the gate requires run-to-run stability AND an
+  // order-insensitive geometry match against serial.
   add(
     "vtkVoronoi2D", "Filters/Core", Risk::Merge,
     [](const Inputs& in) {
