@@ -33,19 +33,20 @@ struct ComputeMeanDistanceFunctor
   vtkAbstractPointLocator* Locator;
   int SampleSize;
   float* Distance;
+  vtkIdType NumPts;
   double Mean;
 
   // Don't want to allocate working arrays on every thread invocation. Thread local
   // storage lots of new/delete.
   vtkSMPThreadLocalObject<vtkIdList> PIds;
-  vtkSMPThreadLocal<double> ThreadMean;
-  vtkSMPThreadLocal<vtkIdType> ThreadCount;
 
-  ComputeMeanDistanceFunctor(TArray* points, vtkAbstractPointLocator* loc, int size, float* d)
+  ComputeMeanDistanceFunctor(
+    TArray* points, vtkAbstractPointLocator* loc, int size, float* d, vtkIdType numPts)
     : Points(points)
     , Locator(loc)
     , SampleSize(size)
     , Distance(d)
+    , NumPts(numPts)
     , Mean(0.0)
   {
   }
@@ -55,24 +56,17 @@ struct ComputeMeanDistanceFunctor
   {
     vtkIdList*& pIds = this->PIds.Local();
     pIds->Allocate(128); // allocate some memory
-
-    double& threadMean = this->ThreadMean.Local();
-    threadMean = 0.0;
-
-    vtkIdType& threadCount = this->ThreadCount.Local();
-    threadCount = 0;
   }
 
-  // Compute average distance for each point, plus accumulate summation of
-  // mean distances and count (for averaging in the Reduce() method).
+  // Compute the average distance to the SampleSize nearest neighbors for each
+  // point, storing it in Distance[]. This per-point result is independent of the
+  // thread partitioning; the global mean is reduced deterministically in Reduce().
   void operator()(vtkIdType ptId, vtkIdType endPtId)
   {
     auto points = vtk::DataArrayTupleRange<3>(this->Points);
     auto px = points.begin() + ptId;
     double x[3], y[3];
     vtkIdList*& pIds = this->PIds.Local();
-    double& threadMean = this->ThreadMean.Local();
-    vtkIdType& threadCount = this->ThreadCount.Local();
 
     for (; ptId < endPtId; ++ptId, ++px)
     {
@@ -100,8 +94,6 @@ struct ComputeMeanDistanceFunctor
       if (numPts > 0)
       {
         this->Distance[ptId] = sum / static_cast<double>(numPts - 1);
-        threadMean += this->Distance[ptId];
-        threadCount++;
       }
       else // ignore if no points are found, something bad has happened
       {
@@ -110,24 +102,28 @@ struct ComputeMeanDistanceFunctor
     }
   }
 
-  // Compute the mean by compositing all threads
+  // Compute the mean deterministically. The threaded operator() above fills the
+  // per-point Distance[] array, which is byte-identical regardless of how the
+  // point range was partitioned across threads (each point's neighbor search and
+  // distance sum is independent of the partitioning). Sum those distances here in
+  // a single serial, input-point-ordered pass. This intentionally replaces the
+  // former vtkSMPThreadLocal partial-sum composite, whose result depended on the
+  // number/order of partitions (FP addition is not associative). A ULP-level
+  // difference in Mean shifts the mean+k*sigma keep/drop threshold and can flip a
+  // borderline point, changing the SURVIVOR COUNT between serial and parallel
+  // runs -- a count-sacred violation. A fixed-order sum is partition-independent
+  // and byte-identical to the serial result. Runs once, after the parallel For.
   void Reduce()
   {
     double mean = 0.0;
     vtkIdType count = 0;
-
-    vtkSMPThreadLocal<double>::iterator mItr;
-    vtkSMPThreadLocal<double>::iterator mEnd = this->ThreadMean.end();
-    for (mItr = this->ThreadMean.begin(); mItr != mEnd; ++mItr)
+    for (vtkIdType ptId = 0; ptId < this->NumPts; ++ptId)
     {
-      mean += *mItr;
-    }
-
-    vtkSMPThreadLocal<vtkIdType>::iterator cItr;
-    vtkSMPThreadLocal<vtkIdType>::iterator cEnd = this->ThreadCount.end();
-    for (cItr = this->ThreadCount.begin(); cItr != cEnd; ++cItr)
-    {
-      count += *cItr;
+      if (this->Distance[ptId] < VTK_FLOAT_MAX)
+      {
+        mean += this->Distance[ptId];
+        count++;
+      }
     }
 
     count = (count < 1 ? 1 : count);
@@ -141,87 +137,43 @@ struct ComputeMeanDistanceWorker
   void operator()(
     TArray* points, vtkStatisticalOutlierRemoval* self, float* distances, double& mean)
   {
+    const vtkIdType numTuples = points->GetNumberOfTuples();
     ComputeMeanDistanceFunctor<TArray> meanDist(
-      points, self->GetLocator(), self->GetSampleSize(), distances);
-    vtkSMPTools::For(0, points->GetNumberOfTuples(), meanDist);
+      points, self->GetLocator(), self->GetSampleSize(), distances, numTuples);
+    vtkSMPTools::For(0, numTuples, meanDist);
     mean = meanDist.Mean;
   }
 };
 
 //------------------------------------------------------------------------------
-// Now that the mean is known, compute the standard deviation
+// Now that the mean is known, compute the standard deviation.
+//
+// This is computed with a single serial, input-point-ordered reduction rather
+// than a threaded vtkSMPThreadLocal composite. The per-point work here is
+// trivial (one subtract + multiply over the already-computed Distances[]), so
+// threading it bought nothing, while the partial-sum composite made the result
+// depend on the thread/partition count (FP addition is not associative). A
+// ULP-level difference in the standard deviation shifts the mean+k*sigma
+// keep/drop threshold and can flip a borderline point, changing the SURVIVOR
+// COUNT between serial and parallel runs. A fixed-order sum is partition-
+// independent and byte-identical to the serial result.
 struct ComputeStdDev
 {
-  float* Distances;
-  double Mean;
-  double StdDev;
-  vtkSMPThreadLocal<double> ThreadSigma;
-  vtkSMPThreadLocal<vtkIdType> ThreadCount;
-
-  ComputeStdDev(float* d, double mean)
-    : Distances(d)
-    , Mean(mean)
-    , StdDev(0.0)
-  {
-  }
-
-  void Initialize()
-  {
-    double& threadSigma = this->ThreadSigma.Local();
-    threadSigma = 0.0;
-
-    vtkIdType& threadCount = this->ThreadCount.Local();
-    threadCount = 0;
-  }
-
-  void operator()(vtkIdType ptId, vtkIdType endPtId)
-  {
-    double& threadSigma = this->ThreadSigma.Local();
-    vtkIdType& threadCount = this->ThreadCount.Local();
-    float d;
-
-    for (; ptId < endPtId; ++ptId)
-    {
-      d = this->Distances[ptId];
-      if (d < VTK_FLOAT_MAX)
-      {
-        threadSigma += (this->Mean - d) * (this->Mean - d);
-        threadCount++;
-      }
-      else
-      {
-        continue; // skip bad point
-      }
-    }
-  }
-
-  void Reduce()
-  {
-    double sigma = 0.0;
-    vtkIdType count = 0;
-
-    vtkSMPThreadLocal<double>::iterator sItr;
-    vtkSMPThreadLocal<double>::iterator sEnd = this->ThreadSigma.end();
-    for (sItr = this->ThreadSigma.begin(); sItr != sEnd; ++sItr)
-    {
-      sigma += *sItr;
-    }
-
-    vtkSMPThreadLocal<vtkIdType>::iterator cItr;
-    vtkSMPThreadLocal<vtkIdType>::iterator cEnd = this->ThreadCount.end();
-    for (cItr = this->ThreadCount.begin(); cItr != cEnd; ++cItr)
-    {
-      count += *cItr;
-    }
-
-    this->StdDev = sqrt(sigma / static_cast<double>(count));
-  }
-
   static void Execute(vtkIdType numPts, float* distances, double mean, double& sigma)
   {
-    ComputeStdDev stdDev(distances, mean);
-    vtkSMPTools::For(0, numPts, stdDev);
-    sigma = stdDev.StdDev;
+    double s = 0.0;
+    vtkIdType count = 0;
+    for (vtkIdType ptId = 0; ptId < numPts; ++ptId)
+    {
+      const float d = distances[ptId];
+      if (d < VTK_FLOAT_MAX)
+      {
+        s += (mean - d) * (mean - d);
+        count++;
+      }
+    }
+
+    sigma = sqrt(s / static_cast<double>(count));
   }
 
 }; // ComputeStdDev
