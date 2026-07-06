@@ -42,7 +42,9 @@ find_package(VTK REQUIRED COMPONENTS
   FiltersStatistics
   FiltersVerdict
   ImagingCore
-  ImagingHybrid)
+  ImagingGeneral
+  ImagingHybrid
+  ImagingMorphological)
 
 add_executable(cvista_smp_parity
   main.cxx

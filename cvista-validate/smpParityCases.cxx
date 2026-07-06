@@ -9,6 +9,7 @@
 #include <vtkFloatArray.h>
 #include <vtkImageData.h>
 #include <vtkIntArray.h>
+#include <vtkLookupTable.h>
 #include <vtkNew.h>
 #include <vtkPlane.h>
 #include <vtkPointData.h>
@@ -59,6 +60,22 @@
 #include <vtkGaussianSplatter.h>
 #include <vtkGeometryFilter.h>
 #include <vtkGradientFilter.h>
+#include <vtkImageAppendComponents.h>
+#include <vtkImageBlend.h>
+#include <vtkImageCast.h>
+#include <vtkImageContinuousDilate3D.h>
+#include <vtkImageContinuousErode3D.h>
+#include <vtkImageDilateErode3D.h>
+#include <vtkImageExtractComponents.h>
+#include <vtkImageGaussianSmooth.h>
+#include <vtkImageMapToColors.h>
+#include <vtkImageMedian3D.h>
+#include <vtkImageRectilinearWipe.h>
+#include <vtkImageReslice.h>
+#include <vtkImageResize.h>
+#include <vtkImageShiftScale.h>
+#include <vtkImageShrink3D.h>
+#include <vtkImageThreshold.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
@@ -929,6 +946,33 @@ std::vector<Case> RegisterCases()
       f->SetInputData(1, sel);
       return vtkSmartPointer<vtkAlgorithm>(f);
     });
+  // FRUSTUM -> vtkFrustumSelector: keep cells inside an 8-corner frustum. The
+  // per-cell in/out test runs in a threaded functor (ComputeCellsInFrustumFunctor);
+  // extraction then compacts in input cell order -> byte-exact. (The frustum's exact
+  // winding is immaterial to parity: both backends use the same planes, so any
+  // deterministic selection validates the threaded path.) Corners are the standard
+  // near/far x-y-z vtkFrustumSelector vertex order, each as (x,y,z,1).
+  add("vtkExtractSelection/frustum", "Filters/Extraction", Risk::PerElement,
+    [](const Inputs& in) {
+      vtkNew<vtkSelectionNode> node;
+      node->SetFieldType(vtkSelectionNode::CELL);
+      node->SetContentType(vtkSelectionNode::FRUSTUM);
+      vtkNew<vtkDoubleArray> corners;
+      corners->SetNumberOfComponents(4);
+      const double lo = -8.0, hi = 8.0;
+      // 0:nLL 1:fLL 2:nUL 3:fUL 4:nLR 5:fLR 6:nUR 7:fUR  (L/R=x, L/U=y, n/f=z)
+      const double v[8][3] = { { lo, lo, lo }, { lo, lo, hi }, { lo, hi, lo }, { lo, hi, hi },
+        { hi, lo, lo }, { hi, lo, hi }, { hi, hi, lo }, { hi, hi, hi } };
+      for (int i = 0; i < 8; ++i)
+        corners->InsertNextTuple4(v[i][0], v[i][1], v[i][2], 1.0);
+      node->SetSelectionList(corners);
+      vtkNew<vtkSelection> sel;
+      sel->AddNode(node);
+      vtkNew<vtkExtractSelection> f;
+      f->SetInputData(0, in.ugrid);
+      f->SetInputData(1, sel);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    });
   // Point-cloud subset extractors (vtkPointCloudFilter subclasses). The per-point
   // keep/drop mask is computed in a threaded loop, but the surviving points are
   // numbered by a SERIAL prefix-sum over the mask and copied to their mapped slot,
@@ -1047,6 +1091,147 @@ std::vector<Case> RegisterCases()
     vtkNew<vtkRemovePolyData> f;
     f->SetInputData(0, in.poly);
     f->AddInputData(1, in.poly2);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+
+  // ---- image (vtkThreadedImageAlgorithm) ------------------------------------
+  // cvista is NOT built with VTK_SMP_Sequential, so
+  // vtkThreadedImageAlgorithm::GlobalDefaultEnableSMP defaults to true and every
+  // subclass threads its ThreadedRequestData through vtkSMPTools::For out of the
+  // box (the base splits the OUTPUT extent into pieces; the serial floor's
+  // Sequential backend runs that For serially). Each output voxel is a pure
+  // function of the input it reads (pointwise, fixed local kernel, or independent
+  // resample), written to its own disjoint slot, so the value is independent of
+  // how the extent was partitioned -> byte-exact parallel-vs-serial. None of these
+  // reduce across the split, so Risk::PerElement.
+  add("vtkImageThreshold", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageThreshold> f;
+    f->SetInputData(in.image);
+    f->ThresholdByUpper(150.0);
+    f->SetInValue(1000.0);
+    f->SetOutValue(0.0);
+    f->SetOutputScalarTypeToFloat();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageShiftScale", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageShiftScale> f;
+    f->SetInputData(in.image);
+    f->SetShift(10.0);
+    f->SetScale(0.25);
+    f->SetOutputScalarTypeToDouble();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageCast", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageCast> f;
+    f->SetInputData(in.image);
+    f->SetOutputScalarTypeToDouble();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageExtractComponents", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageExtractComponents> f;
+    f->SetInputData(in.image);
+    f->SetComponents(0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Block downsample: each output voxel = mean over its FIXED input block, summed
+  // in a fixed order -> byte-exact regardless of extent partition.
+  add("vtkImageShrink3D", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageShrink3D> f;
+    f->SetInputData(in.image);
+    f->SetShrinkFactors(2, 2, 2);
+    f->MeanOn();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Resample onto a coarser grid; each output voxel is an independent interpolation
+  // of the input -> byte-exact.
+  add("vtkImageResize", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageResize> f;
+    f->SetInputData(in.image);
+    f->SetResizeMethodToOutputDimensions();
+    f->SetOutputDimensions(15, 15, 15);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Reslice to a coarser spacing with linear interpolation; each output voxel is an
+  // independent sample of the input volume -> byte-exact per voxel.
+  add("vtkImageReslice", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageReslice> f;
+    f->SetInputData(in.image);
+    f->SetOutputSpacing(1.5, 1.5, 1.5);
+    f->SetInterpolationModeToLinear();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Per-voxel LUT map (scalar -> RGBA uint8); pointwise -> byte-exact.
+  add("vtkImageMapToColors", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkLookupTable> lut;
+    lut->SetTableRange(0.0, 300.0);
+    lut->Build();
+    vtkNew<vtkImageMapToColors> f;
+    f->SetInputData(in.image);
+    f->SetLookupTable(lut);
+    f->SetOutputFormatToRGBA();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Two-input component stack (same image twice -> 2-component output). Each output
+  // voxel copies its corresponding input voxels -> byte-exact.
+  add("vtkImageAppendComponents", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageAppendComponents> f;
+    f->AddInputData(in.image);
+    f->AddInputData(in.image);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Per-voxel weighted blend of two inputs; pointwise -> byte-exact.
+  add("vtkImageBlend", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageBlend> f;
+    f->AddInputData(in.image);
+    f->AddInputData(in.image);
+    f->SetOpacity(0, 0.5);
+    f->SetOpacity(1, 0.5);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Separable Gaussian convolution: each output voxel is a fixed-weight sum over a
+  // fixed input neighborhood -> byte-exact.
+  add("vtkImageGaussianSmooth", "Imaging/General", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageGaussianSmooth> f;
+    f->SetInputData(in.image);
+    f->SetStandardDeviations(1.5, 1.5, 1.5);
+    f->SetRadiusFactors(2.0, 2.0, 2.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Median over a fixed kernel: deterministic per-voxel selection -> byte-exact.
+  add("vtkImageMedian3D", "Imaging/General", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageMedian3D> f;
+    f->SetInputData(in.image);
+    f->SetKernelSize(3, 3, 3);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Grayscale morphology: max / min over a fixed kernel -> byte-exact per voxel.
+  add("vtkImageContinuousDilate3D", "Imaging/Morphological", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageContinuousDilate3D> f;
+    f->SetInputData(in.image);
+    f->SetKernelSize(3, 3, 3);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageContinuousErode3D", "Imaging/Morphological", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageContinuousErode3D> f;
+    f->SetInputData(in.image);
+    f->SetKernelSize(3, 3, 3);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageDilateErode3D", "Imaging/Morphological", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageDilateErode3D> f;
+    f->SetInputData(in.labelImage);
+    f->SetKernelSize(3, 3, 3);
+    f->SetDilateValue(1.0);
+    f->SetErodeValue(0.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Region composite of two images (same image twice); each output voxel copies one
+  // input voxel chosen by a fixed spatial rule -> byte-exact.
+  add("vtkImageRectilinearWipe", "Imaging/Hybrid", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageRectilinearWipe> f;
+    f->SetInput1Data(in.image);
+    f->SetInput2Data(in.image);
+    f->SetWipeToQuad();
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
 
