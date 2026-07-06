@@ -54,6 +54,14 @@ public:
   vtkSetMacro(SortSample, bool);
   vtkBooleanMacro(SortSample, bool);
 
+  /// Set/get the seed used to randomly sample cells and connectivity entries.
+  ///
+  /// The sampling is seeded so the output is reproducible from run to run
+  /// (and byte-identical whether the sampling loop runs serially or threaded).
+  /// Change the seed to obtain a different random subset. The default is 0.
+  vtkGetMacro(Seed, unsigned int);
+  vtkSetMacro(Seed, unsigned int);
+
   /// Return the length scale at a particular quantile.
   ///
   /// This method must only be invoked after the filter
@@ -77,6 +85,7 @@ protected:
 
   vtkIdType SampleSize = 100000;
   bool SortSample = true;
+  unsigned int Seed = 0;
 
 private:
   vtkLengthDistribution(const vtkLengthDistribution&) = delete;
