@@ -277,6 +277,15 @@ jobs:
             CCACHE_MAXSIZE=30G
           CIBW_ENVIRONMENT_PASS_LINUX: SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
+          # Skip cibuildwheel's post-build render smoke here. That test installs
+          # the PRE-partition full wheel, whose Requires-Dist pulls matplotlib ->
+          # pillow, and pillow has no manylinux2014/cp310 wheel anymore (pillow 12
+          # baselines manylinux_2_28), so pip tries to compile it from source on
+          # el7 and fails. It is not our deliverable's gate: we ship the TIER
+          # wheels (validated by the partition self-containment audit below), the
+          # abi3 jobs already smoke import+render on 3.12, and the macOS/Windows
+          # legacy legs keep their full smoke (pillow ships wheels there).
+          CIBW_TEST_SKIP: "*"
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq patchelf binutils
