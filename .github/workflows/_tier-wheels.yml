@@ -18,12 +18,26 @@ name: _tier-wheels (reusable)
 
 on:
   workflow_call:
+    inputs:
+      scm_pretend_version:
+        description: >-
+          Force the wheel version (setuptools-scm pretend). Empty = derive from
+          the git tag/history as usual. Used to re-publish tier wheels onto an
+          already-tagged release (e.g. adding legacy cp310/cp311 to 9.6.2.3)
+          from main without moving the tag.
+        type: string
+        required: false
+        default: ""
 
 jobs:
   linux:
     name: 3-wheel tier split (linux)
     runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 75
+    # Empty by default -> setuptools-scm ignores it (falsy) and uses the git tag.
+    # Set on a re-publish dispatch to stamp the wheels with an existing version.
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -49,6 +63,8 @@ jobs:
             CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
             CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache:/ccache"
+          # Pass the (optional) pretend-version through into the build container.
+          CIBW_ENVIRONMENT_PASS_LINUX: SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq patchelf binutils
@@ -99,6 +115,9 @@ jobs:
     name: 3-wheel tier split (macOS)
     runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
     timeout-minutes: 90
+    # Not containerized: this job-level var is visible to the build directly.
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -149,6 +168,9 @@ jobs:
     name: 3-wheel tier split (Windows)
     runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
     timeout-minutes: 120
+    # Not containerized: this job-level var is visible to the build directly.
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -204,3 +226,174 @@ jobs:
           name: cvista-tier-wheels-windows
           path: tier-wheels/*.whl
           if-no-files-found: warn
+
+  # ── Legacy version-specific tiers (cp310 + cp311) ──────────────────────────
+  # The abi3 jobs above cover Python 3.12+ with a single cp312-abi3 wheel. Python
+  # 3.10/3.11 need version-specific wheels (CVISTA_ABI3=0), exactly like ci.yml's
+  # build-legacy-* jobs — but built with the TIERED init-cache and then partitioned
+  # into the same three projects. Each job builds two wheels (cp310, cp311) and
+  # tiers EACH into cvista / cvista-rendering / cvista-io (6 tier wheels/OS),
+  # uploaded as cvista-tier-wheels-<os>-legacy (the publish step's
+  # `cvista-tier-wheels-*` pattern picks them up alongside the abi3 artifacts).
+  # The partition step's self-containment audit is the hard gate; the abi3 jobs
+  # already prove stacking, and a cp310/cp311 wheel can't be smoke-imported by the
+  # runner's default interpreter, so these skip the stack smoke.
+  linux-legacy:
+    name: 3-wheel tier split (linux legacy cp310+cp311)
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+    timeout-minutes: 150
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build TIERED legacy wheels (cibuildwheel, cp310+cp311)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          # Mirror ci.yml build-legacy-linux (manylinux2014 / glibc 2.17 baseline,
+          # el7 yum before-all, gold linker) but swap in the tiered init-cache so
+          # the built tree partitions cleanly, and pass the pretend-version through.
+          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux2014"
+          CIBW_ARCHS_LINUX: "x86_64"
+          CIBW_BEFORE_ALL_LINUX: >-
+            yum install -y epel-release &&
+            yum install -y
+            mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel
+            mesa-libGLU-devel libglvnd-devel
+            libX11-devel libXcursor-devel libXt-devel libXext-devel
+            mesa-dri-drivers xorg-x11-server-Xvfb ccache git &&
+            mkdir -p /ccache && chmod 0777 /ccache
+          CIBW_BEFORE_BUILD_LINUX: "{project}/ci/cibw/before-build.sh"
+          CIBW_ENVIRONMENT_LINUX: >-
+            CVISTA_ABI3=0
+            CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
+            CVISTA_FAST_LINKER=gold
+            CCACHE_DIR=/ccache
+            CMAKE_C_COMPILER_LAUNCHER=ccache
+            CMAKE_CXX_COMPILER_LAUNCHER=ccache
+            CCACHE_MAXSIZE=30G
+          CIBW_ENVIRONMENT_PASS_LINUX: SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
+      - name: Tooling for partition/pack (patchelf, binutils, wheel)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq patchelf binutils
+          python3 -m pip -q install wheel
+      - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tier-wheels
+          for whl in wheelhouse/cvista-*.whl; do
+            echo "=== tiering $whl ==="
+            base=$(basename "$whl" .whl)
+            ver=$(echo "$base" | cut -d- -f2)
+            tag=$(echo "$base" | cut -d- -f3-)
+            rm -rf /tmp/unpack /tmp/tiers
+            python3 -m wheel unpack "$whl" -d /tmp/unpack
+            initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+            root=$(dirname "$(dirname "$initpy")")
+            python3 cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+            CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
+              python3 cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
+          done
+          echo "=== packed legacy tier wheels ==="; ls -la /tmp/tier-wheels
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cvista-tier-wheels-linux-legacy
+          path: /tmp/tier-wheels/*.whl
+          if-no-files-found: error
+
+  macos-legacy:
+    name: 3-wheel tier split (macOS legacy cp310+cp311)
+    runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+    timeout-minutes: 150
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build TIERED legacy wheels (cibuildwheel, cp310+cp311)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          # Mirror ci.yml build-legacy-macos + the tiered init-cache.
+          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_ENVIRONMENT_MACOS: >-
+            CVISTA_ABI3=0
+            CVISTA_CMAKE_INIT=ci/cmake/macos-tiered.cmake
+            CVISTA_TARGET_OS=macos
+            MACOSX_DEPLOYMENT_TARGET=11.0
+            _PYTHON_HOST_PLATFORM=macosx-11.0-arm64
+            CMAKE_C_COMPILER_LAUNCHER=ccache
+            CMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
+        run: |
+          set -euo pipefail
+          python3 -m pip -q install --break-system-packages wheel
+          mkdir -p /tmp/tier-wheels
+          for whl in wheelhouse/cvista-*.whl; do
+            echo "=== tiering $whl ==="
+            base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
+            rm -rf /tmp/unpack /tmp/tiers
+            python3 -m wheel unpack "$whl" -d /tmp/unpack
+            initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+            root=$(dirname "$(dirname "$initpy")")
+            python3 cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+            CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
+              python3 cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
+          done
+          echo "=== packed legacy tier wheels ==="; ls -la /tmp/tier-wheels
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cvista-tier-wheels-macos-legacy
+          path: /tmp/tier-wheels/*.whl
+          if-no-files-found: error
+
+  windows-legacy:
+    name: 3-wheel tier split (Windows legacy cp310+cp311)
+    runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+    timeout-minutes: 180
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Set up MSVC (vcvars) for the Ninja build
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build TIERED legacy wheels (cibuildwheel, cp310+cp311)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          # Mirror ci.yml build-legacy-windows + the tiered init-cache.
+          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_ENVIRONMENT_WINDOWS: "CVISTA_ABI3=0 CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON"
+      - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip -q install wheel pefile
+          mkdir -p tier-wheels
+          for whl in wheelhouse/cvista-*.whl; do
+            echo "=== tiering $whl ==="
+            base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
+            rm -rf /tmp/unpack /tmp/tiers
+            python -m wheel unpack "$whl" -d /tmp/unpack
+            initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+            root=$(dirname "$(dirname "$initpy")")
+            python cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+            CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
+              python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers tier-wheels
+          done
+          echo "=== packed legacy tier wheels ==="; ls -la tier-wheels
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cvista-tier-wheels-windows-legacy
+          path: tier-wheels/*.whl
+          if-no-files-found: error
