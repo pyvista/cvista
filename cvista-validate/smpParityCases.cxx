@@ -40,8 +40,10 @@
 #include <vtkConstrainedSmoothingFilter.h>
 #include <vtkContour3DLinearGrid.h>
 #include <vtkContourFilter.h>
+#include <vtkCorrelativeStatistics.h>
 #include <vtkCutter.h>
 #include <vtkDataSetSurfaceFilter.h>
+#include <vtkDescriptiveStatistics.h>
 #include <vtkDiscreteFlyingEdges2D.h>
 #include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkDiscreteFlyingEdgesClipper2D.h>
@@ -80,7 +82,9 @@
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
 #include <vtkMeshQuality.h>
+#include <vtkMultiCorrelativeStatistics.h>
 #include <vtkMultiObjectMassProperties.h>
+#include <vtkOrderStatistics.h>
 #include <vtkPackLabels.h>
 #include <vtkPlaneCutter.h>
 #include <vtkPointDataToCellData.h>
@@ -108,6 +112,8 @@
 #include <vtkStaticCleanPolyData.h>
 #include <vtkStaticCleanUnstructuredGrid.h>
 #include <vtkStatisticalOutlierRemoval.h>
+#include <vtkStatisticsAlgorithm.h>
+#include <vtkStreamTracer.h>
 #include <vtkStructuredDataPlaneCutter.h>
 #include <vtkSumTables.h>
 #include <vtkSurfaceNets2D.h>
@@ -376,6 +382,9 @@ std::vector<Case> RegisterCases()
     cases.back().knownIssue = true;
     cases.back().knownIssueReason = reason;
   };
+  // Compare the just-registered case's non-default output port. Statistics filters
+  // mirror their input on port 0 and emit the computed model on OUTPUT_MODEL (1).
+  auto useOutputPort = [&cases](int port) { cases.back().outputPort = port; };
   auto plane = [](double nx, double ny, double nz) {
     vtkSmartPointer<vtkPlane> pl = vtkSmartPointer<vtkPlane>::New();
     pl->SetOrigin(0, 0, 0);
@@ -655,6 +664,130 @@ std::vector<Case> RegisterCases()
     f->SetInputData(1, in.table2);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+
+  // ---- statistics MODEL outputs (vtkStatisticalModel on OUTPUT_MODEL) --------
+  // vtkStatisticsAlgorithm subclasses compute a MODEL: a vtkStatisticalModel (a
+  // vtkDataObject holding Learned/Derived/Test vtkTables). It lives on output port
+  // OUTPUT_MODEL (1); port 0 (OUTPUT_DATA) just mirrors the input, so the model is
+  // the output that actually exercises the Learn/Derive math -- hence useOutputPort.
+  //
+  // The comparator now DESCENDS a vtkStatisticalModel (and any vtkCompositeDataSet):
+  // before this wave a model/composite output fell through every SafeDownCast in
+  // CompareDataObjects and passed VACUOUSLY, so registering these cases without the
+  // comparator fix would have been a false green. With the fix the Learned/Derived
+  // leaf tables are compared byte-exact (numeric columns) as the model is walked in
+  // deterministic (TableType, index) order.
+  //
+  // In this VTK the statistics Learn/Derive paths are SERIAL (no vtkSMPTools::For in
+  // any of these filters), so the model is byte-identical under STDThread by
+  // construction; these cases gate the comparator descent and confirm the STDThread
+  // default introduces no divergence, rather than stressing a threaded reduction.
+  // Set up the simplest deterministic comparable model: Learn+Derive on, Assess/Test
+  // off. Run over the shared numeric table (columns A,B).
+  add("vtkDescriptiveStatistics", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkDescriptiveStatistics> f;
+    f->SetInputData(in.table);
+    f->AddColumn("A");
+    f->AddColumn("B");
+    f->SetLearnOption(true);
+    f->SetDeriveOption(true);
+    f->SetAssessOption(false);
+    f->SetTestOption(false);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+  add("vtkCorrelativeStatistics", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkCorrelativeStatistics> f;
+    f->SetInputData(in.table);
+    f->AddColumnPair("A", "B");
+    f->SetLearnOption(true);
+    f->SetDeriveOption(true);
+    f->SetAssessOption(false);
+    f->SetTestOption(false);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+  // Multi-column request (A,B jointly): a sparse covariance model + its Cholesky
+  // decomposition in the Derived table.
+  add("vtkMultiCorrelativeStatistics", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkMultiCorrelativeStatistics> f;
+    f->SetInputData(in.table);
+    f->SetColumnStatus("A", 1);
+    f->SetColumnStatus("B", 1);
+    f->RequestSelectedColumns();
+    f->SetLearnOption(true);
+    f->SetDeriveOption(true);
+    f->SetAssessOption(false);
+    f->SetTestOption(false);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+  // Per-column histogram (Learned, std::map-ordered) + Cardinalities/Quantiles
+  // (Derived). Deterministic value-keyed ordering.
+  add("vtkOrderStatistics", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkOrderStatistics> f;
+    f->SetInputData(in.table);
+    f->AddColumn("A");
+    f->AddColumn("B");
+    f->SetLearnOption(true);
+    f->SetDeriveOption(true);
+    f->SetAssessOption(false);
+    f->SetTestOption(false);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+
+  // ---- stream tracing (parallel per-seed integration) -----------------------
+  // vtkStreamTracer integrates one streamline per seed, and the class is threaded
+  // over seeds via vtkSMPTools. Each streamline's points are a deterministic
+  // function of its seed, but the EMISSION ORDER of whole streamlines across the
+  // output polydata is thread-dependent -> orderRelaxed: point positions/count must
+  // match serial as a set and be run-to-run stable, only the concatenation order of
+  // the lines may vary. A red even under order-relaxed means per-seed positions or
+  // count diverge = a real threading defect (shared/accumulated integrator state),
+  // not a benign ordering effect. Uses a fresh copy of the dense wavelet image
+  // decorated with an analytic rotational vector field (bounded helical streamlines
+  // that traverse many cells), seeded by a small deterministic point set.
+  add(
+    "vtkStreamTracer", "Filters/FlowPaths", Risk::Iso,
+    [](const Inputs& in) {
+      auto img = vtkSmartPointer<vtkImageData>::New();
+      img->DeepCopy(in.image);
+      const vtkIdType np = img->GetNumberOfPoints();
+      vtkNew<vtkDoubleArray> vf;
+      vf->SetName("vfield");
+      vf->SetNumberOfComponents(3);
+      vf->SetNumberOfTuples(np);
+      for (vtkIdType i = 0; i < np; ++i)
+      {
+        double p[3];
+        img->GetPoint(i, p);
+        // Rotational + gentle axial drift: bounded, non-trivial, everywhere defined.
+        vf->SetTuple3(i, -p[1], p[0], 0.3);
+      }
+      img->GetPointData()->AddArray(vf);
+      img->GetPointData()->SetActiveVectors("vfield");
+
+      // Deterministic seed cloud: a small grid of points inside the domain.
+      auto seeds = vtkSmartPointer<vtkPolyData>::New();
+      vtkNew<vtkPoints> spts;
+      for (int j = 0; j < 5; ++j)
+        for (int i = 0; i < 5; ++i)
+          spts->InsertNextPoint(-4.0 + 2.0 * i, -4.0 + 2.0 * j, -3.0);
+      seeds->SetPoints(spts);
+
+      vtkNew<vtkStreamTracer> f;
+      f->SetInputData(img);
+      f->SetSourceData(seeds);
+      f->SetInputArrayToProcess(
+        0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "vfield");
+      f->SetIntegratorTypeToRungeKutta45();
+      f->SetIntegrationDirectionToForward();
+      f->SetMaximumPropagation(40.0);
+      f->SetInitialIntegrationStep(0.2);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
 
   // ---- isosurface / cut / clip (parallel extraction) ------------------------
   add("vtkContourFilter/image", "Filters/Core", Risk::Iso, [](const Inputs& in) {

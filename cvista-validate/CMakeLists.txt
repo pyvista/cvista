@@ -33,6 +33,7 @@ find_package(VTK REQUIRED COMPONENTS
   CommonTransforms
   FiltersCore
   FiltersExtraction
+  FiltersFlowPaths
   FiltersGeneral
   FiltersGeometry
   FiltersModeling

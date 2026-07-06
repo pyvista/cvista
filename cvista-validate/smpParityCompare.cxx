@@ -4,9 +4,12 @@
 #include <vtkArrayDispatch.h>
 #include <vtkCellArray.h>
 #include <vtkCellData.h>
+#include <vtkCompositeDataIterator.h>
+#include <vtkCompositeDataSet.h>
 #include <vtkDataArray.h>
 #include <vtkDataArrayRange.h>
 #include <vtkDataObject.h>
+#include <vtkDataObjectTreeIterator.h>
 #include <vtkDataSet.h>
 #include <vtkDataSetAttributes.h>
 #include <vtkImageData.h>
@@ -17,7 +20,9 @@
 #include <vtkPointSet.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
+#include <vtkSmartPointer.h>
 #include <vtkStaticPointLocator.h>
+#include <vtkStatisticalModel.h>
 #include <vtkTable.h>
 #include <vtkUnstructuredGrid.h>
 
@@ -28,6 +33,7 @@
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace smpparity
@@ -193,6 +199,101 @@ std::string compareCellArray(const std::string& tag, vtkCellArray* a, vtkCellArr
   return compareArray(tag + ".conn", a->GetConnectivityArray(), b->GetConnectivityArray());
 }
 
+// Dispatch a single leaf (dataset / table) to the byte-exact or the order-relaxed
+// comparator, matching how the driver would compare it as a standalone output.
+// The two entry points are declared in the header, so composite/model descent (in
+// this anonymous namespace) can recurse into whichever policy applies.
+std::string compareLeaf(vtkDataObject* a, vtkDataObject* b, bool orderRelaxed)
+{
+  return orderRelaxed ? CompareGeometrySet(a, b) : CompareDataObjects(a, b);
+}
+
+// Descend a composite dataset (multiblock / multipiece / partitioned): compare the
+// block STRUCTURE (leaf count, per-leaf flat index, and null-vs-non-null on each
+// side) in deterministic flat-index order, then recurse into every non-null leaf
+// with the same per-leaf rules a standalone output would get. Without this, a
+// composite output falls through every SafeDownCast in CompareDataObjects and
+// compares as "equal" vacuously.
+std::string compareComposite(vtkCompositeDataSet* a, vtkCompositeDataSet* b, bool orderRelaxed)
+{
+  if (!a || !b)
+    return "composite: one side null";
+  // Gather leaves in flat-index order. SkipEmptyNodes OFF so a null block present on
+  // one side but not the other is detectable; VisitOnlyLeaves so we recurse into
+  // concrete datasets rather than intermediate group nodes.
+  auto collect = [](vtkCompositeDataSet* c,
+                   std::vector<std::pair<unsigned int, vtkDataObject*>>& out) {
+    vtkSmartPointer<vtkCompositeDataIterator> it;
+    it.TakeReference(c->NewIterator());
+    if (auto* tree = vtkDataObjectTreeIterator::SafeDownCast(it))
+    {
+      tree->VisitOnlyLeavesOn();
+      tree->TraverseSubTreeOn();
+    }
+    it->SkipEmptyNodesOff();
+    for (it->InitTraversal(); !it->IsDoneWithTraversal(); it->GoToNextItem())
+      out.emplace_back(it->GetCurrentFlatIndex(), it->GetCurrentDataObject());
+  };
+  std::vector<std::pair<unsigned int, vtkDataObject*>> la, lb;
+  collect(a, la);
+  collect(b, lb);
+  if (la.size() != lb.size())
+    return "composite block count " + std::to_string(la.size()) + " vs " +
+      std::to_string(lb.size());
+  for (std::size_t i = 0; i < la.size(); ++i)
+  {
+    if (la[i].first != lb[i].first)
+      return "composite block flat-index differs at position " + std::to_string(i) + " (" +
+        std::to_string(la[i].first) + " vs " + std::to_string(lb[i].first) + ")";
+    vtkDataObject* da = la[i].second;
+    vtkDataObject* db = lb[i].second;
+    if (!da && !db)
+      continue;
+    if (!da || !db)
+      return "composite block[" + std::to_string(la[i].first) + "]: one side null (" +
+        (da ? "parallel" : "serial") + " missing)";
+    const std::string d = compareLeaf(da, db, orderRelaxed);
+    if (!d.empty())
+      return "block[" + std::to_string(la[i].first) + "] " + d;
+  }
+  return "";
+}
+
+// Descend a vtkStatisticalModel (statistics-filter model output): an ordered map of
+// vtkTables keyed by (TableType, index). Compare the table inventory per type and
+// recurse into each table with the existing table rules. Like composite datasets,
+// a model output otherwise falls through every SafeDownCast and passes vacuously.
+std::string compareModel(vtkStatisticalModel* a, vtkStatisticalModel* b, bool orderRelaxed)
+{
+  if (!a || !b)
+    return "model: one side null";
+  const int numTypes = vtkStatisticalModel::GetNumberOfTableTypes();
+  for (int t = 0; t < numTypes; ++t)
+  {
+    const int na = a->GetNumberOfTables(t);
+    const int nb = b->GetNumberOfTables(t);
+    const char* tname = vtkStatisticalModel::GetTableTypeName(t);
+    if (na != nb)
+      return std::string("model table count for type ") + (tname ? tname : "?") + ": " +
+        std::to_string(na) + " vs " + std::to_string(nb);
+    for (int i = 0; i < na; ++i)
+    {
+      vtkTable* ta = a->GetTable(t, i);
+      vtkTable* tb = b->GetTable(t, i);
+      const std::string label =
+        std::string("model[") + (tname ? tname : "?") + "#" + std::to_string(i) + "] ";
+      if (!ta && !tb)
+        continue;
+      if (!ta || !tb)
+        return label + "one side null table (" + (ta ? "parallel" : "serial") + " missing)";
+      const std::string d = compareLeaf(ta, tb, orderRelaxed);
+      if (!d.empty())
+        return label + d;
+    }
+  }
+  return "";
+}
+
 } // namespace
 
 std::string CompareDataObjects(vtkDataObject* a, vtkDataObject* b)
@@ -202,6 +303,15 @@ std::string CompareDataObjects(vtkDataObject* a, vtkDataObject* b)
   if (std::strcmp(a->GetClassName(), b->GetClassName()) != 0)
     return std::string("class mismatch: ") + a->GetClassName() + " (serial) vs " +
       b->GetClassName() + " (parallel)";
+
+  // Composite datasets (multiblock / multipiece / partitioned) and statistics
+  // models are containers of leaves; descend and compare each leaf byte-exact.
+  // (Handled before the leaf SafeDownCasts, which would otherwise no-op and pass
+  // a composite/model output vacuously.)
+  if (auto* ca = vtkCompositeDataSet::SafeDownCast(a))
+    return compareComposite(ca, vtkCompositeDataSet::SafeDownCast(b), /*orderRelaxed=*/false);
+  if (auto* ma = vtkStatisticalModel::SafeDownCast(a))
+    return compareModel(ma, vtkStatisticalModel::SafeDownCast(b), /*orderRelaxed=*/false);
 
   // Tables: compare the row-data columns byte-exact.
   if (auto* ta = vtkTable::SafeDownCast(a))
@@ -497,6 +607,13 @@ std::string CompareGeometrySet(vtkDataObject* a, vtkDataObject* b)
 {
   if (!a || !b)
     return "null output object";
+
+  // Composite datasets and statistics models: descend and compare each leaf with
+  // the order-insensitive rules (block STRUCTURE + flat-index order stay strict).
+  if (auto* ca = vtkCompositeDataSet::SafeDownCast(a))
+    return compareComposite(ca, vtkCompositeDataSet::SafeDownCast(b), /*orderRelaxed=*/true);
+  if (auto* ma = vtkStatisticalModel::SafeDownCast(a))
+    return compareModel(ma, vtkStatisticalModel::SafeDownCast(b), /*orderRelaxed=*/true);
 
   // Tables (statistics filters): compare column values as sorted multisets.
   if (auto* ta = vtkTable::SafeDownCast(a))

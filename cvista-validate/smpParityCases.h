@@ -74,6 +74,12 @@ struct Case
   // (b) genuine threading bugs (a data race) recorded pending a fix.
   bool knownIssue = false;
   std::string knownIssueReason;
+  // Which output port of the algorithm to compare. Defaults to 0. A few filters
+  // put the interesting result on a non-default port -- e.g. vtkStatisticsAlgorithm
+  // subclasses mirror their input on OUTPUT_DATA (port 0) but emit the computed
+  // vtkStatisticalModel on OUTPUT_MODEL (port 1), which is the output that actually
+  // exercises the Learn/Derive math and that this validator must compare.
+  int outputPort = 0;
 };
 
 std::vector<Case> RegisterCases();
