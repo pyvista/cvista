@@ -763,16 +763,22 @@ std::vector<Case> RegisterCases()
   // GEOMETRY (default OUTPUT_STYLE_BOUNDARY) is deterministic (integer voxel-center
   // coords, serial prefix-sum offsets, per-thread label lookup, Jacobi
   // double-buffered smoothing) -- points + connectivity are byte-identical.
-  // #176 zero-initialized the padded BoundaryLabels scalar buffer to kill an
-  // uninitialized read of the trailing (never-written) tuples. HOWEVER the CI
-  // parity gate for this PR re-flagged this case as SERIAL-UNSTABLE: BoundaryLabels
-  // is garbage again at an EARLY tuple (tuple 1, serial=4.16e8), which the #176
-  // trailing-padding fix does NOT cover -- so there is a SECOND uninitialized/wild
-  // BoundaryLabels source (an emitted quad, not padding). The harness auto-detects
-  // this via its serial-vs-serial pre-check and reports it ungated (not a gate
-  // failure), which is why #176's gate happened to pass (the two serial runs
-  // matched by luck that time). Tracked for a follow-up that revisits #176 and
-  // finds the remaining uninitialized write.
+  // FIXED (gated). Two distinct uninitialized BoundaryLabels sources were addressed:
+  //   1. #176: the pre-triangulation newScalars buffer in ConfigureOutput is sized
+  //      to a PADDED upper-bound quad count; its trailing (never-emitted) tuples
+  //      were left uninitialized. #176 zero-fills that buffer at allocation.
+  //   2. THIS follow-up: the default output is smoothed TRIANGLES, so the newScalars
+  //      quad buffer is replaced by a fresh 2*numCells "BoundaryLabels" array
+  //      (updatedScalars) built in TransformMeshType. That array is SetNumberOfTuples'd
+  //      (VTK leaves the storage uninitialized) and populated ONLY by
+  //      ScalarsWorker/ScalarsDispatch -- a dispatch that silently no-ops if it fails
+  //      to match the input array/value type, leaving every tuple wild. This is the
+  //      EARLY-tuple garbage the gate saw (tuple 1, serial=4.16e8) that #176's
+  //      trailing-padding fix could not reach. Fix: zero-init updatedScalars right
+  //      after SetNumberOfTuples (mirroring the #176 std::fill), so any tuple the
+  //      copy does not overwrite is a deterministic zero. Gated byte-exact: under the
+  //      Sequential floor the whole pipeline is deterministic, and STDThread's
+  //      per-tuple copy is a disjoint write, so parallel == serial byte-for-byte.
   add("vtkSurfaceNets3D", "Filters/Core", Risk::Iso, [](const Inputs& in) {
     vtkNew<vtkSurfaceNets3D> f;
     f->SetInputData(in.labelImage);

@@ -1981,6 +1981,21 @@ void TransformMeshType(
   updatedScalars->SetNumberOfComponents(2);
   updatedScalars->SetName("BoundaryLabels");
   updatedScalars->SetNumberOfTuples(2 * numCells);
+  // This is the triangulated BoundaryLabels array that becomes the output cell
+  // scalars, and it is the SECOND uninitialized source #176 did not cover.
+  // SetNumberOfTuples reserves storage that VTK does NOT zero-initialize, and
+  // this array is populated solely by the ScalarsDispatch::Execute() below -- a
+  // dispatch that silently no-ops (writing nothing) if it fails to match the
+  // input array/value type, leaving every tuple wild. Even when the dispatch
+  // runs, only tuples covered by the copy worker are written. Those never-written
+  // BoundaryLabels tuples read back as garbage: run-to-run nondeterministic under
+  // threading, and serially unstable on a dirtied heap (an EARLY-tuple garbage
+  // read that #176's ConfigureOutput trailing-padding fix cannot reach, since it
+  // only touches the pre-triangulation newScalars buffer). Zero-init so any tuple
+  // the dispatch does not overwrite is deterministic; genuinely-copied tuples
+  // overwrite their own slot below.
+  auto updatedRange = vtk::DataArrayValueRange<2>(updatedScalars);
+  std::fill(updatedRange.begin(), updatedRange.end(), 0);
   output->GetCellData()->AddArray(updatedScalars);
 
   // The dispatch does not need error checking on type, since a previous dispatch
