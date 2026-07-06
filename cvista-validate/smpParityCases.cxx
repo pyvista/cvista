@@ -600,25 +600,25 @@ std::vector<Case> RegisterCases()
     f->SetFeatureEdgeSmoothing(false); // no point splitting: preserve count/order
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  // Per-object volume/area/centroid over a closed surface. Points + connectivity
-  // pass through byte-exact, BUT the CI parity gate proved a REAL threading
-  // divergence: the per-cell "Areas2" cell-data (each cell stamped with its
-  // owning object's accumulated area) differs macroscopically parallel-vs-serial
-  // (serial=7.28e-5 vs parallel=2.78e-3 at cell 7) -- the per-object area is a
-  // thread-order-sensitive reduction/labeling, so a cell can be stamped with the
-  // wrong object's area under threading. This is NOT FP noise and NOT reorder;
-  // it is a genuine SMP bug. markKnown() ungates it (so the gate stays green for
-  // the deterministic filters) while keeping it visible pending a fix -- see the
-  // deterministic-reduction follow-up. Do NOT treat as benign.
+  // Per-object volume/area/centroid over a closed surface. GATED byte-exact.
+  // The CI parity gate previously proved a REAL threading divergence in the
+  // per-cell "Areas" cell-data (serial=7.28e-5 vs parallel=2.78e-3 at cell 7).
+  // Root cause was NOT a reduction/labeling race but a shared-scratch data race:
+  // ComputeProperties::operator() read connectivity via the raw-pointer
+  // vtkPolyData::GetCellPoints(id, npts, pts) overload, which (for int32-default
+  // cell storage) returns a pointer into the single shared
+  // vtkAbstractCellArray::TempCell list. Concurrent threads clobbered that
+  // buffer, so a cell's pts/npts -- and thus its own-area from
+  // vtkPolygon::ComputeArea -- came out wrong under threading. Fixed by reading
+  // through the thread-safe GetCellPoints(id, npts, pts, ptIds) overload with a
+  // per-thread vtkIdList scratch, making all per-cell outputs (Areas, Volumes)
+  // byte-identical serial-vs-parallel. (The per-object ObjectAreas/Volumes/
+  // Centroids reductions live in field data, which this gate does not compare.)
   add("vtkMultiObjectMassProperties", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkMultiObjectMassProperties> f;
     f->SetInputData(in.poly);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  markKnown("REAL threading bug (CI-confirmed): per-cell Areas2 diverges "
-            "macroscopically parallel-vs-serial (7.28e-5 vs 2.78e-3) -- object "
-            "area accumulation/labeling is thread-order-sensitive; needs a "
-            "deterministic-reduction fix, not benign");
 
   // ---- table outputs (per-column) -------------------------------------------
   add("vtkAttributeDataToTableFilter", "Filters/Core", Risk::PerElement, [](const Inputs& in) {
