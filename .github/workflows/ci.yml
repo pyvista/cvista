@@ -578,20 +578,21 @@ jobs:
           path: /tmp/rx-out
           if-no-files-found: ignore
 
-  # === Linux aarch64 shipped wheel (every PR + push + release) ===============
-  # The manylinux_2_28 aarch64 wheel shipped alongside x86_64. Like build-other-os
-  # (macOS/Windows), this is a SINGLE optimized build that runs on every PR — so an
-  # aarch64-specific break is caught BEFORE merge, not after. No LTO/non-LTO split
-  # (that exists only for x86_64,
-  # whose fast wheel feeds the Linux-only bitexact/render gates); aarch64 has no
-  # such gates, so one fully-optimized build (CVISTA_LTO/CVISTA_GATE_O2 unset => -flto
-  # + -O3) both validates and ships. Native (not QEMU): the full VTK compile under
+  # === Linux aarch64 build validation (main / merge_group only) ==============
+  # aarch64 VALIDATION of the shipped (tiered) config — it compiles the aarch64
+  # wheel and runs cibuildwheel's offscreen smoke so an aarch64-specific break is
+  # caught. It does NOT ship: the aarch64 tier wheels are built + published by
+  # release-tiers.yml (the `linux-arm` job in _tier-wheels.yml). Gated OFF pull
+  # requests (`if` below) so the expensive native compile never burdens PR CI —
+  # it runs on push-to-main / merge_group / dispatch, i.e. main-only, matching the
+  # aarch64-on-main-and-release policy. Same fast tiered flags as the shipped
+  # x86_64 tier wheel (CVISTA_LTO=0 + CVISTA_GATE_O2=1 + tiered init-cache) so it
+  # validates exactly what ships. Native (not QEMU): the full VTK compile under
   # emulation is prohibitively slow. Runner: the Blacksmith arm64 tier when
   # CVISTA_RUNNER_LINUX_ARM64 is set, else github-hosted ubuntu-24.04-arm.
-  # cibuildwheel's offscreen smoke (test-command, xvfb) proves the wheel imports
-  # and computes on its native platform.
   build-arm:
     name: build cp312-abi3 (manylinux_2_28 aarch64)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ${{ vars.CVISTA_RUNNER_LINUX_ARM64 || 'ubuntu-24.04-arm' }}
     # Native aarch64 full VTK compile; cap below the 360-min default.
     timeout-minutes: 90
@@ -613,11 +614,14 @@ jobs:
         env:
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
           # Build aarch64 (overrides the pyproject [tool.cibuildwheel.linux]
-          # x86_64 archs/image/repair-plat) on the manylinux_2_28 aarch64 image.
-          # Optimized ship config (no CVISTA_LTO=0 / CVISTA_GATE_O2 override).
+          # x86_64 archs/image/repair-plat) on the manylinux_2_28 aarch64 image,
+          # in the SHIPPED tiered config (fast bit-exact-gate flags + tiered
+          # init-cache) so this validates exactly what release-tiers.yml ships.
           CIBW_ARCHS_LINUX: aarch64
           CIBW_MANYLINUX_AARCH64_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
-          CIBW_ENVIRONMENT: CVISTA_SOURCE_UNITY=1
+          CIBW_ENVIRONMENT: >-
+            CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
+            CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --strip --plat manylinux_2_28_aarch64 -w {dest_dir} {wheel}"
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-arm:/ccache"
       - uses: actions/upload-artifact@v4
