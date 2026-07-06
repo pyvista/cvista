@@ -22,6 +22,8 @@
 #include <vtkUnstructuredGrid.h>
 
 // Sources / filters under test.
+#include <vtk3DLinearGridCrinkleExtractor.h>
+#include <vtk3DLinearGridPlaneCutter.h>
 #include <vtkAppendFilter.h>
 #include <vtkAppendPolyData.h>
 #include <vtkAttributeDataToTableFilter.h>
@@ -34,6 +36,7 @@
 #include <vtkCellQuality.h>
 #include <vtkCheckerboardSplatter.h>
 #include <vtkCleanUnstructuredGrid.h>
+#include <vtkConstrainedSmoothingFilter.h>
 #include <vtkContour3DLinearGrid.h>
 #include <vtkContourFilter.h>
 #include <vtkCutter.h>
@@ -45,8 +48,11 @@
 #include <vtkElevationFilter.h>
 #include <vtkExtractCells.h>
 #include <vtkExtractEdges.h>
+#include <vtkExtractEnclosedPoints.h>
 #include <vtkExtractGeometry.h>
+#include <vtkExtractPoints.h>
 #include <vtkExtractSelection.h>
+#include <vtkFitImplicitFunction.h>
 #include <vtkFlyingEdges2D.h>
 #include <vtkFlyingEdges3D.h>
 #include <vtkFlyingEdgesPlaneCutter.h>
@@ -57,19 +63,24 @@
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
 #include <vtkMeshQuality.h>
+#include <vtkMultiObjectMassProperties.h>
 #include <vtkPackLabels.h>
 #include <vtkPlaneCutter.h>
 #include <vtkPointDataToCellData.h>
 #include <vtkPointInterpolator.h>
+#include <vtkPointInterpolator2D.h>
 #include <vtkPointSmoothingFilter.h>
 #include <vtkPolyDataNormals.h>
 #include <vtkPolyDataPlaneClipper.h>
 #include <vtkPolyDataPlaneCutter.h>
 #include <vtkPolyDataTangents.h>
+#include <vtkPolyDataToUnstructuredGrid.h>
 #include <vtkProbeFilter.h>
 #include <vtkRTAnalyticSource.h>
+#include <vtkRadiusOutlierRemoval.h>
 #include <vtkRemovePolyData.h>
 #include <vtkResampleToImage.h>
+#include <vtkResampleWithDataSet.h>
 #include <vtkSPHInterpolator.h>
 #include <vtkSampleFunction.h>
 #include <vtkSelectEnclosedPoints.h>
@@ -79,6 +90,7 @@
 #include <vtkSplitSharpEdgesPolyData.h>
 #include <vtkStaticCleanPolyData.h>
 #include <vtkStaticCleanUnstructuredGrid.h>
+#include <vtkStructuredDataPlaneCutter.h>
 #include <vtkSumTables.h>
 #include <vtkSurfaceNets2D.h>
 #include <vtkSurfaceNets3D.h>
@@ -89,6 +101,7 @@
 #include <vtkVoronoi2D.h>
 #include <vtkWarpScalar.h>
 #include <vtkWarpVector.h>
+#include <vtkWindowedSincPolyDataFilter.h>
 
 #include <cmath>
 
@@ -434,6 +447,14 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.ugrid);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // Poly -> UG cell-by-cell repackaging: the threaded pass writes each cell into
+  // its own slot at the input's cell index, so points/connectivity/data are
+  // byte-exact regardless of partitioning.
+  add("vtkPolyDataToUnstructuredGrid", "Filters/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkPolyDataToUnstructuredGrid> f;
+    f->SetInputData(in.poly);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
 
   // ---- reduction / accumulation ---------------------------------------------
   add("vtkCellDataToPointData", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
@@ -546,6 +567,51 @@ std::vector<Case> RegisterCases()
     f->SetInputData(1, in.poly2);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // Resample a dataset onto a probe geometry (same family as vtkProbeFilter): each
+  // output point gathers a deterministic interpolation of the source cell it lands
+  // in, in output-point order -- byte-exact.
+  add("vtkResampleWithDataSet", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkResampleWithDataSet> f;
+    f->SetInputData(in.poly);
+    f->SetSourceData(in.image);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkPointInterpolator2D", "Filters/Points", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkPointInterpolator2D> f;
+    f->SetInputData(in.poly);
+    f->SetSourceData(in.cloud);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Mesh smoothers: connectivity is copied through untouched and every point's new
+  // position is a Jacobi (double-buffered) weighted average of its FIXED stencil
+  // neighbors, summed in a fixed per-point order and written to its own slot -- so
+  // points come out in input order, byte-exact. The threaded loop is over points,
+  // not over the accumulation, so there is no cross-thread reduction of the sum.
+  add("vtkConstrainedSmoothingFilter", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkConstrainedSmoothingFilter> f;
+    f->SetInputData(in.poly);
+    f->SetNumberOfIterations(5);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkWindowedSincPolyDataFilter", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkWindowedSincPolyDataFilter> f;
+    f->SetInputData(in.poly);
+    f->SetNumberOfIterations(20);
+    f->SetFeatureEdgeSmoothing(false); // no point splitting: preserve count/order
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Per-object volume/area/centroid over a closed surface. The compared surface is
+  // passed through untouched (points + connectivity byte-exact) and the per-cell
+  // area/volume cell arrays are computed independently per polygon (no reduction),
+  // so they are byte-exact. The connected-object labeling (ObjectIds cell array) is
+  // a serial wave-propagation, deterministic. Only the per-OBJECT accumulated sums
+  // land in FIELD data, which the comparator does not check, so the FP sum-order of
+  // that reduction cannot affect the gate.
+  add("vtkMultiObjectMassProperties", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkMultiObjectMassProperties> f;
+    f->SetInputData(in.poly);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
 
   // ---- table outputs (per-column) -------------------------------------------
   add("vtkAttributeDataToTableFilter", "Filters/Core", Risk::PerElement, [](const Inputs& in) {
@@ -645,6 +711,37 @@ std::vector<Case> RegisterCases()
     f->SetClipFunction(plane(1, 1, 0));
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // Parallel linear-grid cut/extract. Like the sibling fast cutters these emit the
+  // same geometry in a thread-dependent order (per-batch prefix-sum offsets), so
+  // order-relaxed: geometry + point/cell data must match serial as a set and be
+  // stable run-to-run.
+  add(
+    "vtk3DLinearGridPlaneCutter", "Filters/Core", Risk::Iso,
+    [plane](const Inputs& in) {
+      vtkNew<vtk3DLinearGridPlaneCutter> f;
+      f->SetInputData(in.ugrid);
+      f->SetPlane(plane(1, 0.5, 0.25));
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  add(
+    "vtk3DLinearGridCrinkleExtractor", "Filters/Core", Risk::Iso,
+    [plane](const Inputs& in) {
+      vtkNew<vtk3DLinearGridCrinkleExtractor> f;
+      f->SetInputData(in.ugrid);
+      f->SetImplicitFunction(plane(1, 0.5, 0.25));
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  add(
+    "vtkStructuredDataPlaneCutter", "Filters/Core", Risk::Iso,
+    [plane](const Inputs& in) {
+      vtkNew<vtkStructuredDataPlaneCutter> f;
+      f->SetInputData(in.image);
+      f->SetPlane(plane(1, 0.5, 0.25));
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
   // GATED byte-exact: the GEOMETRY of the default OUTPUT_STYLE_BOUNDARY path is
   // deterministic (integer voxel-center coords, serial prefix-sum offsets,
   // per-thread label lookup, Jacobi double-buffered smoothing) -- points +
@@ -761,6 +858,81 @@ std::vector<Case> RegisterCases()
     vtkNew<vtkExtractSelection> f;
     f->SetInputData(0, in.ugrid);
     f->SetInputData(1, sel);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // vtkExtractSelection over the two remaining threaded selector kinds (the case
+  // above exercises INDICES). Each selector fills a per-element insidedness array
+  // in parallel; extraction then compacts in input cell order, so byte-exact.
+  // VALUES -> vtkValueSelector: keep cells whose "cellScalars" equals a listed value.
+  add("vtkExtractSelection/values", "Filters/Extraction", Risk::PerElement,
+    [](const Inputs& in) {
+      vtkNew<vtkSelectionNode> node;
+      node->SetFieldType(vtkSelectionNode::CELL);
+      node->SetContentType(vtkSelectionNode::VALUES);
+      vtkNew<vtkFloatArray> vals;
+      vals->SetName("cellScalars"); // must name the array to test against
+      vals->InsertNextValue(1.0f);
+      vals->InsertNextValue(5.0f);
+      vals->InsertNextValue(10.0f);
+      node->SetSelectionList(vals);
+      vtkNew<vtkSelection> sel;
+      sel->AddNode(node);
+      vtkNew<vtkExtractSelection> f;
+      f->SetInputData(0, in.ugrid);
+      f->SetInputData(1, sel);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    });
+  // LOCATIONS -> vtkLocationSelector: keep cells containing the listed world points.
+  add("vtkExtractSelection/locations", "Filters/Extraction", Risk::PerElement,
+    [](const Inputs& in) {
+      vtkNew<vtkSelectionNode> node;
+      node->SetFieldType(vtkSelectionNode::CELL);
+      node->SetContentType(vtkSelectionNode::LOCATIONS);
+      vtkNew<vtkDoubleArray> locs;
+      locs->SetNumberOfComponents(3);
+      locs->InsertNextTuple3(0.0, 0.0, 0.0);
+      locs->InsertNextTuple3(3.0, -2.0, 1.0);
+      locs->InsertNextTuple3(-4.0, 4.0, -3.0);
+      node->SetSelectionList(locs);
+      vtkNew<vtkSelection> sel;
+      sel->AddNode(node);
+      vtkNew<vtkExtractSelection> f;
+      f->SetInputData(0, in.ugrid);
+      f->SetInputData(1, sel);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    });
+  // Point-cloud subset extractors (vtkPointCloudFilter subclasses). The per-point
+  // keep/drop mask is computed in a threaded loop, but the surviving points are
+  // numbered by a SERIAL prefix-sum over the mask and copied to their mapped slot,
+  // so output is emitted in input-point order -- byte-exact, not order-relaxed.
+  add("vtkExtractPoints", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkSphere> s;
+    s->SetRadius(2.0);
+    vtkNew<vtkExtractPoints> f;
+    f->SetInputData(in.cloud);
+    f->SetImplicitFunction(s);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkFitImplicitFunction", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkSphere> s;
+    s->SetRadius(2.0);
+    vtkNew<vtkFitImplicitFunction> f;
+    f->SetInputData(in.cloud);
+    f->SetImplicitFunction(s);
+    f->SetThreshold(0.5);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkRadiusOutlierRemoval", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkRadiusOutlierRemoval> f;
+    f->SetInputData(in.cloud);
+    f->SetRadius(0.5);
+    f->SetNumberOfNeighbors(2);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkExtractEnclosedPoints", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkExtractEnclosedPoints> f;
+    f->SetInputData(in.cloud);
+    f->SetSurfaceData(in.poly); // sphere is a closed manifold
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkPackLabels", "Filters/Core", Risk::PerElement, [](const Inputs& in) {
