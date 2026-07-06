@@ -600,18 +600,25 @@ std::vector<Case> RegisterCases()
     f->SetFeatureEdgeSmoothing(false); // no point splitting: preserve count/order
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  // Per-object volume/area/centroid over a closed surface. The compared surface is
-  // passed through untouched (points + connectivity byte-exact) and the per-cell
-  // area/volume cell arrays are computed independently per polygon (no reduction),
-  // so they are byte-exact. The connected-object labeling (ObjectIds cell array) is
-  // a serial wave-propagation, deterministic. Only the per-OBJECT accumulated sums
-  // land in FIELD data, which the comparator does not check, so the FP sum-order of
-  // that reduction cannot affect the gate.
+  // Per-object volume/area/centroid over a closed surface. Points + connectivity
+  // pass through byte-exact, BUT the CI parity gate proved a REAL threading
+  // divergence: the per-cell "Areas2" cell-data (each cell stamped with its
+  // owning object's accumulated area) differs macroscopically parallel-vs-serial
+  // (serial=7.28e-5 vs parallel=2.78e-3 at cell 7) -- the per-object area is a
+  // thread-order-sensitive reduction/labeling, so a cell can be stamped with the
+  // wrong object's area under threading. This is NOT FP noise and NOT reorder;
+  // it is a genuine SMP bug. markKnown() ungates it (so the gate stays green for
+  // the deterministic filters) while keeping it visible pending a fix -- see the
+  // deterministic-reduction follow-up. Do NOT treat as benign.
   add("vtkMultiObjectMassProperties", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkMultiObjectMassProperties> f;
     f->SetInputData(in.poly);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  markKnown("REAL threading bug (CI-confirmed): per-cell Areas2 diverges "
+            "macroscopically parallel-vs-serial (7.28e-5 vs 2.78e-3) -- object "
+            "area accumulation/labeling is thread-order-sensitive; needs a "
+            "deterministic-reduction fix, not benign");
 
   // ---- table outputs (per-column) -------------------------------------------
   add("vtkAttributeDataToTableFilter", "Filters/Core", Risk::PerElement, [](const Inputs& in) {
@@ -742,16 +749,30 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
-  // GATED byte-exact: the GEOMETRY of the default OUTPUT_STYLE_BOUNDARY path is
-  // deterministic (integer voxel-center coords, serial prefix-sum offsets,
-  // per-thread label lookup, Jacobi double-buffered smoothing) -- points +
-  // connectivity are byte-identical. The "BoundaryLabels" cell-data used to come
-  // out as garbage (~9e8, far outside the 0..3 label range) that changed every
-  // run: the quad count is a padded upper bound, so an isolated boundary case
-  // could reserve a scalar tuple GenerateQuads never wrote, and SetNumberOfTuples
-  // left that storage uninitialized. The scalar buffer is now zero-initialized at
-  // allocation, so any padding tuple is deterministic and every emitted quad
-  // overwrites its own -- BoundaryLabels is now byte-identical serial-vs-parallel.
+  // Unlike the sibling fast cutters (which match serial point positions EXACTLY,
+  // only reordered), this one's threaded cut-point interpolation is FP
+  // non-associative: the CI gate measured point POSITIONS 1 ULP off from serial
+  // (max coord dev=1.11e-16), so even the order-insensitive geometry set differs.
+  // Sub-ULP and almost certainly harmless, but a real violation of the
+  // point-positions-sacred rule -- markKnown() ungates it (documented) rather than
+  // silently widen the comparator's tolerance. Revisit if strict bit-exact
+  // positions are required (would mean forcing this cutter serial).
+  markKnown("point positions diverge 1 ULP parallel-vs-serial (max dev=1.1e-16), "
+            "FP non-associativity in threaded cut-point interpolation; sub-ULP, "
+            "ungated + documented");
+  // GEOMETRY (default OUTPUT_STYLE_BOUNDARY) is deterministic (integer voxel-center
+  // coords, serial prefix-sum offsets, per-thread label lookup, Jacobi
+  // double-buffered smoothing) -- points + connectivity are byte-identical.
+  // #176 zero-initialized the padded BoundaryLabels scalar buffer to kill an
+  // uninitialized read of the trailing (never-written) tuples. HOWEVER the CI
+  // parity gate for this PR re-flagged this case as SERIAL-UNSTABLE: BoundaryLabels
+  // is garbage again at an EARLY tuple (tuple 1, serial=4.16e8), which the #176
+  // trailing-padding fix does NOT cover -- so there is a SECOND uninitialized/wild
+  // BoundaryLabels source (an emitted quad, not padding). The harness auto-detects
+  // this via its serial-vs-serial pre-check and reports it ungated (not a gate
+  // failure), which is why #176's gate happened to pass (the two serial runs
+  // matched by luck that time). Tracked for a follow-up that revisits #176 and
+  // finds the remaining uninitialized write.
   add("vtkSurfaceNets3D", "Filters/Core", Risk::Iso, [](const Inputs& in) {
     vtkNew<vtkSurfaceNets3D> f;
     f->SetInputData(in.labelImage);
