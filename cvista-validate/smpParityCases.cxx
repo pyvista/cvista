@@ -90,6 +90,7 @@
 #include <vtkSplitSharpEdgesPolyData.h>
 #include <vtkStaticCleanPolyData.h>
 #include <vtkStaticCleanUnstructuredGrid.h>
+#include <vtkStatisticalOutlierRemoval.h>
 #include <vtkStructuredDataPlaneCutter.h>
 #include <vtkSumTables.h>
 #include <vtkSurfaceNets2D.h>
@@ -954,6 +955,20 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.cloud);
     f->SetRadius(0.5);
     f->SetNumberOfNeighbors(2);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // The keep/drop threshold is mean + k*stddev, where mean and stddev were
+  // historically accumulated via vtkSMPThreadLocal partial sums composited in a
+  // partition-dependent order -- an FP-order-sensitive reduction. A borderline
+  // point could then flip keep<->drop between serial and N-thread runs, changing
+  // the SURVIVOR COUNT (count is sacred). Registered gated byte-exact so the gate
+  // proves the reduction is now deterministic (mean/stddev summed serially in
+  // input-point order over the byte-identical per-point distance array).
+  add("vtkStatisticalOutlierRemoval", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkStatisticalOutlierRemoval> f;
+    f->SetInputData(in.cloud);
+    f->SetSampleSize(8);
+    f->SetStandardDeviationFactor(1.0);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkExtractEnclosedPoints", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
