@@ -51,6 +51,21 @@ When a geometry/table divergence is reported it is annotated with a **magnitude*
 multisets — so floating-point noise (`~1e-13`, benign reduction-order jitter) is
 distinguishable at a glance from a macroscopic, genuinely-different result.
 
+### Composite / statistics-model outputs
+
+Some filters emit a *container* of leaves rather than a single dataset: a
+`vtkCompositeDataSet` (multiblock / multipiece / partitioned) or, for the
+`vtkStatisticsAlgorithm` family, a `vtkStatisticalModel` holding Learned/Derived
+`vtkTable`s. Both comparators (`CompareDataObjects` and `CompareGeometrySet`)
+**descend** these: they compare the block/table STRUCTURE (leaf count, per-leaf
+flat index or `(TableType, index)` key, and null-vs-non-null on each side) in a
+deterministic order, then recurse into every non-null leaf with the ordinary
+per-leaf rules. Without this descent a composite/model output would fall through
+every `SafeDownCast` and compare as "equal" **vacuously** (a false green worse
+than no case at all) — so statistics-filter cases are only meaningful with it.
+Statistics filters expose their computed model on the `OUTPUT_MODEL` port (a
+case's `outputPort` selects it), since port 0 merely mirrors the input.
+
 ### Serial-vs-serial pre-check
 
 Before any parallel comparison, each filter's serial run is done **twice** and
@@ -64,7 +79,7 @@ them.
 
 ### Not-gated exceptions (reported with evidence)
 
-A few of the ~65 filters are **not** byte-exact. The validator still runs them,
+A few of the ~100 filters are **not** byte-exact. The validator still runs them,
 prints the divergence + magnitude, and classifies each — but does not count them
 as gate failures (the gate protects the deterministic majority). The observed
 exceptions fall into three kinds:
@@ -96,9 +111,12 @@ Coverage spans every SMP risk class — per-element (`vtkWarpVector`,
 `vtkElevationFilter`, `vtkTransformFilter`, `vtkThreshold`, …), reduction
 (`vtkCellDataToPointData`, `vtkGradientFilter`, `vtkPolyDataNormals`, …),
 isosurface/cut/clip (`vtkContourFilter`, `vtkFlyingEdges3D`, `vtkPlaneCutter`,
-`vtkTableBasedClipDataSet`, …), and point-merge/hashing (`vtkGeometryFilter`,
-`vtkStaticCleanUnstructuredGrid`, `vtkExtractEdges`, `vtkAppendPolyData`, …) —
-across image, polydata, and unstructured-grid inputs.
+`vtkTableBasedClipDataSet`, …), point-merge/hashing (`vtkGeometryFilter`,
+`vtkStaticCleanUnstructuredGrid`, `vtkExtractEdges`, `vtkAppendPolyData`, …),
+per-seed stream integration (`vtkStreamTracer`), and statistics-model outputs
+(`vtkDescriptiveStatistics`, `vtkMultiCorrelativeStatistics`,
+`vtkOrderStatistics`, …) — across image, polydata, unstructured-grid, and table
+inputs.
 
 ## Build & run
 

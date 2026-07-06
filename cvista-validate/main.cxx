@@ -89,7 +89,7 @@ vtkSmartPointer<vtkDataObject> runOnce(const smpparity::Case& c, const smpparity
   if (!algo)
     return nullptr;
   algo->Update();
-  vtkDataObject* out = algo->GetOutputDataObject(0);
+  vtkDataObject* out = algo->GetOutputDataObject(c.outputPort);
   if (!out)
     return nullptr;
   vtkSmartPointer<vtkDataObject> clone;
