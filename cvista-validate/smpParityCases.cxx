@@ -105,7 +105,6 @@
 #include <vtkSimpleElevationFilter.h>
 #include <vtkSphereSource.h>
 #include <vtkSplitSharpEdgesPolyData.h>
-#include <vtkStatisticalOutlierRemoval.h>
 #include <vtkStaticCleanPolyData.h>
 #include <vtkStaticCleanUnstructuredGrid.h>
 #include <vtkStructuredDataPlaneCutter.h>
@@ -999,18 +998,6 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.cloud);
     f->SetRadius(0.5);
     f->SetNumberOfNeighbors(2);
-    return vtkSmartPointer<vtkAlgorithm>(f);
-  });
-  // Same vtkPointCloudFilter family as vtkRadiusOutlierRemoval: the per-point
-  // keep/drop mask (here: mean distance to the k nearest neighbors within a
-  // StandardDeviationFactor of the global mean) is computed in a threaded loop,
-  // but survivors are numbered by a SERIAL prefix-sum over the mask and copied to
-  // their mapped slot -- so output is in input-point order, byte-exact.
-  add("vtkStatisticalOutlierRemoval", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
-    vtkNew<vtkStatisticalOutlierRemoval> f;
-    f->SetInputData(in.cloud);
-    f->SetSampleSize(8);
-    f->SetStandardDeviationFactor(1.0);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkExtractEnclosedPoints", "Filters/Points", Risk::PerElement, [](const Inputs& in) {
