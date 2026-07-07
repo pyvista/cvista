@@ -38,6 +38,7 @@ find_package(VTK REQUIRED COMPONENTS
   FiltersGeometry
   FiltersModeling
   FiltersParallel
+  FiltersParallelDIY2
   FiltersPoints
   FiltersSources
   FiltersStatistics
