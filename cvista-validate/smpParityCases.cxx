@@ -796,6 +796,12 @@ std::vector<Case> RegisterCases()
   // only which block a cell lands in, and the per-block emission order, are threaded.
   // orderRelaxed: block STRUCTURE (4 blocks, flat-index order) stays strict, each leaf's
   // points/cells compared order-insensitively; positions/count sacred, order negotiable.
+  // GenerateGlobalCellIds is turned OFF on purpose: the synthesized per-cell global id is
+  // a within-block ordinal, so if the per-block cell emission order is thread-dependent
+  // the SAME cell would carry a different id in parallel -- that id rides in the cell-data
+  // key of the order-insensitive comparator and would red a benign reordering. With it off
+  // the case tests exactly what parity requires here: identical point positions and cells
+  // (connectivity + original cell data) landing in the same deterministic blocks.
   add(
     "vtkRedistributeDataSetFilter", "Filters/ParallelDIY2", Risk::Merge,
     [](const Inputs& in) {
@@ -803,6 +809,7 @@ std::vector<Case> RegisterCases()
       f->SetInputData(in.ugrid);
       f->SetPreservePartitionsInOutput(true);
       f->SetNumberOfPartitions(4);
+      f->SetGenerateGlobalCellIds(false);
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
