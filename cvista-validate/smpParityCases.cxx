@@ -20,6 +20,7 @@
 #include <vtkSphere.h>
 #include <vtkTable.h>
 #include <vtkTransform.h>
+#include <vtkUnsignedCharArray.h>
 #include <vtkUnstructuredGrid.h>
 
 // Sources / filters under test.
@@ -90,6 +91,19 @@
 #include <vtkImageSlabReslice.h>
 #include <vtkImageThreshold.h>
 #include <vtkImprintFilter.h>
+#include <vtkImageButterworthHighPass.h>
+#include <vtkImageButterworthLowPass.h>
+#include <vtkImageCheckerboard.h>
+#include <vtkImageConstantPad.h>
+#include <vtkImageDifference.h>
+#include <vtkImageFFT.h>
+#include <vtkImageFlip.h>
+#include <vtkImageMirrorPad.h>
+#include <vtkImagePermute.h>
+#include <vtkImageRFFT.h>
+#include <vtkImageResample.h>
+#include <vtkImageSSIM.h>
+#include <vtkImageWrapPad.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
@@ -217,6 +231,33 @@ vtkSmartPointer<vtkImageData> makeLabelImage(int nx, int ny, int nz)
         labels->SetValue(idx++, lbl);
       }
   img->GetPointData()->SetScalars(labels);
+  return img;
+}
+
+// Deterministic 3-component (RGB) unsigned-char image. The unsigned-char two-input
+// comparison filters (vtkImageDifference / vtkImageSSIM) REQUIRE VTK_UNSIGNED_CHAR
+// scalars, so the wavelet (float) image cannot feed them. `shift` offsets the
+// pattern so a second call yields a slightly different image for the 2nd input.
+vtkSmartPointer<vtkImageData> makeImageRGB(int shift)
+{
+  const int n = 24;
+  auto img = vtkSmartPointer<vtkImageData>::New();
+  img->SetDimensions(n, n, n);
+  vtkNew<vtkUnsignedCharArray> rgb;
+  rgb->SetName("RGB");
+  rgb->SetNumberOfComponents(3);
+  rgb->SetNumberOfTuples(static_cast<vtkIdType>(n) * n * n);
+  vtkIdType idx = 0;
+  for (int z = 0; z < n; ++z)
+    for (int y = 0; y < n; ++y)
+      for (int x = 0; x < n; ++x)
+      {
+        rgb->SetTypedComponent(idx, 0, static_cast<unsigned char>((x * 10 + shift) & 0xFF));
+        rgb->SetTypedComponent(idx, 1, static_cast<unsigned char>((y * 10 + 2 * shift) & 0xFF));
+        rgb->SetTypedComponent(idx, 2, static_cast<unsigned char>((z * 10 + 3 * shift) & 0xFF));
+        ++idx;
+      }
+  img->GetPointData()->SetScalars(rgb);
   return img;
 }
 
@@ -458,6 +499,8 @@ Inputs BuildInputs()
   in.image2d = makeImage2D();
   in.labelImage = makeLabelImage(24, 24, 24);
   in.labelImage2d = makeLabelImage(32, 32, 1);
+  in.imageRGB = makeImageRGB(0);
+  in.imageRGB2 = makeImageRGB(7);
   in.poly = makePoly();
   in.polyNT = makePolyNT();
   in.poly2 = makePoly2(in.poly);
@@ -1726,6 +1769,121 @@ std::vector<Case> RegisterCases()
     vtkNew<vtkHyperTreeGridProbeFilter> f;
     f->SetInputData(in.poly);
     f->SetSourceData(in.htg);
+  // ---- wave 7: more vtkThreadedImageAlgorithm subclasses --------------------
+  // Same argument as the block above: the base splits the OUTPUT extent and each
+  // output voxel is a pure function of the (shared, read-only) input written to
+  // its own disjoint slot, so parallel == serial byte-for-byte. Risk::PerElement.
+  //
+  // Extent-padding filters (vtkImagePadFilter subclasses): grow the whole extent;
+  // each output voxel is either a copied input voxel or a boundary rule
+  // (constant / mirror-reflected / wrapped) evaluated from the fixed input --
+  // pointwise, byte-exact.
+  add("vtkImageConstantPad", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageConstantPad> f;
+    f->SetInputData(in.image);
+    f->SetOutputWholeExtent(-12, 12, -12, 12, -12, 12);
+    f->SetConstant(7.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageMirrorPad", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageMirrorPad> f;
+    f->SetInputData(in.image);
+    f->SetOutputWholeExtent(-12, 12, -12, 12, -12, 12);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageWrapPad", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageWrapPad> f;
+    f->SetInputData(in.image);
+    f->SetOutputWholeExtent(-12, 12, -12, 12, -12, 12);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Axis flip / permute / resample (all vtkImageReslice subclasses): each output
+  // voxel is one independent resample of the input volume -> byte-exact per voxel.
+  add("vtkImageFlip", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageFlip> f;
+    f->SetInputData(in.image);
+    f->SetFilteredAxis(1);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImagePermute", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImagePermute> f;
+    f->SetInputData(in.image);
+    f->SetFilteredAxes(1, 0, 2);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageResample", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageResample> f;
+    f->SetInputData(in.image);
+    f->SetMagnificationFactors(0.5, 0.5, 0.5);
+    f->SetInterpolationModeToLinear();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Checkerboard select between two inputs: each output voxel copies exactly one of
+  // the two aligned input voxels chosen by a fixed spatial rule -> byte-exact.
+  add("vtkImageCheckerboard", "Imaging/General", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageCheckerboard> f;
+    f->SetInput1Data(in.image);
+    f->SetInput2Data(in.image);
+    f->SetNumberOfDivisions(3, 3, 3);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Per-pixel perceptual difference of two unsigned-char images (requires uchar
+  // inputs); each output pixel is a fixed local function of the two inputs ->
+  // byte-exact. (The reduced ThresholdedError lives in field data, not compared.)
+  add("vtkImageDifference", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageDifference> f;
+    f->SetInputData(in.imageRGB);
+    f->SetImageData(in.imageRGB2);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Structural similarity of two images: each output voxel is a windowed SSIM
+  // statistic over a FIXED neighborhood of the (shared) inputs -> byte-exact per
+  // voxel. Uses RGB mode over the two unsigned-char images. Watch: the RGB->Lab
+  // conversion is FP-heavy, though still a deterministic per-voxel map.
+  add("vtkImageSSIM", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageSSIM> f;
+    f->SetInputData(in.imageRGB);
+    f->SetImageData(in.imageRGB2);
+    f->SetInputToRGB();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Fourier family (Imaging/Fourier). vtkImageFFT/RFFT are vtkImageDecomposeFilter
+  // subclasses that transform one axis at a time, threaded over the perpendicular
+  // lines; each 1D transform is a deterministic serial computation written to its
+  // own output line -> byte-exact regardless of how the lines are partitioned.
+  // Watch: FP-heavy trigonometric sums (flagged in case a build shows drift).
+  add("vtkImageFFT", "Imaging/Fourier", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageFFT> f;
+    f->SetInputData(in.image);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // RFFT and the Butterworth filters consume complex (2-component double) frequency
+  // data, so they are fed a fresh FFT of the wavelet image (built via an input
+  // connection; the FFT stage runs under the same backend and is itself byte-exact).
+  add("vtkImageRFFT", "Imaging/Fourier", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageFFT> fft;
+    fft->SetInputData(in.image);
+    vtkNew<vtkImageRFFT> f;
+    f->SetInputConnection(fft->GetOutputPort());
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Butterworth low/high pass: per-voxel multiply of the complex frequency data by
+  // an attenuation that depends only on the voxel's frequency coordinate (index +
+  // spacing), not on neighbors -> pointwise, byte-exact.
+  add("vtkImageButterworthLowPass", "Imaging/Fourier", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageFFT> fft;
+    fft->SetInputData(in.image);
+    vtkNew<vtkImageButterworthLowPass> f;
+    f->SetInputConnection(fft->GetOutputPort());
+    f->SetCutOff(0.2);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  add("vtkImageButterworthHighPass", "Imaging/Fourier", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageFFT> fft;
+    fft->SetInputData(in.image);
+    vtkNew<vtkImageButterworthHighPass> f;
+    f->SetInputConnection(fft->GetOutputPort());
+    f->SetCutOff(0.2);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
 
