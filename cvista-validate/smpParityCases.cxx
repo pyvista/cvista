@@ -78,6 +78,7 @@
 #include <vtkImageShiftScale.h>
 #include <vtkImageShrink3D.h>
 #include <vtkImageThreshold.h>
+#include <vtkImprintFilter.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
@@ -87,6 +88,7 @@
 #include <vtkOrderStatistics.h>
 #include <vtkPackLabels.h>
 #include <vtkPlaneCutter.h>
+#include <vtkPlaneSource.h>
 #include <vtkPointDataToCellData.h>
 #include <vtkPointInterpolator.h>
 #include <vtkPointInterpolator2D.h>
@@ -588,6 +590,51 @@ std::vector<Case> RegisterCases()
     f->SetSurfaceData(in.poly); // sphere is a closed manifold
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // Imprint one coplanar plane onto another (MERGED_IMPRINT). The candidate target
+  // cells are triangulated in a threaded per-cell pass; the CI gate previously
+  // proved a REAL cell-count divergence (parallel=89 vs serial=84 @T=2) -- more
+  // output cells under threading. Root cause was NOT the thread-order point-id
+  // assignment in ProduceIntersectionPoints::Reduce (that only permutes ids/order,
+  // which order-relaxed set comparison absorbs) but a shared-scratch data race:
+  // Triangulate::operator() read each candidate cell's connectivity via the
+  // raw-pointer vtkPolyData::GetCellPoints(id, npts, pts) overload, which -- for
+  // int32-default cell storage -- returns a pointer into vtkCellArray's single
+  // shared TempCell buffer. Concurrent threads clobbered that buffer, so a cell's
+  // perimeter (npts/pts) came out wrong under STDThread, corrupting its edge
+  // network and thus the number of loops/cells the triangulation emitted. Fixed by
+  // reading through the thread-safe GetCellPoints(id, npts, pts, ptIds) overload
+  // with a per-thread vtkIdList scratch (vtkSMPThreadLocal), so every candidate
+  // cell's triangulation -- and the total cell count -- is deterministic and
+  // matches serial. orderRelaxed stays true: the intersection-point VTK ids and
+  // point/cell EMISSION ORDER remain thread-scheduling dependent (only permuted),
+  // so the output matches serial as an order-insensitive geometry SET, and the
+  // COUNT must match.
+  add(
+    "vtkImprintFilter", "Filters/Modeling", Risk::Merge,
+    [](const Inputs&) {
+      vtkNew<vtkPlaneSource> target;
+      target->SetOrigin(-2, -2, 0);
+      target->SetPoint1(2, -2, 0);
+      target->SetPoint2(-2, 2, 0);
+      target->SetXResolution(3);
+      target->SetYResolution(3);
+      target->Update();
+
+      vtkNew<vtkPlaneSource> imprint;
+      imprint->SetOrigin(-1.2, -1.2, 0);
+      imprint->SetPoint1(1.2, -1.2, 0);
+      imprint->SetPoint2(-1.2, 1.2, 0);
+      imprint->SetXResolution(5);
+      imprint->SetYResolution(5);
+      imprint->Update();
+
+      vtkNew<vtkImprintFilter> f;
+      f->SetTargetData(target->GetOutput());
+      f->SetImprintData(imprint->GetOutput());
+      f->SetOutputTypeToMergedImprint();
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
   add("vtkDistancePolyDataFilter", "Filters/General", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkDistancePolyDataFilter> f;
     f->SetInputData(0, in.poly);
