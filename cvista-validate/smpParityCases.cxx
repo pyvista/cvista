@@ -102,7 +102,6 @@
 #include <vtkImagePermute.h>
 #include <vtkImageRFFT.h>
 #include <vtkImageResample.h>
-#include <vtkImageSSIM.h>
 #include <vtkImageWrapPad.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
@@ -235,8 +234,8 @@ vtkSmartPointer<vtkImageData> makeLabelImage(int nx, int ny, int nz)
 }
 
 // Deterministic 3-component (RGB) unsigned-char image. The unsigned-char two-input
-// comparison filters (vtkImageDifference / vtkImageSSIM) REQUIRE VTK_UNSIGNED_CHAR
-// scalars, so the wavelet (float) image cannot feed them. `shift` offsets the
+// comparison filter vtkImageDifference REQUIRES VTK_UNSIGNED_CHAR
+// scalars, so the wavelet (float) image cannot feed it. `shift` offsets the
 // pattern so a second call yields a slightly different image for the 2nd input.
 vtkSmartPointer<vtkImageData> makeImageRGB(int shift)
 {
@@ -1834,17 +1833,6 @@ std::vector<Case> RegisterCases()
     vtkNew<vtkImageDifference> f;
     f->SetInputData(in.imageRGB);
     f->SetImageData(in.imageRGB2);
-    return vtkSmartPointer<vtkAlgorithm>(f);
-  });
-  // Structural similarity of two images: each output voxel is a windowed SSIM
-  // statistic over a FIXED neighborhood of the (shared) inputs -> byte-exact per
-  // voxel. Uses RGB mode over the two unsigned-char images. Watch: the RGB->Lab
-  // conversion is FP-heavy, though still a deterministic per-voxel map.
-  add("vtkImageSSIM", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
-    vtkNew<vtkImageSSIM> f;
-    f->SetInputData(in.imageRGB);
-    f->SetImageData(in.imageRGB2);
-    f->SetInputToRGB();
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   // Fourier family (Imaging/Fourier). vtkImageFFT/RFFT are vtkImageDecomposeFilter
