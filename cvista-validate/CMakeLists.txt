@@ -36,6 +36,7 @@ find_package(VTK REQUIRED COMPONENTS
   FiltersFlowPaths
   FiltersGeneral
   FiltersGeometry
+  FiltersHyperTree
   FiltersModeling
   FiltersParallel
   FiltersPoints

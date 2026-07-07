@@ -62,6 +62,13 @@
 #include <vtkGaussianSplatter.h>
 #include <vtkGeometryFilter.h>
 #include <vtkGradientFilter.h>
+#include <vtkHyperTreeGrid.h>
+#include <vtkHyperTreeGridContour.h>
+#include <vtkHyperTreeGridGeometry.h>
+#include <vtkHyperTreeGridNonOrientedGeometryCursor.h>
+#include <vtkHyperTreeGridPlaneCutter.h>
+#include <vtkHyperTreeGridProbeFilter.h>
+#include <vtkHyperTreeGridToUnstructuredGrid.h>
 #include <vtkImageAppendComponents.h>
 #include <vtkImageBlend.h>
 #include <vtkImageCast.h>
@@ -336,6 +343,90 @@ vtkSmartPointer<vtkTable> makeTable(double phase)
   return t;
 }
 
+// Hand-build a deterministic vtkHyperTreeGrid. cvista has NO HyperTreeGrid SOURCE
+// filter (vtkHyperTreeGridSource / vtkRandomHyperTreeGridSource / vtkUniform... /
+// vtkImageDataToHyperTreeGrid are all nocompiled -- see cvista-config/
+// _nocompile_classes.cmake), so the fixture is constructed directly through the
+// public vtkHyperTreeGrid + non-oriented geometry-cursor API, exactly as a source
+// filter would. A 3x3x2 grid of binary trees spans [-2,2]x[-2,2]x[-1,1]; each tree
+// is refined by a fixed, position-driven predicate (no RNG) so the refinement is
+// bit-identical every run. Every node (coarse and leaf) is assigned a contiguous
+// global index and a smooth "scalar" cell field s = sin(cx)+cos(cy)+0.5*cz at its
+// cell center, giving the contour/cut/probe cases a non-trivial field to act on.
+vtkSmartPointer<vtkHyperTreeGrid> makeHTG()
+{
+  auto htg = vtkSmartPointer<vtkHyperTreeGrid>::New();
+  htg->Initialize();
+  const int dims[3] = { 4, 4, 3 }; // POINTS -> 3x3x2 = 18 level-0 trees
+  htg->SetDimensions(dims);
+  htg->SetBranchFactor(2);
+
+  // Axis coordinates: evenly spaced over [-2,2] (x,y) and [-1,1] (z).
+  const double lo[3] = { -2.0, -2.0, -1.0 };
+  const double hi[3] = { 2.0, 2.0, 1.0 };
+  for (int axis = 0; axis < 3; ++axis)
+  {
+    vtkNew<vtkDoubleArray> c;
+    c->SetNumberOfValues(dims[axis]);
+    for (int i = 0; i < dims[axis]; ++i)
+      c->SetValue(i, lo[axis] + (hi[axis] - lo[axis]) * i / (dims[axis] - 1));
+    if (axis == 0)
+      htg->SetXCoordinates(c);
+    else if (axis == 1)
+      htg->SetYCoordinates(c);
+    else
+      htg->SetZCoordinates(c);
+  }
+
+  vtkNew<vtkDoubleArray> scalar;
+  scalar->SetName("scalar");
+  scalar->SetNumberOfComponents(1);
+
+  vtkNew<vtkHyperTreeGridNonOrientedGeometryCursor> cursor;
+  vtkIdType globalIndex = 0;
+  const unsigned int maxLevel = 3;
+
+  // Pre-order DFS refinement. Assigns each visited node its own global index and a
+  // cell-center scalar; refines a leaf when the deterministic predicate holds.
+  std::function<void()> refine = [&]() {
+    const vtkIdType gid = globalIndex++;
+    cursor->SetGlobalIndexFromLocal(gid);
+    double bounds[6];
+    cursor->GetBounds(bounds);
+    const double cx = 0.5 * (bounds[0] + bounds[1]);
+    const double cy = 0.5 * (bounds[2] + bounds[3]);
+    const double cz = 0.5 * (bounds[4] + bounds[5]);
+    scalar->InsertValue(gid, std::sin(cx) + std::cos(cy) + 0.5 * cz);
+    const unsigned int level = cursor->GetLevel();
+    // Deterministic, position-driven refinement: gives a non-uniform tree so the
+    // geometry/contour/cut walks traverse varied depths.
+    const bool subdivide =
+      level < maxLevel && (static_cast<int>(std::floor(cx + cy + 2.0 * cz + 4.0)) % 2 == 0);
+    if (subdivide)
+    {
+      cursor->SubdivideLeaf();
+      const int nChildren = cursor->GetNumberOfChildren();
+      for (int child = 0; child < nChildren; ++child)
+      {
+        cursor->ToChild(static_cast<unsigned char>(child));
+        refine();
+        cursor->ToParent();
+      }
+    }
+  };
+
+  const vtkIdType nTrees = htg->GetMaxNumberOfTrees();
+  for (vtkIdType t = 0; t < nTrees; ++t)
+  {
+    htg->InitializeNonOrientedGeometryCursor(cursor, t, /*create=*/true);
+    refine();
+  }
+
+  htg->GetCellData()->AddArray(scalar);
+  htg->GetCellData()->SetActiveScalars("scalar");
+  return htg;
+}
+
 } // namespace
 
 const char* RiskName(Risk r)
@@ -365,6 +456,7 @@ Inputs BuildInputs()
   in.ugrid = makeUGrid(in.image);
   in.table = makeTable(0.0);
   in.table2 = makeTable(0.5);
+  in.htg = makeHTG();
   return in;
 }
 
@@ -1365,6 +1457,66 @@ std::vector<Case> RegisterCases()
     f->SetInput1Data(in.image);
     f->SetInput2Data(in.image);
     f->SetWipeToQuad();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+
+  // ---- HyperTreeGrid family -------------------------------------------------
+  // Coverage of the vtkHyperTreeGrid filters that survive cvista's trim. In STOCK
+  // VTK this family is heavily vtkSMPTools-threaded (vtkHyperTreeGridGradient,
+  // vtkHyperTreeGridToDualGrid, vtkImageDataToHyperTreeGrid, ...), but every one of
+  // those -- and every HTG SOURCE -- is nocompiled here (see cvista-config/
+  // _nocompile_classes.cmake), so no threaded HTG-in-HTG-out path exists to gate.
+  // The four FiltersHyperTree filters that remain (Geometry, ToUnstructuredGrid,
+  // Contour, PlaneCutter) are SERIAL cursor walks (no vtkSMPTools call in the
+  // module), and vtkHyperTreeGridProbeFilter (FiltersCore) pins its probing worklet
+  // to Sequential (Kitware issue 18629 workaround) and only threads a Fill of a
+  // constant mask array. So -- exactly like the serial vtkStatistics cases above --
+  // these gate that the STDThread default introduces no divergence on the HTG input
+  // path (and that the comparator really compares their vtkPolyData/vtkUnstructuredGrid
+  // output), rather than stressing a threaded reduction. All output a point set the
+  // comparator already handles byte-exact; none is registered order-relaxed because,
+  // being serial, their emission order is itself deterministic.
+  //
+  // Input is the hand-built htg fixture (makeHTG): no HTG source is compiled, so it
+  // is constructed directly through the vtkHyperTreeGrid geometry-cursor API.
+
+  // HTG -> external surface (vtkPolyData). Serial recursive geometry extraction.
+  add("vtkHyperTreeGridGeometry", "Filters/HyperTree", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridGeometry> f;
+    f->SetInputData(in.htg);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // HTG -> vtkUnstructuredGrid: each leaf cell emitted once in tree-traversal order.
+  add("vtkHyperTreeGridToUnstructuredGrid", "Filters/HyperTree", Risk::PerElement,
+    [](const Inputs& in) {
+      vtkNew<vtkHyperTreeGridToUnstructuredGrid> f;
+      f->SetInputData(in.htg);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    });
+  // HTG isocontour of the "scalar" cell field -> vtkPolyData. Serial dual walk.
+  add("vtkHyperTreeGridContour", "Filters/HyperTree", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridContour> f;
+    f->SetInputData(in.htg);
+    f->SetInputArrayToProcess(
+      0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_CELLS, "scalar");
+    f->SetValue(0, 0.5);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // HTG plane cut -> vtkPolyData. Serial recursive cut.
+  add("vtkHyperTreeGridPlaneCutter", "Filters/HyperTree", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridPlaneCutter> f;
+    f->SetInputData(in.htg);
+    f->SetPlane(1.0, 0.5, 0.25, 0.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Probe the sphere's points against the HTG "scalar" field. The probing worklet is
+  // forced Sequential (issue 18629), and the only threaded op is a Fill of an all-1
+  // valid-point mask (order-independent, single value) -> byte-exact. Output mirrors
+  // the input polydata structure with the probed point data + a validity mask.
+  add("vtkHyperTreeGridProbeFilter", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridProbeFilter> f;
+    f->SetInputData(in.poly);
+    f->SetSourceData(in.htg);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
 
