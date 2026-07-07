@@ -78,6 +78,7 @@
 #include <vtkImageShiftScale.h>
 #include <vtkImageShrink3D.h>
 #include <vtkImageThreshold.h>
+#include <vtkImprintFilter.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
@@ -87,6 +88,7 @@
 #include <vtkOrderStatistics.h>
 #include <vtkPackLabels.h>
 #include <vtkPlaneCutter.h>
+#include <vtkPlaneSource.h>
 #include <vtkPointDataToCellData.h>
 #include <vtkPointInterpolator.h>
 #include <vtkPointInterpolator2D.h>
@@ -99,6 +101,7 @@
 #include <vtkProbeFilter.h>
 #include <vtkRTAnalyticSource.h>
 #include <vtkRadiusOutlierRemoval.h>
+#include <vtkRegularPolygonSource.h>
 #include <vtkRemovePolyData.h>
 #include <vtkResampleToImage.h>
 #include <vtkResampleWithDataSet.h>
@@ -122,6 +125,7 @@
 #include <vtkTableFFT.h>
 #include <vtkThreshold.h>
 #include <vtkTransformFilter.h>
+#include <vtkTrimmedExtrusionFilter.h>
 #include <vtkVoronoi2D.h>
 #include <vtkWarpScalar.h>
 #include <vtkWarpVector.h>
@@ -1003,6 +1007,85 @@ std::vector<Case> RegisterCases()
     [](const Inputs& in) {
       vtkNew<vtkVoronoi2D> f;
       f->SetInputData(in.cloudPlanar);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+
+  // ---- modeling: trimmed extrusion / imprint (2nd trivially-built input) -----
+  // Both are heavily vtkSMPTools-threaded modeling filters that need a SECOND
+  // polydata input, built inline here from deterministic sources (the shared
+  // Inputs carry no matching pair). They emit swept/triangulated geometry whose
+  // batch EMISSION ORDER is thread-dependent -> orderRelaxed: geometry + data
+  // must match serial as a set and be run-to-run stable; only the concatenation
+  // order may vary.
+  //
+  // vtkTrimmedExtrusionFilter sweeps the boundary edges of a flat n-gon (in the
+  // z=-1 plane) along +z until they meet a flat trim plane at z=0 -- a fully
+  // enclosed, guaranteed-non-empty intersection, so the skirt is well defined.
+  add(
+    "vtkTrimmedExtrusionFilter", "Filters/Modeling", Risk::Iso,
+    [](const Inputs&) {
+      vtkNew<vtkRegularPolygonSource> ngon;
+      ngon->SetCenter(0.0, 0.0, -1.0);
+      ngon->SetNormal(0.0, 0.0, 1.0);
+      ngon->SetRadius(0.5);
+      ngon->SetNumberOfSides(12);
+      ngon->Update();
+      auto in0 = vtkSmartPointer<vtkPolyData>::New();
+      in0->DeepCopy(ngon->GetOutput());
+
+      vtkNew<vtkPlaneSource> trim;
+      trim->SetOrigin(-2.0, -2.0, 0.0);
+      trim->SetPoint1(2.0, -2.0, 0.0);
+      trim->SetPoint2(-2.0, 2.0, 0.0);
+      trim->SetXResolution(4);
+      trim->SetYResolution(4);
+      trim->Update();
+      auto trimPd = vtkSmartPointer<vtkPolyData>::New();
+      trimPd->DeepCopy(trim->GetOutput());
+
+      vtkNew<vtkTrimmedExtrusionFilter> f;
+      f->SetInputData(in0);
+      f->SetTrimSurfaceData(trimPd);
+      f->SetExtrusionDirection(0.0, 0.0, 1.0);
+      f->SetExtrusionStrategyToBoundaryEdges();
+      f->SetCapping(true);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  // vtkImprintFilter imprints a finer plane (the imprint) onto a coarser,
+  // overlapping COPLANAR plane (the target); candidate target cells are
+  // triangulated against the projected imprint edges. Two coplanar overlapping
+  // planes is the canonical, non-vacuous imprint configuration. MERGED_IMPRINT
+  // emits the full target+imprint mesh (points are merged within tolerance), so
+  // Risk::Merge; triangulated cells are appended per-candidate in thread order.
+  add(
+    "vtkImprintFilter", "Filters/Modeling", Risk::Merge,
+    [](const Inputs&) {
+      vtkNew<vtkPlaneSource> target;
+      target->SetOrigin(-2.0, -2.0, 0.0);
+      target->SetPoint1(2.0, -2.0, 0.0);
+      target->SetPoint2(-2.0, 2.0, 0.0);
+      target->SetXResolution(3);
+      target->SetYResolution(3);
+      target->Update();
+      auto targetPd = vtkSmartPointer<vtkPolyData>::New();
+      targetPd->DeepCopy(target->GetOutput());
+
+      vtkNew<vtkPlaneSource> imprint;
+      imprint->SetOrigin(-1.2, -1.2, 0.0);
+      imprint->SetPoint1(1.2, -1.2, 0.0);
+      imprint->SetPoint2(-1.2, 1.2, 0.0);
+      imprint->SetXResolution(5);
+      imprint->SetYResolution(5);
+      imprint->Update();
+      auto imprintPd = vtkSmartPointer<vtkPolyData>::New();
+      imprintPd->DeepCopy(imprint->GetOutput());
+
+      vtkNew<vtkImprintFilter> f;
+      f->SetTargetData(targetPd);
+      f->SetImprintData(imprintPd);
+      f->SetOutputTypeToMergedImprint();
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
