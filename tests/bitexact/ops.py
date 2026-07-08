@@ -3764,17 +3764,21 @@ def op_streamtracer(dtype, size):
     # interpolation of a LINEAR field is exact, so the integrated POSITIONS are
     # thread-invariant (identical serial-vs-parallel).
     #
-    # cvista's DEFAULT SMP backend is STDThread, and vtkStreamTracer integrates the
-    # per-seed streamlines in parallel and emits them in a thread-dependent ORDER
-    # (intended-divergence ledger class C1: same set of polylines / same per-line
-    # point positions, LINE order permuted, and with it the global point numbering
-    # and the per-line/point-data + cell-data). Stock VTK runs the sequential
-    # reference. Hence this op is expected to compare ORDER-RELAXED + POINTS-RELAXED:
-    # same point set (coords + interpolated velocity 'vec' + IntegrationTime +
-    # Normals) and the same multiset of polylines carrying their cell-data
-    # (ReasonForTermination, SeedIds), with point/cell order negotiable. If instead
-    # the per-seed POSITIONS diverge, that is a real ODE-integration bug (not order)
-    # and the order-relaxed gate will still RED -- do not mask it.
+    # cvista's DEFAULT SMP backend is STDThread. The intended-divergence ledger's
+    # class C1 anticipated that vtkStreamTracer, integrating the per-seed streamlines
+    # in parallel, might emit them in a thread-dependent ORDER (same polylines / same
+    # per-line positions, LINE order permuted). CI VERDICT (PR #201): for this
+    # bounded case -- a small fixed seed set, a linear field whose trilinear
+    # interpolation is exact, and independent per-seed RK4 -- cvista's output is
+    # BYTE-FOR-BYTE identical to stock's sequential reference, ORDER INCLUDED: the
+    # parallel integration writes each seed into its indexed output slot and
+    # concatenates in seed order, so nothing permutes. Hence NO relaxation flag is
+    # needed and this op is a strict byte-exact gate (points + 'vec' + IntegrationTime
+    # + Normals + the ReasonForTermination/SeedIds cell-data all maxULP=0).
+    #
+    # This makes the op a real ODE-integration oracle: any future byte difference is
+    # a genuine divergence (a wrong integrated POSITION, or -- only if a reorder ever
+    # appears -- an order permutation to be re-characterized), not something to mask.
     #
     # ComputeVorticity is turned OFF to keep the output focused on positions (drops
     # the Vorticity/Rotation/AngularVelocity arrays); the along-line 'Normals' array
@@ -4007,15 +4011,14 @@ OPS = {
     "points_interp_voronoi": dict(fn=op_interp_voronoi, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     # --- Filters/FlowPaths stock-parity lane (Wave 5) ---
     # vtkStreamTracer: a fixed-step RK4 integration of a deterministic rotation
-    # velocity field from a few fixed seeds. cvista's default STDThread backend
-    # integrates the per-seed streamlines in parallel and emits them in a thread-
-    # dependent ORDER (ledger class C1), so this is expected to need order_relaxed
-    # + points_relaxed (same point set + same polyline multiset, order permuted).
-    # NOTE(Wave 5): registered here WITHOUT the relaxation flags on purpose for the
-    # first CI run, to OBSERVE the raw divergence and confirm it is order-only
-    # (positions preserved) before adding the flags. A per-seed POSITION divergence
-    # would be a real ODE-integration bug and must not be masked. Odd sizes keep the
-    # field center c=(n-1)//2 an exact integer.
+    # velocity field from a few fixed seeds. The ledger's class C1 anticipated a
+    # thread-dependent LINE order under cvista's default STDThread backend, so this
+    # was first run WITHOUT relaxation flags to observe the raw divergence. CI VERDICT
+    # (PR #201, py3.12+3.13): strict BYTE-EXACT, order included -- the parallel
+    # integration emits seeds in indexed slot order and the linear field's exact
+    # interpolation makes the per-seed positions byte-identical, so NO relaxation is
+    # warranted and this stays a strict gate. Odd sizes keep the field center
+    # c=(n-1)//2 an exact integer.
     "streamtracer": dict(fn=op_streamtracer, group="filter", dtypes=["float32", "float64"], sizes=[11, 21]),
     # vtkEvenlySpacedStreamlines2D: SERIAL adaptive 2D streamline placement -> strict
     # BYTE-EXACT vs stock (no relaxation flag). A red is a real divergence.
