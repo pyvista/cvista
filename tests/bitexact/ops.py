@@ -4209,19 +4209,16 @@ OPS = {
                                  sizes=[6, 10], corrects_stock=True),
     "ribbon": dict(fn=op_ribbon, group="modeling", dtypes=["float64"],
                    sizes=[8, 16], corrects_stock=True),
-    # ruled_surface: float32 ONLY. On float32 input both backends compute+store f32
-    # identically -> byte-exact (no flag). float64 is DELIBERATELY EXCLUDED: the
-    # RESAMPLE branch is one of the 30 OutputPointsPrecision-corrected filters, but
-    # unlike single-pass corrects_stock filters (shrink/datasettriangle) its resample
-    # walk reads back stored intermediate points, so cvista's all-f64 path diverges
-    # from stock's f32-intermediate path by MORE than a pure storage-width downcast
-    # (cvista is more correct). That legitimate value divergence is NOT expressible by
-    # the strict corrects_stock gate ("not a single value changed on downcast"), so we
-    # gate the byte-exact f32 path here and leave the f64 correction to the other
-    # precision members. Point COUNT is precision-independent (a function of Resolution
-    # + line count), so this is a value nuance, not a topology/count bug.
-    "ruled_surface": dict(fn=op_ruled_surface, group="modeling", dtypes=["float32"],
-                          sizes=[8, 16]),
+    # ruled_surface: DEFERRED (op_ruled_surface retained but unregistered). CI showed a
+    # same-COUNT ([162,3]==[162,3]), same-dtype float32 point divergence vs stock with
+    # ulp==0x3F800000 (the 0.0-vs-1.0 signature of an unwritten default point). The
+    # RESAMPLE branch pre-allocates via InsertPoint(last,0,0,0) "so SetPoint() can be
+    # safely used" then fills each slot with SetPoint(id); cvista's sole change is a
+    # SetDataType(newPts) inserted before that dance (#97 precision fix). Whether that
+    # interaction leaves a slot unwritten (real regression) or merely reorders is NOT
+    # determinable from CI alone -- needs a local array dump (build-constrained here,
+    # like the SMP heap crash). Tracked as a suspected regression; NOT silenced with a
+    # guessed flag. See memory cvista-stock-parity-gate.
     "banded_contour": dict(fn=op_banded_contour, group="modeling", dtypes=["float64"],
                            sizes=[8, 12], corrects_stock=True),
     # Byte-exact members (NOT precision-corrected; plain maxULP=0 vs stock, no flag).
