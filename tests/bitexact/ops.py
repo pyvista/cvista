@@ -159,17 +159,23 @@ try:
         vtkConeSource,
         vtkSphereSource,
     )
-    # Imaging stock-parity lane: per-pixel / per-voxel threaded image filters.
-    # Only classes that cvista COMPILES and WRAPS are imported here (verified
-    # against cvista-config/_nocompile_classes.cmake + _nowrap_classes.cmake and
-    # the module WANT list in _modules_minimal.cmake). ImagingMath/Statistics and
-    # the many nocompiled Imaging classes (vtkImageGradient, vtkImageMathematics,
-    # vtkImageLogic, vtkImageLaplacian, vtkImageSobel*, ...) are deliberately NOT
-    # imported — importing an unwrapped class would ImportError and red the suite.
+    # Imaging lanes (per-pixel from PR #196 + the geometric/resample/component/
+    # label remainder): only classes cvista COMPILES and WRAPS are imported here
+    # (verified against cvista-config/_nocompile_classes.cmake + _nowrap_classes.cmake
+    # with each module WANTed in _modules_minimal.cmake: ImagingCore, ImagingGeneral,
+    # ImagingMorphological). ImagingMath/Statistics and the nocompiled Imaging classes
+    # (vtkImageGradient, vtkImageMathematics, vtkImageLogic, vtkImageSobel*, ...) are
+    # deliberately NOT imported — an unwrapped class would ImportError and red the suite.
     from vtkmodules.vtkImagingCore import (
+        vtkImageAppendComponents,
         vtkImageCast,
         vtkImageConstantPad,
+        vtkImageExtractComponents,
+        vtkImageFlip,
         vtkImageMirrorPad,
+        vtkImagePermute,
+        vtkImageReslice,
+        vtkImageResize,
         vtkImageShiftScale,
         vtkImageThreshold,
         vtkImageWrapPad,
@@ -179,6 +185,7 @@ try:
         vtkImageMedian3D,
     )
     from vtkmodules.vtkImagingMorphological import (
+        vtkImageConnectivityFilter,
         vtkImageContinuousDilate3D,
         vtkImageContinuousErode3D,
     )
@@ -204,9 +211,9 @@ def _require_vtk():
 DTYPES = {
     "float32": np.float32,
     "float64": np.float64,
-    # Integer input widths for the imaging cast/threshold lane. Values are only
-    # mapped to a numpy dtype in run_case; adding keys here does not affect any
-    # existing op (each op opts in via its `dtypes` list).
+    # Integer input widths for the imaging cast/threshold/component/flip/label lane.
+    # Values are only mapped to a numpy dtype in run_case; adding keys here does not
+    # affect any existing op (each op opts in via its `dtypes` list).
     "uint8": np.uint8,
     "int16": np.int16,
 }
@@ -255,14 +262,16 @@ def make_grid2d(n=64, dtype=np.float64):
     return img
 
 
-def make_scalar_image(size, dtype, dims=3):
+def make_scalar_image(size, dtype, dims=3, offset=0):
     """A deterministic single-component scalar vtkImageData for the imaging lane.
 
     Fills a ``size``-per-side voxel grid (3D by default, 2D when dims==2) with a
     value built ONLY from integer index algebra (a linear ramp mod 251 — no trig,
     no sqrt) so both backends start byte-identical. Values land in [0, 250], which
-    is exactly representable in float32/float64 AND uint8/int16, so a cast or
-    threshold of this image is exact regardless of the chosen storage width.
+    is exactly representable in float32/float64 AND uint8/int16, so a cast, threshold,
+    component shuffle, flip, permute, integer-scaled reslice or label of this image is
+    exact regardless of the chosen storage width. ``offset`` shifts the ramp phase
+    (used to build a distinct second image for AppendComponents).
 
     The output scalar is captured by capture_dataobject via GetPointData (vtkImage-
     Data has no GetPoints), so the per-voxel scalar array IS the compared array.
@@ -270,7 +279,7 @@ def make_scalar_image(size, dtype, dims=3):
     nx = ny = int(size)
     nz = int(size) if dims == 3 else 1
     zz, yy, xx = np.indices((nz, ny, nx), dtype=np.int64)
-    field = (xx * 7 + yy * 13 + zz * 5) % 251
+    field = (xx * 7 + yy * 13 + zz * 5 + int(offset)) % 251
     # C-order ravel of (nz, ny, nx) iterates x fastest -> VTK point order.
     flat = np.ascontiguousarray(field.ravel())
     img = vtkImageData()
@@ -3071,6 +3080,114 @@ def op_interp_voronoi(dtype, size):
 
 
 # ===========================================================================
+# IMAGING remainder lane (geometric / resample / component / labeling)
+# ===========================================================================
+# Extends PR #196's per-pixel imaging lane with the ImagingCore filters that
+# move / resample / reshuffle voxels (reslice, resize, flip, permute, component
+# assembly / extraction) plus the ImagingMorphological region-labeling filter.
+# Inputs are deterministic integer-valued ramps in [0, 250] (make_scalar_image),
+# exactly representable in every dtype, so the transported/relabeled voxels are
+# byte-identical across libm builds. The output vtkImageData point-scalar array is
+# what capture_dataobject compares (via _field_arrays(GetPointData(), ...)), so
+# each comparison is non-vacuous. All are expected BYTE-EXACT and carry NO
+# relaxation flag; vtkImageConnectivityFilter is the one classify-on-red candidate
+# (its region-label VALUES could reorder under threading even if the partition is
+# identical — an order-only difference would earn a documented flag, a
+# count/position/value difference is a real bug).
+
+
+def op_image_reslice(dtype, size):
+    # Axis-aligned integer-magnified resample. No trig-based rotation: the reslice
+    # axes stay the identity so the interpolated sample positions are exact grid
+    # multiples -> the resampled voxels are exact copies, byte-identical on both
+    # backends and independent of libm.
+    img = make_scalar_image(size, dtype)
+    f = vtkImageReslice()
+    f.SetInputData(img)
+    f.SetInterpolationModeToNearestNeighbor()
+    f.SetOutputSpacing(0.5, 0.5, 0.5)  # integer 2x upsample of unit-spacing input
+    e = img.GetExtent()
+    f.SetOutputExtent(e[0], 2 * e[1], e[2], 2 * e[3], e[4], 2 * e[5])
+    f.SetOutputOrigin(0.0, 0.0, 0.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_resize(dtype, size):
+    # Deterministic integer magnification (2x per axis). Nearest-ish resample done
+    # by identical C++ on both backends over integer sample positions.
+    f = vtkImageResize()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.SetResizeMethodToMagnificationFactors()
+    f.SetMagnificationFactors(2.0, 2.0, 2.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_flip(dtype, size):
+    # Reverse the voxel order along X (axis 0). Pure index remap -> exact.
+    f = vtkImageFlip()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.SetFilteredAxis(0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_permute(dtype, size):
+    # Swap the X and Z axes (2, 1, 0). Pure index remap -> exact.
+    f = vtkImagePermute()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.SetFilteredAxes(2, 1, 0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_appendcomponents(dtype, size):
+    # Assemble a 2-component image from two deterministic single-component images
+    # (distinct ramp phases). Per-voxel component interleave -> exact; the output
+    # (N, 2) scalar array is captured whole.
+    a = make_scalar_image(size, dtype, offset=0)
+    b = make_scalar_image(size, dtype, offset=37)
+    f = vtkImageAppendComponents()
+    f.SetInputData(0, a)
+    f.AddInputData(b)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_extractcomponents(dtype, size):
+    # From the 2-component assembly, pull component 1 back out. Per-voxel select.
+    a = make_scalar_image(size, dtype, offset=0)
+    b = make_scalar_image(size, dtype, offset=37)
+    ap = vtkImageAppendComponents()
+    ap.SetInputData(0, a)
+    ap.AddInputData(b)
+    f = vtkImageExtractComponents()
+    f.SetInputConnection(ap.GetOutputPort())
+    f.SetComponents(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_connectivity(dtype, size):
+    # Region labeling of the ramp's upper half [128, 250] as foreground. The
+    # 6-connected partition of a fixed integer field is deterministic; SizeRank
+    # labeling assigns 1..N by descending region size. Output = a per-voxel label
+    # image, returned explicitly so the compared array is unambiguous. A red that
+    # is a pure relabel (same partition, permuted label VALUES) would be
+    # order-relaxation under threading -> add a flag then; a differing region
+    # COUNT or a moved boundary is a real divergence to characterize.
+    f = vtkImageConnectivityFilter()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.SetScalarRange(128.0, 250.0)
+    f.SetExtractionModeToAllRegions()
+    f.SetLabelModeToSizeRank()
+    f.Update()
+    out = f.GetOutput()
+    return {"scalars": vtk_to_numpy(out.GetPointData().GetScalars())}
+
+
+# ===========================================================================
 # REGISTRY
 # ===========================================================================
 # group: "modified" -> hard gate; others -> broad coverage.
@@ -3331,7 +3448,7 @@ OPS = {
     # Each is a vtkThreadedImageAlgorithm writing one output voxel per thread from
     # a fixed input neighborhood -> position-deterministic, NO relaxation flag. A
     # red here is a real divergence to characterize (value/count/position), not to
-    # silence. Reduction/histogram image filters are deferred to a later push.
+    # silence. Reduction/histogram image filters (ImagingStatistics) are not compiled.
     "image_cast": dict(fn=op_image_cast, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
     "image_shiftscale": dict(fn=op_image_shiftscale, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
     "image_threshold": dict(fn=op_image_threshold, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
@@ -3342,6 +3459,19 @@ OPS = {
     "image_constantpad": dict(fn=op_image_constantpad, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
     "image_mirrorpad": dict(fn=op_image_mirrorpad, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
     "image_wrappad": dict(fn=op_image_wrappad, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
+    # --- IMAGING remainder: geometric / resample / component / labeling ---
+    # Extends the per-pixel lane. Expected BYTE-EXACT, NO relaxation flag. A red is a
+    # real divergence to characterize (value/count/position), not to silence.
+    # vtkImageConnectivityFilter is the classify-on-red candidate: a pure label-value
+    # permutation under threading would earn a documented flag; a region-count or
+    # boundary change is a bug. (CI verdict: all byte-exact, no flag needed.)
+    "image_reslice": dict(fn=op_image_reslice, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
+    "image_resize": dict(fn=op_image_resize, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "image_flip": dict(fn=op_image_flip, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
+    "image_permute": dict(fn=op_image_permute, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
+    "image_appendcomponents": dict(fn=op_image_appendcomponents, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
+    "image_extractcomponents": dict(fn=op_image_extractcomponents, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
+    "image_connectivity": dict(fn=op_image_connectivity, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
     # --- IO round-trips (PLY writer gather + reader scatter, byte-for-byte) ---
     "ply_roundtrip_binary": dict(fn=op_ply_roundtrip_binary, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
     "ply_roundtrip_ascii": dict(fn=op_ply_roundtrip_ascii, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
