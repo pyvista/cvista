@@ -1,0 +1,118 @@
+# High-repeat SMP parity STRESS harness (dispatch-only diagnostic; NOT a gate).
+#
+# The required parity gate (smp-parity.yml) runs the validator once at a low
+# REPEATS. That is enough for stable divergences but has been shown to MISS
+# intermittent, scheduling-dependent ones: a real vtkVisualStatistics parallel
+# histogram bin miscount (serial=1 vs parallel=2) once passed a gate run and only
+# surfaced later. This workflow exists to hunt those out of band: it builds the
+# same NATIVE validator (no sanitizers -- value divergences reproduce best at
+# native speed + high repeats) and loops it many times at a high REPEATS.
+#
+# Deliberately its OWN workflow, workflow_dispatch ONLY, so it never runs on PRs,
+# main, or the merge queue and never slows the required gate. It also does not
+# edit the shared ci/run-smp-parity.sh (a separate ci/run-smp-parity-stress.sh),
+# so it stays clear of the concurrent heap-hunt work on that script.
+name: SMP parity stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'REPEATS per (case,threadcount) inside each validator run'
+        required: false
+        default: '200'
+      iterations:
+        description: 'Number of full-suite validator iterations to loop'
+        required: false
+        default: '8'
+      include_macos:
+        description: 'Also run the stress sweep on macOS'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: smp-parity-stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    name: SMP parity stress (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          # macOS leg is opt-in via the include_macos dispatch input (filtered below).
+          - os: macos
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+            container: ''
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Skip macOS unless requested
+        id: gate
+        run: |
+          if [ "${{ matrix.os }}" = macos ] && [ "${{ inputs.include_macos }}" != true ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "macOS stress leg not requested (include_macos=false); skipping."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          fetch-depth: 0 # setuptools_scm version for the SDK build
+      - name: Install rendering + build deps (Linux)
+        if: steps.gate.outputs.run == 'true' && startsWith(matrix.os, 'linux')
+        run: |
+          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+            mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
+            libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
+            ccache git mold lld
+      - name: Set up Python (macOS)
+        if: steps.gate.outputs.run == 'true' && matrix.os == 'macos'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ccache (macOS)
+        if: steps.gate.outputs.run == 'true' && matrix.os == 'macos'
+        run: brew install ccache
+      - name: Configure ccache dir
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          if [ -n "${{ matrix.container }}" ]; then
+            echo "CCACHE_DIR=/ccache" >> "$GITHUB_ENV"
+          else
+            echo "CCACHE_DIR=$HOME/.cache/cvista-smp-ccache" >> "$GITHUB_ENV"
+          fi
+      - name: Restore ccache (reuse the gate's cache to skip a cold SDK build)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cvista-smp-ccache-${{ matrix.os }}-stress-${{ github.run_id }}
+          restore-keys: |
+            cvista-smp-ccache-${{ matrix.os }}-
+      - name: Build + install cvista (find_package tree)
+        if: steps.gate.outputs.run == 'true'
+        run: ci/build-sdk.sh
+      - name: SMP parity high-repeat stress sweep
+        if: steps.gate.outputs.run == 'true'
+        env:
+          SMP_STRESS_REPEATS: ${{ inputs.repeats }}
+          SMP_STRESS_ITERATIONS: ${{ inputs.iterations }}
+        run: ci/run-smp-parity-stress.sh
+      - name: Upload per-iteration stress logs
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-stress-logs-${{ matrix.os }}
+          path: build-smp-parity/stress-logs/
+          if-no-files-found: ignore
