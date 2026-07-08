@@ -14,6 +14,7 @@
 #include <vector>
 
 class vtkAlgorithm;
+class vtkHyperTreeGrid;
 class vtkImageData;
 class vtkPolyData;
 class vtkTable;
@@ -36,6 +37,7 @@ struct Inputs
   vtkSmartPointer<vtkUnstructuredGrid> ugrid; // thresholded wavelet + cell data
   vtkSmartPointer<vtkTable> table;            // numeric columns A,B
   vtkSmartPointer<vtkTable> table2;           // numeric columns A,B (2nd)
+  vtkSmartPointer<vtkHyperTreeGrid> htg;      // hand-built 3x3x2 HTG + "scalar" cell field
 };
 
 // Build the shared inputs. MUST be called with the SMP backend forced serial so
