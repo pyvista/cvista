@@ -182,6 +182,18 @@ try:
         vtkConeSource,
         vtkSphereSource,
     )
+    # Filters/Verdict per-cell mesh/cell quality + size (Wave 6 stock-parity lane).
+    # FiltersVerdict is WANTed in _modules_minimal.cmake and none of these classes
+    # is in _nocompile_classes.cmake / _nowrap_classes.cmake, so all three COMPILE
+    # and WRAP -- importing them here is safe (an unwrapped class would ImportError
+    # and red the whole suite). Each writes a per-cell scalar indexed by cell id
+    # under vtkSMPTools::For, so the compared cell-data array is position-
+    # deterministic and expected BYTE-EXACT (no relaxation flag).
+    from vtkmodules.vtkFiltersVerdict import (
+        vtkCellQuality,
+        vtkCellSizeFilter,
+        vtkMeshQuality,
+    )
     # Imaging lanes (per-pixel from PR #196 + the geometric/resample/component/
     # label remainder): only classes cvista COMPILES and WRAPS are imported here
     # (verified against cvista-config/_nocompile_classes.cmake + _nowrap_classes.cmake
@@ -3668,6 +3680,151 @@ def op_image_wrappad(dtype, size):
     return _run_image_pad(vtkImageWrapPad(), size, dtype)
 
 
+# ---------------------------------------------------------------------------
+# Filters/Verdict stock-parity lane (Wave 6): per-cell mesh/cell quality + size.
+#
+# These three filters add a per-cell scalar (or several) to the input's cell
+# data, computed independently per cell and stored at index cellId inside a
+# vtkSMPTools::For loop. The value depends ONLY on that cell's own geometry, so
+# the thread partition changes neither the values nor their positions: the
+# compared cell-data array (cd:Quality / cd:CellQuality / cd:Area / cd:Volume /
+# cd:Length / cd:VertexCount) is position-deterministic and expected BYTE-EXACT
+# vs stock VTK 9.6.2 at maxULP=0. No relaxation flag -- a red here is a REAL
+# divergence to characterize (value/count/position), not to silence.
+#
+# Inputs use only deterministic integer/linspace coordinates (no trig on the
+# data path): integer-lattice hexes (make_hex_ugrid), their deterministic
+# tessellation into tets (make_tet_ugrid, points pinned to float32 on both
+# backends), a fixed-precision triangulated sphere (_sphere_with_precision --
+# the sphere source runs identically in both C++ backends), and a mixed
+# tet/hex/voxel/wedge/pyramid grid (make_mixed_ugrid) so CellQuality/CellSize
+# exercise several per-cell-type branches in one filter. Aggregate stats
+# (min/avg/max/variance, size sums) land in FieldData, which capture_dataobject
+# does NOT read -- only the per-cell CellData arrays are byte-compared, so any
+# reduction-order concern is out of scope by construction.
+def op_meshquality_tri_radiusratio(dtype, size):
+    """vtkMeshQuality per-triangle radius ratio over a fixed-precision sphere.
+    Output cell-data 'Quality'. float32/float64 point arrays both exercised."""
+    q = vtkMeshQuality()
+    q.SetInputData(_sphere_with_precision(size, size, dtype))
+    q.SetTriangleQualityMeasureToRadiusRatio()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_meshquality_tri_aspect(dtype, size):
+    """vtkMeshQuality per-triangle aspect ratio (a distinct measure) over the
+    same fixed-precision sphere. Output cell-data 'Quality'."""
+    q = vtkMeshQuality()
+    q.SetInputData(_sphere_with_precision(size, size, dtype))
+    q.SetTriangleQualityMeasureToAspectRatio()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_meshquality_hex_jacobian(dtype, size):
+    """vtkMeshQuality per-hex Jacobian over an integer-lattice hex UG. Integer
+    coordinates are exact in float32 AND float64, so both dtype cases run the
+    corresponding typed geometry path. Output cell-data 'Quality'."""
+    q = vtkMeshQuality()
+    q.SetInputData(make_hex_ugrid(size, dtype))
+    q.SetHexQualityMeasureToJacobian()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_meshquality_hex_scaledjacobian(dtype, size):
+    """vtkMeshQuality per-hex scaled Jacobian (distinct measure) over the same
+    integer-lattice hex UG. Output cell-data 'Quality'."""
+    q = vtkMeshQuality()
+    q.SetInputData(make_hex_ugrid(size, dtype))
+    q.SetHexQualityMeasureToScaledJacobian()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_meshquality_tet_radiusratio(dtype, size):
+    """vtkMeshQuality per-tet radius ratio over the deterministic tessellation of
+    the hex lattice (points pinned to float32 on both backends). Output cell-data
+    'Quality'. Varied tet shapes give non-degenerate quality spread."""
+    q = vtkMeshQuality()
+    q.SetInputData(make_tet_ugrid(size, dtype))
+    q.SetTetQualityMeasureToRadiusRatio()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_meshquality_tet_scaledjacobian(dtype, size):
+    """vtkMeshQuality per-tet scaled Jacobian (distinct measure) over the same
+    tet grid. Output cell-data 'Quality'."""
+    q = vtkMeshQuality()
+    q.SetInputData(make_tet_ugrid(size, dtype))
+    q.SetTetQualityMeasureToScaledJacobian()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_cellquality_mixed_scaledjacobian(dtype, size):
+    """vtkCellQuality (one measure applied per cell, dispatched on cell type) over
+    a mixed tet/hex/voxel/wedge/pyramid grid. Scaled Jacobian is defined for the
+    supported 3D types; voxel falls to the defined GetUnsupportedGeometry()
+    sentinel (deterministic on both backends). Output cell-data 'CellQuality'."""
+    q = vtkCellQuality()
+    q.SetInputData(make_mixed_ugrid(size, dtype))
+    q.SetQualityMeasureToScaledJacobian()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_cellquality_hex_volume(dtype, size):
+    """vtkCellQuality volume measure per hex over the integer-lattice hex UG.
+    Output cell-data 'CellQuality'."""
+    q = vtkCellQuality()
+    q.SetInputData(make_hex_ugrid(size, dtype))
+    q.SetQualityMeasureToVolume()
+    q.Update()
+    return q.GetOutput()
+
+
+def op_cellsize_hex_volume(dtype, size):
+    """vtkCellSizeFilter per-hex volume (ComputeVolume + ComputeSum) over the
+    integer-lattice hex UG. The per-cell 'Volume' cell-data array is byte-compared
+    (the summed total lands in FieldData, which is not captured)."""
+    f = vtkCellSizeFilter()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.ComputeVolumeOn()
+    f.ComputeSumOn()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_cellsize_tri_area(dtype, size):
+    """vtkCellSizeFilter per-triangle area (ComputeArea + ComputeSum) over a
+    fixed-precision sphere. Per-cell 'Area' cell-data array is byte-compared."""
+    f = vtkCellSizeFilter()
+    f.SetInputData(_sphere_with_precision(size, size, dtype))
+    f.ComputeAreaOn()
+    f.ComputeSumOn()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_cellsize_mixed_all(dtype, size):
+    """vtkCellSizeFilter with ALL size metrics on (VertexCount/Length/Area/Volume
+    + Sum) over the mixed tet/hex/voxel/wedge/pyramid grid, so the per-cell-
+    dimension size branch is exercised for each metric. Compared cell-data arrays:
+    'VertexCount', 'Length', 'Area', 'Volume' (each per-cell, cellId-indexed)."""
+    f = vtkCellSizeFilter()
+    f.SetInputData(make_mixed_ugrid(size, dtype))
+    f.ComputeVertexCountOn()
+    f.ComputeLengthOn()
+    f.ComputeAreaOn()
+    f.ComputeVolumeOn()
+    f.ComputeSumOn()
+    f.Update()
+    return f.GetOutput()
+
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -3853,6 +4010,23 @@ OPS = {
     "points_interp_shepard": dict(fn=op_interp_shepard, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_linear": dict(fn=op_interp_linear, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_voronoi": dict(fn=op_interp_voronoi, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    # --- Filters/Verdict per-cell mesh/cell quality + size (Wave 6). Each adds a
+    # per-cell scalar indexed by cell id under vtkSMPTools::For -> value depends
+    # only on that cell's geometry, thread partition changes neither value nor
+    # position. Expected strict BYTE-EXACT, NO relaxation flag; a count/position/
+    # value divergence is a real bug. Aggregate stats/sums go to (uncaptured)
+    # FieldData, so only the per-cell CellData arrays are compared.
+    "meshquality_tri_radiusratio": dict(fn=op_meshquality_tri_radiusratio, group="verdict", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "meshquality_tri_aspect": dict(fn=op_meshquality_tri_aspect, group="verdict", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "meshquality_hex_jacobian": dict(fn=op_meshquality_hex_jacobian, group="verdict", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "meshquality_hex_scaledjacobian": dict(fn=op_meshquality_hex_scaledjacobian, group="verdict", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "meshquality_tet_radiusratio": dict(fn=op_meshquality_tet_radiusratio, group="verdict", dtypes=["float64"], sizes=[6, 8]),
+    "meshquality_tet_scaledjacobian": dict(fn=op_meshquality_tet_scaledjacobian, group="verdict", dtypes=["float64"], sizes=[6, 8]),
+    "cellquality_mixed_scaledjacobian": dict(fn=op_cellquality_mixed_scaledjacobian, group="verdict", dtypes=["float32", "float64"], sizes=[3, 6]),
+    "cellquality_hex_volume": dict(fn=op_cellquality_hex_volume, group="verdict", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "cellsize_hex_volume": dict(fn=op_cellsize_hex_volume, group="verdict", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "cellsize_tri_area": dict(fn=op_cellsize_tri_area, group="verdict", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "cellsize_mixed_all": dict(fn=op_cellsize_mixed_all, group="verdict", dtypes=["float32", "float64"], sizes=[3, 6]),
     # --- IO round-trip Wave 3: STL / OBJ / XML / legacy .vtk ---
     # STL: cvista's FAST STL reader is ORDER-RELAXED (same merged point set + same
     # triangle multiset, arbitrary order) -> order_relaxed + points_relaxed are
