@@ -3787,6 +3787,158 @@ def op_image_wrappad(dtype, size):
 
 
 # ===========================================================================
+# FILTERS/STATISTICS stock-parity lane (Wave 4)
+# ===========================================================================
+# vtkStatisticsAlgorithm subclasses (Descriptive/Order) and the vtkComputeQuantiles
+# convenience filters. These do NOT produce a mesh; the interesting result is the
+# statistical MODEL. In VTK 9.6.2 that model is a vtkStatisticalModel (a
+# vtkDataObject holding Learned/Derived vtkTables), emitted on OUTPUT PORT 1
+# (vtkStatisticsAlgorithm.OUTPUT_MODEL == 1) — NOT on port 0, which just mirrors the
+# input data. capture_dataobject does not traverse a vtkStatisticalModel, so these
+# ops pull the model explicitly and return {table_col: ndarray} for every NUMERIC
+# column (the per-variable 'Variable' string column is skipped — vtk_to_numpy can't
+# represent it and it carries no numeric divergence). vtkComputeQuantiles /
+# vtkComputeQuartiles are vtkTableAlgorithms whose result is a plain vtkTable on
+# port 0 (GetOutput()), captured the same way.
+#
+# CLASS AVAILABILITY (verified against cvista-config): FiltersStatistics is WANTed
+# and vtkDescriptiveStatistics / vtkOrderStatistics / vtkComputeQuantiles /
+# vtkComputeQuartiles / vtkStatisticalModel are all compiled AND wrapped. The
+# Correlative / AutoCorrelative / MultiCorrelative / KMeans / PCA / Contingency
+# statistics are in _nowrap_classes.cmake (importing one would ImportError and red
+# the whole suite) so they are DELIBERATELY NOT covered here.
+#
+# EXPECTATION: default BYTE-EXACT (no relaxation flag). The Learn phase accumulates
+# per-observation integer counts + double partials and Derive turns them into
+# moments (variance/std/skewness/kurtosis). Raw counts / minima / maxima / sums are
+# integer or exact-sum quantities and MUST match to the byte; if CI shows a tiny
+# (<~1e-12 relative) difference ONLY in a DERIVED moment while the raw
+# Cardinality/Minimum/Maximum/Sum are identical, that is FP non-associativity across
+# thread partials -> reclassify that op as point_data_tol and document it. A COUNT /
+# cardinality / large-value difference is a REAL BUG to capture, not to relax. We
+# start with NO flags so the raw CI verdict is visible.
+#
+# DETERMINISM: input columns are built from pure integer/linspace algebra (mod +
+# half-integer offsets, exactly representable in double), NO trig, so both backends
+# start byte-identical (proven independently of build_inputs_digest, which only
+# covers the mesh inputs, because these tables use the same deterministic recipe).
+
+
+def make_stats_table(nrows, ncols=3):
+    """A deterministic vtkTable of ``ncols`` double columns x ``nrows`` rows.
+
+    Every value is integer or half-integer (pure index algebra mod a small prime,
+    plus a 0.5-scaled residue) -> exactly representable in float32/float64 and
+    identical across libm builds. Distinct per-column recipes give the columns
+    different means/spreads so the descriptive moments and order quantiles are
+    non-degenerate.
+    """
+    from vtkmodules.vtkCommonDataModel import vtkTable
+
+    t = vtkTable()
+    idx = np.arange(int(nrows), dtype=np.float64)
+    for c in range(ncols):
+        vals = ((idx * (c + 2) + 3 * c) % 17).astype(np.float64) + 0.5 * (idx % (c + 3))
+        arr = numpy_to_vtk(np.ascontiguousarray(vals), deep=1)  # -> vtkDoubleArray
+        arr.SetName(f"col{c}")
+        t.AddColumn(arr)
+    return t
+
+
+def _capture_table_into(rec, tab, prefix):
+    """Append every NUMERIC column of ``tab`` to ``rec`` under ``prefix``_<col>.
+
+    Non-numeric (string 'Variable') columns are skipped: vtk_to_numpy cannot
+    represent them and they hold no compute-path values. Column names are
+    space-normalized so they are clean npz keys ('Standard Deviation' ->
+    'Standard_Deviation')."""
+    if tab is None:
+        return
+    for j in range(tab.GetNumberOfColumns()):
+        col = tab.GetColumn(j)
+        if col is None or not col.IsNumeric():
+            continue
+        name = (col.GetName() or f"c{j}").replace(" ", "_")
+        rec[f"{prefix}_{name}"] = np.ascontiguousarray(vtk_to_numpy(col)).copy()
+
+
+def _capture_stats_model(model):
+    """Flatten a statistics result into {name: ndarray} of its numeric columns.
+
+    Handles both shapes the lane produces:
+      * vtkStatisticalModel (OUTPUT_MODEL of vtkStatisticsAlgorithm): iterate the
+        Learned (type 0) then Derived (type 1) tables via GetTable(type, index);
+      * plain vtkTable (vtkComputeQuantiles/Quartiles GetOutput()): captured whole.
+    """
+    from vtkmodules.vtkCommonDataModel import vtkStatisticalModel, vtkTable
+
+    rec = {}
+    if isinstance(model, vtkStatisticalModel):
+        for type_ in (0, 1):  # vtkStatisticalModel.Learned, .Derived
+            for idx in range(model.GetNumberOfTables(type_)):
+                _capture_table_into(rec, model.GetTable(type_, idx), f"t{type_}_{idx}")
+    elif isinstance(model, vtkTable):
+        _capture_table_into(rec, model, "t")
+    return rec
+
+
+def op_stats_descriptive(dtype, size):
+    # Univariate moments (Cardinality/Min/Max/Mean + M2..M4 primary; Std/Var/
+    # Skewness/Kurtosis/Sum derived). Model on OUTPUT_MODEL (port 1).
+    from vtkmodules.vtkFiltersStatistics import vtkDescriptiveStatistics
+
+    t = make_stats_table(size)
+    s = vtkDescriptiveStatistics()
+    s.SetInputData(0, t)  # INPUT_DATA
+    for c in range(3):
+        s.AddColumn(f"col{c}")
+    s.SetLearnOption(True)
+    s.SetDeriveOption(True)
+    s.SetAssessOption(False)
+    s.SetTestOption(False)
+    s.Update()
+    return _capture_stats_model(s.GetOutputDataObject(1))
+
+
+def op_stats_order(dtype, size):
+    # Rank/quantile statistics: a per-variable histogram (Learned) + a quantile
+    # table (Derived). All boundaries fall on the small set of distinct integer/
+    # half-integer values, so the quantiles are unambiguous and deterministic.
+    from vtkmodules.vtkFiltersStatistics import vtkOrderStatistics
+
+    t = make_stats_table(size)
+    s = vtkOrderStatistics()
+    s.SetInputData(0, t)
+    for c in range(3):
+        s.AddColumn(f"col{c}")
+    s.SetLearnOption(True)
+    s.SetDeriveOption(True)
+    s.SetAssessOption(False)
+    s.SetTestOption(False)
+    s.Update()
+    return _capture_stats_model(s.GetOutputDataObject(1))
+
+
+def op_stats_quantiles(dtype, size):
+    # vtkComputeQuantiles: N-tile + extrema table (one column per input column,
+    # N+1 rows). vtkTableAlgorithm -> result is a plain vtkTable on port 0.
+    from vtkmodules.vtkFiltersStatistics import vtkComputeQuantiles
+
+    f = vtkComputeQuantiles()
+    f.SetInputData(make_stats_table(size))
+    f.SetNumberOfIntervals(5)
+    f.Update()
+    return _capture_stats_model(f.GetOutput())
+
+
+def op_stats_quartiles(dtype, size):
+    # vtkComputeQuartiles == vtkComputeQuantiles fixed at 4 intervals.
+    from vtkmodules.vtkFiltersStatistics import vtkComputeQuartiles
+
+    f = vtkComputeQuartiles()
+    f.SetInputData(make_stats_table(size))
+    f.Update()
+    return _capture_stats_model(f.GetOutput())
 # Filters/Modeling stock-parity lane (Wave 7)
 # ===========================================================================
 # Deterministic polydata builders for the modeling filters. All coordinates are
@@ -4546,6 +4698,17 @@ OPS = {
     "points_interp_shepard": dict(fn=op_interp_shepard, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_linear": dict(fn=op_interp_linear, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_voronoi": dict(fn=op_interp_voronoi, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    # --- Filters/Statistics stock-parity lane (Wave 4) ---
+    # vtkStatisticsAlgorithm model on OUTPUT PORT 1 (vtkStatisticalModel) for
+    # descriptive/order; vtkComputeQuantiles/Quartiles result table on port 0.
+    # Default strict byte-exact (NO relaxation flag): raw counts/min/max/sum must
+    # match exactly; a tiny <~1e-12 divergence in a DERIVED moment ONLY (thread-
+    # partial FP non-associativity) would be reclassified point_data_tol, a count/
+    # value divergence is a real bug. Sizes = table row counts spanning SMP batches.
+    "stats_descriptive": dict(fn=op_stats_descriptive, group="statistics", dtypes=["float64"], sizes=[200, 400]),
+    "stats_order": dict(fn=op_stats_order, group="statistics", dtypes=["float64"], sizes=[200, 400]),
+    "stats_quantiles": dict(fn=op_stats_quantiles, group="statistics", dtypes=["float64"], sizes=[200, 400]),
+    "stats_quartiles": dict(fn=op_stats_quartiles, group="statistics", dtypes=["float64"], sizes=[200, 400]),
     # --- Filters/FlowPaths stock-parity lane (Wave 5) ---
     # vtkStreamTracer: a fixed-step RK4 integration of a deterministic rotation
     # velocity field from a few fixed seeds. The ledger's class C1 anticipated a
