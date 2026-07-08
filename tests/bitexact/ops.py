@@ -159,6 +159,19 @@ try:
         vtkConeSource,
         vtkSphereSource,
     )
+    # Filters/FlowPaths stock-parity lane (Wave 5). FiltersFlowPaths is WANTed in
+    # _modules_minimal.cmake and vtkStreamTracer / vtkEvenlySpacedStreamlines2D are
+    # neither in _nocompile_classes.cmake nor _nowrap_classes.cmake (only the
+    # Lagrangian tracker + vtkExtractParticlesOverTime are excluded), so both are
+    # compiled AND wrapped. The time-dependent tracers (vtkParticleTracer,
+    # vtkParticlePathFilter, vtkStreaklineFilter) require a TEMPORAL collection on
+    # input port 0 (vtkParticleTracerBase uses vtkTemporalInterpolatedVelocityField)
+    # and are deliberately NOT covered here -- a deterministic static-field case
+    # can't be built for them without a temporal pipeline.
+    from vtkmodules.vtkFiltersFlowPaths import (
+        vtkEvenlySpacedStreamlines2D,
+        vtkStreamTracer,
+    )
     # Imaging lanes (per-pixel from PR #196 + the geometric/resample/component/
     # label remainder): only classes cvista COMPILES and WRAPS are imported here
     # (verified against cvista-config/_nocompile_classes.cmake + _nowrap_classes.cmake
@@ -288,6 +301,77 @@ def make_scalar_image(size, dtype, dims=3, offset=0):
     arr.SetName("img")
     img.GetPointData().SetScalars(arr)
     return img
+
+
+def make_velocity_volume(n, dtype):
+    """A 3D vtkImageData carrying a solid-body ROTATION velocity field, built from
+    integer index algebra ONLY (no trig, no sqrt) so both backends start byte-
+    identical AND the ODE integration of it is reproducible.
+
+    Grid: dims (n,n,n), unit spacing, origin 0 -> points at integer coords 0..n-1
+    (VTK image point order iterates x fastest). n is used ODD by the callers so the
+    center c=(n-1)//2 is an exact integer. The per-point vector is
+
+        v = ( -(y - c),  (x - c),  0 )
+
+    i.e. a rigid rotation about the axis x=y=c in the z=const planes. Every
+    component is an integer in [-(n-1), n-1], exactly representable in float32 AND
+    float64, so the field is bit-identical at every grid point on both sides. A seed
+    at radius r from the axis traces a CIRCLE of radius r that stays inside the
+    domain (no OUT_OF_DOMAIN termination) -- a well-conditioned, bounded, curved
+    streamline. The field is set as the active VECTORS array 'vec' (vtkStreamTracer
+    integrates the active vectors by default)."""
+    n = int(n)
+    zz, yy, xx = np.indices((n, n, n), dtype=np.int64)
+    c = (n - 1) // 2
+    vx = -(yy - c)
+    vy = (xx - c)
+    vz = np.zeros_like(xx)
+    # C-order ravel of (n,n,n) iterates the last axis (xx) fastest -> VTK point order.
+    vec = np.stack([vx.ravel(), vy.ravel(), vz.ravel()], axis=1).astype(dtype)
+    img = vtkImageData()
+    img.SetDimensions(n, n, n)
+    arr = numpy_to_vtk(np.ascontiguousarray(vec), deep=1)
+    arr.SetName("vec")
+    img.GetPointData().SetVectors(arr)
+    return img
+
+
+def make_velocity_grid2d(n, dtype):
+    """2D counterpart of make_velocity_volume: a single-slice (dims n,n,1) rotation
+    field in the z=0 plane, for vtkEvenlySpacedStreamlines2D (which requires a 2D
+    field). Same integer-only construction; v=(-(y-c),(x-c),0), c=(n-1)//2."""
+    n = int(n)
+    yy, xx = np.indices((n, n), dtype=np.int64)
+    c = (n - 1) // 2
+    vx = -(yy - c)
+    vy = (xx - c)
+    vz = np.zeros_like(xx)
+    vec = np.stack([vx.ravel(), vy.ravel(), vz.ravel()], axis=1).astype(dtype)
+    img = vtkImageData()
+    img.SetDimensions(n, n, 1)
+    arr = numpy_to_vtk(np.ascontiguousarray(vec), deep=1)
+    arr.SetName("vec")
+    img.GetPointData().SetVectors(arr)
+    return img
+
+
+def make_seed_points(n, dtype, nseeds=4):
+    """A tiny vtkPolyData of `nseeds` seed points on distinct radii along the
+    +x ray from the rotation axis, in the z=center plane of make_velocity_volume.
+
+    Seeds sit at (c+r, c, c) for r=1..nseeds (c=(n-1)//2). DISTINCT radii => the
+    resulting circular streamlines never share a coordinate, so the order-relaxed
+    point canonicalization (lexsort by coords) is unambiguous. A SMALL, fixed seed
+    count keeps the output compact for an unambiguous multiset comparison."""
+    n = int(n)
+    c = (n - 1) // 2
+    pts = np.array([(c + (k + 1), c, c) for k in range(nseeds)], dtype=dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts), deep=1))
+    pd.SetPoints(vp)
+    return pd
 
 
 def make_sphere(theta=40, phi=40):
@@ -3302,6 +3386,74 @@ def op_image_wrappad(dtype, size):
     return _run_image_pad(vtkImageWrapPad(), size, dtype)
 
 
+# ---------------------------------------------------------------------------
+# Filters/FlowPaths stock-parity lane (Wave 5).
+# ---------------------------------------------------------------------------
+def op_streamtracer(dtype, size):
+    # vtkStreamTracer integrates a small set of fixed seeds through the deterministic
+    # solid-body-rotation velocity field of make_velocity_volume, using a FIXED-step
+    # RK4 integrator (SetIntegratorTypeToRungeKutta4) with a bounded step budget so
+    # the output is compact and reproducible. Each seed's circular streamline is an
+    # independent, deterministic sequence of RK4 evaluations; the trilinear
+    # interpolation of a LINEAR field is exact, so the integrated POSITIONS are
+    # thread-invariant (identical serial-vs-parallel).
+    #
+    # cvista's DEFAULT SMP backend is STDThread, and vtkStreamTracer integrates the
+    # per-seed streamlines in parallel and emits them in a thread-dependent ORDER
+    # (intended-divergence ledger class C1: same set of polylines / same per-line
+    # point positions, LINE order permuted, and with it the global point numbering
+    # and the per-line/point-data + cell-data). Stock VTK runs the sequential
+    # reference. Hence this op is expected to compare ORDER-RELAXED + POINTS-RELAXED:
+    # same point set (coords + interpolated velocity 'vec' + IntegrationTime +
+    # Normals) and the same multiset of polylines carrying their cell-data
+    # (ReasonForTermination, SeedIds), with point/cell order negotiable. If instead
+    # the per-seed POSITIONS diverge, that is a real ODE-integration bug (not order)
+    # and the order-relaxed gate will still RED -- do not mask it.
+    #
+    # ComputeVorticity is turned OFF to keep the output focused on positions (drops
+    # the Vorticity/Rotation/AngularVelocity arrays); the along-line 'Normals' array
+    # is still emitted (GenerateNormalsInIntegrate has no public setter) and is
+    # per-line deterministic.
+    st = vtkStreamTracer()
+    st.SetInputData(make_velocity_volume(size, dtype))
+    st.SetSourceData(make_seed_points(size, dtype))
+    st.SetIntegratorTypeToRungeKutta4()
+    st.SetIntegrationStepUnit(1)  # 1 == LENGTH_UNIT: fixed 0.5 arc-length steps
+    st.SetInitialIntegrationStep(0.5)
+    st.SetMaximumPropagation(1.0e6)  # large -> the step budget is the real limiter
+    st.SetMaximumNumberOfSteps(20)  # bounded -> compact streamlines
+    st.SetIntegrationDirectionToForward()
+    st.SetComputeVorticity(False)
+    st.Update()
+    return st.GetOutput()
+
+
+def op_evenly_spaced_streamlines2d(dtype, size):
+    # vtkEvenlySpacedStreamlines2D fills the z=0 plane of make_velocity_grid2d's
+    # rotation field with streamlines spaced SeparatingDistance apart, growing
+    # adaptively from a single StartPosition. The algorithm is SERIAL (no
+    # vtkSMPTools use) and fully deterministic, so unlike vtkStreamTracer this op is
+    # expected to be strict BYTE-EXACT vs stock (no relaxation flag). A red here is a
+    # real divergence to characterize (position/count/value), not order noise.
+    #
+    # Fixed-step RK4, LENGTH_UNIT so InitialIntegrationStep + SeparatingDistance are
+    # in arc length, a bounded step budget, and ComputeVorticity OFF keep the output
+    # compact and reproducible. The rotation field yields concentric closed loops,
+    # which the filter's closed-loop detection terminates cleanly.
+    f = vtkEvenlySpacedStreamlines2D()
+    f.SetInputData(make_velocity_grid2d(size, dtype))
+    c = (int(size) - 1) // 2
+    f.SetStartPosition(c + 2, c, 0)
+    f.SetIntegratorTypeToRungeKutta4()
+    f.SetIntegrationStepUnit(1)  # 1 == LENGTH_UNIT
+    f.SetInitialIntegrationStep(0.5)
+    f.SetSeparatingDistance(2.0)
+    f.SetMaximumNumberOfSteps(200)
+    f.SetComputeVorticity(False)
+    f.Update()
+    return f.GetOutput()
+
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -3487,6 +3639,21 @@ OPS = {
     "points_interp_shepard": dict(fn=op_interp_shepard, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_linear": dict(fn=op_interp_linear, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_voronoi": dict(fn=op_interp_voronoi, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    # --- Filters/FlowPaths stock-parity lane (Wave 5) ---
+    # vtkStreamTracer: a fixed-step RK4 integration of a deterministic rotation
+    # velocity field from a few fixed seeds. cvista's default STDThread backend
+    # integrates the per-seed streamlines in parallel and emits them in a thread-
+    # dependent ORDER (ledger class C1), so this is expected to need order_relaxed
+    # + points_relaxed (same point set + same polyline multiset, order permuted).
+    # NOTE(Wave 5): registered here WITHOUT the relaxation flags on purpose for the
+    # first CI run, to OBSERVE the raw divergence and confirm it is order-only
+    # (positions preserved) before adding the flags. A per-seed POSITION divergence
+    # would be a real ODE-integration bug and must not be masked. Odd sizes keep the
+    # field center c=(n-1)//2 an exact integer.
+    "streamtracer": dict(fn=op_streamtracer, group="filter", dtypes=["float32", "float64"], sizes=[11, 21]),
+    # vtkEvenlySpacedStreamlines2D: SERIAL adaptive 2D streamline placement -> strict
+    # BYTE-EXACT vs stock (no relaxation flag). A red is a real divergence.
+    "evenly_spaced_streamlines2d": dict(fn=op_evenly_spaced_streamlines2d, group="filter", dtypes=["float32", "float64"], sizes=[11, 15]),
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
