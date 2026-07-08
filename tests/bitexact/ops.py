@@ -150,6 +150,29 @@ try:
         vtkPLYReader,
         vtkPLYWriter,
     )
+    # IO round-trip stock-parity lane (compiled+wrapped, verified against
+    # cvista-config/_nocompile_classes.cmake + _nowrap_classes.cmake and the
+    # module WANT list in _modules_minimal.cmake).
+    from vtkmodules.vtkIOGeometry import (
+        vtkOBJReader,
+        vtkOBJWriter,
+        vtkSTLReader,
+        vtkSTLWriter,
+    )
+    from vtkmodules.vtkIOXML import (
+        vtkXMLImageDataReader,
+        vtkXMLImageDataWriter,
+        vtkXMLPolyDataReader,
+        vtkXMLPolyDataWriter,
+        vtkXMLUnstructuredGridReader,
+        vtkXMLUnstructuredGridWriter,
+    )
+    from vtkmodules.vtkIOLegacy import (
+        vtkPolyDataReader,
+        vtkPolyDataWriter,
+        vtkUnstructuredGridReader,
+        vtkUnstructuredGridWriter,
+    )
     from vtkmodules.vtkFiltersGeometry import (
         vtkDataSetSurfaceFilter,
         vtkGeometryFilter,
@@ -3102,6 +3125,349 @@ def op_interp_voronoi(dtype, size):
 
 
 # ===========================================================================
+# IO round-trip stock-parity lane (Wave 3): STL / OBJ / XML / legacy .vtk
+# ===========================================================================
+# Each op writes a deterministic dataset to a tempfile with a cvista/stock IO
+# WRITER and reads it back with the matching READER, returning the read-back
+# data object. capture_dataobject then proves the round-tripped points / point
+# & cell scalars / connectivity are byte-identical between cvista and stock --
+# a true write-then-read fidelity gate (the #117 XML compression bug corrupted
+# exactly this read-back).
+#
+# DETERMINISM: every input is built from integer index algebra (no trig, no
+# sqrt); point coordinates are integer-VALUED (stored at the requested float
+# width) so even the limited-precision ASCII/STL text formats round-trip the
+# coordinates EXACTLY -- this isolates any real divergence from mere text
+# rounding. Scalars are (idx * k + c) % 251, exactly representable in every
+# tested storage width.
+
+
+def _io_poly(size, dtype):
+    """A small triangulated planar grid (z=0) with integer-valued coordinates,
+    a per-point scalar 'psca' and a per-cell scalar 'csca' -- the full
+    point/cell field payload exercised through every surface format."""
+    n = int(size)
+    lin = np.arange(n, dtype=dtype)
+    gx, gy = np.meshgrid(lin, lin, indexing="ij")
+    gz = np.zeros_like(gx)
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+
+    def pid(i, j):
+        return i * n + j
+
+    polys = vtkCellArray()
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a, b, c, d = pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)
+            polys.InsertNextCell(3)
+            polys.InsertCellPoint(a)
+            polys.InsertCellPoint(b)
+            polys.InsertCellPoint(c)
+            polys.InsertNextCell(3)
+            polys.InsertCellPoint(a)
+            polys.InsertCellPoint(c)
+            polys.InsertCellPoint(d)
+    pd.SetPolys(polys)
+
+    npts = n * n
+    pidx = np.arange(npts, dtype=np.int64)
+    psca = ((pidx * 7 + 5) % 251).astype(dtype)
+    pa = numpy_to_vtk(np.ascontiguousarray(psca), deep=1)
+    pa.SetName("psca")
+    pd.GetPointData().SetScalars(pa)
+
+    ncell = 2 * (n - 1) * (n - 1)
+    cidx = np.arange(ncell, dtype=np.int64)
+    csca = ((cidx * 11 + 3) % 251).astype(dtype)
+    ca = numpy_to_vtk(np.ascontiguousarray(csca), deep=1)
+    ca.SetName("csca")
+    pd.GetCellData().SetScalars(ca)
+    return pd
+
+
+def _io_ugrid(size, dtype):
+    """A small hexahedral vtkUnstructuredGrid on an integer lattice with a
+    per-point scalar 'psca' and a per-cell scalar 'csca'."""
+    from vtkmodules.vtkCommonDataModel import VTK_HEXAHEDRON
+
+    n = int(size)
+    lin = np.arange(n, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    ug = vtkUnstructuredGrid()
+    ug.SetPoints(vp)
+
+    def pid(i, j, k):
+        return i + n * (j + n * k)
+
+    ncell = (n - 1) ** 3
+    ug.Allocate(ncell)
+    ids = vtkIdList()
+    for k in range(n - 1):
+        for j in range(n - 1):
+            for i in range(n - 1):
+                ids.Reset()
+                for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                    ids.InsertNextId(pid(i + di, j + dj, k))
+                for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                    ids.InsertNextId(pid(i + di, j + dj, k + 1))
+                ug.InsertNextCell(VTK_HEXAHEDRON, ids)
+
+    npts = n * n * n
+    pidx = np.arange(npts, dtype=np.int64)
+    psca = ((pidx * 7 + 5) % 251).astype(dtype)
+    pa = numpy_to_vtk(np.ascontiguousarray(psca), deep=1)
+    pa.SetName("psca")
+    ug.GetPointData().SetScalars(pa)
+
+    cidx = np.arange(ncell, dtype=np.int64)
+    csca = ((cidx * 11 + 3) % 251).astype(dtype)
+    ca = numpy_to_vtk(np.ascontiguousarray(csca), deep=1)
+    ca.SetName("csca")
+    ug.GetCellData().SetScalars(ca)
+    return ug
+
+
+def _io_image(size, dtype):
+    """A small vtkImageData with a per-VOXEL point scalar 'psca' and a per-CELL
+    scalar 'csca' (both integer-valued index algebra)."""
+    n = int(size)
+    img = vtkImageData()
+    img.SetDimensions(n, n, n)
+
+    zz, yy, xx = np.indices((n, n, n), dtype=np.int64)
+    pfield = ((xx * 7 + yy * 13 + zz * 5) % 251).ravel()
+    pa = numpy_to_vtk(np.ascontiguousarray(pfield.astype(dtype)), deep=1)
+    pa.SetName("psca")
+    img.GetPointData().SetScalars(pa)
+
+    m = n - 1
+    czz, cyy, cxx = np.indices((m, m, m), dtype=np.int64)
+    cfield = ((cxx * 11 + cyy * 3 + czz * 17 + 3) % 251).ravel()
+    ca = numpy_to_vtk(np.ascontiguousarray(cfield.astype(dtype)), deep=1)
+    ca.SetName("csca")
+    img.GetCellData().SetScalars(ca)
+    return img
+
+
+def _tmp_roundtrip(suffix, writer_cfg, reader_cfg):
+    """Run write-then-read against a temp file, returning capture of the reader
+    output. writer_cfg(path)->configured writer with input set; reader_cfg(path)
+    ->configured reader. Mirrors the PLY op's mkstemp/cleanup pattern."""
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    try:
+        w = writer_cfg(path)
+        w.Write()
+        r = reader_cfg(path)
+        r.Update()
+        return capture_dataobject(r.GetOutput())
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+# ---- STL (vtkSTLWriter / vtkSTLReader) ------------------------------------
+# cvista ships a FAST STL reader that is ORDER-RELAXED: it produces the same
+# merged point set and the same triangle multiset as stock, but in a different
+# (equally valid) order, and re-merges the writer's per-triangle duplicated
+# vertices. So these ops carry order_relaxed + points_relaxed (documented,
+# EXPECTED). Coordinates are integer-valued -> the ASCII float format round-trips
+# them EXACTLY on both backends, so no point_data_tol is needed; a POINT-COUNT or
+# >0 canonicalized-coordinate difference here would NOT be the known order-relax
+# and IS a candidate bug.
+def _stl_roundtrip(size, dtype, ascii_mode):
+    mesh = _io_poly(size, dtype)  # STL stores triangles+coords only (scalars dropped)
+
+    def wcfg(path):
+        w = vtkSTLWriter()
+        w.SetFileName(path)
+        if ascii_mode:
+            w.SetFileTypeToASCII()
+        else:
+            w.SetFileTypeToBinary()
+        w.SetInputData(mesh)
+        return w
+
+    def rcfg(path):
+        r = vtkSTLReader()
+        r.SetFileName(path)
+        return r
+
+    return _tmp_roundtrip(".stl", wcfg, rcfg)
+
+
+def op_stl_roundtrip_binary(dtype, size):
+    return _stl_roundtrip(size, dtype, ascii_mode=False)
+
+
+def op_stl_roundtrip_ascii(dtype, size):
+    return _stl_roundtrip(size, dtype, ascii_mode=True)
+
+
+# ---- OBJ (vtkOBJWriter / vtkOBJReader) ------------------------------------
+# OBJ writes vertices in order and 1-based face indices; the reader preserves
+# that order. Integer coords -> exact text round-trip. Expected byte-exact /
+# order-stable (no relaxation flag). OBJ carries geometry only (no field data).
+def op_obj_roundtrip(dtype, size):
+    mesh = _io_poly(size, dtype)
+
+    def wcfg(path):
+        w = vtkOBJWriter()
+        w.SetFileName(path)
+        w.SetInputData(mesh)
+        return w
+
+    def rcfg(path):
+        r = vtkOBJReader()
+        r.SetFileName(path)
+        return r
+
+    return _tmp_roundtrip(".obj", wcfg, rcfg)
+
+
+# ---- XML: VTP / VTU / VTI -------------------------------------------------
+# Full-fidelity formats: points, point+cell scalars, connectivity, and storage
+# precision are all preserved. Expected BYTE-EXACT vs stock. The compressed
+# (SetCompressorTypeToZLib) + Binary/Appended data-mode paths are exactly where
+# the #117 XML-writer compression bug bit -- a red here is a real find, NOT to be
+# silenced with a relaxation flag.
+_XML_DATAMODE = {"ascii": 0, "binary": 1, "appended": 2}  # vtkXMLWriter enum
+
+
+def _xml_roundtrip(suffix, writer_cls, reader_cls, dataset, data_mode, zlib):
+    def wcfg(path):
+        w = writer_cls()
+        w.SetFileName(path)
+        dm = _XML_DATAMODE[data_mode]
+        if dm == 0:
+            w.SetDataModeToAscii()
+        elif dm == 1:
+            w.SetDataModeToBinary()
+        else:
+            w.SetDataModeToAppended()
+        if zlib:
+            w.SetCompressorTypeToZLib()
+        else:
+            w.SetCompressorTypeToNone()
+        # Pin the encoded byte order so binary/appended payloads match across
+        # runners of either endianness.
+        w.SetByteOrderToLittleEndian()
+        w.SetInputData(dataset)
+        return w
+
+    def rcfg(path):
+        r = reader_cls()
+        r.SetFileName(path)
+        return r
+
+    return _tmp_roundtrip(suffix, wcfg, rcfg)
+
+
+def op_xml_vtp_appended(dtype, size):
+    return _xml_roundtrip(".vtp", vtkXMLPolyDataWriter, vtkXMLPolyDataReader,
+                          _io_poly(size, dtype), "appended", zlib=False)
+
+
+def op_xml_vtp_binary_zlib(dtype, size):
+    # #117-risk path: Binary data mode + ZLib compression.
+    return _xml_roundtrip(".vtp", vtkXMLPolyDataWriter, vtkXMLPolyDataReader,
+                          _io_poly(size, dtype), "binary", zlib=True)
+
+
+def op_xml_vtp_ascii(dtype, size):
+    return _xml_roundtrip(".vtp", vtkXMLPolyDataWriter, vtkXMLPolyDataReader,
+                          _io_poly(size, dtype), "ascii", zlib=False)
+
+
+def op_xml_vtu_appended(dtype, size):
+    return _xml_roundtrip(".vtu", vtkXMLUnstructuredGridWriter,
+                          vtkXMLUnstructuredGridReader,
+                          _io_ugrid(size, dtype), "appended", zlib=False)
+
+
+def op_xml_vtu_binary_zlib(dtype, size):
+    # #117-risk path: Binary data mode + ZLib compression on an UnstructuredGrid.
+    return _xml_roundtrip(".vtu", vtkXMLUnstructuredGridWriter,
+                          vtkXMLUnstructuredGridReader,
+                          _io_ugrid(size, dtype), "binary", zlib=True)
+
+
+def op_xml_vtu_ascii(dtype, size):
+    return _xml_roundtrip(".vtu", vtkXMLUnstructuredGridWriter,
+                          vtkXMLUnstructuredGridReader,
+                          _io_ugrid(size, dtype), "ascii", zlib=False)
+
+
+def op_xml_vti_appended(dtype, size):
+    return _xml_roundtrip(".vti", vtkXMLImageDataWriter, vtkXMLImageDataReader,
+                          _io_image(size, dtype), "appended", zlib=False)
+
+
+def op_xml_vti_binary_zlib(dtype, size):
+    # #117-risk path: Binary data mode + ZLib compression on ImageData.
+    return _xml_roundtrip(".vti", vtkXMLImageDataWriter, vtkXMLImageDataReader,
+                          _io_image(size, dtype), "binary", zlib=True)
+
+
+# ---- Legacy .vtk (vtkPolyData/UnstructuredGrid Writer/Reader) -------------
+# Full-fidelity legacy format, ascii + binary. Expected BYTE-EXACT vs stock.
+def _legacy_roundtrip(suffix, writer_cls, reader_cls, dataset, ascii_mode):
+    def wcfg(path):
+        w = writer_cls()
+        w.SetFileName(path)
+        if ascii_mode:
+            w.SetFileTypeToASCII()
+        else:
+            w.SetFileTypeToBinary()
+        w.SetInputData(dataset)
+        return w
+
+    def rcfg(path):
+        r = reader_cls()
+        r.SetFileName(path)
+        # Pull back BOTH the point and cell scalar arrays.
+        r.ReadAllScalarsOn()
+        return r
+
+    return _tmp_roundtrip(suffix, wcfg, rcfg)
+
+
+def op_legacy_poly_ascii(dtype, size):
+    return _legacy_roundtrip(".vtk", vtkPolyDataWriter, vtkPolyDataReader,
+                             _io_poly(size, dtype), ascii_mode=True)
+
+
+def op_legacy_poly_binary(dtype, size):
+    return _legacy_roundtrip(".vtk", vtkPolyDataWriter, vtkPolyDataReader,
+                             _io_poly(size, dtype), ascii_mode=False)
+
+
+def op_legacy_ugrid_ascii(dtype, size):
+    return _legacy_roundtrip(".vtk", vtkUnstructuredGridWriter,
+                             vtkUnstructuredGridReader,
+                             _io_ugrid(size, dtype), ascii_mode=True)
+
+
+def op_legacy_ugrid_binary(dtype, size):
+    return _legacy_roundtrip(".vtk", vtkUnstructuredGridWriter,
+                             vtkUnstructuredGridReader,
+                             _io_ugrid(size, dtype), ascii_mode=False)
+
+
+# ===========================================================================
 # IMAGING remainder lane (geometric / resample / component / labeling)
 # ===========================================================================
 # Extends PR #196's per-pixel imaging lane with the ImagingCore filters that
@@ -3876,6 +4242,30 @@ OPS = {
     "points_interp_shepard": dict(fn=op_interp_shepard, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_linear": dict(fn=op_interp_linear, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
     "points_interp_voronoi": dict(fn=op_interp_voronoi, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    # --- IO round-trip Wave 3: STL / OBJ / XML / legacy .vtk ---
+    # STL: cvista's FAST STL reader is ORDER-RELAXED (same merged point set + same
+    # triangle multiset, arbitrary order) -> order_relaxed + points_relaxed are
+    # EXPECTED here (integer coords make the ASCII text round-trip exact, so no
+    # point_data_tol is needed). A point-count or canonicalized-coord difference
+    # would be a candidate bug, not the documented relax.
+    "stl_roundtrip_binary": dict(fn=op_stl_roundtrip_binary, group="io", dtypes=["float32", "float64"], sizes=[6, 10], order_relaxed=True, points_relaxed=True),
+    "stl_roundtrip_ascii": dict(fn=op_stl_roundtrip_ascii, group="io", dtypes=["float32", "float64"], sizes=[6, 10], order_relaxed=True, points_relaxed=True),
+    # OBJ / XML / legacy: full-fidelity formats, expected BYTE-EXACT (no flag).
+    # A red in any of these is a real writer/reader divergence to characterize
+    # (the XML *_binary_zlib ops are the #117 compression-bug risk path).
+    "obj_roundtrip": dict(fn=op_obj_roundtrip, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vtp_appended": dict(fn=op_xml_vtp_appended, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vtp_binary_zlib": dict(fn=op_xml_vtp_binary_zlib, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vtp_ascii": dict(fn=op_xml_vtp_ascii, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vtu_appended": dict(fn=op_xml_vtu_appended, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vtu_binary_zlib": dict(fn=op_xml_vtu_binary_zlib, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vtu_ascii": dict(fn=op_xml_vtu_ascii, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vti_appended": dict(fn=op_xml_vti_appended, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "xml_vti_binary_zlib": dict(fn=op_xml_vti_binary_zlib, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "legacy_poly_ascii": dict(fn=op_legacy_poly_ascii, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "legacy_poly_binary": dict(fn=op_legacy_poly_binary, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "legacy_ugrid_ascii": dict(fn=op_legacy_ugrid_ascii, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "legacy_ugrid_binary": dict(fn=op_legacy_ugrid_binary, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
