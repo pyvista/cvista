@@ -60,6 +60,7 @@
 #include <vtkFlyingEdges3D.h>
 #include <vtkFlyingEdgesPlaneCutter.h>
 #include <vtkGaussianSplatter.h>
+#include <vtkGenerateGlobalIds.h>
 #include <vtkGeometryFilter.h>
 #include <vtkGradientFilter.h>
 #include <vtkHyperTreeGrid.h>
@@ -70,6 +71,7 @@
 #include <vtkHyperTreeGridProbeFilter.h>
 #include <vtkHyperTreeGridToUnstructuredGrid.h>
 #include <vtkImageAppendComponents.h>
+#include <vtkImageBSplineCoefficients.h>
 #include <vtkImageBlend.h>
 #include <vtkImageCast.h>
 #include <vtkImageContinuousDilate3D.h>
@@ -81,9 +83,11 @@
 #include <vtkImageMedian3D.h>
 #include <vtkImageRectilinearWipe.h>
 #include <vtkImageReslice.h>
+#include <vtkImageResliceToColors.h>
 #include <vtkImageResize.h>
 #include <vtkImageShiftScale.h>
 #include <vtkImageShrink3D.h>
+#include <vtkImageSlabReslice.h>
 #include <vtkImageThreshold.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
@@ -106,6 +110,7 @@
 #include <vtkProbeFilter.h>
 #include <vtkRTAnalyticSource.h>
 #include <vtkRadiusOutlierRemoval.h>
+#include <vtkRedistributeDataSetFilter.h>
 #include <vtkRemovePolyData.h>
 #include <vtkResampleToImage.h>
 #include <vtkResampleWithDataSet.h>
@@ -129,6 +134,7 @@
 #include <vtkTableFFT.h>
 #include <vtkThreshold.h>
 #include <vtkTransformFilter.h>
+#include <vtkVisualStatistics.h>
 #include <vtkVoronoi2D.h>
 #include <vtkWarpScalar.h>
 #include <vtkWarpVector.h>
@@ -828,6 +834,77 @@ std::vector<Case> RegisterCases()
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+  // Unlike its siblings above (whose Learn/Derive are serial), vtkVisualStatistics
+  // (a vtkDescriptiveStatistics subclass) genuinely THREADS its Learn pass: for each
+  // requested field it bins the column into a per-thread vtkIdTypeArray histogram via
+  // vtkSMPTools::For (HistogramWorker), then composites the per-thread partials in
+  // Reduce(). The composite is integer counters summed bin-by-bin -- integer addition
+  // is associative, so the final histogram is independent of how the tuples were
+  // partitioned across threads -> byte-exact parallel-vs-serial. This is the one
+  // statistics case that actually stresses a threaded reduction rather than gating the
+  // comparator descent. The histogram is only emitted for fields with an explicit
+  // range, so SetFieldRange is REQUIRED (A,B both lie in [-1,1]); without it the Learn
+  // loop iterates no fields and the model is vacuous. Model on OUTPUT_MODEL (port 1).
+  add("vtkVisualStatistics", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkVisualStatistics> f;
+    f->SetInputData(in.table);
+    f->AddColumn("A");
+    f->AddColumn("B");
+    f->SetFieldRange("A", -1.0, 1.0);
+    f->SetFieldRange("B", -1.0, 1.0);
+    f->SetLearnOption(true);
+    f->SetDeriveOption(true);
+    f->SetAssessOption(false);
+    f->SetTestOption(false);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+
+  // ---- parallel DIY2 (single-rank, no MPI controller) -----------------------
+  // These live in Filters/ParallelDIY2 and are runnable single-process: their
+  // constructor grabs vtkMultiProcessController::GetGlobalController(), which with no
+  // MPI is a serial/dummy controller (GetNumberOfProcesses()==1), so DIY runs one
+  // local block. They are threaded (vtkSMPTools::For) within that rank.
+  //
+  // Global-id assignment. vtkGenerateGlobalIds SHALLOW-copies the input (points/cells
+  // are NOT reordered) and adds GlobalPointIds/GlobalCellIds arrays. Single-rank, the
+  // block count is 1 so the kd-tree redistribution branch (nblocks>1) is skipped; the
+  // unique-id assignment is a SERIAL input-order walk over the merged elements, and the
+  // threaded passes are per-element disjoint writes (coordinate gather, cell-gid lookup)
+  // plus a final offset-add that early-returns at offset 0 for the sole rank. So both
+  // the added id VALUES and the pass-through geometry are byte-identical serial-vs-
+  // parallel -> gated byte-exact (points stay in input order, no reindexing to relax).
+  add("vtkGenerateGlobalIds", "Filters/ParallelDIY2", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkGenerateGlobalIds> f;
+    f->SetInputData(in.ugrid);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // DIY redistribution. With PreservePartitionsInOutput the output is a
+  // vtkPartitionedDataSet (the comparator descends it as a composite). Ask for 4
+  // partitions so the kd-tree actually splits (single-rank default is 1 partition =
+  // vacuous pass-through). The kd-tree cuts are a deterministic function of the point
+  // coordinates (serial median splits) and BoundaryMode defaults to ASSIGN_TO_ONE_REGION
+  // (whole cells, no clipping), so point POSITIONS are copied unchanged from the input --
+  // only which block a cell lands in, and the per-block emission order, are threaded.
+  // orderRelaxed: block STRUCTURE (4 blocks, flat-index order) stays strict, each leaf's
+  // points/cells compared order-insensitively; positions/count sacred, order negotiable.
+  // GenerateGlobalCellIds is turned OFF on purpose: the synthesized per-cell global id is
+  // a within-block ordinal, so if the per-block cell emission order is thread-dependent
+  // the SAME cell would carry a different id in parallel -- that id rides in the cell-data
+  // key of the order-insensitive comparator and would red a benign reordering. With it off
+  // the case tests exactly what parity requires here: identical point positions and cells
+  // (connectivity + original cell data) landing in the same deterministic blocks.
+  add(
+    "vtkRedistributeDataSetFilter", "Filters/ParallelDIY2", Risk::Merge,
+    [](const Inputs& in) {
+      vtkNew<vtkRedistributeDataSetFilter> f;
+      f->SetInputData(in.ugrid);
+      f->SetPreservePartitionsInOutput(true);
+      f->SetNumberOfPartitions(4);
+      f->SetGenerateGlobalCellIds(false);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
 
   // ---- stream tracing (parallel per-seed integration) -----------------------
   // vtkStreamTracer integrates one streamline per seed, and the class is threaded
@@ -1383,6 +1460,47 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.image);
     f->SetOutputSpacing(1.5, 1.5, 1.5);
     f->SetInterpolationModeToLinear();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // vtkImageReslice subclass that colour-maps the resliced scalars through a LUT. Same
+  // TIA reslice threading as the base (each output voxel is an independent sample of the
+  // input, then a pointwise LUT lookup), disjoint output slots -> byte-exact per voxel.
+  add("vtkImageResliceToColors", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkLookupTable> lut;
+    lut->SetTableRange(0.0, 300.0);
+    lut->Build();
+    vtkNew<vtkImageResliceToColors> f;
+    f->SetInputData(in.image);
+    f->SetOutputSpacing(1.5, 1.5, 1.5);
+    f->SetInterpolationModeToLinear();
+    f->SetLookupTable(lut);
+    f->SetOutputFormatToRGBA();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Slab reslice (vtkImageReslice subclass): each output pixel blends a fixed number of
+  // slab samples along the slab normal with a fixed reduction (mean here) -- a fixed-
+  // order per-output-voxel accumulation written to its own slot -> byte-exact per voxel.
+  add("vtkImageSlabReslice", "Imaging/General", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageSlabReslice> f;
+    f->SetInputData(in.image);
+    f->SetOutputSpacing(1.5, 1.5, 1.5);
+    f->SetInterpolationModeToLinear();
+    f->SetBlendModeToMean();
+    f->SetSlabThickness(4.0);
+    f->SetSlabResolution(1.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // B-spline coefficient transform (vtkThreadedImageAlgorithm). RequestData runs one
+  // threaded pass PER dimension (this->Iteration); each pass threads the output extent
+  // split across the OTHER axes so every thread owns whole lines along the processing
+  // axis -- the recursive IIR filter over each line is therefore complete and
+  // independent per thread -> byte-exact regardless of the extent partition.
+  add("vtkImageBSplineCoefficients", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageBSplineCoefficients> f;
+    f->SetInputData(in.image);
+    f->SetSplineDegree(3);
+    f->SetBorderModeToClamp();
+    f->SetOutputScalarTypeToDouble();
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   // Per-voxel LUT map (scalar -> RGBA uint8); pointwise -> byte-exact.

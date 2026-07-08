@@ -39,6 +39,7 @@ find_package(VTK REQUIRED COMPONENTS
   FiltersHyperTree
   FiltersModeling
   FiltersParallel
+  FiltersParallelDIY2
   FiltersPoints
   FiltersSources
   FiltersStatistics
