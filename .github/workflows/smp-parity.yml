@@ -20,6 +20,27 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+    inputs:
+      # Dispatch-only high-repeat STRESS sweep (the `stress` job below). Off by
+      # default so a plain dispatch still just runs the normal parity gate.
+      run_stress:
+        description: 'Run the high-repeat intermittent-divergence STRESS sweep instead of the normal gate'
+        type: boolean
+        required: false
+        default: false
+      stress_repeats:
+        description: 'STRESS: REPEATS per (case,threadcount) inside each validator run'
+        required: false
+        default: '200'
+      stress_iterations:
+        description: 'STRESS: number of full-suite validator iterations to loop'
+        required: false
+        default: '8'
+      stress_include_macos:
+        description: 'STRESS: also run the sweep on macOS'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: smp-parity-${{ github.ref }}
@@ -53,7 +74,9 @@ jobs:
   parity:
     name: SMP parity (${{ matrix.os }})
     needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true') }}
+    # Normal per-OS gate. Skipped on a STRESS dispatch (run_stress=true) so the
+    # dispatch spends its time in the `stress` job below, not a redundant 3-OS build.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true') && !(github.event_name == 'workflow_dispatch' && inputs.run_stress) }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     timeout-minutes: 90
@@ -117,6 +140,95 @@ jobs:
         run: ci/build-sdk.sh
       - name: SMP parallel-vs-serial parity
         run: ci/run-smp-parity.sh
+
+  # ---------------------------------------------------------------------------
+  # Dispatch-only high-repeat STRESS sweep. A single low-REPEATS gate run misses
+  # intermittent, scheduling-dependent VALUE/COUNT divergences (a real
+  # vtkVisualStatistics parallel histogram bin miscount once passed the gate and
+  # only surfaced on a later run). This job builds the SAME native validator (no
+  # sanitizers -- value divergences reproduce best at native speed + high repeats)
+  # and loops it many times at a high REPEATS to shake those out. NOT a gate:
+  # gated to `run_stress` dispatch input, so it never runs on PRs/main/merge_group.
+  stress:
+    name: SMP parity stress (${{ matrix.os }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stress }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - os: macos
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+            container: ''
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Skip macOS unless requested
+        id: gate
+        run: |
+          if [ "${{ matrix.os }}" = macos ] && [ "${{ inputs.stress_include_macos }}" != true ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "macOS stress leg not requested (stress_include_macos=false); skipping."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          fetch-depth: 0
+      - name: Install rendering + build deps (Linux)
+        if: steps.gate.outputs.run == 'true' && startsWith(matrix.os, 'linux')
+        run: |
+          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+            mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
+            libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
+            ccache git mold lld
+      - name: Set up Python (macOS)
+        if: steps.gate.outputs.run == 'true' && matrix.os == 'macos'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ccache (macOS)
+        if: steps.gate.outputs.run == 'true' && matrix.os == 'macos'
+        run: brew install ccache
+      - name: Configure ccache dir
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          if [ -n "${{ matrix.container }}" ]; then
+            echo "CCACHE_DIR=/ccache" >> "$GITHUB_ENV"
+          else
+            echo "CCACHE_DIR=$HOME/.cache/cvista-smp-ccache" >> "$GITHUB_ENV"
+          fi
+      - name: Restore ccache (reuse the gate's cache to skip a cold SDK build)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cvista-smp-ccache-${{ matrix.os }}-stress-${{ github.run_id }}
+          restore-keys: |
+            cvista-smp-ccache-${{ matrix.os }}-
+      - name: Build + install cvista (find_package tree)
+        if: steps.gate.outputs.run == 'true'
+        run: ci/build-sdk.sh
+      - name: SMP parity high-repeat stress sweep
+        if: steps.gate.outputs.run == 'true'
+        env:
+          SMP_STRESS_REPEATS: ${{ inputs.stress_repeats }}
+          SMP_STRESS_ITERATIONS: ${{ inputs.stress_iterations }}
+        run: ci/run-smp-parity-stress.sh
+      - name: Upload per-iteration stress logs
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-stress-logs-${{ matrix.os }}
+          path: build-smp-parity/stress-logs/
+          if-no-files-found: ignore
 
   smp-parity-gate:
     name: SMP parity gate
