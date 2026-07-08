@@ -194,6 +194,7 @@ try:
     from vtkmodules.vtkFiltersFlowPaths import (
         vtkEvenlySpacedStreamlines2D,
         vtkStreamTracer,
+    )
     # Filters/Verdict per-cell mesh/cell quality + size (Wave 6 stock-parity lane).
     # FiltersVerdict is WANTed in _modules_minimal.cmake and none of these classes
     # is in _nocompile_classes.cmake / _nowrap_classes.cmake, so all three COMPILE
