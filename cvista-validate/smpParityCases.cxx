@@ -98,6 +98,7 @@
 #include <vtkOrderStatistics.h>
 #include <vtkPackLabels.h>
 #include <vtkPlaneCutter.h>
+#include <vtkPlaneSource.h>
 #include <vtkPointDataToCellData.h>
 #include <vtkPointInterpolator.h>
 #include <vtkPointInterpolator2D.h>
@@ -111,6 +112,7 @@
 #include <vtkRTAnalyticSource.h>
 #include <vtkRadiusOutlierRemoval.h>
 #include <vtkRedistributeDataSetFilter.h>
+#include <vtkRegularPolygonSource.h>
 #include <vtkRemovePolyData.h>
 #include <vtkResampleToImage.h>
 #include <vtkResampleWithDataSet.h>
@@ -134,6 +136,7 @@
 #include <vtkTableFFT.h>
 #include <vtkThreshold.h>
 #include <vtkTransformFilter.h>
+#include <vtkTrimmedExtrusionFilter.h>
 #include <vtkVisualStatistics.h>
 #include <vtkVoronoi2D.h>
 #include <vtkWarpScalar.h>
@@ -1175,6 +1178,53 @@ std::vector<Case> RegisterCases()
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
+
+  // ---- modeling: trimmed extrusion / imprint (2nd trivially-built input) -----
+  // Both are heavily vtkSMPTools-threaded modeling filters that need a SECOND
+  // polydata input, built inline here from deterministic sources (the shared
+  // Inputs carry no matching pair). They emit swept/triangulated geometry whose
+  // batch EMISSION ORDER is thread-dependent -> orderRelaxed: geometry + data
+  // must match serial as a set and be run-to-run stable; only the concatenation
+  // order may vary.
+  //
+  // vtkTrimmedExtrusionFilter sweeps the boundary edges of a flat n-gon (in the
+  // z=-1 plane) along +z until they meet a flat trim plane at z=0 -- a fully
+  // enclosed, guaranteed-non-empty intersection, so the skirt is well defined.
+  add(
+    "vtkTrimmedExtrusionFilter", "Filters/Modeling", Risk::Iso,
+    [](const Inputs&) {
+      vtkNew<vtkRegularPolygonSource> ngon;
+      ngon->SetCenter(0.0, 0.0, -1.0);
+      ngon->SetNormal(0.0, 0.0, 1.0);
+      ngon->SetRadius(0.5);
+      ngon->SetNumberOfSides(12);
+      ngon->Update();
+      auto in0 = vtkSmartPointer<vtkPolyData>::New();
+      in0->DeepCopy(ngon->GetOutput());
+
+      vtkNew<vtkPlaneSource> trim;
+      trim->SetOrigin(-2.0, -2.0, 0.0);
+      trim->SetPoint1(2.0, -2.0, 0.0);
+      trim->SetPoint2(-2.0, 2.0, 0.0);
+      trim->SetXResolution(4);
+      trim->SetYResolution(4);
+      trim->Update();
+      auto trimPd = vtkSmartPointer<vtkPolyData>::New();
+      trimPd->DeepCopy(trim->GetOutput());
+
+      vtkNew<vtkTrimmedExtrusionFilter> f;
+      f->SetInputData(in0);
+      f->SetTrimSurfaceData(trimPd);
+      f->SetExtrusionDirection(0.0, 0.0, 1.0);
+      f->SetExtrusionStrategyToBoundaryEdges();
+      f->SetCapping(true);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  // NOTE: vtkImprintFilter is DELIBERATELY NOT registered here. Its smp-parity
+  // run surfaced a real threading bug: parallel-vs-serial CELL COUNT diverges
+  // (89 vs 84 @T=2) -- a count-sacred violation, not mere reordering. Tracked
+  // and fixed separately; do not re-add until the fix lands.
 
   // ---- extraction / clip subsets --------------------------------------------
   add("vtkExtractGeometry", "Filters/Extraction", Risk::PerElement, [](const Inputs& in) {
