@@ -60,9 +60,18 @@
 #include <vtkFlyingEdges3D.h>
 #include <vtkFlyingEdgesPlaneCutter.h>
 #include <vtkGaussianSplatter.h>
+#include <vtkGenerateGlobalIds.h>
 #include <vtkGeometryFilter.h>
 #include <vtkGradientFilter.h>
+#include <vtkHyperTreeGrid.h>
+#include <vtkHyperTreeGridContour.h>
+#include <vtkHyperTreeGridGeometry.h>
+#include <vtkHyperTreeGridNonOrientedGeometryCursor.h>
+#include <vtkHyperTreeGridPlaneCutter.h>
+#include <vtkHyperTreeGridProbeFilter.h>
+#include <vtkHyperTreeGridToUnstructuredGrid.h>
 #include <vtkImageAppendComponents.h>
+#include <vtkImageBSplineCoefficients.h>
 #include <vtkImageBlend.h>
 #include <vtkImageCast.h>
 #include <vtkImageContinuousDilate3D.h>
@@ -74,10 +83,13 @@
 #include <vtkImageMedian3D.h>
 #include <vtkImageRectilinearWipe.h>
 #include <vtkImageReslice.h>
+#include <vtkImageResliceToColors.h>
 #include <vtkImageResize.h>
 #include <vtkImageShiftScale.h>
 #include <vtkImageShrink3D.h>
+#include <vtkImageSlabReslice.h>
 #include <vtkImageThreshold.h>
+#include <vtkImprintFilter.h>
 #include <vtkIntegrateAttributes.h>
 #include <vtkLengthDistribution.h>
 #include <vtkMarkBoundaryFilter.h>
@@ -87,6 +99,7 @@
 #include <vtkOrderStatistics.h>
 #include <vtkPackLabels.h>
 #include <vtkPlaneCutter.h>
+#include <vtkPlaneSource.h>
 #include <vtkPointDataToCellData.h>
 #include <vtkPointInterpolator.h>
 #include <vtkPointInterpolator2D.h>
@@ -99,6 +112,8 @@
 #include <vtkProbeFilter.h>
 #include <vtkRTAnalyticSource.h>
 #include <vtkRadiusOutlierRemoval.h>
+#include <vtkRedistributeDataSetFilter.h>
+#include <vtkRegularPolygonSource.h>
 #include <vtkRemovePolyData.h>
 #include <vtkResampleToImage.h>
 #include <vtkResampleWithDataSet.h>
@@ -122,6 +137,7 @@
 #include <vtkTableFFT.h>
 #include <vtkThreshold.h>
 #include <vtkTransformFilter.h>
+#include <vtkTrimmedExtrusionFilter.h>
 #include <vtkVoronoi2D.h>
 #include <vtkWarpScalar.h>
 #include <vtkWarpVector.h>
@@ -336,6 +352,90 @@ vtkSmartPointer<vtkTable> makeTable(double phase)
   return t;
 }
 
+// Hand-build a deterministic vtkHyperTreeGrid. cvista has NO HyperTreeGrid SOURCE
+// filter (vtkHyperTreeGridSource / vtkRandomHyperTreeGridSource / vtkUniform... /
+// vtkImageDataToHyperTreeGrid are all nocompiled -- see cvista-config/
+// _nocompile_classes.cmake), so the fixture is constructed directly through the
+// public vtkHyperTreeGrid + non-oriented geometry-cursor API, exactly as a source
+// filter would. A 3x3x2 grid of binary trees spans [-2,2]x[-2,2]x[-1,1]; each tree
+// is refined by a fixed, position-driven predicate (no RNG) so the refinement is
+// bit-identical every run. Every node (coarse and leaf) is assigned a contiguous
+// global index and a smooth "scalar" cell field s = sin(cx)+cos(cy)+0.5*cz at its
+// cell center, giving the contour/cut/probe cases a non-trivial field to act on.
+vtkSmartPointer<vtkHyperTreeGrid> makeHTG()
+{
+  auto htg = vtkSmartPointer<vtkHyperTreeGrid>::New();
+  htg->Initialize();
+  const int dims[3] = { 4, 4, 3 }; // POINTS -> 3x3x2 = 18 level-0 trees
+  htg->SetDimensions(dims);
+  htg->SetBranchFactor(2);
+
+  // Axis coordinates: evenly spaced over [-2,2] (x,y) and [-1,1] (z).
+  const double lo[3] = { -2.0, -2.0, -1.0 };
+  const double hi[3] = { 2.0, 2.0, 1.0 };
+  for (int axis = 0; axis < 3; ++axis)
+  {
+    vtkNew<vtkDoubleArray> c;
+    c->SetNumberOfValues(dims[axis]);
+    for (int i = 0; i < dims[axis]; ++i)
+      c->SetValue(i, lo[axis] + (hi[axis] - lo[axis]) * i / (dims[axis] - 1));
+    if (axis == 0)
+      htg->SetXCoordinates(c);
+    else if (axis == 1)
+      htg->SetYCoordinates(c);
+    else
+      htg->SetZCoordinates(c);
+  }
+
+  vtkNew<vtkDoubleArray> scalar;
+  scalar->SetName("scalar");
+  scalar->SetNumberOfComponents(1);
+
+  vtkNew<vtkHyperTreeGridNonOrientedGeometryCursor> cursor;
+  vtkIdType globalIndex = 0;
+  const unsigned int maxLevel = 3;
+
+  // Pre-order DFS refinement. Assigns each visited node its own global index and a
+  // cell-center scalar; refines a leaf when the deterministic predicate holds.
+  std::function<void()> refine = [&]() {
+    const vtkIdType gid = globalIndex++;
+    cursor->SetGlobalIndexFromLocal(gid);
+    double bounds[6];
+    cursor->GetBounds(bounds);
+    const double cx = 0.5 * (bounds[0] + bounds[1]);
+    const double cy = 0.5 * (bounds[2] + bounds[3]);
+    const double cz = 0.5 * (bounds[4] + bounds[5]);
+    scalar->InsertValue(gid, std::sin(cx) + std::cos(cy) + 0.5 * cz);
+    const unsigned int level = cursor->GetLevel();
+    // Deterministic, position-driven refinement: gives a non-uniform tree so the
+    // geometry/contour/cut walks traverse varied depths.
+    const bool subdivide =
+      level < maxLevel && (static_cast<int>(std::floor(cx + cy + 2.0 * cz + 4.0)) % 2 == 0);
+    if (subdivide)
+    {
+      cursor->SubdivideLeaf();
+      const int nChildren = cursor->GetNumberOfChildren();
+      for (int child = 0; child < nChildren; ++child)
+      {
+        cursor->ToChild(static_cast<unsigned char>(child));
+        refine();
+        cursor->ToParent();
+      }
+    }
+  };
+
+  const vtkIdType nTrees = htg->GetMaxNumberOfTrees();
+  for (vtkIdType t = 0; t < nTrees; ++t)
+  {
+    htg->InitializeNonOrientedGeometryCursor(cursor, t, /*create=*/true);
+    refine();
+  }
+
+  htg->GetCellData()->AddArray(scalar);
+  htg->GetCellData()->SetActiveScalars("scalar");
+  return htg;
+}
+
 } // namespace
 
 const char* RiskName(Risk r)
@@ -365,6 +465,7 @@ Inputs BuildInputs()
   in.ugrid = makeUGrid(in.image);
   in.table = makeTable(0.0);
   in.table2 = makeTable(0.5);
+  in.htg = makeHTG();
   return in;
 }
 
@@ -588,6 +689,51 @@ std::vector<Case> RegisterCases()
     f->SetSurfaceData(in.poly); // sphere is a closed manifold
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // Imprint one coplanar plane onto another (MERGED_IMPRINT). The candidate target
+  // cells are triangulated in a threaded per-cell pass; the CI gate previously
+  // proved a REAL cell-count divergence (parallel=89 vs serial=84 @T=2) -- more
+  // output cells under threading. Root cause was NOT the thread-order point-id
+  // assignment in ProduceIntersectionPoints::Reduce (that only permutes ids/order,
+  // which order-relaxed set comparison absorbs) but a shared-scratch data race:
+  // Triangulate::operator() read each candidate cell's connectivity via the
+  // raw-pointer vtkPolyData::GetCellPoints(id, npts, pts) overload, which -- for
+  // int32-default cell storage -- returns a pointer into vtkCellArray's single
+  // shared TempCell buffer. Concurrent threads clobbered that buffer, so a cell's
+  // perimeter (npts/pts) came out wrong under STDThread, corrupting its edge
+  // network and thus the number of loops/cells the triangulation emitted. Fixed by
+  // reading through the thread-safe GetCellPoints(id, npts, pts, ptIds) overload
+  // with a per-thread vtkIdList scratch (vtkSMPThreadLocal), so every candidate
+  // cell's triangulation -- and the total cell count -- is deterministic and
+  // matches serial. orderRelaxed stays true: the intersection-point VTK ids and
+  // point/cell EMISSION ORDER remain thread-scheduling dependent (only permuted),
+  // so the output matches serial as an order-insensitive geometry SET, and the
+  // COUNT must match.
+  add(
+    "vtkImprintFilter", "Filters/Modeling", Risk::Merge,
+    [](const Inputs&) {
+      vtkNew<vtkPlaneSource> target;
+      target->SetOrigin(-2, -2, 0);
+      target->SetPoint1(2, -2, 0);
+      target->SetPoint2(-2, 2, 0);
+      target->SetXResolution(3);
+      target->SetYResolution(3);
+      target->Update();
+
+      vtkNew<vtkPlaneSource> imprint;
+      imprint->SetOrigin(-1.2, -1.2, 0);
+      imprint->SetPoint1(1.2, -1.2, 0);
+      imprint->SetPoint2(-1.2, 1.2, 0);
+      imprint->SetXResolution(5);
+      imprint->SetYResolution(5);
+      imprint->Update();
+
+      vtkNew<vtkImprintFilter> f;
+      f->SetTargetData(target->GetOutput());
+      f->SetImprintData(imprint->GetOutput());
+      f->SetOutputTypeToMergedImprint();
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
   add("vtkDistancePolyDataFilter", "Filters/General", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkDistancePolyDataFilter> f;
     f->SetInputData(0, in.poly);
@@ -735,7 +881,58 @@ std::vector<Case> RegisterCases()
     f->SetTestOption(false);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // NOTE: vtkVisualStatistics is DELIBERATELY NOT registered here. Its threaded
+  // Learn histogram pass diverges parallel-vs-serial INTERMITTENTLY (a Learned-model
+  // histogram bin came back serial=1 vs parallel=2) -- a real value miscount, not
+  // reordering. The per-thread bin composite is not reliably order-independent.
+  // Tracked + investigated separately; do not re-add until fixed.
   useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+
+  // ---- parallel DIY2 (single-rank, no MPI controller) -----------------------
+  // These live in Filters/ParallelDIY2 and are runnable single-process: their
+  // constructor grabs vtkMultiProcessController::GetGlobalController(), which with no
+  // MPI is a serial/dummy controller (GetNumberOfProcesses()==1), so DIY runs one
+  // local block. They are threaded (vtkSMPTools::For) within that rank.
+  //
+  // Global-id assignment. vtkGenerateGlobalIds SHALLOW-copies the input (points/cells
+  // are NOT reordered) and adds GlobalPointIds/GlobalCellIds arrays. Single-rank, the
+  // block count is 1 so the kd-tree redistribution branch (nblocks>1) is skipped; the
+  // unique-id assignment is a SERIAL input-order walk over the merged elements, and the
+  // threaded passes are per-element disjoint writes (coordinate gather, cell-gid lookup)
+  // plus a final offset-add that early-returns at offset 0 for the sole rank. So both
+  // the added id VALUES and the pass-through geometry are byte-identical serial-vs-
+  // parallel -> gated byte-exact (points stay in input order, no reindexing to relax).
+  add("vtkGenerateGlobalIds", "Filters/ParallelDIY2", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkGenerateGlobalIds> f;
+    f->SetInputData(in.ugrid);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // DIY redistribution. With PreservePartitionsInOutput the output is a
+  // vtkPartitionedDataSet (the comparator descends it as a composite). Ask for 4
+  // partitions so the kd-tree actually splits (single-rank default is 1 partition =
+  // vacuous pass-through). The kd-tree cuts are a deterministic function of the point
+  // coordinates (serial median splits) and BoundaryMode defaults to ASSIGN_TO_ONE_REGION
+  // (whole cells, no clipping), so point POSITIONS are copied unchanged from the input --
+  // only which block a cell lands in, and the per-block emission order, are threaded.
+  // orderRelaxed: block STRUCTURE (4 blocks, flat-index order) stays strict, each leaf's
+  // points/cells compared order-insensitively; positions/count sacred, order negotiable.
+  // GenerateGlobalCellIds is turned OFF on purpose: the synthesized per-cell global id is
+  // a within-block ordinal, so if the per-block cell emission order is thread-dependent
+  // the SAME cell would carry a different id in parallel -- that id rides in the cell-data
+  // key of the order-insensitive comparator and would red a benign reordering. With it off
+  // the case tests exactly what parity requires here: identical point positions and cells
+  // (connectivity + original cell data) landing in the same deterministic blocks.
+  add(
+    "vtkRedistributeDataSetFilter", "Filters/ParallelDIY2", Risk::Merge,
+    [](const Inputs& in) {
+      vtkNew<vtkRedistributeDataSetFilter> f;
+      f->SetInputData(in.ugrid);
+      f->SetPreservePartitionsInOutput(true);
+      f->SetNumberOfPartitions(4);
+      f->SetGenerateGlobalCellIds(false);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
 
   // ---- stream tracing (parallel per-seed integration) -----------------------
   // vtkStreamTracer integrates one streamline per seed, and the class is threaded
@@ -1007,6 +1204,48 @@ std::vector<Case> RegisterCases()
     },
     /*orderRelaxed=*/true);
 
+  // ---- modeling: trimmed extrusion / imprint (2nd trivially-built input) -----
+  // Both are heavily vtkSMPTools-threaded modeling filters that need a SECOND
+  // polydata input, built inline here from deterministic sources (the shared
+  // Inputs carry no matching pair). They emit swept/triangulated geometry whose
+  // batch EMISSION ORDER is thread-dependent -> orderRelaxed: geometry + data
+  // must match serial as a set and be run-to-run stable; only the concatenation
+  // order may vary.
+  //
+  // vtkTrimmedExtrusionFilter sweeps the boundary edges of a flat n-gon (in the
+  // z=-1 plane) along +z until they meet a flat trim plane at z=0 -- a fully
+  // enclosed, guaranteed-non-empty intersection, so the skirt is well defined.
+  add(
+    "vtkTrimmedExtrusionFilter", "Filters/Modeling", Risk::Iso,
+    [](const Inputs&) {
+      vtkNew<vtkRegularPolygonSource> ngon;
+      ngon->SetCenter(0.0, 0.0, -1.0);
+      ngon->SetNormal(0.0, 0.0, 1.0);
+      ngon->SetRadius(0.5);
+      ngon->SetNumberOfSides(12);
+      ngon->Update();
+      auto in0 = vtkSmartPointer<vtkPolyData>::New();
+      in0->DeepCopy(ngon->GetOutput());
+
+      vtkNew<vtkPlaneSource> trim;
+      trim->SetOrigin(-2.0, -2.0, 0.0);
+      trim->SetPoint1(2.0, -2.0, 0.0);
+      trim->SetPoint2(-2.0, 2.0, 0.0);
+      trim->SetXResolution(4);
+      trim->SetYResolution(4);
+      trim->Update();
+      auto trimPd = vtkSmartPointer<vtkPolyData>::New();
+      trimPd->DeepCopy(trim->GetOutput());
+
+      vtkNew<vtkTrimmedExtrusionFilter> f;
+      f->SetInputData(in0);
+      f->SetTrimSurfaceData(trimPd);
+      f->SetExtrusionDirection(0.0, 0.0, 1.0);
+      f->SetExtrusionStrategyToBoundaryEdges();
+      f->SetCapping(true);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
   // ---- extraction / clip subsets --------------------------------------------
   add("vtkExtractGeometry", "Filters/Extraction", Risk::PerElement, [](const Inputs& in) {
     vtkNew<vtkSphere> s;
@@ -1293,6 +1532,47 @@ std::vector<Case> RegisterCases()
     f->SetInterpolationModeToLinear();
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // vtkImageReslice subclass that colour-maps the resliced scalars through a LUT. Same
+  // TIA reslice threading as the base (each output voxel is an independent sample of the
+  // input, then a pointwise LUT lookup), disjoint output slots -> byte-exact per voxel.
+  add("vtkImageResliceToColors", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkLookupTable> lut;
+    lut->SetTableRange(0.0, 300.0);
+    lut->Build();
+    vtkNew<vtkImageResliceToColors> f;
+    f->SetInputData(in.image);
+    f->SetOutputSpacing(1.5, 1.5, 1.5);
+    f->SetInterpolationModeToLinear();
+    f->SetLookupTable(lut);
+    f->SetOutputFormatToRGBA();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Slab reslice (vtkImageReslice subclass): each output pixel blends a fixed number of
+  // slab samples along the slab normal with a fixed reduction (mean here) -- a fixed-
+  // order per-output-voxel accumulation written to its own slot -> byte-exact per voxel.
+  add("vtkImageSlabReslice", "Imaging/General", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageSlabReslice> f;
+    f->SetInputData(in.image);
+    f->SetOutputSpacing(1.5, 1.5, 1.5);
+    f->SetInterpolationModeToLinear();
+    f->SetBlendModeToMean();
+    f->SetSlabThickness(4.0);
+    f->SetSlabResolution(1.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // B-spline coefficient transform (vtkThreadedImageAlgorithm). RequestData runs one
+  // threaded pass PER dimension (this->Iteration); each pass threads the output extent
+  // split across the OTHER axes so every thread owns whole lines along the processing
+  // axis -- the recursive IIR filter over each line is therefore complete and
+  // independent per thread -> byte-exact regardless of the extent partition.
+  add("vtkImageBSplineCoefficients", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkImageBSplineCoefficients> f;
+    f->SetInputData(in.image);
+    f->SetSplineDegree(3);
+    f->SetBorderModeToClamp();
+    f->SetOutputScalarTypeToDouble();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
   // Per-voxel LUT map (scalar -> RGBA uint8); pointwise -> byte-exact.
   add("vtkImageMapToColors", "Imaging/Core", Risk::PerElement, [](const Inputs& in) {
     vtkNew<vtkLookupTable> lut;
@@ -1365,6 +1645,66 @@ std::vector<Case> RegisterCases()
     f->SetInput1Data(in.image);
     f->SetInput2Data(in.image);
     f->SetWipeToQuad();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+
+  // ---- HyperTreeGrid family -------------------------------------------------
+  // Coverage of the vtkHyperTreeGrid filters that survive cvista's trim. In STOCK
+  // VTK this family is heavily vtkSMPTools-threaded (vtkHyperTreeGridGradient,
+  // vtkHyperTreeGridToDualGrid, vtkImageDataToHyperTreeGrid, ...), but every one of
+  // those -- and every HTG SOURCE -- is nocompiled here (see cvista-config/
+  // _nocompile_classes.cmake), so no threaded HTG-in-HTG-out path exists to gate.
+  // The four FiltersHyperTree filters that remain (Geometry, ToUnstructuredGrid,
+  // Contour, PlaneCutter) are SERIAL cursor walks (no vtkSMPTools call in the
+  // module), and vtkHyperTreeGridProbeFilter (FiltersCore) pins its probing worklet
+  // to Sequential (Kitware issue 18629 workaround) and only threads a Fill of a
+  // constant mask array. So -- exactly like the serial vtkStatistics cases above --
+  // these gate that the STDThread default introduces no divergence on the HTG input
+  // path (and that the comparator really compares their vtkPolyData/vtkUnstructuredGrid
+  // output), rather than stressing a threaded reduction. All output a point set the
+  // comparator already handles byte-exact; none is registered order-relaxed because,
+  // being serial, their emission order is itself deterministic.
+  //
+  // Input is the hand-built htg fixture (makeHTG): no HTG source is compiled, so it
+  // is constructed directly through the vtkHyperTreeGrid geometry-cursor API.
+
+  // HTG -> external surface (vtkPolyData). Serial recursive geometry extraction.
+  add("vtkHyperTreeGridGeometry", "Filters/HyperTree", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridGeometry> f;
+    f->SetInputData(in.htg);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // HTG -> vtkUnstructuredGrid: each leaf cell emitted once in tree-traversal order.
+  add("vtkHyperTreeGridToUnstructuredGrid", "Filters/HyperTree", Risk::PerElement,
+    [](const Inputs& in) {
+      vtkNew<vtkHyperTreeGridToUnstructuredGrid> f;
+      f->SetInputData(in.htg);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    });
+  // HTG isocontour of the "scalar" cell field -> vtkPolyData. Serial dual walk.
+  add("vtkHyperTreeGridContour", "Filters/HyperTree", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridContour> f;
+    f->SetInputData(in.htg);
+    f->SetInputArrayToProcess(
+      0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_CELLS, "scalar");
+    f->SetValue(0, 0.5);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // HTG plane cut -> vtkPolyData. Serial recursive cut.
+  add("vtkHyperTreeGridPlaneCutter", "Filters/HyperTree", Risk::Iso, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridPlaneCutter> f;
+    f->SetInputData(in.htg);
+    f->SetPlane(1.0, 0.5, 0.25, 0.0);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+  // Probe the sphere's points against the HTG "scalar" field. The probing worklet is
+  // forced Sequential (issue 18629), and the only threaded op is a Fill of an all-1
+  // valid-point mask (order-independent, single value) -> byte-exact. Output mirrors
+  // the input polydata structure with the probed point data + a validity mask.
+  add("vtkHyperTreeGridProbeFilter", "Filters/Core", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkHyperTreeGridProbeFilter> f;
+    f->SetInputData(in.poly);
+    f->SetSourceData(in.htg);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
 

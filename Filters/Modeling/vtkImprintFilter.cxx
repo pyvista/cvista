@@ -2200,6 +2200,12 @@ struct Triangulate
   // Used for thread-based triangulation
   vtkSMPThreadLocal<vtkSmartPointer<vtkPolygon>> Polygon;
   vtkSMPThreadLocal<vtkSmartPointer<vtkIdList>> OutTris;
+  // Per-thread scratch for the thread-safe vtkPolyData::GetCellPoints overload.
+  // The raw-pointer GetCellPoints(id, npts, pts) overload returns a pointer into
+  // vtkCellArray's shared TempCell buffer for non-native-width cell storage
+  // (int32-default), which concurrent threads clobber; a per-thread vtkIdList
+  // makes the candidate-cell connectivity read deterministic under STDThread.
+  vtkSMPThreadLocal<vtkSmartPointer<vtkIdList>> CellPointIds;
 
   Triangulate(vtkPoints* outPts, vtkPointList* pl, vtkPolyData* candidates, vtkCandidateList* ca,
     vtkPolyData* output, vtkIdType offset, int outputType, int debugOption, vtkCellMapType* cellMap,
@@ -2246,7 +2252,8 @@ struct Triangulate
     // Output the cell edges
     vtkIdType npts, e[2];
     const vtkIdType* pts;
-    this->Candidates->GetCellPoints(cellId, npts, pts);
+    vtkNew<vtkIdList> cellPointIds; // thread-safe GetCellPoints scratch
+    this->Candidates->GetCellPoints(cellId, npts, pts, cellPointIds);
     for (auto i = 0; i < npts; ++i)
     {
       e[0] = pts[i];
@@ -2551,6 +2558,7 @@ struct Triangulate
     this->Polygon.Local().TakeReference(vtkPolygon::New());
     this->Polygon.Local()->SetTolerance(0.0001);
     this->OutTris.Local().TakeReference(vtkIdList::New());
+    this->CellPointIds.Local().TakeReference(vtkIdList::New());
   }
 
   // On a target-cell by target-cell approach, tessellate each. This requires
@@ -2560,6 +2568,7 @@ struct Triangulate
   {
     vtkPolygon* poly = this->Polygon.Local();
     vtkIdList* outTris = this->OutTris.Local();
+    vtkIdList* cellPointIds = this->CellPointIds.Local();
     vtkTriEdgeList triEdgeList(this->OutPts);
     double normal[3];
     bool isFirst = vtkSMPTools::GetSingleThread();
@@ -2601,7 +2610,7 @@ struct Triangulate
         // edges around the target cell perimeter.
         vtkIdType npts;
         const vtkIdType* pts;
-        this->Candidates->GetCellPoints(cellId, npts, pts);
+        this->Candidates->GetCellPoints(cellId, npts, pts, cellPointIds);
         this->AddPerimeterEdges(cellId, npts, pts, triEdgeList);
 
         // Now add edges interior to the current cell to the edge network.
