@@ -158,6 +158,28 @@ try:
         vtkArrowSource,
         vtkConeSource,
         vtkSphereSource,
+        vtkOutlineCornerFilter,
+    )
+    # Filters/Modeling stock-parity lane (Wave 7). FiltersModeling is WANTed in
+    # _modules_minimal.cmake and none of these classes are in _nocompile_classes.cmake
+    # / _nowrap_classes.cmake (only the parallel vtkP*/vtkQuad*/vtkLinearCell* and
+    # vtkHyperTreeGridOutlineFilter variants are excluded, none used here), so every
+    # class below is compiled AND wrapped. vtkOutlineCornerFilter lives in
+    # Filters/Sources (imported above); the rest are in Filters/Modeling.
+    from vtkmodules.vtkFiltersModeling import (
+        vtkLinearSubdivisionFilter,
+        vtkLoopSubdivisionFilter,
+        vtkButterflySubdivisionFilter,
+        vtkLinearExtrusionFilter,
+        vtkRotationalExtrusionFilter,
+        vtkRibbonFilter,
+        vtkRuledSurfaceFilter,
+        vtkOutlineFilter,
+        vtkContourLoopExtraction,
+        vtkImprintFilter,
+        vtkFillHolesFilter,
+        vtkBandedPolyDataContourFilter,
+        vtkTrimmedExtrusionFilter,
     )
     # Imaging lanes (per-pixel from PR #196 + the geometric/resample/component/
     # label remainder): only classes cvista COMPILES and WRAPS are imported here
@@ -3302,6 +3324,339 @@ def op_image_wrappad(dtype, size):
     return _run_image_pad(vtkImageWrapPad(), size, dtype)
 
 
+# ===========================================================================
+# Filters/Modeling stock-parity lane (Wave 7)
+# ===========================================================================
+# Deterministic polydata builders for the modeling filters. All coordinates are
+# built from integer / half-integer algebra (no trig on the INPUT path) so both
+# backends start byte-identical; the requested dtype drives the point-array
+# precision, exercising the float32 AND float64 branches.
+def make_tri_grid(n, dtype, z=0.0):
+    """An open (n x n)-point triangulated grid of unit quads in the plane at
+    height ``z`` (two triangles per cell). Integer lattice coords -> deterministic.
+    Being OPEN it has real boundary edges, so extrusion produces a proper skirt
+    and FillHoles/TrimmedExtrusion have well-defined boundaries to work from."""
+    yy, xx = np.indices((n, n), dtype=np.float64)
+    coords = np.stack(
+        [xx.ravel(), yy.ravel(), np.full(n * n, float(z))], axis=1
+    ).astype(dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+
+    def pid(i, j):
+        return i + n * j
+
+    polys = vtkCellArray()
+    for j in range(n - 1):
+        for i in range(n - 1):
+            for tri in (
+                (pid(i, j), pid(i + 1, j), pid(i + 1, j + 1)),
+                (pid(i, j), pid(i + 1, j + 1), pid(i, j + 1)),
+            ):
+                polys.InsertNextCell(3)
+                for k in tri:
+                    polys.InsertCellPoint(k)
+    pd.SetPolys(polys)
+    return pd
+
+
+def make_holey_tri_grid(n, dtype):
+    """make_tri_grid with the single central quad omitted, leaving a 4-edge hole
+    for vtkFillHolesFilter to triangulate (it reuses the existing boundary points,
+    so the output point array equals the input's -> a clean byte-exact target)."""
+    yy, xx = np.indices((n, n), dtype=np.float64)
+    coords = np.stack(
+        [xx.ravel(), yy.ravel(), np.zeros(n * n)], axis=1
+    ).astype(dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+
+    def pid(i, j):
+        return i + n * j
+
+    hi = hj = n // 2 - 1  # omit this quad -> a hole
+    polys = vtkCellArray()
+    for j in range(n - 1):
+        for i in range(n - 1):
+            if i == hi and j == hj:
+                continue
+            for tri in (
+                (pid(i, j), pid(i + 1, j), pid(i + 1, j + 1)),
+                (pid(i, j), pid(i + 1, j + 1), pid(i, j + 1)),
+            ):
+                polys.InsertNextCell(3)
+                for k in tri:
+                    polys.InsertCellPoint(k)
+    pd.SetPolys(polys)
+    return pd
+
+
+def make_flat_quad_grid(n, dtype, z=0.0):
+    """An (n x n)-point grid of convex QUAD cells in the plane z (vtkImprint
+    requires convex target cells). Integer lattice -> deterministic."""
+    yy, xx = np.indices((n, n), dtype=np.float64)
+    coords = np.stack(
+        [xx.ravel(), yy.ravel(), np.full(n * n, float(z))], axis=1
+    ).astype(dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+
+    def pid(i, j):
+        return i + n * j
+
+    polys = vtkCellArray()
+    for j in range(n - 1):
+        for i in range(n - 1):
+            polys.InsertNextCell(4)
+            for k in (pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)):
+                polys.InsertCellPoint(k)
+    pd.SetPolys(polys)
+    return pd
+
+
+def _make_imprint_diamond(n, dtype):
+    """A single convex quad (a diamond) coplanar with make_flat_quad_grid, centred
+    on the grid and sized so its edges cross several target cell edges (produces
+    non-trivial edge-intersection points). Half-integer offsets -> deterministic."""
+    c = (n - 1) / 2.0
+    r = 1.5
+    verts = np.array(
+        [[c, c - r, 0.0], [c + r, c, 0.0], [c, c + r, 0.0], [c - r, c, 0.0]],
+        dtype=dtype,
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(verts), deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+    polys = vtkCellArray()
+    polys.InsertNextCell(4)
+    for k in range(4):
+        polys.InsertCellPoint(k)
+    pd.SetPolys(polys)
+    return pd
+
+
+def _sphere_with_scalar(theta, phi, dtype):
+    """_sphere_with_precision plus a deterministic per-point scalar 's' (integer
+    algebra on the point index, values 0..6) so vtkBandedPolyDataContourFilter has
+    a varying field to band. Points are precision-forced to ``dtype``."""
+    s = _sphere_with_precision(theta, phi, dtype)
+    npts = s.GetNumberOfPoints()
+    idx = np.arange(npts, dtype=np.int64)
+    scal = numpy_to_vtk(np.ascontiguousarray((idx % 7).astype(dtype)), deep=1)
+    scal.SetName("s")
+    s.GetPointData().SetScalars(scal)
+    return s
+
+
+# ---- corrects_stock modeling ops (float64 pointset -> cvista preserves f64 where
+# ---- stock 9.6.2 downcasts to f32; see _compare_corrects_stock). Each of these
+# ---- filters carries the OutputPointsPrecision fix (PR #97 / precision_audit.md).
+def op_loop_subdivision(dtype, size):
+    # vtkLoopSubdivisionFilter derives from vtkApproximatingSubdivisionFilter,
+    # whose Execute got the OutputPointsPrecision fix (SetDataType(input dtype) on
+    # DEFAULT). On float64 input cvista preserves f64; stock downcasts to f32.
+    f = vtkLoopSubdivisionFilter()
+    f.SetInputData(_sphere_with_precision(size, size, dtype))
+    f.SetNumberOfSubdivisions(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_linear_extrusion(dtype, size):
+    # vtkLinearExtrusionFilter (confirmed precision bug in stock; fixed in cvista).
+    # Vector extrusion is pure translation (input + Vector*scale) -> exact algebra;
+    # only the output point storage width diverges (cvista f64 vs stock f32).
+    f = vtkLinearExtrusionFilter()
+    f.SetInputData(make_tri_grid(size, dtype))
+    f.SetExtrusionTypeToVectorExtrusion()
+    f.SetVector(0.0, 0.0, 1.0)
+    f.SetScaleFactor(2.0)
+    f.SetCapping(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_rotational_extrusion(dtype, size):
+    # vtkRotationalExtrusionFilter (confirmed precision bug in stock; fixed in
+    # cvista). The internal sweep uses std::sin/cos which resolve to the SAME
+    # system libm on both backends (same CI machine) -> byte-identical f64 before
+    # the width divergence; corrects_stock asserts only the storage widened.
+    f = vtkRotationalExtrusionFilter()
+    f.SetInputData(make_tri_grid(size, dtype))
+    f.SetResolution(6)
+    f.SetAngle(90.0)
+    f.SetTranslation(0.5)
+    f.SetCapping(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_ribbon(dtype, size):
+    # vtkRibbonFilter (confirmed precision bug in stock; fixed in cvista). Ribbons
+    # from deterministic polylines; UseDefaultNormal so no per-line normal solve is
+    # needed (keeps output deterministic and the field varied).
+    f = vtkRibbonFilter()
+    f.SetInputData(make_polylines(nlines=4, length=size, dtype=dtype))
+    f.SetWidth(0.3)
+    f.SetUseDefaultNormal(1)
+    f.SetDefaultNormal(0.0, 0.0, 1.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_ruled_surface(dtype, size):
+    # vtkRuledSurfaceFilter RESAMPLE branch (confirmed precision bug in stock;
+    # fixed in cvista). Resample creates new interpolated points between the input
+    # polylines -> the default-float branch the audit flagged (site 83).
+    f = vtkRuledSurfaceFilter()
+    f.SetInputData(make_polylines(nlines=3, length=size, dtype=dtype))
+    f.SetRuledModeToResample()
+    f.SetResolution(size, size)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_banded_contour(dtype, size):
+    # vtkBandedPolyDataContourFilter (confirmed precision bug in stock; fixed in
+    # cvista). Bands a deterministic point scalar; band-boundary points are
+    # interpolated along edges -> new points at the fixed/buggy precision.
+    f = vtkBandedPolyDataContourFilter()
+    f.SetInputData(_sphere_with_scalar(size, size, dtype))
+    f.GenerateValues(5, 0.5, 5.5)
+    f.Update()
+    return f.GetOutput()
+
+
+# ---- byte-exact modeling ops (NOT in the precision-corrected set -> plain
+# ---- maxULP=0 byte comparison vs stock, no flag). An unexpected red here is a
+# ---- real divergence to characterize, not to silence.
+def op_linear_subdivision(dtype, size):
+    # vtkLinearSubdivisionFilter derives from vtkInterpolatingSubdivisionFilter,
+    # which cvista did NOT modify (no OutputPointsPrecision fix; it DeepCopies the
+    # input points into a fresh vtkPoints identically on both backends). So stock
+    # == cvista byte-for-byte on both float32 and float64.
+    f = vtkLinearSubdivisionFilter()
+    f.SetInputData(_sphere_with_precision(size, size, dtype))
+    f.SetNumberOfSubdivisions(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_butterfly_subdivision(dtype, size):
+    # vtkButterflySubdivisionFilter: same unmodified vtkInterpolatingSubdivision
+    # base as linear_subdivision -> byte-exact vs stock on both dtypes.
+    f = vtkButterflySubdivisionFilter()
+    f.SetInputData(_sphere_with_precision(size, size, dtype))
+    f.SetNumberOfSubdivisions(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_outline(dtype, size):
+    # vtkOutlineFilter: bounding-box wireframe of a dataset. Not in the 30 fixed
+    # filters (unmodified in cvista); its native OutputPointsPrecision handling is
+    # identical on both backends -> byte-exact.
+    f = vtkOutlineFilter()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_outline_corner(dtype, size):
+    # vtkOutlineCornerFilter (Filters/Sources): corner segments of the bounding
+    # box. Unmodified in cvista -> byte-exact.
+    f = vtkOutlineCornerFilter()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def _make_closed_loops(nloops, dtype):
+    """A vtkPolyData of `nloops` axis-aligned closed square line loops (each a
+    single closed polyline cell), translated apart. Integer coords -> deterministic.
+    Drives vtkContourLoopExtraction's loop assembly from connected line segments."""
+    pts = []
+    cells = []
+
+    def add(coords):
+        base = len(pts)
+        pts.extend(coords)
+        return base
+
+    for L in range(nloops):
+        ox = 3 * L
+        b = add([(ox, 0, 0), (ox + 2, 0, 0), (ox + 2, 2, 0), (ox, 2, 0)])
+        # closed polyline: 5 ids, last == first
+        cells.append([b, b + 1, b + 2, b + 3, b])
+
+    arr = np.array(pts, dtype=dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(arr), deep=1))
+    pd = vtkPolyData()
+    pd.SetPoints(vp)
+    lines = vtkCellArray()
+    for ids in cells:
+        idl = vtkIdList()
+        for i in ids:
+            idl.InsertNextId(i)
+        lines.InsertNextCell(idl)
+    pd.SetLines(lines)
+    return pd
+
+
+def op_contour_loop_extraction(dtype, size):
+    # vtkContourLoopExtraction: assemble closed polygons from line segments. The
+    # audit flags a latent default-float newPts path (CleanPoints), but cvista did
+    # NOT modify this class, so stock == cvista byte-for-byte on both dtypes.
+    f = vtkContourLoopExtraction()
+    f.SetInputData(_make_closed_loops(size, dtype))
+    f.SetOutputModeToPolygons()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_imprint(dtype, size):
+    # vtkImprintFilter (#191 TempCell-race filter). Imprint a diamond onto a small
+    # coplanar quad grid. Kept intentionally small so the SMP-threaded candidate
+    # segregation / triangulation runs as a single batch (order matches stock's
+    # sequential run). Not in the precision-corrected set -> plain byte-exact.
+    f = vtkImprintFilter()
+    f.SetTargetData(make_flat_quad_grid(size, dtype))
+    f.SetImprintData(_make_imprint_diamond(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_fill_holes(dtype, size):
+    # vtkFillHolesFilter: triangulate the central hole of make_holey_tri_grid using
+    # the existing boundary points (no new points). Unmodified in cvista -> byte-exact.
+    f = vtkFillHolesFilter()
+    f.SetInputData(make_holey_tri_grid(size, dtype))
+    f.SetHoleSize(100.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_trimmed_extrusion(dtype, size):
+    # vtkTrimmedExtrusionFilter: sweep an open grid along +z, trimmed by a parallel
+    # grid plane above it. Listed in precision_audit.md as a REFERENCE-CORRECT impl
+    # (already precision-correct in stock; unmodified in cvista) -> byte-exact.
+    f = vtkTrimmedExtrusionFilter()
+    f.SetInputData(make_tri_grid(size, dtype, z=0.0))
+    f.SetTrimSurfaceData(make_tri_grid(size, dtype, z=3.0))
+    f.SetExtrusionDirection(0.0, 0.0, 1.0)
+    f.SetCapping(1)
+    f.Update()
+    return f.GetOutput()
+
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -3472,6 +3827,40 @@ OPS = {
     "image_appendcomponents": dict(fn=op_image_appendcomponents, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
     "image_extractcomponents": dict(fn=op_image_extractcomponents, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
     "image_connectivity": dict(fn=op_image_connectivity, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
+    # --- Filters/Modeling stock-parity lane (Wave 7) ---
+    # corrects_stock members: these filters carry cvista's OutputPointsPrecision fix
+    # (PR #97 / precision_audit.md). On a float64 pointset input cvista preserves
+    # f64 output points where STOCK 9.6.2 downcasts to f32 — the DOCUMENTED intended
+    # divergence. The corrects_stock gate asserts cvista's points are the input dtype
+    # AND that downcasting them to stock's width reproduces stock's bytes exactly (no
+    # value changed), with every other array byte-identical. Same mechanism as
+    # shrink_ugrid / datasettriangle above; float64-only (that IS the divergence).
+    "loop_subdivision": dict(fn=op_loop_subdivision, group="modeling", dtypes=["float64"],
+                             sizes=[8, 12], corrects_stock=True),
+    "linear_extrusion": dict(fn=op_linear_extrusion, group="modeling", dtypes=["float64"],
+                             sizes=[6, 10], corrects_stock=True),
+    "rotational_extrusion": dict(fn=op_rotational_extrusion, group="modeling", dtypes=["float64"],
+                                 sizes=[6, 10], corrects_stock=True),
+    "ribbon": dict(fn=op_ribbon, group="modeling", dtypes=["float64"],
+                   sizes=[8, 16], corrects_stock=True),
+    "ruled_surface": dict(fn=op_ruled_surface, group="modeling", dtypes=["float64"],
+                          sizes=[8, 16], corrects_stock=True),
+    "banded_contour": dict(fn=op_banded_contour, group="modeling", dtypes=["float64"],
+                           sizes=[8, 12], corrects_stock=True),
+    # Byte-exact members (NOT precision-corrected; plain maxULP=0 vs stock, no flag).
+    # linear/butterfly subdivision inherit the UNMODIFIED vtkInterpolatingSubdivision
+    # base (no precision fix); outline/outline_corner/contour_loop/fill_holes/imprint/
+    # trimmed_extrusion are unmodified (or reference-correct) in cvista -> stock==cvista.
+    "linear_subdivision": dict(fn=op_linear_subdivision, group="modeling", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "butterfly_subdivision": dict(fn=op_butterfly_subdivision, group="modeling", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "outline": dict(fn=op_outline, group="modeling", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "outline_corner": dict(fn=op_outline_corner, group="modeling", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "contour_loop_extraction": dict(fn=op_contour_loop_extraction, group="modeling", dtypes=["float32", "float64"], sizes=[3, 6]),
+    "fill_holes": dict(fn=op_fill_holes, group="modeling", dtypes=["float32", "float64"], sizes=[5, 9]),
+    # #191 TempCell-race filter, gated vs stock. Small input so the SMP triangulation
+    # is a single batch (order matches stock's sequential run).
+    "imprint": dict(fn=op_imprint, group="modeling", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "trimmed_extrusion": dict(fn=op_trimmed_extrusion, group="modeling", dtypes=["float32", "float64"], sizes=[5, 8]),
     # --- IO round-trips (PLY writer gather + reader scatter, byte-for-byte) ---
     "ply_roundtrip_binary": dict(fn=op_ply_roundtrip_binary, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
     "ply_roundtrip_ascii": dict(fn=op_ply_roundtrip_ascii, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
