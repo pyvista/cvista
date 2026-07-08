@@ -87,7 +87,16 @@ struct HistogramWorker
           continue;
         }
       }
-      double val = this->Data->GetTuple1(ii);
+      // NB: Use GetComponent() rather than GetTuple1(). The latter dispatches to
+      // vtkDataArray::GetTuple(vtkIdType) which writes into a shared per-array
+      // scratch buffer (vtkGenericDataArray::LegacyTuple) and returns a pointer
+      // into it. When multiple threads bin the same column concurrently, they
+      // race on that shared buffer and can read back a value written by another
+      // thread, misbinning a sample and producing a nondeterministic histogram
+      // count (parallel != serial). GetComponent() is reimplemented on
+      // vtkGenericDataArray as a direct typed read (GetTypedComponent), and the
+      // abstract fallback allocates its own buffer -- both are thread-safe.
+      double val = this->Data->GetComponent(ii, 0);
       int bin;
       if (IsFloatingPt)
       {

@@ -138,6 +138,7 @@
 #include <vtkThreshold.h>
 #include <vtkTransformFilter.h>
 #include <vtkTrimmedExtrusionFilter.h>
+#include <vtkVisualStatistics.h>
 #include <vtkVoronoi2D.h>
 #include <vtkWarpScalar.h>
 #include <vtkWarpVector.h>
@@ -881,11 +882,31 @@ std::vector<Case> RegisterCases()
     f->SetTestOption(false);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
-  // NOTE: vtkVisualStatistics is DELIBERATELY NOT registered here. Its threaded
-  // Learn histogram pass diverges parallel-vs-serial INTERMITTENTLY (a Learned-model
-  // histogram bin came back serial=1 vs parallel=2) -- a real value miscount, not
-  // reordering. The per-thread bin composite is not reliably order-independent.
-  // Tracked + investigated separately; do not re-add until fixed.
+  useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
+  // Unlike the statistics filters above (whose Learn/Derive is serial), the
+  // vtkVisualStatistics Learn pass is THREADED: for each requested field it bins
+  // the column into per-thread histograms via vtkSMPTools::For (HistogramWorker)
+  // and composites the partials in Reduce(). This case therefore stresses a real
+  // threaded reduction and its Learned-model histogram table must be byte-exact
+  // vs serial. It previously diverged intermittently (a bin came back serial=1 /
+  // parallel=2) because HistogramWorker read each sample with
+  // vtkDataArray::GetTuple1(), which returns a pointer into the array's shared
+  // LegacyTuple scratch buffer -- a data race that misbinned samples. The fix
+  // reads via GetComponent(ii, 0) (thread-safe direct typed read). Because the
+  // bug is INTERMITTENT, confirm this case over several gate runs, not just one.
+  add("vtkVisualStatistics", "Filters/Statistics", Risk::Reduce, [](const Inputs& in) {
+    vtkNew<vtkVisualStatistics> f;
+    f->SetInputData(in.table);
+    f->AddColumn("A");
+    f->AddColumn("B");
+    f->SetFieldRange("A", -1, 1);
+    f->SetFieldRange("B", -1, 1);
+    f->SetLearnOption(true);
+    f->SetDeriveOption(true);
+    f->SetAssessOption(false);
+    f->SetTestOption(false);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
   useOutputPort(vtkStatisticsAlgorithm::OUTPUT_MODEL);
 
   // ---- parallel DIY2 (single-rank, no MPI controller) -----------------------
