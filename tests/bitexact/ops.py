@@ -82,9 +82,21 @@ try:
         vtkPlane,
         vtkPointLocator,
         vtkPolyData,
+        vtkSphere,
         vtkStaticPointLocator,
         vtkStructuredGrid,
         vtkUnstructuredGrid,
+    )
+    from vtkmodules.vtkFiltersPoints import (
+        vtkExtractPoints,
+        vtkFitImplicitFunction,
+        vtkGaussianKernel,
+        vtkLinearKernel,
+        vtkPointInterpolator,
+        vtkRadiusOutlierRemoval,
+        vtkShepardKernel,
+        vtkStatisticalOutlierRemoval,
+        vtkVoronoiKernel,
     )
     from vtkmodules.vtkFiltersExtraction import vtkExtractGrid
     from vtkmodules.vtkFiltersCore import (
@@ -2814,6 +2826,193 @@ def op_ply_roundtrip_ascii(dtype, size):
     return _ply_roundtrip(dtype, size, 2)  # VTK_ASCII
 
 
+# ---------------------------------------------------------------------------
+# Filters/Points stock-parity lane (Wave 2).
+#
+# Targets the #184 bug CLASS: a THREADED per-point neighborhood reduction feeding
+# a keep/drop/emit THRESHOLD decision. In #184, vtkStatisticalOutlierRemoval's
+# parallel mean+std reduction produced a different output COUNT than the serial
+# path. These ops drive the compiled+wrapped Filters/Points siblings against
+# STOCK VTK 9.6.2 so a count/position/value divergence surfaces as a byte diff.
+#
+# Every input is a deterministic 3D point cloud: a jittered integer lattice (the
+# dense inlier core) plus a fixed handful of far-flung outliers, so the keep/drop
+# boundary is genuinely crossed. Sizes are chosen so size**3 points span multiple
+# vtkSMPTools batches under the default STDThread backend (a count-flip would then
+# actually manifest). Only integer/linspace + pure algebra (NO trig): both
+# backends start byte-identical. vtkPointCloudFilter preserves the INPUT point
+# datatype on output (vtkPointCloudFilter.cxx SetDataType(input dtype)), so no
+# corrects_stock precision gate is needed -- float32 in => float32 out on both.
+# ---------------------------------------------------------------------------
+def make_cloud_with_outliers(size, dtype, with_scalar=False):
+    """Deterministic point cloud for the Filters/Points parity lane.
+
+    A `size`^3 integer lattice on [0, size-1], deterministically jittered by a
+    small modular offset (pure integer algebra, no trig), plus 5 fixed sparse
+    outlier points well outside the core. Large enough that the threaded per-point
+    loops span multiple SMP batches. Optionally carries a per-point scalar 's'
+    (used as the interpolation source field)."""
+    n = size
+    idx = np.arange(n * n * n, dtype=np.int64)
+    ix = idx % n
+    iy = (idx // n) % n
+    iz = idx // (n * n)
+    x = ix.astype(np.float64) + ((idx * 7 + 3) % 5).astype(np.float64) * 0.05
+    y = iy.astype(np.float64) + ((idx * 3 + 1) % 4).astype(np.float64) * 0.05
+    z = iz.astype(np.float64) + ((idx * 5 + 2) % 3).astype(np.float64) * 0.05
+    core = np.stack([x, y, z], axis=1)
+    outliers = np.array(
+        [
+            [-6.0, -6.0, -6.0],
+            [n + 5.0, n + 5.0, n + 5.0],
+            [n + 8.0, -7.0, n / 2.0],
+            [-8.0, n + 6.0, n / 2.0],
+            [n / 2.0, n / 2.0, n + 9.0],
+        ],
+        dtype=np.float64,
+    )
+    pts = np.ascontiguousarray(np.vstack([core, outliers])).astype(dtype)
+    m = pts.shape[0]
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts), deep=1))
+    pd.SetPoints(vp)
+    if with_scalar:
+        ids = np.arange(m, dtype=np.int64)
+        scal = numpy_to_vtk(
+            np.ascontiguousarray((1.0 + (ids % 13)).astype(dtype)), deep=1
+        )
+        scal.SetName("s")
+        pd.GetPointData().SetScalars(scal)
+    return pd
+
+
+def op_radius_outlier(dtype, size):
+    """vtkRadiusOutlierRemoval: keep points with >= NumberOfNeighbors neighbors
+    within Radius, drop the rest. A threaded per-point neighbor COUNT feeding a
+    keep/drop decision -- the #184 class. GenerateVerticesOn so the surviving set
+    is captured as both points AND vertex cells; a parallel-vs-serial count flip
+    changes the output point/vertex count."""
+    r = vtkRadiusOutlierRemoval()
+    r.SetInputData(make_cloud_with_outliers(size, dtype))
+    r.SetRadius(1.5)
+    r.SetNumberOfNeighbors(6)
+    r.GenerateVerticesOn()
+    r.Update()
+    return r.GetOutput()
+
+
+def op_statistical_outlier(dtype, size):
+    """vtkStatisticalOutlierRemoval -- THE #184 filter, now re-covered vs STOCK
+    (the #184 SMP validator only checked cvista parallel-vs-serial, never vs
+    stock). Each point's mean distance to its SampleSize nearest neighbors, then a
+    threaded mean+std REDUCTION over all points, then drop beyond mean +
+    StandardDeviationFactor*std. The canonical threaded-reduction -> threshold ->
+    keep/drop count-flip risk."""
+    s = vtkStatisticalOutlierRemoval()
+    s.SetInputData(make_cloud_with_outliers(size, dtype))
+    s.SetSampleSize(8)
+    s.SetStandardDeviationFactor(1.0)
+    s.GenerateVerticesOn()
+    s.Update()
+    return s.GetOutput()
+
+
+def op_extract_points_sphere(dtype, size):
+    """vtkExtractPoints with a vtkSphere implicit function: keep points INSIDE the
+    sphere, drop the rest. Threaded per-point implicit-function evaluate ->
+    keep/drop emit. The kept-set count/identity is the invariant."""
+    sph = vtkSphere()
+    c = (size - 1) / 2.0
+    sph.SetCenter(c, c, c)
+    sph.SetRadius(size * 0.35)
+    e = vtkExtractPoints()
+    e.SetInputData(make_cloud_with_outliers(size, dtype))
+    e.SetImplicitFunction(sph)
+    e.ExtractInsideOn()
+    e.GenerateVerticesOn()
+    e.Update()
+    return e.GetOutput()
+
+
+def op_fit_implicit(dtype, size):
+    """vtkFitImplicitFunction: keep points whose implicit-function value lies in
+    [-Threshold, Threshold) (a shell around a vtkSphere), drop the rest. Threaded
+    per-point evaluate -> threshold -> keep/drop emit. Threshold sized to leave a
+    non-trivial populated shell (some kept, corners + outliers dropped)."""
+    sph = vtkSphere()
+    c = (size - 1) / 2.0
+    sph.SetCenter(c, c, c)
+    sph.SetRadius(size * 0.35)
+    f = vtkFitImplicitFunction()
+    f.SetInputData(make_cloud_with_outliers(size, dtype))
+    f.SetImplicitFunction(sph)
+    f.SetThreshold(2.0 * size)  # vtkSphere value is squared-distance based
+    f.GenerateVerticesOn()
+    f.Update()
+    return f.GetOutput()
+
+
+def _interp_target(size, dtype):
+    """A coarse jittered interior lattice: the points to interpolate AT."""
+    k = max(4, size // 2)
+    lin = np.linspace(1.0, size - 2.0, k, dtype=np.float64)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    tpts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    ).astype(dtype)
+    tgt = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(tpts, deep=1))
+    tgt.SetPoints(vp)
+    return tgt
+
+
+def _interp_pipeline(dtype, size, kernel, generalized=True):
+    """vtkPointInterpolator: interpolate the source cloud's scalar 's' onto the
+    target lattice with `kernel`. Per input point the filter finds neighbors via
+    the locator and computes a weighted sum -- a per-point (not cross-point)
+    reduction, so both backends sum in identical order and the interpolated VALUES
+    should be byte-exact vs stock."""
+    source = make_cloud_with_outliers(size, dtype, with_scalar=True)
+    if generalized:
+        kernel.SetKernelFootprintToNClosest()
+        kernel.SetNumberOfPoints(8)
+    interp = vtkPointInterpolator()
+    interp.SetInputData(_interp_target(size, dtype))
+    interp.SetSourceData(source)
+    interp.SetKernel(kernel)
+    interp.Update()
+    return interp.GetOutput()
+
+
+def op_interp_gaussian(dtype, size):
+    """vtkPointInterpolator with vtkGaussianKernel (N_CLOSEST=8)."""
+    k = vtkGaussianKernel()
+    k.SetSharpness(2.0)
+    return _interp_pipeline(dtype, size, k)
+
+
+def op_interp_shepard(dtype, size):
+    """vtkPointInterpolator with vtkShepardKernel (inverse-distance, N_CLOSEST=8)."""
+    k = vtkShepardKernel()
+    k.SetPowerParameter(2.0)
+    return _interp_pipeline(dtype, size, k)
+
+
+def op_interp_linear(dtype, size):
+    """vtkPointInterpolator with vtkLinearKernel (uniform average, N_CLOSEST=8)."""
+    k = vtkLinearKernel()
+    return _interp_pipeline(dtype, size, k)
+
+
+def op_interp_voronoi(dtype, size):
+    """vtkPointInterpolator with vtkVoronoiKernel (nearest-point; not a
+    vtkGeneralizedKernel, so no footprint config)."""
+    k = vtkVoronoiKernel()
+    return _interp_pipeline(dtype, size, k, generalized=False)
+
+
 # ===========================================================================
 # REGISTRY
 # ===========================================================================
@@ -2965,6 +3164,18 @@ OPS = {
     # --- IO round-trips (PLY writer gather + reader scatter, byte-for-byte) ---
     "ply_roundtrip_binary": dict(fn=op_ply_roundtrip_binary, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
     "ply_roundtrip_ascii": dict(fn=op_ply_roundtrip_ascii, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
+    # --- Filters/Points stock-parity lane (Wave 2): the #184 threaded-reduction
+    # -> keep/drop-count class, re-covered vs STOCK. Default = strict byte-exact
+    # (no relaxation flag); a COUNT/POSITION/VALUE divergence here is a real bug.
+    # Sizes give size**3 points (1728 / 8000) to span multiple SMP batches.
+    "points_radius_outlier": dict(fn=op_radius_outlier, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_statistical_outlier": dict(fn=op_statistical_outlier, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_extract_sphere": dict(fn=op_extract_points_sphere, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_fit_implicit": dict(fn=op_fit_implicit, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_interp_gaussian": dict(fn=op_interp_gaussian, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_interp_shepard": dict(fn=op_interp_shepard, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_interp_linear": dict(fn=op_interp_linear, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "points_interp_voronoi": dict(fn=op_interp_voronoi, group="points", dtypes=["float32", "float64"], sizes=[12, 20]),
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
