@@ -12,6 +12,8 @@
 #include "vtkPolyData.h"
 #include "vtkPolyLine.h"
 
+#include <vector>
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkRuledSurfaceFilter);
 
@@ -122,8 +124,16 @@ int vtkRuledSurfaceFilter::RequestData(vtkInformation* vtkNotUsed(request),
   // For each pair of lines (as selected by Offset and OnRatio), create a
   // stripe (a ruled surface between two lines).
   //
+  // NOTE: vtkCellArray::GetNextCell may return a pointer into a single shared
+  // internal scratch cell (when the connectivity is stored with 32-bit ids), so
+  // the "current" line ids (pts) must be kept in an owned buffer that the next
+  // GetNextCell for the "next" line (pts2) cannot clobber. See paired issue.
+  std::vector<vtkIdType> curBuf;
+  std::vector<vtkIdType> nextBuf;
   inLines->InitTraversal();
   inLines->GetNextCell(npts, pts);
+  curBuf.assign(pts, pts + npts);
+  pts = curBuf.data();
   for (i = 0; i < numLines; i++)
   {
     // abort/progress methods
@@ -134,6 +144,8 @@ int vtkRuledSurfaceFilter::RequestData(vtkInformation* vtkNotUsed(request),
     }
 
     inLines->GetNextCell(npts2, pts2); // get the next edge
+    nextBuf.assign(pts2, pts2 + npts2);
+    pts2 = nextBuf.data();
 
     // Determine whether this stripe should be generated
     if ((i - this->Offset) >= 0 && !((i - this->Offset) % this->OnRatio) && npts >= 2 && npts2 >= 2)
@@ -149,9 +161,12 @@ int vtkRuledSurfaceFilter::RequestData(vtkInformation* vtkNotUsed(request),
       } // switch
     }   // generate this stripe
 
-    // Get the next line for generating the next stripe
+    // Get the next line for generating the next stripe. Swap the owned buffers
+    // so the "next" line becomes the "current" line and survives the following
+    // GetNextCell fetch into nextBuf.
     npts = npts2;
-    pts = pts2;
+    curBuf.swap(nextBuf);
+    pts = curBuf.data();
     if (i == (numLines - 2))
     {
       if (this->CloseSurface)

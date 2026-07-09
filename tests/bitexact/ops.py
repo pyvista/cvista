@@ -4657,16 +4657,20 @@ OPS = {
                                  sizes=[6, 10], corrects_stock=True),
     "ribbon": dict(fn=op_ribbon, group="modeling", dtypes=["float64"],
                    sizes=[8, 16], corrects_stock=True),
-    # ruled_surface: DEFERRED (op_ruled_surface retained but unregistered). CI showed a
-    # same-COUNT ([162,3]==[162,3]), same-dtype float32 point divergence vs stock with
-    # ulp==0x3F800000 (the 0.0-vs-1.0 signature of an unwritten default point). The
-    # RESAMPLE branch pre-allocates via InsertPoint(last,0,0,0) "so SetPoint() can be
-    # safely used" then fills each slot with SetPoint(id); cvista's sole change is a
-    # SetDataType(newPts) inserted before that dance (#97 precision fix). Whether that
-    # interaction leaves a slot unwritten (real regression) or merely reorders is NOT
-    # determinable from CI alone -- needs a local array dump (build-constrained here,
-    # like the SMP heap crash). Tracked as a suspected regression; NOT silenced with a
-    # guessed flag. See memory cvista-stock-parity-gate.
+    # ruled_surface: RE-ENABLED (#204). The float32 divergence was NOT the #97
+    # precision fix — it was int32-storage TempCell aliasing in RequestData: the
+    # "current" line ids returned by GetNextCell were held across the "next"
+    # GetNextCell, which under cvista's int32-default cell storage returns the SAME
+    # shared scratch cell, so pts==pts2 and every rule collapsed to a constant point
+    # (0.0-vs-1.0 signature). Fixed by copying each line's ids into an owned buffer
+    # before the next fetch (same class as memory fvtk-int32-scratch-getcellpoints /
+    # #114). float32 is now BYTE-EXACT vs stock (locally verified: 162 pts, downcast
+    # equal). float64 carries the #97 OutputPointsPrecision correction on the RESAMPLE
+    # output (cvista keeps f64 where stock downcasts to f32) -> corrects_stock; the
+    # downcast reproduces stock's bytes exactly (locally verified).
+    "ruled_surface": dict(fn=op_ruled_surface, group="modeling", dtypes=["float32"], sizes=[8, 12]),
+    "ruled_surface_f64": dict(fn=op_ruled_surface, group="modeling", dtypes=["float64"],
+                              sizes=[8, 12], corrects_stock=True),
     "banded_contour": dict(fn=op_banded_contour, group="modeling", dtypes=["float64"],
                            sizes=[8, 12], corrects_stock=True),
     # Byte-exact members (NOT precision-corrected; plain maxULP=0 vs stock, no flag).
