@@ -173,6 +173,7 @@ protected:
   vtkDoubleArray* ObjectCentroids;      // what is the object centroid
 
   vtkIdList* CellNeighbors; // avoid repetitive new/delete
+  vtkIdList* CellPts;       // owned snapshot of a cell's point ids (avoid TempCell aliasing)
   vtkIdList* Wave;          // processing wave
   vtkIdList* Wave2;
 

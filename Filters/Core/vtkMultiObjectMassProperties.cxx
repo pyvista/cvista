@@ -279,6 +279,7 @@ vtkMultiObjectMassProperties::vtkMultiObjectMassProperties()
 
   // Processing waves for performing connected traversal
   this->CellNeighbors = vtkIdList::New();
+  this->CellPts = vtkIdList::New();
   this->Wave = nullptr;
   this->Wave2 = nullptr;
 }
@@ -288,6 +289,7 @@ vtkMultiObjectMassProperties::vtkMultiObjectMassProperties()
 vtkMultiObjectMassProperties::~vtkMultiObjectMassProperties()
 {
   this->CellNeighbors->Delete();
+  this->CellPts->Delete();
 }
 
 //------------------------------------------------------------------------------
@@ -539,6 +541,19 @@ void vtkMultiObjectMassProperties::TraverseAndMark(
     {
       polyId = wave->GetId(i);
       output->GetCellPoints(polyId, npts, pts);
+
+      // Snapshot polyId's connectivity into owned storage. Under int32-default
+      // cell storage, GetCellPoints returns a pointer into vtkCellArray's shared
+      // TempCell scratch; the GetCellPoints(neiId,...) call inside the edge loop
+      // below would clobber it, corrupting pts[] mid-walk. Copying here keeps pts
+      // valid for the whole loop (byte-identical to stock int64 behavior, and the
+      // reused vtkIdList avoids per-cell heap allocation).
+      this->CellPts->SetNumberOfIds(npts);
+      for (k = 0; k < npts; ++k)
+      {
+        this->CellPts->SetId(k, pts[k]);
+      }
+      pts = this->CellPts->GetPointer(0);
 
       for (j = 0; j < npts; ++j)
       {
