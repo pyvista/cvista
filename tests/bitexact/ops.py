@@ -123,6 +123,7 @@ try:
         vtkDecimatePro,
         vtkElevationFilter,
         vtkMaskPoints,
+        vtkMultiObjectMassProperties,
         vtkOrientPolyData,
         vtkProbeFilter,
         vtkStaticCleanUnstructuredGrid,
@@ -4471,6 +4472,87 @@ def op_cellsize_mixed_all(dtype, size):
     return f.GetOutput()
 
 
+def op_mass_properties(dtype, size):
+    """vtkMultiObjectMassProperties on a deterministic set of closed manifolds:
+    `size`^3 disjoint axis-aligned unit cubes on a spaced lattice (each cube has its
+    own 8 points and 6 outward-wound quad faces). Disjoint topology -> `size`^3
+    separate valid objects, each of volume 1.0 and area 6.0, so the filter's per-
+    object edge-neighbor orientation walk (the correct-volume path) is exercised many
+    times over.
+
+    This is the regression gate for the int32 TempCell aliasing bug (#206): the
+    GetCellPoints(neiId,...) call inside TraverseAndMark's edge loop used to clobber
+    the shared vtkCellArray scratch that `pts` pointed into, corrupting orientation
+    marking -> wrong volume/validity (TotalVolume collapsed to 0, AllValid to 0).
+    Volume/area/validity are exact integers/simple products on this input, so it is
+    byte-exact vs stock with NO relaxation.
+
+    Compared arrays: per-cell 'ObjectIds'/'Areas'/'Volumes', per-object
+    'ObjectValidity'/'ObjectAreas', and the scalar totals 'TotalVolume'/'TotalArea'/
+    'NumberOfObjects'/'AllValid'. The per-object 'ObjectVolumes'/'ObjectCentroids'
+    field arrays are deliberately NOT compared: they carry a benign 1-ULP
+    accumulation-order (FMA) divergence that is independent of this fix and would
+    otherwise force a relaxation flag."""
+    ncube = max(1, int(size))
+    # unit-cube corner offsets + 6 outward-wound quad faces (integer coords, no trig)
+    corners = [(a, b, d) for a in (0, 1) for b in (0, 1) for d in (0, 1)]
+    ci = {c: n for n, c in enumerate(corners)}
+    faces = [
+        [ci[0, 0, 0], ci[0, 1, 0], ci[1, 1, 0], ci[1, 0, 0]],  # -z
+        [ci[0, 0, 1], ci[1, 0, 1], ci[1, 1, 1], ci[0, 1, 1]],  # +z
+        [ci[0, 0, 0], ci[1, 0, 0], ci[1, 0, 1], ci[0, 0, 1]],  # -y
+        [ci[0, 1, 0], ci[0, 1, 1], ci[1, 1, 1], ci[1, 1, 0]],  # +y
+        [ci[0, 0, 0], ci[0, 0, 1], ci[0, 1, 1], ci[0, 1, 0]],  # -x
+        [ci[1, 0, 0], ci[1, 1, 0], ci[1, 1, 1], ci[1, 0, 1]],  # +x
+    ]
+    pts = []
+    quads = []
+    for i in range(ncube):
+        for j in range(ncube):
+            for k in range(ncube):
+                base = len(pts)
+                # spaced by 2 so cubes are disjoint (no shared points/edges)
+                for (a, b, d) in corners:
+                    pts.append((float(2 * i + a), float(2 * j + b), float(2 * k + d)))
+                for f in faces:
+                    quads.append([base + f[0], base + f[1], base + f[2], base + f[3]])
+
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts, dtype=np.float64), deep=1))
+    pd.SetPoints(vp)
+    ca = vtkCellArray()
+    for q in quads:
+        ids = vtkIdList()
+        for pid in q:
+            ids.InsertNextId(int(pid))
+        ca.InsertNextCell(ids)
+    pd.SetPolys(ca)
+
+    m = vtkMultiObjectMassProperties()
+    m.SetInputData(pd)
+    m.Update()
+    og = m.GetOutput()
+
+    res = {
+        "TotalVolume": np.asarray([m.GetTotalVolume()], dtype=np.float64),
+        "TotalArea": np.asarray([m.GetTotalArea()], dtype=np.float64),
+        "NumberOfObjects": np.asarray([m.GetNumberOfObjects()], dtype=np.int64),
+        "AllValid": np.asarray([m.GetAllValid()], dtype=np.int64),
+    }
+    cd = og.GetCellData()
+    for nm in ("ObjectIds", "Areas", "Volumes"):
+        a = cd.GetArray(nm)
+        if a is not None:
+            res[nm] = np.ascontiguousarray(vtk_to_numpy(a)).copy()
+    fd = og.GetFieldData()
+    for nm in ("ObjectValidity", "ObjectAreas"):
+        a = fd.GetArray(nm)
+        if a is not None:
+            res[nm] = np.ascontiguousarray(vtk_to_numpy(a)).copy()
+    return res
+
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -4683,6 +4765,12 @@ OPS = {
     # is a single batch (order matches stock's sequential run).
     "imprint": dict(fn=op_imprint, group="modeling", dtypes=["float32", "float64"], sizes=[5, 7]),
     "trimmed_extrusion": dict(fn=op_trimmed_extrusion, group="modeling", dtypes=["float32", "float64"], sizes=[5, 8]),
+    # ===== #206 int32 TempCell aliasing in vtkMultiObjectMassProperties =====
+    # (own border per the additive-OPS merge-conflict convention). The filter is the
+    # mesh volume/orientation oracle; its edge-neighbor walk re-fetched GetCellPoints
+    # into the shared cell scratch mid-loop -> byte-exact vs stock only after the fix.
+    "mass_properties": dict(fn=op_mass_properties, group="filter", dtypes=["float64"], sizes=[1, 3]),
+    # ===== end #206 =====
     # --- IO round-trips (PLY writer gather + reader scatter, byte-for-byte) ---
     "ply_roundtrip_binary": dict(fn=op_ply_roundtrip_binary, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
     "ply_roundtrip_ascii": dict(fn=op_ply_roundtrip_ascii, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
