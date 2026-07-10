@@ -148,6 +148,24 @@ try:
         vtkTransform,
     )
     from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
+    # === Wave 11: Discrete/Synchronized templates & marching contour filters ===
+    from vtkmodules.vtkCommonDataModel import vtkRectilinearGrid
+    from vtkmodules.vtkFiltersCore import (
+        vtkGridSynchronizedTemplates3D,
+        vtkMarchingSquares,
+        vtkRectilinearSynchronizedTemplates,
+        vtkSynchronizedTemplates2D,
+        vtkSynchronizedTemplates3D,
+        vtkSynchronizedTemplatesCutter3D,
+    )
+    from vtkmodules.vtkFiltersGeneral import (
+        vtkDiscreteFlyingEdges2D,
+        vtkDiscreteFlyingEdges3D,
+        vtkDiscreteMarchingCubes,
+        vtkImageMarchingCubes,
+        vtkMarchingContourFilter,
+    )
+    # === end Wave 11 imports ===
     from vtkmodules.vtkIOPLY import (
         vtkPLYReader,
         vtkPLYWriter,
@@ -4826,6 +4844,196 @@ def op_esg_connectivity_flags(dtype, size):
         res["ConnectivityFlags"] = np.ascontiguousarray(vtk_to_numpy(a)).copy()
     return res
 # === end #208 ESG ===
+# === Wave 11: Discrete/Synchronized templates & marching contour ops ===
+# Templated contour/marching hot paths (the #133 float64-double-round + threaded-
+# marching class). Every one PROVED BYTE-EXACT (strict, no flag) vs stock 9.6.2 in
+# the wheel-diff parity probe across float32/float64 x two sizes: the threaded
+# Synchronized* / DiscreteFlyingEdges* templates emit identical point/cell arrays
+# in identical order under cvista's STDThread SMP backend, and cvista's double-
+# precision iso-crossing interpolation downcasts to a value byte-identical with
+# stock (no double-round divergence). Inputs reuse the deterministic radial /
+# ramp fields (make_volume / make_grid2d) or the dedicated integer-only helpers
+# below; the Discrete* filters get an integer LABEL field (region boundaries), so
+# their crossings land on exact voxel midpoints. No np.sin/cos anywhere.
+def _make_sgrid_radial(n, dtype):
+    """Curvilinear vtkStructuredGrid (integer/half-integer warp, no trig) carrying
+    the radial scalar field, for vtkGridSynchronizedTemplates3D."""
+    n = int(n)
+    lin = np.arange(n, dtype=np.float64)
+    gi, gj, gk = np.meshgrid(lin, lin, lin, indexing="ij")
+    x = gi + 0.25 * (gj % 3)
+    y = gj + 0.5 * (gk % 2)
+    z = gk + 0.125 * (gi % 4)
+    coords = np.stack(
+        [x.transpose(2, 1, 0).ravel(), y.transpose(2, 1, 0).ravel(),
+         z.transpose(2, 1, 0).ravel()], axis=1).astype(dtype)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    sg = vtkStructuredGrid()
+    sg.SetDimensions(n, n, n)
+    sg.SetPoints(vp)
+    a = numpy_to_vtk(np.ascontiguousarray(_radial_field(n, dtype)), deep=1)
+    a.SetName("s")
+    sg.GetPointData().SetScalars(a)
+    return sg
+
+
+def _make_rgrid_radial(n, dtype):
+    """vtkRectilinearGrid on integer axis coordinates carrying the radial scalar,
+    for vtkRectilinearSynchronizedTemplates."""
+    n = int(n)
+    rg = vtkRectilinearGrid()
+    rg.SetDimensions(n, n, n)
+    for setter in ("SetXCoordinates", "SetYCoordinates", "SetZCoordinates"):
+        getattr(rg, setter)(
+            numpy_to_vtk(np.ascontiguousarray(np.arange(n, dtype=dtype)), deep=1))
+    a = numpy_to_vtk(np.ascontiguousarray(_radial_field(n, dtype)), deep=1)
+    a.SetName("s")
+    rg.GetPointData().SetScalars(a)
+    return rg
+
+
+def _make_label_volume(n, dtype):
+    """3D vtkImageData of blocky INTEGER labels (values 0..3 via integer index
+    algebra) for the Discrete* 3D filters (they contour label-region boundaries)."""
+    n = int(n)
+    zz, yy, xx = np.indices((n, n, n), dtype=np.int64)
+    lab = ((xx // 3) + (yy // 3) + (zz // 3)) % 4
+    flat = np.ascontiguousarray(lab.transpose(2, 1, 0).ravel())
+    img = vtkImageData()
+    img.SetDimensions(n, n, n)
+    a = numpy_to_vtk(flat.astype(dtype), deep=1)
+    a.SetName("s")
+    img.GetPointData().SetScalars(a)
+    return img
+
+
+def _make_label_grid2d(n, dtype):
+    """2D vtkImageData of blocky INTEGER labels for the Discrete* 2D filters."""
+    n = int(n)
+    yy, xx = np.indices((n, n), dtype=np.int64)
+    lab = ((xx // 4) + (yy // 4)) % 4
+    flat = np.ascontiguousarray(lab.T.ravel())
+    img = vtkImageData()
+    img.SetDimensions(n, n, 1)
+    a = numpy_to_vtk(flat.astype(dtype), deep=1)
+    a.SetName("s")
+    img.GetPointData().SetScalars(a)
+    return img
+
+
+def op_synctemplates3d(dtype, size):
+    # vtkSynchronizedTemplates3D directly on a 3D image volume (the default marching
+    # path vtkContourFilter routes vtkImageData to). Threaded; byte-exact vs stock.
+    f = vtkSynchronizedTemplates3D()
+    f.SetInputData(make_volume(size, dtype))
+    f.GenerateValues(5, 3.0, size * 0.45)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_imagemarchingcubes(dtype, size):
+    # vtkImageMarchingCubes on a 3D image volume (streaming marching cubes).
+    f = vtkImageMarchingCubes()
+    f.SetInputData(make_volume(size, dtype))
+    f.GenerateValues(5, 3.0, size * 0.45)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_marchingcontour(dtype, size):
+    # vtkMarchingContourFilter (dispatch wrapper) on a 3D image volume.
+    f = vtkMarchingContourFilter()
+    f.SetInputData(make_volume(size, dtype))
+    f.GenerateValues(5, 3.0, size * 0.45)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_synctemplatescutter3d(dtype, size):
+    # vtkSynchronizedTemplatesCutter3D: cut a 3D image volume by an implicit plane.
+    p = vtkPlane()
+    p.SetOrigin(size / 2.0, size / 2.0, size / 2.0)
+    p.SetNormal(1.0, 0.0, 0.0)
+    f = vtkSynchronizedTemplatesCutter3D()
+    f.SetInputData(make_volume(size, dtype))
+    f.SetCutFunction(p)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_marchingsquares(dtype, size):
+    # vtkMarchingSquares on a 2D image (line isocontours of the ramp field).
+    f = vtkMarchingSquares()
+    f.SetInputData(make_grid2d(size, dtype))
+    f.GenerateValues(5, 0.1, 0.9)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_synctemplates2d(dtype, size):
+    # vtkSynchronizedTemplates2D on a 2D image (threaded 2D marching squares).
+    f = vtkSynchronizedTemplates2D()
+    f.SetInputData(make_grid2d(size, dtype))
+    f.GenerateValues(5, 0.1, 0.9)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_gridsynctemplates3d(dtype, size):
+    # vtkGridSynchronizedTemplates3D on a curvilinear vtkStructuredGrid.
+    f = vtkGridSynchronizedTemplates3D()
+    f.SetInputData(_make_sgrid_radial(size, dtype))
+    f.GenerateValues(5, 3.0, size * 0.45)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_rectilinearsynctemplates(dtype, size):
+    # vtkRectilinearSynchronizedTemplates on a vtkRectilinearGrid.
+    f = vtkRectilinearSynchronizedTemplates()
+    f.SetInputData(_make_rgrid_radial(size, dtype))
+    f.GenerateValues(5, 3.0, size * 0.45)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_discreteflyingedges3d(dtype, size):
+    # vtkDiscreteFlyingEdges3D on an integer-label 3D image: extracts the surfaces
+    # between labeled regions (values 0..3). Threaded; byte-exact vs stock.
+    f = vtkDiscreteFlyingEdges3D()
+    f.SetInputData(_make_label_volume(size, dtype))
+    f.GenerateValues(4, 0.0, 3.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_discretemarchingcubes(dtype, size):
+    # vtkDiscreteMarchingCubes on an integer-label 3D image.
+    f = vtkDiscreteMarchingCubes()
+    f.SetInputData(_make_label_volume(size, dtype))
+    f.GenerateValues(4, 0.0, 3.0)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_discreteflyingedges2d(dtype, size):
+    # vtkDiscreteFlyingEdges2D on an integer-label 2D image (label-boundary lines).
+    f = vtkDiscreteFlyingEdges2D()
+    f.SetInputData(_make_label_grid2d(size, dtype))
+    f.GenerateValues(4, 0.0, 3.0)
+    f.Update()
+    return f.GetOutput()
+
+
+# NOTE: vtkDiscreteFlyingEdgesClipper2D is deliberately NOT covered. It emits an
+# over-allocated points array containing ~235 UNREFERENCED orphan points whose
+# coordinates are left UNINITIALIZED (read as zeros on a fresh heap but as
+# denormal heap garbage in the real all-ops run_ops process). This is a stock-VTK
+# characteristic (reproduced identically in stock 9.6.2, NOT a cvista divergence),
+# but it makes the filter's point array non-reproducible across processes, so it
+# cannot serve as a byte-exact gate. Skipped, not papered over.
+# === end Wave 11 ops ===
 
 
 OPS = {
@@ -5177,6 +5385,26 @@ OPS = {
     "marchingcubes": dict(fn=op_marchingcubes, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
     "surfacenets2d": dict(fn=op_surfacenets2d, group="filter", dtypes=["float64"], sizes=[24, 40]),
     # ===== end Wave 8 =====
+    # === Wave 11: Discrete/Synchronized templates & marching contour ===
+    # All BYTE-EXACT vs stock 9.6.2 (strict, no flag) across float32/float64 x two
+    # sizes in the wheel-diff probe: threaded Synchronized*/DiscreteFlyingEdges*
+    # emit identical points+cells in identical order under STDThread, and cvista's
+    # double-precision iso interpolation downcasts byte-identically (no #133 double
+    # round). A red in any of these is a real marching/threading divergence.
+    "synctemplates3d": dict(fn=op_synctemplates3d, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "imagemarchingcubes": dict(fn=op_imagemarchingcubes, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "marchingcontour": dict(fn=op_marchingcontour, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "synctemplatescutter3d": dict(fn=op_synctemplatescutter3d, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "marchingsquares": dict(fn=op_marchingsquares, group="filter", dtypes=["float32", "float64"], sizes=[24, 48]),
+    "synctemplates2d": dict(fn=op_synctemplates2d, group="filter", dtypes=["float32", "float64"], sizes=[24, 48]),
+    "gridsynctemplates3d": dict(fn=op_gridsynctemplates3d, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "rectilinearsynctemplates": dict(fn=op_rectilinearsynctemplates, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "discreteflyingedges3d": dict(fn=op_discreteflyingedges3d, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "discretemarchingcubes": dict(fn=op_discretemarchingcubes, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "discreteflyingedges2d": dict(fn=op_discreteflyingedges2d, group="filter", dtypes=["float32", "float64"], sizes=[24, 48]),
+    # vtkDiscreteFlyingEdgesClipper2D intentionally omitted (uninitialized orphan
+    # points -> non-reproducible; stock characteristic, see op note above).
+    # === end Wave 11 ===
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
