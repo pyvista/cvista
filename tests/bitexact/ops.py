@@ -205,6 +205,16 @@ try:
         vtkBandedPolyDataContourFilter,
         vtkTrimmedExtrusionFilter,
     )
+    # === Wave 10 ===  Filters/Modeling extrusion/subdivision/boundary remainder.
+    # vtkAdaptiveSubdivisionFilter lives in Filters/Modeling (WANTed in
+    # _modules_minimal.cmake) and is in NEITHER _nocompile_classes.cmake NOR
+    # _nowrap_classes.cmake (only vtkAdaptiveDataSetSurfaceFilter /
+    # vtkAdaptiveResampleToImage / vtkAdaptiveTemporalInterpolator are excluded),
+    # so it COMPILES and WRAPS in cvista -- importing it here is safe (an unwrapped
+    # class would ImportError and red the whole suite). Separate import statement so
+    # this Wave-10 block merges additively with the Wave-7 tuple above.
+    from vtkmodules.vtkFiltersModeling import vtkAdaptiveSubdivisionFilter
+    # === end Wave 10 ===
     # Filters/FlowPaths stock-parity lane (Wave 5). FiltersFlowPaths is WANTed in
     # _modules_minimal.cmake and vtkStreamTracer / vtkEvenlySpacedStreamlines2D are
     # neither in _nocompile_classes.cmake nor _nowrap_classes.cmake (only the
@@ -4456,6 +4466,34 @@ def op_trimmed_extrusion(dtype, size):
     f.SetTrimSurfaceData(make_tri_grid(size, dtype, z=3.0))
     f.SetExtrusionDirection(0.0, 0.0, 1.0)
     f.SetCapping(1)
+    # NOTE: the original Wave-7 (#203) op omitted Update()/return, so it returned
+    # None -> capture_dataobject(None) == {} on BOTH backends, making the parity
+    # comparison vacuously pass with ZERO coverage. Restored here (Wave 10). The
+    # output is byte-exact vs stock (points stay f64 on both backends), so no flag.
+    f.Update()
+    return f.GetOutput()
+
+
+# === Wave 10 ===  Filters/Modeling extrusion/subdivision/boundary remainder.
+def op_adaptive_subdivision(dtype, size):
+    # vtkAdaptiveSubdivisionFilter: recursively splits triangles until every edge
+    # is shorter than MaximumEdgeLength. Input is the OPEN integer-lattice
+    # make_tri_grid (unit right-triangles); with a 0.5 max edge length the split
+    # points land on exact half/quarter-integer coordinates -> exactly representable
+    # in BOTH float32 and float64, so the geometry is reproducible to the ULP.
+    # The filter is NOT in the 30 OutputPointsPrecision-corrected set; it follows
+    # DEFAULT precision (input point type) identically on both backends -- verified
+    # via the wheel-diff probe: output points stay f64-on-f64 / f32-on-f32 on both
+    # stock and cvista, byte-exact across dtype x {5,8}. Plain byte comparison, no
+    # relaxation flag; an unexpected red here is a real divergence to characterize.
+    f = vtkAdaptiveSubdivisionFilter()
+    f.SetInputData(make_tri_grid(size, dtype))
+    f.SetMaximumEdgeLength(0.5)
+    f.Update()
+    return f.GetOutput()
+# === end Wave 10 ===
+
+
 def op_cellsize_mixed_all(dtype, size):
     """vtkCellSizeFilter with ALL size metrics on (VertexCount/Length/Area/Volume
     + Sum) over the mixed tet/hex/voxel/wedge/pyramid grid, so the per-cell-
@@ -4769,6 +4807,12 @@ OPS = {
     # is a single batch (order matches stock's sequential run).
     "imprint": dict(fn=op_imprint, group="modeling", dtypes=["float32", "float64"], sizes=[5, 7]),
     "trimmed_extrusion": dict(fn=op_trimmed_extrusion, group="modeling", dtypes=["float32", "float64"], sizes=[5, 8]),
+    # === Wave 10 ===  Filters/Modeling extrusion/subdivision/boundary remainder
+    # (own border per the additive-OPS merge-conflict convention). Byte-exact vs
+    # stock: split points fall on exactly-representable fractions and the filter
+    # follows DEFAULT output precision on both backends -> no relaxation flag.
+    "adaptive_subdivision": dict(fn=op_adaptive_subdivision, group="modeling", dtypes=["float32", "float64"], sizes=[5, 8]),
+    # === end Wave 10 ===
     # ===== #206 int32 TempCell aliasing in vtkMultiObjectMassProperties =====
     # (own border per the additive-OPS merge-conflict convention). The filter is the
     # mesh volume/orientation oracle; its edge-neighbor walk re-fetched GetCellPoints
