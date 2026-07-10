@@ -323,6 +323,36 @@ try:
         vtkThresholdPoints,
     )
     # === end Wave 9 imports ===
+    # === Wave 13: MED-tier topology conversions + append/procrustes ===
+    # Bounded import block (additive-OPS merge convention). Every class below was
+    # confirmed IMPORTABLE (compiled AND wrapped) in BOTH stock vtk==9.6.2 and the
+    # cvista core-tier wheel before writing these ops -- an unwrapped class would
+    # ImportError and red the whole suite. Module homes verified empirically:
+    #   FiltersCore:     vtkExplicitStructuredGridToUnstructuredGrid,
+    #                    vtkUnstructuredGridToExplicitStructuredGrid, vtkAppendDataSets,
+    #                    vtkTriangleMeshPointNormals, vtkGenerateRegionIds, vtkTubeBender
+    #   FiltersGeneral:  vtkBooleanOperationPolyDataFilter, vtkAppendPoints
+    #                    (vtkVertexGlyphFilter already imported above / covered)
+    #   FiltersPoints:   vtkConvertToPointCloud
+    #   FiltersModeling: vtkSubdivideTetra
+    #   FiltersHybrid:   vtkProcrustesAlignmentFilter
+    from vtkmodules.vtkFiltersCore import (
+        vtkExplicitStructuredGridToUnstructuredGrid,
+        vtkUnstructuredGridToExplicitStructuredGrid,
+        vtkAppendDataSets,
+        vtkTriangleMeshPointNormals,
+        vtkGenerateRegionIds,
+        vtkTubeBender,
+    )
+    from vtkmodules.vtkFiltersGeneral import (
+        vtkBooleanOperationPolyDataFilter,
+        vtkAppendPoints,
+    )
+    from vtkmodules.vtkFiltersPoints import vtkConvertToPointCloud
+    from vtkmodules.vtkFiltersModeling import vtkSubdivideTetra
+    from vtkmodules.vtkFiltersHybrid import vtkProcrustesAlignmentFilter
+    from vtkmodules.vtkCommonDataModel import vtkMultiBlockDataSet
+    # === end Wave 13 imports ===
     from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
     _HAVE_VTK = True
@@ -5075,6 +5105,303 @@ def op_discreteflyingedges2d(dtype, size):
 # === end Wave 11 ops ===
 
 
+# === Wave 13: MED-tier topology conversions + append/procrustes ops ===
+# Input builders use ONLY integer-lattice / arange point coordinates (no trig, no
+# sqrt on the Python data path) so both backends start byte-identical. The two
+# sphere-driven ops (trianglemesh_normals, generate_region_ids) reuse make_sphere,
+# whose sin/cos run in the C++ backend identically on both sides (the determinism
+# rule bans PYTHON-side np.sin/cos, whose libm/numpy drift would masquerade as a
+# cvista divergence, not the C++ source shared by both wheels).
+def _make_hex_esg(n, dtype):
+    """A vtkExplicitStructuredGrid of n^3 hexahedra on an integer lattice. The
+    canonical ESG input for the two ESG<->UG topology converters (ESG-adjacent to
+    the just-fixed #208 int32 bug)."""
+    _require_vtk()
+    px = py = pz = int(n) + 1
+    pts = np.array(
+        [[i, j, k] for k in range(pz) for j in range(py) for i in range(px)], dtype
+    )
+
+    def pid(i, j, k):
+        return i + j * px + k * px * py
+
+    esg = vtkExplicitStructuredGrid()
+    esg.SetDimensions(px, py, pz)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts), deep=1))
+    esg.SetPoints(vp)
+    ca = vtkCellArray()
+    for k in range(int(n)):
+        for j in range(int(n)):
+            for i in range(int(n)):
+                ids = vtkIdList()
+                for (di, dj, dk) in (
+                    (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+                    (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+                ):
+                    ids.InsertNextId(pid(i + di, j + dj, k + dk))
+                ca.InsertNextCell(ids)
+    esg.SetCells(ca)
+    return esg
+
+
+def op_esg_to_ug(dtype, size):
+    # vtkExplicitStructuredGridToUnstructuredGrid: ESG -> UG. Rebuilds cell
+    # connectivity + emits BLOCK_I/J/K + vtkOriginalCellIds cell arrays -> the
+    # int32 TempCell-aliasing surface behind #114/#204/#206/#208. BYTE-EXACT vs
+    # stock 9.6.2 (points + connectivity + all cell arrays) in the wheel-diff
+    # probe across both dtypes/sizes -> STRICT gate. A COUNT/VALUE red here would
+    # be a real ESG-converter int32/topology bug to escalate (mirror #208).
+    f = vtkExplicitStructuredGridToUnstructuredGrid()
+    f.SetInputData(_make_hex_esg(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_ug_to_esg(dtype, size):
+    # vtkUnstructuredGridToExplicitStructuredGrid: UG -> ESG (the inverse). Fed the
+    # UG emitted by the ESG->UG converter (which carries the BLOCK_I/J/K cell arrays
+    # this filter consumes). ComputeFacesConnectivityFlagsArray() is called on the
+    # output so a real per-cell ConnectivityFlags array is captured (non-vacuous +
+    # meaningful topology content). BYTE-EXACT vs stock across both dtypes/sizes.
+    pre = vtkExplicitStructuredGridToUnstructuredGrid()
+    pre.SetInputData(_make_hex_esg(size, dtype))
+    pre.Update()
+    ug = pre.GetOutput()
+    g = vtkUnstructuredGridToExplicitStructuredGrid()
+    g.SetInputData(ug)
+    g.SetWholeExtent(0, int(size), 0, int(size), 0, int(size))
+    g.SetInputArrayToProcess(0, 0, 0, 1, "BLOCK_I")
+    g.SetInputArrayToProcess(1, 0, 0, 1, "BLOCK_J")
+    g.SetInputArrayToProcess(2, 0, 0, 1, "BLOCK_K")
+    g.Update()
+    out = g.GetOutput()
+    out.ComputeFacesConnectivityFlagsArray()
+    return out
+
+
+def _tri_cube(o, s, dtype):
+    """A closed 12-triangle cube of side `s` at origin `o`, consistent outward
+    winding, coordinates on an exact integer lattice."""
+    p = (
+        np.array(
+            [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+             [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], dtype
+        )
+        * s
+        + o
+    )
+    tris = (
+        (0, 3, 2), (0, 2, 1), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
+        (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+    )
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(p.astype(dtype)), deep=1))
+    pd.SetPoints(vp)
+    ca = vtkCellArray()
+    for t in tris:
+        ids = vtkIdList()
+        for k in t:
+            ids.InsertNextId(int(k))
+        ca.InsertNextCell(ids)
+    pd.SetPolys(ca)
+    return pd
+
+
+def op_boolean_union(dtype, size):
+    # vtkBooleanOperationPolyDataFilter (SHIPPED sibling of the latent LoopBoolean
+    # aliasing bug #209). Two overlapping closed triangulated cubes, UNION. BYTE-
+    # EXACT vs stock 9.6.2 (points + polys + BadTriangle/CellSource/Distance/FreeEdge
+    # cell arrays + PointSource) across union/intersection/difference x both
+    # dtypes/sizes in the wheel-diff probe -> STRICT gate, NO relaxation flag. A
+    # COUNT/VALUE red here is a real boolean aliasing bug to escalate (mirror #209).
+    f = vtkBooleanOperationPolyDataFilter()
+    f.SetInputData(0, _tri_cube(np.array([0.0, 0.0, 0.0], dtype), float(int(size)), dtype))
+    f.SetInputData(1, _tri_cube(np.array([float(int(size) - 1)] * 3, dtype), float(int(size)), dtype))
+    f.SetOperationToUnion()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_boolean_intersection(dtype, size):
+    # vtkBooleanOperationPolyDataFilter INTERSECTION (same special-interest filter).
+    f = vtkBooleanOperationPolyDataFilter()
+    f.SetInputData(0, _tri_cube(np.array([0.0, 0.0, 0.0], dtype), float(int(size)), dtype))
+    f.SetInputData(1, _tri_cube(np.array([float(int(size) - 1)] * 3, dtype), float(int(size)), dtype))
+    f.SetOperationToIntersection()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_boolean_difference(dtype, size):
+    # vtkBooleanOperationPolyDataFilter DIFFERENCE (same special-interest filter).
+    f = vtkBooleanOperationPolyDataFilter()
+    f.SetInputData(0, _tri_cube(np.array([0.0, 0.0, 0.0], dtype), float(int(size)), dtype))
+    f.SetInputData(1, _tri_cube(np.array([float(int(size) - 1)] * 3, dtype), float(int(size)), dtype))
+    f.SetOperationToDifference()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_append_datasets(dtype, size):
+    # vtkAppendDataSets: concatenate two hex UGs (second translated in x). Merges
+    # points + rebuilds connectivity + concatenates the 'v' point scalar. BYTE-EXACT.
+    a = make_hex_ugrid(size, dtype)
+    b = make_hex_ugrid(size, dtype)
+    barr = vtk_to_numpy(b.GetPoints().GetData()).copy()
+    barr[:, 0] = barr[:, 0] + (int(size) + 2)  # integer shift -> exact
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(barr.astype(dtype)), deep=1))
+    b.SetPoints(vp)
+    f = vtkAppendDataSets()
+    f.AddInputData(a)
+    f.AddInputData(b)
+    f.Update()
+    return f.GetOutput()
+
+
+def _pointcloud_pd(o, n, dtype):
+    """An n*n planar point cloud (integer lattice + offset) with a per-point 's'
+    scalar. Drives vtkAppendPoints and vtkConvertToPointCloud."""
+    n = int(n)
+    lin = np.arange(n, dtype=dtype)
+    gx, gy = np.meshgrid(lin, lin, indexing="ij")
+    p = (
+        np.ascontiguousarray(
+            np.stack([gx.ravel(), gy.ravel(), np.zeros(n * n, dtype)], axis=1)
+        )
+        + o
+    ).astype(dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(p), deep=1))
+    pd.SetPoints(vp)
+    idx = np.arange(n * n, dtype=np.int64)
+    sc = numpy_to_vtk(np.ascontiguousarray((1.0 + (idx % 7)).astype(dtype)), deep=1)
+    sc.SetName("s")
+    pd.GetPointData().SetScalars(sc)
+    return pd
+
+
+def op_append_points(dtype, size):
+    # vtkAppendPoints: concatenate the point arrays (+ point data) of two clouds.
+    # Output carries no cells (points-only); points+pd:s captured -> non-vacuous.
+    a = _pointcloud_pd(np.array([0.0, 0.0, 0.0], dtype), size, dtype)
+    b = _pointcloud_pd(np.array([float(int(size) + 3), 0.0, 0.0], dtype), size, dtype)
+    f = vtkAppendPoints()
+    f.AddInputData(a)
+    f.AddInputData(b)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_convert_pointcloud(dtype, size):
+    # vtkConvertToPointCloud: wrap a dataset's points as a single poly-vertex cloud.
+    f = vtkConvertToPointCloud()
+    f.SetInputData(_pointcloud_pd(np.array([0.0, 0.0, 0.0], dtype), size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_trianglemesh_normals(dtype, size):
+    # vtkTriangleMeshPointNormals: fast per-point normals on a triangulated sphere.
+    # Threaded; BYTE-EXACT vs stock (points + pd:Normals) across sizes. dtype knob
+    # is inert (sphere source is double) -> single dtype registered.
+    f = vtkTriangleMeshPointNormals()
+    f.SetInputData(make_sphere(size, size))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_subdivide_tetra(dtype, size):
+    # vtkSubdivideTetra: 1->8 subdivision of a tetrahedralized hex grid. make_tet_ugrid
+    # pins its points to float32 identically on both backends, so this op is dtype-
+    # invariant -> single dtype registered. Rebuilds tet connectivity -> BYTE-EXACT.
+    f = vtkSubdivideTetra()
+    f.SetInputData(make_tet_ugrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_generate_region_ids(dtype, size):
+    # vtkGenerateRegionIds: feature-angle region segmentation of a triangulated
+    # sphere; writes vtkRegionIds cell array (+ Normals). BYTE-EXACT vs stock.
+    f = vtkGenerateRegionIds()
+    f.SetInputData(make_sphere(size, size))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_tube_bender(dtype, size):
+    # vtkTubeBender: rounds the corners of a polyline (pre-pass for vtkTubeFilter).
+    # Integer-algebra zigzag polyline -> BYTE-EXACT points+lines vs stock.
+    n = int(size)
+    idx = np.arange(n, dtype=dtype)
+    p = np.ascontiguousarray(
+        np.stack([idx, (idx % 3).astype(dtype), (idx % 2).astype(dtype)], axis=1)
+    ).astype(dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(p, deep=1))
+    pd.SetPoints(vp)
+    ca = vtkCellArray()
+    ids = vtkIdList()
+    for i in range(n):
+        ids.InsertNextId(i)
+    ca.InsertNextCell(ids)
+    pd.SetLines(ca)
+    f = vtkTubeBender()
+    f.SetInputData(pd)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_procrustes(dtype, size):
+    # vtkProcrustesAlignmentFilter: align a multiblock of point sets to their mean
+    # shape (SVD-based rigid alignment). Output is a vtkMultiBlockDataSet (not a
+    # single dataset), so the op returns a dict of each aligned block's points plus
+    # the mean shape -> captured verbatim, non-vacuous. BYTE-EXACT vs stock across
+    # both dtypes/sizes (the SVD alignment is deterministic on identical inputs).
+    n = int(size)
+    mb = vtkMultiBlockDataSet()
+    cfg = ((1.0, (0.0, 0.0, 0.0)), (2.0, (3.0, 1.0, 0.0)), (1.5, (-2.0, 2.0, 0.0)))
+    for bi, (sc, sh) in enumerate(cfg):
+        lin = np.arange(n, dtype=dtype)
+        gx, gy = np.meshgrid(lin, lin, indexing="ij")
+        p = (
+            np.ascontiguousarray(
+                np.stack([gx.ravel(), gy.ravel(), np.zeros(n * n, dtype)], axis=1)
+            )
+            * sc
+            + np.array(sh, dtype)
+        ).astype(dtype)
+        pd = vtkPolyData()
+        vp = vtkPoints()
+        vp.SetData(numpy_to_vtk(np.ascontiguousarray(p), deep=1))
+        pd.SetPoints(vp)
+        ca = vtkCellArray()
+        for j in range(n * n):
+            ids = vtkIdList()
+            ids.InsertNextId(j)
+            ca.InsertNextCell(ids)
+        pd.SetVerts(ca)
+        mb.SetBlock(bi, pd)
+    f = vtkProcrustesAlignmentFilter()
+    f.SetInputData(mb)
+    f.Update()
+    out = f.GetOutput()
+    res = {}
+    for bi in range(out.GetNumberOfBlocks()):
+        blk = out.GetBlock(bi)
+        res[f"block{bi}"] = vtk_to_numpy(blk.GetPoints().GetData()).copy()
+    mp = f.GetMeanPoints()
+    if mp is not None:
+        res["mean"] = vtk_to_numpy(mp.GetData()).copy()
+    return res
+# === end Wave 13 ops ===
+
+
 # === Wave 9: Core cell-connectivity topology op bodies ===
 # Local pre-classification (published cvista==9.6.2.3 vs stock vtk==9.6.2, in-memory
 # inputs, both dtypes x both sizes) found ALL FOUR filters BYTE-EXACT — strict gate,
@@ -5623,6 +5950,36 @@ OPS = {
     "delaunay2d": dict(fn=op_delaunay2d, group="filter", dtypes=["float32", "float64"], sizes=[6, 10]),
     "delaunay3d": dict(fn=op_delaunay3d, group="filter", dtypes=["float32", "float64"], sizes=[4, 5]),
     # ===== end Wave 9 =====
+    # === Wave 13: MED-tier topology conversions + append/procrustes ===
+    # (own border per the additive-OPS merge-conflict convention). Every member
+    # pre-classified with the wheel-diff parity probe (stock vtk==9.6.2 vs the
+    # cvista core-tier wheel, in-memory inputs, all listed dtypes x sizes) as
+    # BYTE-EXACT -> STRICT gate, NO relaxation flag. A COUNT/POSITION/VALUE red in
+    # any of these is a REAL divergence to characterize + escalate, not to silence.
+    #
+    # SPECIAL INTEREST (both verified BYTE-EXACT here, no divergence):
+    #   * esg_to_ug / ug_to_esg  -- the vtkExplicitStructuredGrid<->UG converters,
+    #     ESG-adjacent to the just-fixed #208 int32 TempCell-aliasing bug. They
+    #     rebuild cell connectivity + emit/consume BLOCK_I/J/K int cell arrays;
+    #     byte-exact points+connectivity+cell-arrays on both dtypes/sizes.
+    #   * boolean_union/intersection/difference -- vtkBooleanOperationPolyDataFilter,
+    #     the SHIPPED sibling of the latent LoopBoolean aliasing bug #209. Byte-exact
+    #     points+polys+all cell/point arrays across all 3 operations x dtypes x sizes.
+    "esg_to_ug": dict(fn=op_esg_to_ug, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
+    "ug_to_esg": dict(fn=op_ug_to_esg, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
+    "boolean_union": dict(fn=op_boolean_union, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
+    "boolean_intersection": dict(fn=op_boolean_intersection, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
+    "boolean_difference": dict(fn=op_boolean_difference, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
+    "append_datasets": dict(fn=op_append_datasets, group="filter", dtypes=["float32", "float64"], sizes=[3, 4]),
+    "append_points": dict(fn=op_append_points, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "convert_pointcloud": dict(fn=op_convert_pointcloud, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    # dtype-invariant (sphere source is double / tet points pinned to f32) -> single dtype.
+    "trianglemesh_normals": dict(fn=op_trianglemesh_normals, group="filter", dtypes=["float64"], sizes=[16, 24]),
+    "generate_region_ids": dict(fn=op_generate_region_ids, group="filter", dtypes=["float64"], sizes=[16, 24]),
+    "subdivide_tetra": dict(fn=op_subdivide_tetra, group="filter", dtypes=["float64"], sizes=[3, 4]),
+    "tube_bender": dict(fn=op_tube_bender, group="filter", dtypes=["float32", "float64"], sizes=[10, 16]),
+    "procrustes": dict(fn=op_procrustes, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    # === end Wave 13 ===
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
