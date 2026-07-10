@@ -76,6 +76,7 @@ try:
         vtkCellArray,
         vtkCellLocator,
         vtkDataObject,
+        vtkExplicitStructuredGrid,
         vtkGenericCell,
         vtkImageData,
         vtkMergePoints,
@@ -4553,6 +4554,58 @@ def op_mass_properties(dtype, size):
     return res
 
 
+# === #208 ESG ===
+def op_esg_connectivity_flags(dtype, size):
+    """vtkExplicitStructuredGrid::ComputeFacesConnectivityFlagsArray() on a
+    deterministic `size`^3 grid of unit hexahedra ((size+1)^3 integer lattice
+    points). Every interior cell face shared with a neighbor must be flagged, so
+    the resulting per-cell 'ConnectivityFlags' bitmask is a fixed integer pattern.
+
+    This is the regression gate for the int32 TempCell aliasing bug (#208): the
+    connectivity walk held a GetCellPoints(cell) raw pointer live across a second
+    GetCellPoints(neighbor) call. Under cvista's int32-default cell storage both
+    pointers alias the single shared vtkCellArray temp-cell scratch, so each cell
+    compared its own (overwritten) ids against themselves and every mask collapsed
+    to 0 (stock: [42, 41, 38, 37, 26, 25, 22, 21] on the 2x2x2 grid). Integer
+    bitmasks -> byte-exact vs stock with NO relaxation."""
+    _require_vtk()
+    n = max(1, int(size))          # cells per axis
+    px = py = pz = n + 1           # points per axis
+    pts = np.array(
+        [[i, j, k] for k in range(pz) for j in range(py) for i in range(px)],
+        dtype=np.float64,
+    )
+
+    def pid(i, j, k):
+        return i + j * px + k * px * py
+
+    esg = vtkExplicitStructuredGrid()
+    esg.SetDimensions(px, py, pz)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts), deep=1))
+    esg.SetPoints(vp)
+    ca = vtkCellArray()
+    hexoffs = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+               (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+    for k in range(n):
+        for j in range(n):
+            for i in range(n):
+                ids = vtkIdList()
+                for (di, dj, dk) in hexoffs:
+                    ids.InsertNextId(pid(i + di, j + dj, k + dk))
+                ca.InsertNextCell(ids)
+    esg.SetCells(ca)
+    esg.ComputeFacesConnectivityFlagsArray()
+
+    res = {}
+    cd = esg.GetCellData()
+    a = cd.GetArray("ConnectivityFlags")
+    if a is not None:
+        res["ConnectivityFlags"] = np.ascontiguousarray(vtk_to_numpy(a)).copy()
+    return res
+# === end #208 ESG ===
+
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -4775,6 +4828,13 @@ OPS = {
     # into the shared cell scratch mid-loop -> byte-exact vs stock only after the fix.
     "mass_properties": dict(fn=op_mass_properties, group="filter", dtypes=["float64"], sizes=[1, 3]),
     # ===== end #206 =====
+    # ===== #208 int32 TempCell aliasing in vtkExplicitStructuredGrid =====
+    # (own border per the additive-OPS merge-conflict convention). The face
+    # connectivity walk held a GetCellPoints(cell) pointer live across a second
+    # GetCellPoints(neighbor) into the shared cell scratch -> all-zero masks under
+    # int32 storage; byte-exact integer bitmasks vs stock only after the fix.
+    "esg_connectivity_flags": dict(fn=op_esg_connectivity_flags, group="filter", dtypes=["float64"], sizes=[2, 3]),
+    # ===== end #208 =====
     # --- IO round-trips (PLY writer gather + reader scatter, byte-for-byte) ---
     "ply_roundtrip_binary": dict(fn=op_ply_roundtrip_binary, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
     "ply_roundtrip_ascii": dict(fn=op_ply_roundtrip_ascii, group="io", dtypes=["float32", "float64"], sizes=[12, 24]),
