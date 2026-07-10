@@ -378,6 +378,45 @@ try:
     )
     from vtkmodules.vtkFiltersCore import vtkImageAppend
     # === end Wave 12 imports ===
+    # === Wave 14: closeout low-risk compute/geometry stock-parity filters ===
+    # Bounded import block (additive-OPS merge convention). Every class below was
+    # confirmed IMPORTABLE (compiled AND wrapped) in BOTH stock vtk==9.6.2 and the
+    # cvista core-tier wheel before writing these ops -- an unwrapped class would
+    # ImportError and red the whole suite. Module homes verified empirically in both
+    # backends:
+    #   FiltersCore:       vtkCenterOfMass, vtkMassProperties, vtkAppendArcLength,
+    #                      vtkReverseSense
+    #   FiltersGeneral:    vtkCurvatures, vtkCellValidator, vtkShrinkPolyData,
+    #                      vtkQuantizePolyDataPoints
+    #   ImagingCore:       vtkExtractVOI, vtkImageClip
+    #   FiltersExtraction: vtkExtractRectilinearGrid
+    #   FiltersGeometry:   vtkImageDataGeometryFilter, vtkStructuredGridGeometryFilter,
+    #                      vtkRectilinearGridGeometryFilter
+    # All 15 configs x every op pre-classified BYTE-EXACT with the wheel-diff parity
+    # probe -> STRICT gate, no relaxation flag.
+    from vtkmodules.vtkFiltersCore import (
+        vtkAppendArcLength,
+        vtkCenterOfMass,
+        vtkMassProperties,
+        vtkReverseSense,
+    )
+    from vtkmodules.vtkFiltersGeneral import (
+        vtkCellValidator,
+        vtkCurvatures,
+        vtkQuantizePolyDataPoints,
+        vtkShrinkPolyData,
+    )
+    from vtkmodules.vtkImagingCore import (
+        vtkExtractVOI,
+        vtkImageClip,
+    )
+    from vtkmodules.vtkFiltersExtraction import vtkExtractRectilinearGrid
+    from vtkmodules.vtkFiltersGeometry import (
+        vtkImageDataGeometryFilter,
+        vtkRectilinearGridGeometryFilter,
+        vtkStructuredGridGeometryFilter,
+    )
+    # === end Wave 14 imports ===
     from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
     _HAVE_VTK = True
@@ -5516,6 +5555,268 @@ def op_procrustes(dtype, size):
 # === end Wave 13 ops ===
 
 
+# === Wave 14: closeout low-risk compute/geometry op bodies ===
+# Every input builder uses ONLY integer-lattice / arange coordinates + pure algebra
+# (no np.sin/cos, no Python-side sqrt on the data path) so both backends start
+# byte-identical. All 15 ops were pre-classified with the wheel-diff parity probe
+# (stock vtk==9.6.2 vs the cvista core-tier wheel, in-memory inputs, every listed
+# dtype x size) as BYTE-EXACT -> STRICT gate, NO relaxation flag. A COUNT/POSITION/
+# VALUE red in any of these is a REAL divergence to characterize + escalate.
+def _w14_tri_cube(size, dtype):
+    """A closed 12-triangle cube scaled by `size` on an exact integer lattice,
+    consistent outward winding. The watertight closed surface for the mass/center/
+    curvature/validity/shrink/quantize/reverse ops."""
+    _require_vtk()
+    p = (
+        np.array(
+            [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+             [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], dtype
+        )
+        * dtype(float(size))
+    )
+    tris = (
+        (0, 3, 2), (0, 2, 1), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
+        (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+    )
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(p), deep=1))
+    pd.SetPoints(vp)
+    ca = vtkCellArray()
+    for t in tris:
+        ids = vtkIdList()
+        for k in t:
+            ids.InsertNextId(int(k))
+        ca.InsertNextCell(ids)
+    pd.SetPolys(ca)
+    return pd
+
+
+def _w14_ramp_image(size, dtype):
+    """A single-component scalar vtkImageData on a size^3 voxel grid, filled by pure
+    integer index algebra (mod 251, no trig/sqrt) so both backends start identical."""
+    _require_vtk()
+    idx = np.indices((size, size, size), dtype=np.int64)
+    v = ((idx[0] * 7 + idx[1] * 13 + idx[2] * 17) % 251).astype(np.float64)
+    flat = np.ascontiguousarray(v.transpose(2, 1, 0).ravel()).astype(dtype)
+    img = vtkImageData()
+    img.SetDimensions(size, size, size)
+    a = numpy_to_vtk(flat, deep=1)
+    a.SetName("s")
+    img.GetPointData().SetScalars(a)
+    return img
+
+
+def _w14_sgrid(size, dtype):
+    """A vtkStructuredGrid of explicit lattice points (size^3) + a ramp point scalar."""
+    _require_vtk()
+    idx = np.indices((size, size, size), dtype=np.float64)
+    pts = np.stack([idx[2], idx[1], idx[0]], axis=-1).reshape(-1, 3).astype(dtype)
+    sg = vtkStructuredGrid()
+    sg.SetDimensions(size, size, size)
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts), deep=1))
+    sg.SetPoints(vp)
+    idx2 = np.indices((size, size, size), dtype=np.int64)
+    v = ((idx2[0] * 7 + idx2[1] * 13 + idx2[2] * 17) % 251).astype(np.float64)
+    flat = np.ascontiguousarray(v.transpose(2, 1, 0).ravel()).astype(dtype)
+    a = numpy_to_vtk(flat, deep=1)
+    a.SetName("s")
+    sg.GetPointData().SetScalars(a)
+    return sg
+
+
+def _w14_rgrid(size, dtype):
+    """A vtkRectilinearGrid with arange coordinate arrays + a ramp point scalar."""
+    _require_vtk()
+    rg = vtkRectilinearGrid()
+    rg.SetDimensions(size, size, size)
+    rg.SetXCoordinates(numpy_to_vtk(np.arange(size, dtype=dtype), deep=1))
+    rg.SetYCoordinates(numpy_to_vtk(np.arange(size, dtype=dtype) * dtype(2), deep=1))
+    rg.SetZCoordinates(numpy_to_vtk(np.arange(size, dtype=dtype) * dtype(3), deep=1))
+    idx = np.indices((size, size, size), dtype=np.int64)
+    v = ((idx[0] * 7 + idx[1] * 13 + idx[2] * 17) % 251).astype(np.float64)
+    flat = np.ascontiguousarray(v.transpose(2, 1, 0).ravel()).astype(dtype)
+    a = numpy_to_vtk(flat, deep=1)
+    a.SetName("s")
+    rg.GetPointData().SetScalars(a)
+    return rg
+
+
+def op_centerofmass(dtype, size):
+    # vtkCenterOfMass: reduces a point set to a single 3-vector centroid. Returned as
+    # an explicit dict (scalar filter -> no dataset output) so the capture is
+    # non-empty. BYTE-EXACT vs stock across both dtypes/sizes in the probe.
+    f = vtkCenterOfMass()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.SetUseScalarsAsWeights(False)
+    f.Update()
+    c = f.GetCenter()
+    return {"center": [c[0], c[1], c[2]]}
+
+
+def op_massproperties(dtype, size):
+    # vtkMassProperties: volume/area/shape scalars of a closed triangulated surface.
+    # Returned as an explicit dict so the capture is non-empty. BYTE-EXACT vs stock.
+    f = vtkMassProperties()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.Update()
+    return {
+        "volume": [f.GetVolume()],
+        "area": [f.GetSurfaceArea()],
+        "projarea": [f.GetVolumeProjected()],
+        "nsi": [f.GetNormalizedShapeIndex()],
+    }
+
+
+def _w14_polylines(size, dtype):
+    """A single polyline through `size` lattice-derived points (pure integer algebra)."""
+    _require_vtk()
+    x = np.arange(size, dtype=np.float64)
+    pts = np.stack([x, (x * x) % 7.0, (2 * x) % 5.0], axis=1).astype(dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(pts), deep=1))
+    pd.SetPoints(vp)
+    ca = vtkCellArray()
+    ids = vtkIdList()
+    for i in range(size):
+        ids.InsertNextId(i)
+    ca.InsertNextCell(ids)
+    pd.SetLines(ca)
+    return pd
+
+
+def op_appendarclength(dtype, size):
+    # vtkAppendArcLength: appends a cumulative 'arc_length' point-data array along
+    # polylines (euclidean distance, IEEE sqrt in C++ -> deterministic). BYTE-EXACT.
+    f = vtkAppendArcLength()
+    f.SetInputData(_w14_polylines(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_curvatures_gaussian(dtype, size):
+    # vtkCurvatures (Gaussian): per-vertex discrete curvature over a closed surface.
+    # Per-vertex FP done in the shared C++ backend -> probe found BYTE-EXACT on all
+    # dtypes/sizes (no point_data_tol needed).
+    f = vtkCurvatures()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.SetCurvatureTypeToGaussian()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_curvatures_mean(dtype, size):
+    # vtkCurvatures (Mean): the mean-curvature companion. BYTE-EXACT vs stock.
+    f = vtkCurvatures()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.SetCurvatureTypeToMean()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_reversesense(dtype, size):
+    # vtkReverseSense: reverses cell winding + point/cell normals. Fed a normals-
+    # carrying surface (vtkPolyDataNormals, splitting off) so the reversed Normals
+    # arrays are captured. BYTE-EXACT vs stock across both dtypes/sizes.
+    nf = vtkPolyDataNormals()
+    nf.SetInputData(_w14_tri_cube(size, dtype))
+    nf.SplittingOff()
+    nf.ConsistencyOn()
+    nf.ComputePointNormalsOn()
+    nf.ComputeCellNormalsOn()
+    nf.Update()
+    f = vtkReverseSense()
+    f.SetInputData(nf.GetOutput())
+    f.ReverseCellsOn()
+    f.ReverseNormalsOn()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_extractvoi(dtype, size):
+    # vtkExtractVOI: crops a sub-volume-of-interest from a vtkImageData. BYTE-EXACT.
+    f = vtkExtractVOI()
+    f.SetInputData(_w14_ramp_image(size, dtype))
+    f.SetVOI(1, size - 2, 1, size - 2, 0, size - 1)
+    f.SetSampleRate(1, 1, 1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_imageclip(dtype, size):
+    # vtkImageClip (ClipData on): extracts a sub-extent of a vtkImageData. BYTE-EXACT.
+    f = vtkImageClip()
+    f.SetInputData(_w14_ramp_image(size, dtype))
+    f.SetOutputWholeExtent(1, size - 2, 1, size - 2, 0, size - 1)
+    f.ClipDataOn()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_extractrgrid(dtype, size):
+    # vtkExtractRectilinearGrid: crops a VOI of a vtkRectilinearGrid. BYTE-EXACT.
+    f = vtkExtractRectilinearGrid()
+    f.SetInputData(_w14_rgrid(size, dtype))
+    f.SetVOI(1, size - 2, 1, size - 2, 0, size - 1)
+    f.SetSampleRate(1, 1, 1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_imagegeometry(dtype, size):
+    # vtkImageDataGeometryFilter: vtkImageData -> vtkPolyData geometry. BYTE-EXACT.
+    f = vtkImageDataGeometryFilter()
+    f.SetInputData(_w14_ramp_image(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_sgridgeometry(dtype, size):
+    # vtkStructuredGridGeometryFilter: vtkStructuredGrid -> vtkPolyData. BYTE-EXACT.
+    f = vtkStructuredGridGeometryFilter()
+    f.SetInputData(_w14_sgrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_rgridgeometry(dtype, size):
+    # vtkRectilinearGridGeometryFilter: vtkRectilinearGrid -> vtkPolyData. BYTE-EXACT.
+    f = vtkRectilinearGridGeometryFilter()
+    f.SetInputData(_w14_rgrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_cellvalidator(dtype, size):
+    # vtkCellValidator: emits a per-cell 'ValidityState' cell-data array. BYTE-EXACT.
+    f = vtkCellValidator()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_shrinkpoly(dtype, size):
+    # vtkShrinkPolyData: shrinks each cell toward its centroid (factor 0.5). Duplicates
+    # points per cell + rebuilds polys. BYTE-EXACT vs stock across both dtypes/sizes.
+    f = vtkShrinkPolyData()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.SetShrinkFactor(0.5)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_quantizepoly(dtype, size):
+    # vtkQuantizePolyDataPoints: snaps points to a QFactor grid (0.25). BYTE-EXACT.
+    f = vtkQuantizePolyDataPoints()
+    f.SetInputData(_w14_tri_cube(size, dtype))
+    f.SetQFactor(0.25)
+    f.Update()
+    return f.GetOutput()
+# === end Wave 14 ops ===
+
+
 # === Wave 9: Core cell-connectivity topology op bodies ===
 # Local pre-classification (published cvista==9.6.2.3 vs stock vtk==9.6.2, in-memory
 # inputs, both dtypes x both sizes) found ALL FOUR filters BYTE-EXACT — strict gate,
@@ -6102,6 +6403,30 @@ OPS = {
     "tube_bender": dict(fn=op_tube_bender, group="filter", dtypes=["float32", "float64"], sizes=[10, 16]),
     "procrustes": dict(fn=op_procrustes, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
     # === end Wave 13 ===
+    # === Wave 14: closeout low-risk compute/geometry stock-parity ops ===
+    # (own border per the additive-OPS merge-conflict convention). CLOSEOUT wave of
+    # the tests/bitexact stock-parity gate. Every member pre-classified with the
+    # wheel-diff parity probe (stock vtk==9.6.2 vs the cvista core-tier wheel,
+    # in-memory inputs, all listed dtypes x sizes) as BYTE-EXACT -> STRICT gate, NO
+    # relaxation flag. A COUNT/POSITION/VALUE red in any of these is a REAL divergence
+    # to characterize + escalate, not to silence. vtkCenterOfMass / vtkMassProperties
+    # return scalars, captured as explicit dicts so the non-vacuity guard is satisfied.
+    "centerofmass": dict(fn=op_centerofmass, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "massproperties": dict(fn=op_massproperties, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "appendarclength": dict(fn=op_appendarclength, group="filter", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "curvatures_gaussian": dict(fn=op_curvatures_gaussian, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "curvatures_mean": dict(fn=op_curvatures_mean, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "reversesense": dict(fn=op_reversesense, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "extractvoi": dict(fn=op_extractvoi, group="filter", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "imageclip": dict(fn=op_imageclip, group="filter", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "extractrgrid": dict(fn=op_extractrgrid, group="filter", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "imagegeometry": dict(fn=op_imagegeometry, group="filter", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "sgridgeometry": dict(fn=op_sgridgeometry, group="filter", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "rgridgeometry": dict(fn=op_rgridgeometry, group="filter", dtypes=["float32", "float64"], sizes=[5, 7]),
+    "cellvalidator": dict(fn=op_cellvalidator, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "shrinkpoly": dict(fn=op_shrinkpoly, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    "quantizepoly": dict(fn=op_quantizepoly, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
+    # === end Wave 14 ===
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
