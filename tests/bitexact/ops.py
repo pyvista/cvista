@@ -353,6 +353,31 @@ try:
     from vtkmodules.vtkFiltersHybrid import vtkProcrustesAlignmentFilter
     from vtkmodules.vtkCommonDataModel import vtkMultiBlockDataSet
     # === end Wave 13 imports ===
+    # === Wave 12: MED-tier imaging templated + Fourier filters ===
+    # Per-pixel templated / FFT image filters. Every class below lives in a module
+    # EXPLICITLY WANTed in cvista-config/_modules_minimal.cmake (ImagingFourier,
+    # ImagingGeneral, ImagingCore, FiltersCore) and is ABSENT from both
+    # _nocompile_classes.cmake and _nowrap_classes.cmake, so each COMPILES + WRAPS
+    # in the shipped cvista core-tier wheel (importability confirmed in BOTH the
+    # stock vtk==9.6.2 and the cvista wheel before writing these ops). Deliberately
+    # NOT imported (would ImportError and red the whole suite): vtkImageMagnitude
+    # (VTK::ImagingMath) and vtkImageMapToWindowLevelColors (VTK::ImagingColor) —
+    # both modules are referenced ONLY under TEST_DEPENDS by WANTed modules and the
+    # Imaging GROUP is DONT_WANT, so neither is built into the gate wheel; and
+    # vtkImageStencil, whose only stencil-source producers (vtkImageToImageStencil,
+    # vtkImageStencilToImage) ARE in _nocompile_classes.cmake / _nowrap_classes.cmake
+    # (no deterministic stencil input can be built on the cvista side).
+    from vtkmodules.vtkImagingFourier import (
+        vtkImageFFT,
+        vtkImageRFFT,
+    )
+    from vtkmodules.vtkImagingGeneral import vtkImageCheckerboard
+    from vtkmodules.vtkImagingCore import (
+        vtkImageBSplineCoefficients,
+        vtkImageDifference,
+    )
+    from vtkmodules.vtkFiltersCore import vtkImageAppend
+    # === end Wave 12 imports ===
     from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
     _HAVE_VTK = True
@@ -4047,6 +4072,95 @@ def op_image_wrappad(dtype, size):
 
 
 # ===========================================================================
+# Wave 12: MED-tier imaging templated + Fourier stock-parity lane
+# ===========================================================================
+# FFT / RFFT (ImagingFourier), a two-input checkerboard select (ImagingGeneral),
+# recursive B-spline coefficient computation + a two-input RGB difference metric
+# (ImagingCore), and multi-image extent append (FiltersCore). Every input is the
+# deterministic integer ramp of make_scalar_image (values in [0, 250], exactly
+# representable in float32/float64/uint8) so both backends start byte-identical.
+# The Fourier/BSpline transforms compute in double precision, but each output
+# voxel/line is written by exactly ONE thread from a fixed input span (a
+# vtkThreadedImageAlgorithm splits by output row, no cross-thread reduction), so
+# there is NO FP-non-associativity: the wheel-diff rig measured all six BYTE-EXACT
+# vs stock across every dtype x size, so none carries a relaxation flag. (Had a
+# last-ULP threaded-reduction gap appeared it would earn a documented
+# point_data_tol; a shape/count/structural divergence would be a real bug. Neither
+# occurred.) All outputs carry a non-empty point-scalar array -> non-vacuous.
+
+
+def op_image_fft(dtype, size):
+    # Forward FFT of the real ramp. Output = a 2-component (real, imaginary)
+    # double image; the whole complex array is captured and compared.
+    f = vtkImageFFT()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_rfft(dtype, size):
+    # Reverse FFT of the ramp (treated as complex with zero imaginary part).
+    # Output = a 2-component double image.
+    f = vtkImageRFFT()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_checkerboard(dtype, size):
+    # Per-voxel select between two distinct-phase ramps by a fixed 2x2x2 checker
+    # partition. Pure index-addressed copy -> exact.
+    f = vtkImageCheckerboard()
+    f.SetInputData(0, make_scalar_image(size, dtype, offset=0))
+    f.SetInputData(1, make_scalar_image(size, dtype, offset=37))
+    f.SetNumberOfDivisions(2, 2, 2)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_bspline(dtype, size):
+    # Cubic B-spline coefficient image via separable recursive (IIR) filtering.
+    # Each scan line is filtered wholly by one thread in double precision -> the
+    # coefficient image is deterministic and byte-identical on both backends.
+    f = vtkImageBSplineCoefficients()
+    f.SetInputData(make_scalar_image(size, dtype))
+    f.SetSplineDegree(3)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_difference(dtype, size):
+    # Perceptual per-pixel difference metric between two RGB (3-component uint8)
+    # images assembled from distinct-phase ramps via AppendComponents. Output = a
+    # 3-component uint8 difference image (captured whole). dtype is fixed uint8 by
+    # the registry (vtkImageDifference operates on unsigned-char RGB).
+    def rgb(off):
+        ap = vtkImageAppendComponents()
+        ap.SetInputData(0, make_scalar_image(size, "uint8", offset=off))
+        ap.AddInputData(make_scalar_image(size, "uint8", offset=off + 29))
+        ap.AddInputData(make_scalar_image(size, "uint8", offset=off + 58))
+        ap.Update()
+        return ap.GetOutput()
+
+    f = vtkImageDifference()
+    f.SetInputData(rgb(0))
+    f.SetImageData(rgb(5))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_image_append(dtype, size):
+    # Concatenate two distinct-phase ramps along X (extent append). Per-voxel copy
+    # into the merged extent -> exact; output single-component image captured whole.
+    f = vtkImageAppend()
+    f.SetInputData(0, make_scalar_image(size, dtype, offset=0))
+    f.AddInputData(make_scalar_image(size, dtype, offset=37))
+    f.SetAppendAxis(0)
+    f.Update()
+    return f.GetOutput()
+
+
+# ===========================================================================
 # FILTERS/STATISTICS stock-parity lane (Wave 4)
 # ===========================================================================
 # vtkStatisticsAlgorithm subclasses (Descriptive/Order) and the vtkComputeQuantiles
@@ -5737,6 +5851,14 @@ OPS = {
     "image_appendcomponents": dict(fn=op_image_appendcomponents, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
     "image_extractcomponents": dict(fn=op_image_extractcomponents, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
     "image_connectivity": dict(fn=op_image_connectivity, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
+    # === Wave 12: MED-tier imaging templated + Fourier ops (all strict byte-exact) ===
+    "image_fft": dict(fn=op_image_fft, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "image_rfft": dict(fn=op_image_rfft, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "image_checkerboard": dict(fn=op_image_checkerboard, group="imaging", dtypes=["float32", "float64", "uint8"], sizes=[12, 20]),
+    "image_bspline": dict(fn=op_image_bspline, group="imaging", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "image_difference": dict(fn=op_image_difference, group="imaging", dtypes=["uint8"], sizes=[12, 20]),
+    "image_append": dict(fn=op_image_append, group="imaging", dtypes=["float32", "float64", "int16"], sizes=[12, 20]),
+    # === end Wave 12 ops ===
     # --- Filters/Modeling stock-parity lane (Wave 7) ---
     # corrects_stock members: these filters carry cvista's OutputPointsPrecision fix
     # (PR #97 / precision_audit.md). On a float64 pointset input cvista preserves
