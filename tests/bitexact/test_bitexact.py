@@ -43,6 +43,12 @@ def _assert_case(results, case_key):
     assert case is not None, f"{case_key} missing from comparison"
     if not case["ok"]:
         detail = case["detail"]
+        # Non-vacuity guard: the STOCK reference produced zero comparable arrays,
+        # so this op is testing nothing (byte-equality of {} == {} is a false green).
+        # Fail loudly, naming the op. See compare._compare / #98 (closes the
+        # op_trimmed_extrusion false-green class, PR #213).
+        if detail.get("vacuous_stock"):
+            pytest.fail(detail.get("message", f"vacuous stock output for {case_key}"))
         # Build a focused failure message listing the non-equal arrays + ULP.
         msg = [f"BIT DIFFERENCE in {case_key}:"]
         if detail.get("order_relaxed"):

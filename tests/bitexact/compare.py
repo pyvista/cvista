@@ -406,6 +406,24 @@ def compare_case(stock_dir, cvista_dir, key, order_relaxed=False, points_relaxed
         return False, {"reason": "missing npz", "stock": os.path.exists(sp), "cvista": os.path.exists(fp)}
     a = np.load(sp)
     b = np.load(fp)
+    # Non-vacuity guard (gate integrity, closes the op_trimmed_extrusion false-green
+    # class, PR #213). Every legitimate op yields >= 1 comparable array on stock:
+    # points, a point/cell/field data array, connectivity, or -- for the scalar-dict
+    # ops (mass_properties etc.) -- one named scalar. ZERO arrays on the STOCK
+    # reference means the op returned None or a vacuous object and is testing
+    # NOTHING; both backends produce {} and byte-equality passes trivially. Fail
+    # LOUDLY instead of silently green. Guard on STOCK (the reference) only, so a
+    # real cvista regression that empties output still surfaces as a genuine array-
+    # set / count DIFF below, not as this guard.
+    if len(a.files) == 0:
+        return False, {
+            "reason": "vacuous stock output",
+            "vacuous_stock": True,
+            "message": (
+                f"op '{key}' produced no comparable arrays on the stock backend "
+                f"-- dead/vacuous op (returned None or an empty object), see #98"
+            ),
+        }
     names_a, names_b = set(a.files), set(b.files)
     if names_a != names_b:
         return False, {
