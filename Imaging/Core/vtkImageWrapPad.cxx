@@ -91,21 +91,36 @@ void vtkImageWrapPadExecute(vtkImageWrapPad* self, vtkImageData* inData, T* vtkN
   outData->GetContinuousIncrements(outExt, outIncX, outIncY, outIncZ);
 
   // initialize pointers to corresponding pixels.
-  start0 = ((outExt[0] - imageMin0) % (imageMax0 - imageMin0 + 1)) + imageMin0;
+  //
+  // Wrap each output start corner back into the input image extent. The
+  // negative-modulo (<0) correction MUST be applied to the raw modulo BEFORE
+  // shifting by imageMin -- otherwise a legitimately negative input index
+  // (imageMin..-1, which occurs whenever the image extent straddles the origin)
+  // trips the correction and is pushed a full width PAST imageMax, so the
+  // GetScalarPointer() below reads out of bounds. Serial execution runs the whole
+  // output as a single piece whose start corner is the output whole-extent origin
+  // (where the raw modulo is negative and the correction is legitimately needed),
+  // so it never hits the bad branch; threaded execution splits the padded output
+  // into sub-extents that start mid-extent, which is what exposes this. This now
+  // matches the (correct) step ordering already used in ComputeInputUpdateExtent.
+  start0 = ((outExt[0] - imageMin0) % (imageMax0 - imageMin0 + 1));
   if (start0 < 0)
   {
     start0 += (imageMax0 - imageMin0 + 1);
   }
-  start1 = ((outExt[2] - imageMin1) % (imageMax1 - imageMin1 + 1)) + imageMin1;
+  start0 += imageMin0;
+  start1 = ((outExt[2] - imageMin1) % (imageMax1 - imageMin1 + 1));
   if (start1 < 0)
   {
     start1 += (imageMax1 - imageMin1 + 1);
   }
-  start2 = ((outExt[4] - imageMin2) % (imageMax2 - imageMin2 + 1)) + imageMin2;
+  start1 += imageMin1;
+  start2 = ((outExt[4] - imageMin2) % (imageMax2 - imageMin2 + 1));
   if (start2 < 0)
   {
     start2 += (imageMax2 - imageMin2 + 1);
   }
+  start2 += imageMin2;
   inPtr2 = static_cast<T*>(inData->GetScalarPointer(start0, start1, start2));
 
   min0 = outExt[0];
