@@ -4409,6 +4409,14 @@ def op_outline(dtype, size):
     # identical on both backends -> byte-exact.
     f = vtkOutlineFilter()
     f.SetInputData(make_hex_ugrid(size, dtype))
+    # NOTE: an earlier wave omitted Update()/return, so this op returned None ->
+    # capture_dataobject(None) == {} on BOTH backends, making the parity comparison
+    # vacuously pass with ZERO coverage (the op_trimmed_extrusion / #98 false-green
+    # class). Restored so it emits the real bounding-box wireframe.
+    f.Update()
+    return f.GetOutput()
+
+
 # ---------------------------------------------------------------------------
 # Filters/FlowPaths stock-parity lane (Wave 5).
 # ---------------------------------------------------------------------------
@@ -4477,6 +4485,13 @@ def op_evenly_spaced_streamlines2d(dtype, size):
     f.SetSeparatingDistance(2.0)
     f.SetMaximumNumberOfSteps(200)
     f.SetComputeVorticity(False)
+    # NOTE: an earlier wave omitted Update()/return, so this op returned None ->
+    # capture_dataobject(None) == {} on BOTH backends, a vacuous false-green
+    # (the op_trimmed_extrusion / #98 class). Restored so it emits real streamlines.
+    f.Update()
+    return f.GetOutput()
+
+
 # Filters/Verdict stock-parity lane (Wave 6): per-cell mesh/cell quality + size.
 #
 # These three filters add a per-cell scalar (or several) to the input's cell
@@ -4599,6 +4614,14 @@ def op_outline_corner(dtype, size):
     # box. Unmodified in cvista -> byte-exact.
     f = vtkOutlineCornerFilter()
     f.SetInputData(make_hex_ugrid(size, dtype))
+    # NOTE: an earlier wave omitted Update()/return, so this op returned None ->
+    # capture_dataobject(None) == {} on BOTH backends, a vacuous false-green
+    # (the op_trimmed_extrusion / #98 class). Restored so it emits real corner
+    # segments of the bounding box.
+    f.Update()
+    return f.GetOutput()
+
+
 def op_cellsize_tri_area(dtype, size):
     """vtkCellSizeFilter per-triangle area (ComputeArea + ComputeSum) over a
     fixed-precision sphere. Per-cell 'Area' cell-data array is byte-compared."""
