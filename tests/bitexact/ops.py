@@ -260,6 +260,24 @@ try:
         vtkImageContinuousDilate3D,
         vtkImageContinuousErode3D,
     )
+    # ===== Wave 8: Core threaded cutter / plane-cut / contour family =====
+    # All seven live in Filters/Core (verified: none is in cvista-config/
+    # _nocompile_classes.cmake or _nowrap_classes.cmake, FiltersCore is WANTed in
+    # _modules_minimal.cmake) so every class COMPILES and WRAPS -- importing them
+    # here is safe (an unwrapped class would ImportError and red the whole suite;
+    # importability was pre-confirmed on both the stock vtk==9.6.2 and the
+    # cvista wheel before writing these ops). Kept in a bounded import block per
+    # the additive-OPS merge-conflict convention.
+    from vtkmodules.vtkFiltersCore import (
+        vtkPlaneCutter,
+        vtkFlyingEdgesPlaneCutter,
+        vtkStructuredDataPlaneCutter,
+        vtkPolyDataPlaneCutter,
+        vtkPolyDataPlaneClipper,
+        vtkMarchingCubes,
+        vtkSurfaceNets2D,
+    )
+    # ===== end Wave 8 imports =====
     from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
     _HAVE_VTK = True
@@ -2662,6 +2680,172 @@ def op_cutter_polydata_bycell(dtype, size):
     return cut.GetOutput()
 
 
+# ===========================================================================
+# === Wave 8: Core threaded cutter / plane-cut / contour family ===
+# Highest-risk uncovered Filters/Core family: the threaded vtkPlaneCutter and its
+# specialized dispatch targets (FlyingEdges / StructuredData / PolyData plane
+# cutters + clipper) plus the classic vtkMarchingCubes and vtkSurfaceNets2D.
+# Deterministic inputs only (integer-lattice coords + integer/sqrt-radial scalar,
+# no trig on the data path). Verdicts were pre-classified with the wheel-diff
+# parity probe (stock vtk==9.6.2 vs the published cvista==9.6.2.3) -- see the OPS
+# entries below for each filter's strict/order_relaxed verdict + local evidence.
+# ---------------------------------------------------------------------------
+def make_structured_grid(n=20, dtype=np.float64):
+    """A vtkStructuredGrid on the same n*n*n integer lattice as make_hex_ugrid,
+    carrying the identical radial point scalar 'v'. Explicit-point structured
+    input so vtkStructuredDataPlaneCutter takes its structured plane-cut path."""
+    lin = np.arange(n, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    sg = vtkStructuredGrid()
+    sg.SetDimensions(n, n, n)
+    sg.SetPoints(vp)
+    c = (n - 1) / 2.0
+    field = (
+        (pts[:, 0] - c) ** 2 + (pts[:, 1] - c) ** 2 + (pts[:, 2] - c) ** 2
+    ).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("v")
+    sg.GetPointData().SetScalars(arr)
+    return sg
+
+
+def make_label_image_2d(n=32, dtype=np.int16):
+    """A 2D single-slice vtkImageData of CONCENTRIC integer label regions (0..5),
+    built from pure integer index algebra (no trig) so both backends start byte-
+    identical. Feeds vtkSurfaceNets2D, which extracts the boundaries between the
+    labeled regions as smoothed polylines."""
+    yy, xx = np.indices((n, n), dtype=np.int64)
+    c = (n - 1) // 2
+    lab = np.minimum(((xx - c) ** 2 + (yy - c) ** 2) // 40, 5).astype(dtype)
+    img = vtkImageData()
+    img.SetDimensions(n, n, 1)
+    arr = numpy_to_vtk(np.ascontiguousarray(lab.ravel()), deep=1)
+    arr.SetName("labels")
+    img.GetPointData().SetScalars(arr)
+    return img
+
+
+def op_plane_cutter(dtype, size):
+    # vtkPlaneCutter on a hex unstructured grid -> the threaded generic plane-cut
+    # path (vtkSMPTools::For over the sphere-tree-pruned cells). Points AND their
+    # interpolated point scalar are emitted per-thread, so both the point array and
+    # the triangle cells permute relative to the sequential reference. Compared
+    # ORDER+POINTS-relaxed: same point set (coords + 'v' scalar, byte-identical
+    # multiset) and same triangle multiset, point + cell order negotiable.
+    #
+    # MergePointsOn (both backends): the default un-merged output emits 3 duplicate
+    # points per triangle (3*ncells slots), so many coincident coords share an
+    # identical (coords, point-data) canonicalization key -- the points_relaxed
+    # connectivity remap is then ambiguous and can't confirm the triangle multiset.
+    # Merging yields a unique point set (locally: 4218->760 pts at size 20), which
+    # makes the (coords, data) canonicalization unambiguous so the FULL triangle
+    # multiset is verified, not just the point set + cell count. VERDICT (probe,
+    # sizes 12/20 x f32/f64): with merging, _compare_order_relaxed(relax_points=True)
+    # is OK with BOTH __points__ and __cells__ equal and byte_exact False -- i.e. a
+    # genuine STDThread reorder of an otherwise identical mesh, NOT a value divergence.
+    c = (size - 1) / 2.0
+    p = vtkPlane()
+    p.SetOrigin(c, c, c)
+    p.SetNormal(1, 1, 0)
+    f = vtkPlaneCutter()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.SetPlane(p)
+    f.MergePointsOn()
+    f.Update()
+    return f.GetOutput()
+
+
+def op_flyingedges_planecut(dtype, size):
+    # vtkFlyingEdgesPlaneCutter on a radial-scalar image volume -> the threaded
+    # flying-edges plane cut. Despite running under STDThread the crossing points
+    # and triangles are emitted in a deterministic voxel-index order, so this is
+    # STRICT byte-exact vs stock (probe: BYTE-EXACT True). No relaxation flag.
+    c = (size - 1) / 2.0
+    p = vtkPlane()
+    p.SetOrigin(c, c, c)
+    p.SetNormal(1, 1, 0)
+    f = vtkFlyingEdgesPlaneCutter()
+    f.SetInputData(make_volume(size, dtype))
+    f.SetPlane(p)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_structured_planecut(dtype, size):
+    # vtkStructuredDataPlaneCutter on an explicit-point structured grid -> the
+    # threaded structured plane cut. Deterministic (i,j,k)-indexed emission ->
+    # STRICT byte-exact vs stock (probe: BYTE-EXACT True). No relaxation flag.
+    c = (size - 1) / 2.0
+    p = vtkPlane()
+    p.SetOrigin(c, c, c)
+    p.SetNormal(1, 1, 0)
+    f = vtkStructuredDataPlaneCutter()
+    f.SetInputData(make_structured_grid(size, dtype))
+    f.SetPlane(p)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_polydata_planecut(dtype, size):
+    # vtkPolyDataPlaneCutter on a triangulated sphere -> the fast convex-polygon
+    # plane cut (emits the cut as lines). Deterministic per-cell emission -> STRICT
+    # byte-exact vs stock (probe: BYTE-EXACT True). No relaxation flag.
+    p = vtkPlane()
+    p.SetOrigin(0.0, 0.0, 0.0)
+    p.SetNormal(1, 1, 1)
+    f = vtkPolyDataPlaneCutter()
+    f.SetInputData(make_sphere(size, size))
+    f.SetPlane(p)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_polydata_planeclip(dtype, size):
+    # vtkPolyDataPlaneClipper on a triangulated sphere (ClippingLoops ON so the
+    # capping-loop path also runs). Output port 0 is the clipped surface, emitted
+    # in deterministic order -> STRICT byte-exact vs stock (probe: BYTE-EXACT True).
+    p = vtkPlane()
+    p.SetOrigin(0.0, 0.0, 0.0)
+    p.SetNormal(1, 1, 1)
+    f = vtkPolyDataPlaneClipper()
+    f.SetInputData(make_sphere(size, size))
+    f.SetPlane(p)
+    f.SetClippingLoops(True)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_marchingcubes(dtype, size):
+    # vtkMarchingCubes on a radial-scalar image volume (ComputeNormals +
+    # ComputeGradients ON by default). The classic serial marching cubes -> STRICT
+    # byte-exact vs stock, points + normals + gradients all byte-identical (probe:
+    # BYTE-EXACT True). No relaxation flag.
+    f = vtkMarchingCubes()
+    f.SetInputData(make_volume(size, dtype))
+    f.SetValue(0, 0.3 * size)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_surfacenets2d(dtype, size):
+    # vtkSurfaceNets2D on a concentric-label 2D image -> smoothed boundary polylines
+    # between the labeled regions, carrying a per-cell BoundaryLabels array. STRICT
+    # byte-exact vs stock (probe: BYTE-EXACT True incl. the cell BoundaryLabels). No
+    # relaxation flag. `dtype` is unused (the label image is integer by construction).
+    f = vtkSurfaceNets2D()
+    f.SetInputData(make_label_image_2d(size))
+    f.GenerateValues(6, 0, 5)
+    f.Update()
+    return f.GetOutput()
+# === end Wave 8 ops ===
+# ===========================================================================
+
+
 # ---- vtkCommon operations (explicitly requested) ----
 def op_common_dataarray(dtype, size):
     """vtkDataArray / vtkAOSDataArrayTemplate round-trip + tuple/component ops."""
@@ -4856,6 +5040,39 @@ OPS = {
     "legacy_poly_binary": dict(fn=op_legacy_poly_binary, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
     "legacy_ugrid_ascii": dict(fn=op_legacy_ugrid_ascii, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
     "legacy_ugrid_binary": dict(fn=op_legacy_ugrid_binary, group="io", dtypes=["float32", "float64"], sizes=[6, 10]),
+    # ===== Wave 8: Core threaded cutter / plane-cut / contour family =====
+    # (own border per the additive-OPS merge-conflict convention). The highest-risk
+    # uncovered Filters/Core family. Verdicts pre-classified with the wheel-diff
+    # parity probe (stock vtk==9.6.2 vs published cvista==9.6.2.3):
+    #
+    #   plane_cutter        ORDER+POINTS-RELAXED (points+pd:v order-permuted-match
+    #                       True; documented STDThread per-thread emission)
+    #   flyingedges_planecut  STRICT byte-exact
+    #   structured_planecut   STRICT byte-exact
+    #   polydata_planecut     STRICT byte-exact
+    #   polydata_planeclip    STRICT byte-exact
+    #   marchingcubes         STRICT byte-exact (points+normals+gradients)
+    #   surfacenets2d         STRICT byte-exact (points+cell BoundaryLabels)
+    #
+    # vtkCutter / vtkContourFilter / vtkContourGrid / vtkContour3DLinearGrid /
+    # vtk3DLinearGridPlaneCutter are already covered (op_cutter*, op_contour*,
+    # op_cutter_linear, op_contour_linear) and are intentionally NOT duplicated here.
+    #
+    # vtkPlaneCutter is threaded and emits points+cells per SMP batch, so both the
+    # point array and the triangle multiset permute vs the sequential reference ->
+    # order_relaxed + points_relaxed. A COUNT/coordinate-multiset/value divergence
+    # (not just a permutation) here would be a real bug, not the documented relax.
+    "plane_cutter": dict(fn=op_plane_cutter, group="filter", dtypes=["float32", "float64"], sizes=[12, 20], order_relaxed=True, points_relaxed=True),
+    # The remaining six emit in deterministic index order -> STRICT byte-exact, NO
+    # relaxation flag. A red in any of these is a REAL divergence to characterize
+    # (value/count/position), not to silence.
+    "flyingedges_planecut": dict(fn=op_flyingedges_planecut, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "structured_planecut": dict(fn=op_structured_planecut, group="filter", dtypes=["float32", "float64"], sizes=[12, 20]),
+    "polydata_planecut": dict(fn=op_polydata_planecut, group="filter", dtypes=["float64"], sizes=[20, 40]),
+    "polydata_planeclip": dict(fn=op_polydata_planeclip, group="filter", dtypes=["float64"], sizes=[20, 40]),
+    "marchingcubes": dict(fn=op_marchingcubes, group="filter", dtypes=["float32", "float64"], sizes=[16, 24]),
+    "surfacenets2d": dict(fn=op_surfacenets2d, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    # ===== end Wave 8 =====
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
