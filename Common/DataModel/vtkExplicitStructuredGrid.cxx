@@ -656,7 +656,13 @@ void vtkExplicitStructuredGrid::ComputeFacesConnectivityFlagsArray()
 
   for (vtkIdType c = 0; c < nbCells; c++)
   {
-    vtkIdType* cellPtsIds = this->GetCellPoints(c);
+    // Snapshot this cell's point ids into an owned buffer before the neighbor
+    // GetCellPoints() call below. The raw accessor returns a pointer into the
+    // shared vtkCellArray temp-cell scratch under int32 cell storage, so the
+    // second call would otherwise alias the first (a hex is always 8 points).
+    vtkIdType* rawCellPtsIds = this->GetCellPoints(c);
+    vtkIdType cellPtsIds[8];
+    std::copy(rawCellPtsIds, rawCellPtsIds + 8, cellPtsIds);
 
     unsigned char mask = 0;
     vtkIdType neighbors[6];
@@ -1044,8 +1050,17 @@ int vtkExplicitStructuredGrid::FindConnectedFaces(int foundFaces[3])
                 ijkId[0] + neiAxisMod[0], ijkId[1] + neiAxisMod[1], ijkId[2] + neiAxisMod[2]);
               if (this->IsCellVisible(neiCellId))
               {
-                // Find if they are connected and by which faces they are connected
-                cellPtsIds = this->GetCellPoints(id0);
+                // Find if they are connected and by which faces they are connected.
+                // Snapshot id0's point ids into an owned buffer before the neighbor
+                // GetCellPoints() call: the raw accessor returns a pointer into the
+                // shared vtkCellArray temp-cell scratch under int32 cell storage, so
+                // the two pointers would otherwise alias (a hex is always 8 points).
+                vtkIdType cellPtsBuf[8];
+                {
+                  vtkIdType* rawCellPtsIds = this->GetCellPoints(id0);
+                  std::copy(rawCellPtsIds, rawCellPtsIds + 8, cellPtsBuf);
+                }
+                cellPtsIds = cellPtsBuf;
                 neiCellPtsIds = this->GetCellPoints(neiCellId);
                 for (int n = 0; n < 6; n++)
                 {
