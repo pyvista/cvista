@@ -307,6 +307,22 @@ try:
         vtkSurfaceNets2D,
     )
     # ===== end Wave 8 imports =====
+    # === Wave 9: Core cell-connectivity topology filters ===
+    # Highest bug-finding wave — these hold/rebuild cell connectivity, the exact
+    # int32 TempCell-aliasing class that produced #114/#204/#206/#208. All four
+    # live in Filters/Core (WANTed in _modules_minimal.cmake) and are COMPILED +
+    # WRAPPED in cvista (none in _nocompile_classes.cmake / _nowrap_classes.cmake;
+    # import verified in BOTH backends). vtkDelaunay3D carries the #114 int32 fix —
+    # this locks it in. The already-covered Wave-9 members (vtkClipDataSet,
+    # vtkClipPolyData, vtkConnectivityFilter, vtkDecimatePro, vtkTriangleFilter,
+    # vtkStripper, vtkFeatureEdges, vtkDataSetTriangleFilter) are NOT re-imported.
+    from vtkmodules.vtkFiltersCore import (
+        vtkDelaunay2D,
+        vtkDelaunay3D,
+        vtkPolyDataConnectivityFilter,
+        vtkThresholdPoints,
+    )
+    # === end Wave 9 imports ===
     from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
     _HAVE_VTK = True
@@ -5036,6 +5052,171 @@ def op_discreteflyingedges2d(dtype, size):
 # === end Wave 11 ops ===
 
 
+# === Wave 9: Core cell-connectivity topology op bodies ===
+# Local pre-classification (published cvista==9.6.2.3 vs stock vtk==9.6.2, in-memory
+# inputs, both dtypes x both sizes) found ALL FOUR filters BYTE-EXACT — strict gate,
+# NO relaxation flag, NO bug candidate. Inputs are pure integer/arange algebra plus a
+# fixed rational in-plane perturbation (0.1 constants are byte-identical on both sides;
+# no trig/sqrt on the data path), so both backends start from identical bytes.
+def make_pointcloud_scalar(size, dtype):
+    """A vtkPolyData point cloud on a `size`^3 integer lattice with a linear point
+    scalar 's'. No cells -> drives vtkThresholdPoints' per-point keep/drop + vertex
+    emission purely from the point scalar."""
+    lin = np.arange(size, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1).astype(dtype))
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    pd.SetPoints(vp)
+    field = (pts[:, 0] * 3.0 + pts[:, 1] * 2.0 + pts[:, 2]).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("s")
+    pd.GetPointData().SetScalars(arr)
+    return pd
+
+
+def op_thresholdpoints(dtype, size):
+    # vtkThresholdPoints (Filters/Core): keeps input points whose scalar passes an
+    # upper threshold and emits one vtkVertex per kept point. Non-deprecated API
+    # (SetThresholdFunction + SetUpperThreshold). Rebuilds a verts connectivity
+    # array from a point-indexed scan -> the int32 storage / point-id class. Local:
+    # BYTE-EXACT both dtypes x both sizes.
+    f = vtkThresholdPoints()
+    f.SetInputData(make_pointcloud_scalar(size, dtype))
+    f.SetThresholdFunction(f.THRESHOLD_UPPER)
+    f.SetUpperThreshold(float(size))
+    f.Update()
+    return f.GetOutput()
+
+
+def make_disjoint_tri_patches(per, dtype, npatch=4):
+    """`npatch` spatially-disjoint triangulated square patches (per*per points each)
+    translated apart along x so NO points are shared -> exactly `npatch` connected
+    regions. Integer coords + linear point scalar 's'."""
+    span = 10.0
+    all_pts, tris = [], []
+    base_off = 0
+    for b in range(npatch):
+        lin = np.arange(per, dtype=np.float64)
+        gx, gy = np.meshgrid(lin, lin, indexing="ij")
+        p = np.stack([gx.ravel() + b * span, gy.ravel(), np.zeros(per * per)], axis=1)
+        all_pts.append(p)
+
+        def pid(i, j, _b=base_off):
+            return _b + i * per + j
+
+        for i in range(per - 1):
+            for j in range(per - 1):
+                tris.append((pid(i, j), pid(i + 1, j), pid(i + 1, j + 1)))
+                tris.append((pid(i, j), pid(i + 1, j + 1), pid(i, j + 1)))
+        base_off += per * per
+    pts = np.ascontiguousarray(np.concatenate(all_pts, axis=0).astype(dtype))
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    pd.SetPoints(vp)
+    ca = vtkCellArray()
+    idl = vtkIdList()
+    for t in tris:
+        idl.Reset()
+        for x in t:
+            idl.InsertNextId(int(x))
+        ca.InsertNextCell(idl)
+    pd.SetPolys(ca)
+    field = (pts[:, 0] * 5.0 + pts[:, 1] * 7.0).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("s")
+    pd.GetPointData().SetScalars(arr)
+    return pd
+
+
+def op_pdconnectivity(dtype, size):
+    # vtkPolyDataConnectivityFilter (Filters/Core) in ExtractAllRegions + ColorRegions
+    # over a multi-component triangle surface. Serial BFS region walk over the
+    # cell/point connectivity (the GetCellPoints/GetPointCells class); numbers regions
+    # by increasing minimum cell id. Emits a per-point + per-cell RegionId. Local:
+    # BYTE-EXACT both dtypes x both sizes.
+    c = vtkPolyDataConnectivityFilter()
+    c.SetInputData(make_disjoint_tri_patches(size, dtype))
+    c.SetExtractionModeToAllRegions()
+    c.ColorRegionsOn()
+    c.Update()
+    return c.GetOutput()
+
+
+def make_planar_points_general(k, dtype):
+    """`k`*`k` points in the z=0 plane in GENERAL position: an integer grid plus a
+    fixed rational in-plane perturbation so no four points are cocircular (a unique
+    Delaunay triangulation exists, so topology is backend-independent)."""
+    pts = []
+    for i in range(k):
+        for j in range(k):
+            x = i + ((i * j) % 5) * 0.1
+            y = j + ((i + 2 * j) % 7) * 0.1
+            pts.append((x, y, 0.0))
+    pts = np.ascontiguousarray(np.array(pts, dtype=dtype))
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    pd.SetPoints(vp)
+    field = (pts[:, 0] * 3.0 + pts[:, 1] * 2.0).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("s")
+    pd.GetPointData().SetScalars(arr)
+    return pd
+
+
+def op_delaunay2d(dtype, size):
+    # vtkDelaunay2D (Filters/Core): incremental Watson insertion producing a
+    # triangulation of a planar point set. General-position input -> unique
+    # triangulation; the incircle/tessellation walk exercises the cell-connectivity
+    # scratch. Local: BYTE-EXACT both dtypes x both sizes (input points pass through,
+    # triangle connectivity identical).
+    f = vtkDelaunay2D()
+    f.SetInputData(make_planar_points_general(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def make_points3d_general(k, dtype):
+    """`k`^3 points in GENERAL position: an integer lattice plus a fixed rational
+    per-axis perturbation so no five points are cospherical (unique tetrahedralization,
+    backend-independent topology). Point scalar 's' is linear in the coordinates."""
+    pts = []
+    for i in range(k):
+        for j in range(k):
+            for m in range(k):
+                x = i + ((i * j + m) % 5) * 0.1
+                y = j + ((i + 2 * j + m) % 7) * 0.1
+                z = m + ((i + j * 3 + 2 * m) % 3) * 0.1
+                pts.append((x, y, z))
+    pts = np.ascontiguousarray(np.array(pts, dtype=dtype))
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    pd.SetPoints(vp)
+    field = (pts[:, 0] * 3.0 + pts[:, 1] * 2.0 + pts[:, 2]).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("s")
+    pd.GetPointData().SetScalars(arr)
+    return pd
+
+
+def op_delaunay3d(dtype, size):
+    # vtkDelaunay3D (Filters/Core): incremental 3D Delaunay -> a tetrahedral
+    # vtkUnstructuredGrid. THIS is the #114 int32 TempCell regression path (GetCellPoints
+    # raw pointer held across a nested call clobbered the shared scratch under cvista's
+    # int32-default cell storage). Locking it in: local pre-classification is BYTE-EXACT
+    # vs stock for both dtypes x both sizes (points, tet connectivity + offsets all
+    # identical), so the fix is proven still in place.
+    f = vtkDelaunay3D()
+    f.SetInputData(make_points3d_general(size, dtype))
+    f.Update()
+    return f.GetOutput()
+# === end Wave 9 op bodies ===
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -5405,6 +5586,20 @@ OPS = {
     # vtkDiscreteFlyingEdgesClipper2D intentionally omitted (uninitialized orphan
     # points -> non-reproducible; stock characteristic, see op note above).
     # === end Wave 11 ===
+    # ===== Wave 9: Core cell-connectivity topology stock-parity ops =====
+    # (own border per the additive-OPS merge-conflict convention). These filters
+    # HOLD/REBUILD cell connectivity — the int32 TempCell-aliasing class behind
+    # #114/#204/#206/#208. Every member pre-classified BYTE-EXACT vs stock (published
+    # cvista 9.6.2.3, in-memory inputs, both dtypes x both sizes) -> STRICT gate, NO
+    # relaxation flag. A COUNT/POSITION/VALUE red here is a real int32/topology bug to
+    # escalate (mirror #208), not something to relax away. vtkDelaunay3D locks in the
+    # #114 fix. Already-covered Wave-9 filters (clip/connectivity/triangle/stripper/
+    # featureedges/decimatepro/datasettriangle) are NOT duplicated.
+    "thresholdpoints": dict(fn=op_thresholdpoints, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "pdconnectivity": dict(fn=op_pdconnectivity, group="filter", dtypes=["float32", "float64"], sizes=[3, 5]),
+    "delaunay2d": dict(fn=op_delaunay2d, group="filter", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "delaunay3d": dict(fn=op_delaunay3d, group="filter", dtypes=["float32", "float64"], sizes=[4, 5]),
+    # ===== end Wave 9 =====
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}
