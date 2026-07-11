@@ -45,6 +45,7 @@ find_package(VTK REQUIRED COMPONENTS
   FiltersStatistics
   FiltersVerdict
   ImagingCore
+  ImagingFourier
   ImagingGeneral
   ImagingHybrid
   ImagingMorphological)

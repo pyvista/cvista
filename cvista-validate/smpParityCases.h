@@ -29,6 +29,8 @@ struct Inputs
   vtkSmartPointer<vtkImageData> image2d;      // 2D single-slice wavelet
   vtkSmartPointer<vtkImageData> labelImage;   // 3D integer-label image ("labels")
   vtkSmartPointer<vtkImageData> labelImage2d; // 2D integer-label image
+  vtkSmartPointer<vtkImageData> imageRGB;     // 3-comp unsigned-char RGB image
+  vtkSmartPointer<vtkImageData> imageRGB2;    // 3-comp unsigned-char RGB (2nd)
   vtkSmartPointer<vtkPolyData> poly;          // sphere + scalars/vectors/cell data
   vtkSmartPointer<vtkPolyData> polyNT;        // sphere + point Normals + TCoords
   vtkSmartPointer<vtkPolyData> poly2;         // translated sphere (2nd surface)
