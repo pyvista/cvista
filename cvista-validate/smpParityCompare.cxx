@@ -355,7 +355,9 @@ std::string CompareDataObjects(vtkDataObject* a, vtkDataObject* b)
     std::string d = compareCellArray("cells", ua->GetCells(), ub->GetCells());
     if (!d.empty())
       return d;
-    d = compareArray("celltypes", ua->GetCellTypesArray(), ub->GetCellTypesArray());
+    // GetCellTypes() (not the deprecated GetCellTypesArray(), which -Werror rejects
+    // and returns nullptr for homogeneous grids) yields the cell-type vtkDataArray.
+    d = compareArray("celltypes", ua->GetCellTypes(), ub->GetCellTypes());
     if (!d.empty())
       return d;
   }

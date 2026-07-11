@@ -1768,6 +1768,9 @@ std::vector<Case> RegisterCases()
     vtkNew<vtkHyperTreeGridProbeFilter> f;
     f->SetInputData(in.poly);
     f->SetSourceData(in.htg);
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
+
   // ---- wave 7: more vtkThreadedImageAlgorithm subclasses --------------------
   // Same argument as the block above: the base splits the OUTPUT extent and each
   // output voxel is a pure function of the (shared, read-only) input written to
