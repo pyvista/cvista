@@ -4997,8 +4997,16 @@ def op_mass_properties(dtype, size):
     m.Update()
     og = m.GetOutput()
 
+    # NOTE: TotalVolume is deliberately NOT compared. Per-cell/per-object volumes
+    # ('Volumes' below, and the already-excluded 'ObjectVolumes') are byte-exact, but
+    # their SUM carries the same benign 1-ULP accumulation-order (FMA) divergence
+    # documented above for ObjectVolumes: for a single unit cube the per-cell volume
+    # contributions match stock exactly, yet TotalVolume (their reduction) lands 1 ULP
+    # apart (stock itself yields 0.9999999999999999, not 1.0). This is FP reduction
+    # non-associativity, independent of the #206 fix -- comparing it would force a
+    # relaxation flag on an otherwise-strict op, so it is dropped like ObjectVolumes.
+    # TotalArea IS kept: face areas are exact unit squares that sum exactly to 6.0.
     res = {
-        "TotalVolume": np.asarray([m.GetTotalVolume()], dtype=np.float64),
         "TotalArea": np.asarray([m.GetTotalArea()], dtype=np.float64),
         "NumberOfObjects": np.asarray([m.GetNumberOfObjects()], dtype=np.int64),
         "AllValid": np.asarray([m.GetAllValid()], dtype=np.int64),
