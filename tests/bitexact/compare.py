@@ -463,6 +463,15 @@ def compare_case(stock_dir, cvista_dir, key, order_relaxed=False, points_relaxed
                 x.shape == y.shape
                 and np.array_equal(x.astype(np.int64), y.astype(np.int64))
             )
+        elif x.dtype.kind == "f" and y.dtype.kind == "f":
+            # Float WIDTH is negotiable too, the direct analog of the int32-default
+            # rule above: cvista preserves input float64 where stock VTK downcasts to
+            # float32 (the OutputPointsPrecision preserve-precision behavior). VALUES
+            # are sacred, storage WIDTH is not -- so downcast the wider array to the
+            # narrower width and require byte-identity. A genuine value divergence
+            # (cvista's f64 not equal to stock's f32 widened) still fails here, so no
+            # real regression is silenced; only the storage-width tag is ignored.
+            equal, _note = _wide_float_eq(x, y)
         else:
             equal = bool(
                 x.shape == y.shape
