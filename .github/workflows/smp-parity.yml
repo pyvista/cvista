@@ -21,6 +21,30 @@ on:
   merge_group:
   workflow_dispatch:
     inputs:
+      asan:
+        description: 'Diagnostic: AddressSanitizer (heap overrun/UAF at the corrupting access; can Heisenbug-mask a timing race)'
+        type: boolean
+        default: false
+      tsan:
+        description: 'Diagnostic: ThreadSanitizer (reports the data race directly, both stacks)'
+        type: boolean
+        default: false
+      gdb:
+        description: 'Diagnostic: native -g build (masks the bug -- kept for reference)'
+        type: boolean
+        default: false
+      native:
+        description: 'Diagnostic: plain GATE layout (no -g, the config that crashes) + fork isolation + libSegFault -> per-case attribution'
+        type: boolean
+        default: false
+      bounds:
+        description: 'Diagnostic: STATIC bounds/overflow warning scan (no run) -- hunt the OOB write in threaded filters'
+        type: boolean
+        default: false
+      diag_repeats:
+        description: 'Diagnostic: repeats per (case,threadcount) inside one sweep'
+        type: string
+        default: '8'
       # Dispatch-only high-repeat STRESS sweep (the `stress` job below). Off by
       # default so a plain dispatch still just runs the normal parity gate.
       run_stress:
@@ -43,7 +67,10 @@ on:
         default: false
 
 concurrency:
-  group: smp-parity-${{ github.ref }}
+  # Cancel-in-progress only within the same ref+event. workflow_dispatch diagnostic
+  # runs get a per-run group (run_id) so a dispatched ASAN/TSan/gdb hunt is never
+  # cancelled by a concurrent PR/push run on the same branch (or by another dispatch).
+  group: smp-parity-${{ github.ref }}-${{ github.event_name }}${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -74,9 +101,10 @@ jobs:
   parity:
     name: SMP parity (${{ matrix.os }})
     needs: changes
-    # Normal per-OS gate. Skipped on a STRESS dispatch (run_stress=true) so the
-    # dispatch spends its time in the `stress` job below, not a redundant 3-OS build.
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true') && !(github.event_name == 'workflow_dispatch' && inputs.run_stress) }}
+    # Skip the normal parity matrix on a diagnostic-only dispatch (asan/tsan/gdb) so a
+    # heap-corruption hunt does not also spin the 3 gate runners; a plain manual
+    # dispatch with no diagnostic ticked still runs it.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true') && !(github.event_name == 'workflow_dispatch' && (inputs.asan || inputs.tsan || inputs.gdb || inputs.native)) && !(github.event_name == 'workflow_dispatch' && inputs.run_stress) }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     timeout-minutes: 90
@@ -229,6 +257,169 @@ jobs:
           name: smp-stress-logs-${{ matrix.os }}
           path: build-smp-parity/stress-logs/
           if-no-files-found: ignore
+
+  # DIAGNOSTIC selector -- emit the JSON matrix of requested diagnostic modes from
+  # the workflow_dispatch booleans, so only the ticked modes each spin a runner.
+  diag-setup:
+    name: select diagnostics
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.asan || inputs.tsan || inputs.gdb || inputs.native) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      modes: ${{ steps.pick.outputs.modes }}
+    steps:
+      - id: pick
+        run: |
+          modes=()
+          [ "${{ inputs.asan }}"   = "true" ] && modes+=('"asan"')
+          [ "${{ inputs.tsan }}"   = "true" ] && modes+=('"tsan"')
+          [ "${{ inputs.gdb }}"    = "true" ] && modes+=('"gdb"')
+          [ "${{ inputs.native }}" = "true" ] && modes+=('"native"')
+          IFS=,; echo "modes=[${modes[*]}]" >> "$GITHUB_OUTPUT"
+
+  # DIAGNOSTIC job -- hunts the intermittent Linux heap corruption that sporadically
+  # SIGSEGVs the parity validator at a WANDERING locus (classic heap-corruption
+  # signature). Builds the cvista SDK AND the validator instrumented per mode and
+  # loops the sweep to reproduce/detect:
+  #   asan -> AddressSanitizer, aborts at the corrupting access (but its slowdown can
+  #           Heisenbug-mask a timing-dependent race -- an earlier asan run was clean).
+  #   tsan -> ThreadSanitizer, reports the unsynchronized concurrent access directly
+  #           (both stacks), independent of whether corruption manifested this run.
+  #   gdb  -> plain -g (NATIVE timing, so the ~20% race still fires) looped under a
+  #           batch gdb that dumps every thread's backtrace at the fault.
+  # workflow_dispatch-only -- NEVER on the PR/main/merge_group gate; not a required check.
+  diagnostic:
+    name: SMP heap-corruption diagnostic (${{ matrix.mode }})
+    needs: diag-setup
+    if: ${{ needs.diag-setup.outputs.modes != '[]' && needs.diag-setup.outputs.modes != '' }}
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ${{ fromJSON(needs.diag-setup.outputs.modes) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Exactly one instrumentation knob per matrix leg (minimal.cmake + run-smp-parity.sh
+      # read these). Keep frames clean/unfolded: no ICF, no source-unity (so a crash TU
+      # maps to a single filter). bfd linker: mold cannot resolve the sanitizer preinit
+      # objects (libasan_preinit.o / libtsan_preinit.o); the compiler-default linker can.
+      CVISTA_ASAN: ${{ matrix.mode == 'asan' && '1' || '0' }}
+      CVISTA_TSAN: ${{ matrix.mode == 'tsan' && '1' || '0' }}
+      CVISTA_DEBUGINFO: ${{ matrix.mode == 'gdb' && '1' || '0' }}
+      # NATIVE-REPRO: the plain GATE build (no -g on VTK) -- one of only two configs that
+      # crash reliably; the validator alone is built -g so its frames symbolise.
+      CVISTA_NATIVE_REPRO: ${{ matrix.mode == 'native' && '1' || '0' }}
+      # Only two configs reproduce the heap overflow: TSan, and the plain GATE layout.
+      # Any -g / ASAN / live-gdb build shifts the heap and masks it. So the crash-
+      # reproducing modes (gdb, native) PRESERVE the GATE layout bit-for-bit (unity ON,
+      # ICF ON, mold, -O2, LTO off); asan/tsan use clean unfolded frames + bfd (mold
+      # cannot resolve the sanitizer preinit objects). Fork-isolate each case in the
+      # native modes for deterministic per-case crash attribution (TSan runs in-process:
+      # TSan + fork() is unsupported; its in-process handler attributes instead).
+      CVISTA_ICF: ${{ (matrix.mode == 'gdb' || matrix.mode == 'native') && '1' || '0' }}
+      CVISTA_SOURCE_UNITY: ${{ (matrix.mode == 'gdb' || matrix.mode == 'native') && '1' || '0' }}
+      CVISTA_FAST_LINKER: ${{ (matrix.mode == 'gdb' || matrix.mode == 'native') && 'mold' || 'off' }}
+      CVISTA_FORK_ISOLATE: ${{ (matrix.mode == 'gdb' || matrix.mode == 'native') && '1' || '0' }}
+      # Sanitizers RUN VTK's Python-wrapping code generators (built instrumented) DURING
+      # the build; LeakSanitizer's atexit check would fail the build on their benign
+      # parser leaks, and a stray build-time sanitizer report must not fail the build
+      # either. Suppress leaks and non-fatal exit at BUILD time; run-smp-parity.sh
+      # re-exports the aborting/report options for the validator RUN.
+      ASAN_OPTIONS: 'detect_leaks=0'
+      LSAN_OPTIONS: 'detect_leaks=0'
+      TSAN_OPTIONS: 'exitcode=0:halt_on_error=0'
+      SMP_PARITY_REPEATS: ${{ inputs.diag_repeats }}
+      # native/gdb loop many native sweeps to hit the crash; tsan crashes ~every sweep
+      # (but is ~5x slower) so a handful suffices; asan a middling count.
+      SMP_PARITY_DIAG_LOOPS: ${{ (matrix.mode == 'gdb' || matrix.mode == 'native') && '40' || matrix.mode == 'tsan' && '6' || '8' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install rendering + build + sanitizer/gdb deps (Linux)
+        run: |
+          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+            mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
+            libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
+            ccache git mold lld gdb binutils
+          # The SDK build uses the gcc-toolset-14 compiler (/opt/rh/gcc-toolset-14), so
+          # the sanitizer link-time runtimes must come from the MATCHING toolset packages
+          # (libasan_preinit.o / -lasan, libtsan). Install all; harmless if unused.
+          dnf install -y gcc-toolset-14-libasan-devel gcc-toolset-14-libtsan-devel \
+            gcc-toolset-14-libubsan-devel || dnf install -y libasan libtsan || true
+      - name: Configure ccache dir (per-mode, isolated from the gate cache)
+        run: echo "CCACHE_DIR=/ccache-diag-${{ matrix.mode }}" >> "$GITHUB_ENV"
+      - name: Restore diagnostic ccache (cross-run)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cvista-diag-ccache-${{ matrix.mode }}-${{ github.run_id }}
+          restore-keys: |
+            cvista-diag-ccache-${{ matrix.mode }}-
+      - name: Build + install cvista (${{ matrix.mode }} instrumentation)
+        run: ci/build-sdk.sh
+      - name: SMP parity diagnostic (${{ matrix.mode }}, looped)
+        run: ci/run-smp-parity.sh
+
+  # STATIC bounds/overflow scan -- the runtime-attribution-free final attempt. Builds
+  # the tree with GCC's optimizer-driven out-of-bounds / buffer-overflow diagnostics
+  # (CVISTA_BOUNDS_WARN, -O2, source-unity OFF so hits cite the real .cxx) and greps
+  # the build log for the OOB write suspected behind the intermittent SMP heap
+  # corruption. No validator run -- pure compile-time analysis. Dispatch-only.
+  bounds-scan:
+    name: SMP heap-corruption static bounds scan
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.bounds }}
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      CVISTA_BOUNDS_WARN: '1'
+      CVISTA_SOURCE_UNITY: '0' # cite the real .cxx, not a unity TU
+      CVISTA_ICF: '0'
+      CVISTA_FAST_LINKER: 'off'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install rendering + build deps (Linux)
+        run: |
+          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+            mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
+            libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
+            ccache git mold lld gdb binutils
+      - name: Configure ccache dir
+        run: echo "CCACHE_DIR=/ccache-bounds" >> "$GITHUB_ENV"
+      - name: Restore bounds ccache (cross-run)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cvista-bounds-ccache-${{ github.run_id }}
+          restore-keys: |
+            cvista-bounds-ccache-
+      - name: Build with bounds diagnostics + scan the warnings
+        run: |
+          set -o pipefail
+          # ccache must NOT replay cached (warning-free) objects -- force a recompile so
+          # the bounds diagnostics are actually emitted.
+          export CCACHE_RECACHE=1
+          ci/build-sdk.sh 2>&1 | tee /tmp/bounds-build.log || true
+          echo "==================== BOUNDS / OVERFLOW WARNINGS (Filters/ Imaging/ Common/) ===================="
+          grep -nE 'warning:' /tmp/bounds-build.log \
+            | grep -E 'Warray-bounds|Wstringop-overflow|Wstringop-truncation|Wrestrict|uninitialized|Wsequence-point' \
+            | grep -E 'Filters/|Imaging/|Common/' \
+            | sort -u | tee /tmp/bounds-hits.txt || true
+          echo "-------------------- hit count --------------------"
+          wc -l < /tmp/bounds-hits.txt || echo 0
+          echo "==================== hits in the SMP-threaded crash-locus suspects ===================="
+          grep -E 'FlyingEdges|SurfaceNets|Clipper|Cutter|PlaneCutter|3DLinearGrid|Voronoi|Threshold|GeometryFilter|vtkImage|Splatter|Interpolator|Gradient|CellDataToPoint|PointDataToCell' \
+            /tmp/bounds-hits.txt || echo "(no hits in the named suspects)"
 
   smp-parity-gate:
     name: SMP parity gate
