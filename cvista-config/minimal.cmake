@@ -197,6 +197,71 @@ elseif (CMAKE_HOST_APPLE OR "$ENV{CVISTA_TARGET_OS}" STREQUAL "macos")
   set(_CVISTA_TOOLCHAIN "apple")
 endif ()
 
+# --- DIAGNOSTIC levers: sanitizers / debug-info (env-gated, INVESTIGATION-ONLY) -
+# Inert unless one of these env knobs is exactly "1" (same env-gated idiom as
+# CVISTA_LTO / CVISTA_PGO above). They instrument the WHOLE VTK C++ tree so a bug
+# INSIDE a filter's threaded internals is caught by the tool, not just at a later
+# unrelated crash. Used ONLY by the workflow_dispatch diagnostic jobs (never any
+# PR/main/merge_group build), which also set CVISTA_LTO=0 / CVISTA_ICF=0 so frames
+# are clean and unfolded. The out-of-tree validator is instrumented to match in
+# ci/run-smp-parity.sh. gnu/apple only (MSVC sanitizer flavours differ; this hunt
+# is Linux-targeted). Exactly one may be active; ASAN takes precedence if several
+# are set.
+#   CVISTA_ASAN=1      AddressSanitizer -- heap overrun / use-after-free / double
+#                      free, caught at the corrupting access. (Can Heisenbug-mask
+#                      a timing-dependent race: its ~10x slowdown perturbs the
+#                      STDThread schedule.)
+#   CVISTA_TSAN=1      ThreadSanitizer -- reports the unsynchronized concurrent
+#                      read/write DIRECTLY (with both stacks), independent of
+#                      whether the race corrupted memory this run.
+#   CVISTA_DEBUGINFO=1 plain -g (no sanitizer): NATIVE timing preserved, so a
+#                      timing-dependent race still fires at its true ~rate; run the
+#                      validator under gdb to capture the crash backtrace.
+if (NOT _CVISTA_TOOLCHAIN STREQUAL "msvc")
+  set(_cvista_diag "")
+  set(_cvista_diag_link "")
+  if ("$ENV{CVISTA_ASAN}" STREQUAL "1")
+    set(_cvista_diag "-fsanitize=address -fno-omit-frame-pointer -g")
+    set(_cvista_diag_link "-fsanitize=address")
+  elseif ("$ENV{CVISTA_TSAN}" STREQUAL "1")
+    set(_cvista_diag "-fsanitize=thread -fno-omit-frame-pointer -g")
+    set(_cvista_diag_link "-fsanitize=thread")
+  elseif ("$ENV{CVISTA_DEBUGINFO}" STREQUAL "1")
+    # ONLY -g: DWARF is a separate section, ZERO code change, so the reliably-crashing
+    # gate LAYOUT (unity/ICF/mold/-O2) is preserved bit-for-bit -- the heap overflow is
+    # build-layout-sensitive and a codegen tweak (e.g. -fno-omit-frame-pointer) masks
+    # it. backtrace()/gdb unwind via .eh_frame, so frame pointers are not needed.
+    set(_cvista_diag "-g")
+  endif ()
+  if (NOT "${_cvista_diag}" STREQUAL "")
+    set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} ${_cvista_diag}" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${_cvista_diag}" CACHE STRING "" FORCE)
+    if (NOT "${_cvista_diag_link}" STREQUAL "")
+      set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${_cvista_diag_link}" CACHE STRING "" FORCE)
+      set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${_cvista_diag_link}" CACHE STRING "" FORCE)
+      set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${_cvista_diag_link}" CACHE STRING "" FORCE)
+    endif ()
+  endif ()
+  unset(_cvista_diag)
+  unset(_cvista_diag_link)
+endif ()
+
+# --- DIAGNOSTIC lever: aggressive static bounds/overflow warnings (CVISTA_BOUNDS_WARN=1)
+# INVESTIGATION-ONLY, inert unless set. Turns on GCC's optimizer-driven out-of-bounds
+# and buffer-overflow diagnostics so the compiler statically flags a threaded filter
+# that WRITES past an allocated/undersized array (the counted-but-unwritten / over-
+# count-write class -- the remaining intermittent SMP heap-corruption suspect). These
+# warnings need -O2 (the gate default) to see through inlining. NOT -Werror: the tree
+# has plenty of benign template noise; the bounds-scan job greps the build log for
+# hits under Filters/ Imaging/ Common/. gnu only (the crash is Linux-only + these are
+# GCC spellings). Pair with CVISTA_SOURCE_UNITY=0 so a hit cites the real .cxx.
+if ("$ENV{CVISTA_BOUNDS_WARN}" STREQUAL "1" AND _CVISTA_TOOLCHAIN STREQUAL "gnu")
+  set(_cvista_bw "-Warray-bounds=2 -Wstringop-overflow=4 -Wstringop-truncation -Wrestrict -Wuninitialized -Wmaybe-uninitialized -Wsequence-point")
+  set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} ${_cvista_bw}" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${_cvista_bw}" CACHE STRING "" FORCE)
+  unset(_cvista_bw)
+endif ()
+
 # Link-time dead-code elimination: emit per-function/data sections and let the linker drop
 # unreachable ones. Safe with VTK's -fvisibility=hidden (only exported symbols are GC roots;
 # factory/virtual/wrapper paths all go through exported symbols). Removes real code and
