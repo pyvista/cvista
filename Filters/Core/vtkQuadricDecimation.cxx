@@ -1387,9 +1387,13 @@ int vtkQuadricDecimation::CollapseEdge(vtkIdType pt0Id, vtkIdType pt1Id)
     // Some non-triangular cells may have been inserted. Process only triangles here.
     if (npts == 3)
     {
+      // Snapshot the ids: on the non-Int64 storage fallback path pts aliases
+      // vtkCellArray's shared temp-cell scratch, which RemoveCellReference below
+      // re-enters GetCellPoints and clobbers mid-loop.
+      const vtkIdType cp[3] = { pts[0], pts[1], pts[2] };
       for (j = 0; j < 3; j++)
       {
-        if (pts[j] == pt1Id)
+        if (cp[j] == pt1Id)
         {
           this->Mesh->RemoveCellReference(cellId);
           this->Mesh->DeleteCell(cellId);
@@ -1405,11 +1409,15 @@ int vtkQuadricDecimation::CollapseEdge(vtkIdType pt0Id, vtkIdType pt1Id)
   {
     cellId = this->CollapseCellIds->GetId(i);
     this->GetMeshCellPoints(cellId, npts, pts);
+    // Snapshot before IsTriangle: on the non-Int64 storage fallback path pts
+    // aliases the shared temp-cell scratch, and IsTriangle re-enters
+    // GetCellPoints which would clobber it mid-expression.
+    const vtkIdType cp[3] = { pts[0], pts[1], pts[2] };
     // making sure we don't already have the triangle we're about to
     // change this one to
-    if ((pts[0] == pt1Id && this->Mesh->IsTriangle(pt0Id, pts[1], pts[2])) ||
-      (pts[1] == pt1Id && this->Mesh->IsTriangle(pts[0], pt0Id, pts[2])) ||
-      (pts[2] == pt1Id && this->Mesh->IsTriangle(pts[0], pts[1], pt0Id)))
+    if ((cp[0] == pt1Id && this->Mesh->IsTriangle(pt0Id, cp[1], cp[2])) ||
+      (cp[1] == pt1Id && this->Mesh->IsTriangle(cp[0], pt0Id, cp[2])) ||
+      (cp[2] == pt1Id && this->Mesh->IsTriangle(cp[0], cp[1], pt0Id)))
     {
       this->Mesh->RemoveCellReference(cellId);
       this->Mesh->DeleteCell(cellId);
