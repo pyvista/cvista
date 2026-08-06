@@ -162,7 +162,16 @@ struct ComputeSH
   void operator()(ArrayType* image)
   {
     Impl<ArrayType> functor(this->Width, this->Height, image, this->Filter);
-    vtkSMPTools::For(0, this->Height, functor);
+    // The spherical-harmonics coefficients are a floating-point reduction over
+    // every pixel, so the result depends on summation order. Under a threaded
+    // SMP backend the per-thread partial sums are combined in nondeterministic
+    // order, making the coefficients vary with thread count and diverge from the
+    // reference (Sequential-backend) result. Run the accumulation on a single
+    // partition -- exactly what vtkSMPTools::For expands to under the Sequential
+    // backend -- so the output stays byte-exact and reproducible.
+    functor.Initialize();
+    functor(0, this->Height);
+    functor.Reduce();
 
     for (vtkIdType i = 0; i < 3; i++)
     {
