@@ -19,6 +19,7 @@
 
 #include <limits>
 #include <memory>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkSmoothPolyDataFilter);
@@ -455,12 +456,18 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
     // identical to Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
     const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(Mesh);
 
+    std::vector<vtkIdType> cellPtsBuf; // owned snapshot of a cell's point ids
     for (cellId = 0, polys->InitTraversal(); polys->GetNextCell(npts, pts); cellId++)
     {
       if (cellId % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
       }
+      // Snapshot this cell's point ids: under int32 cell storage `pts` aliases the
+      // shared temp-cell scratch, which Mesh->GetCellPoints(nei, ...) in the
+      // FeatureEdgeSmoothing branch below re-enters and clobbers mid-loop.
+      cellPtsBuf.assign(pts, pts + npts);
+      pts = cellPtsBuf.data();
       for (i = 0; i < npts; i++)
       {
         p1 = pts[i];
