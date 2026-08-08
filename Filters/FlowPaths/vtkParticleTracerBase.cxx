@@ -1422,7 +1422,18 @@ void vtkParticleTracerBase::SetParticle(vtkParticleTracerBaseNamespace::Particle
       omega = 0.0;
     }
     this->ParticleAngularVel->SetValue(particleId, omega);
-    if (particleId > 0)
+    // Rotation is a per-particle time-integral of angular velocity; its first
+    // sample has no prior interval and must be 0. This was gated on
+    // `particleId > 0`, but particleId is the atomic output-row index
+    // (particleCount++), which is assigned in thread-arrival order once the
+    // integration is threaded -- so under a threaded SMP backend an arbitrary
+    // particle per step got its rotation spuriously reset, making the Rotation
+    // field nondeterministic (thread-count dependent). Gate on the particle's own
+    // TimeStepAge instead (== 1 on its first vorticity sample), which is
+    // thread-invariant and makes the threaded result byte-identical to serial.
+    // This intentionally diverges from stock VTK 9.6.2 to fix that defect (see
+    // upstream report); the stock reset-on-row-0 was itself incorrect per particle.
+    if (info.TimeStepAge > 1)
     {
       rotation =
         info.rotation + (info.angularVel + omega) / 2 * (info.CurrentPosition.x[3] - info.time);
