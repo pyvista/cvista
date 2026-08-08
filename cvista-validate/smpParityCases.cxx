@@ -41,6 +41,7 @@
 #include <vtkConstrainedSmoothingFilter.h>
 #include <vtkContour3DLinearGrid.h>
 #include <vtkContourFilter.h>
+#include <vtkSpanSpace.h>
 #include <vtkCorrelativeStatistics.h>
 #include <vtkCutter.h>
 #include <vtkDataSetSurfaceFilter.h>
@@ -1209,6 +1210,22 @@ std::vector<Case> RegisterCases()
       f->SetInputData(in.ugrid);
       f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
       f->SetValue(0, 130.0);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  // Drives vtkSpanSpace's unstructured-grid span mapping (MapUGridToSpanSpace),
+  // which threads over cells and fetches cell points -- the temp-cell/int32
+  // scratch hazard. Scalar-tree-accelerated contour on the ugrid.
+  add(
+    "vtkContourFilter/ugrid-scalartree", "Filters/Core", Risk::Iso,
+    [](const Inputs& in) {
+      vtkNew<vtkContourFilter> f;
+      f->SetInputData(in.ugrid);
+      f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
+      f->SetValue(0, 130.0);
+      f->UseScalarTreeOn();
+      vtkNew<vtkSpanSpace> tree;
+      f->SetScalarTree(tree);
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);

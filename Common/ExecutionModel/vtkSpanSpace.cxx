@@ -365,6 +365,7 @@ struct MapUGridToSpanSpace
   vtkInternalSpanSpace* SpanSpace;
   vtkUnstructuredGrid* Grid;
   TS* Scalars;
+  vtkSMPThreadLocalObject<vtkIdList> CellPts;
 
   MapUGridToSpanSpace(vtkInternalSpanSpace* ss, vtkUnstructuredGrid* ds, TS* s)
     : SpanSpace(ss)
@@ -373,10 +374,22 @@ struct MapUGridToSpanSpace
   {
   }
 
+  void Initialize()
+  {
+    vtkIdList*& cellPts = this->CellPts.Local();
+    cellPts->SetNumberOfIds(12);
+    // required for multi thread: warm up the grid's cell machinery serially
+    if (this->Grid->GetNumberOfPoints() > 0)
+    {
+      this->Grid->GetCellPoints(0, cellPts);
+    }
+  }
+
   void operator()(vtkIdType cellId, vtkIdType endCellId)
   {
     vtkUnstructuredGrid* grid = this->Grid;
     TS* scalars = this->Scalars;
+    vtkIdList*& cellPts = this->CellPts.Local();
     vtkIdType i, npts;
     const vtkIdType* pts;
     double s, sMin, sMax;
@@ -385,8 +398,17 @@ struct MapUGridToSpanSpace
     {
       sMin = VTK_DOUBLE_MAX;
       sMax = VTK_DOUBLE_MIN;
-      // A faster version of GetCellPoints()
-      grid->GetCellPoints(cellId, npts, pts);
+      // cvista: use the thread-local vtkIdList overload rather than the raw
+      // 3-arg GetCellPoints(cellId, npts, pts). With cvista's int32-default
+      // cell storage on a 64-bit vtkIdType build the connectivity is not
+      // vtkIdType-shareable, so the raw overload materializes ids into the
+      // grid's single shared vtkAbstractCellArray::TempCell -- a data race
+      // when this functor runs under the STDThread default. The vtkIdList
+      // overload copies into per-thread storage (matches the safe sibling
+      // MapToSpanSpace). Byte-exact: same ids, same span points.
+      grid->GetCellPoints(cellId, cellPts);
+      npts = cellPts->GetNumberOfIds();
+      pts = cellPts->GetPointer(0);
       for (i = 0; i < npts; i++)
       {
         s = static_cast<double>(scalars[pts[i]]);
@@ -398,8 +420,16 @@ struct MapUGridToSpanSpace
     } // for all cells in this thread
   }
 
+  void Reduce() {} // needed because of Initialize()
+
   static void Execute(vtkIdType numCells, vtkInternalSpanSpace* ss, vtkUnstructuredGrid* ds, TS* s)
   {
+    // required for multi thread: warm up the grid's cell machinery serially
+    if (ds->GetNumberOfPoints() > 0)
+    {
+      vtkNew<vtkIdList> dummy;
+      ds->GetCellPoints(0, dummy);
+    }
     MapUGridToSpanSpace map(ss, ds, s);
     vtkSMPTools::For(0, numCells, map);
   }
