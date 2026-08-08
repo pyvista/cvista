@@ -24,6 +24,8 @@
 #include "vtkUnstructuredGridBase.h"
 #include "vtkWrappingHints.h" // For VTK_MARSHALMANUAL
 
+#include <mutex> // cvista: serialize the lazy BuildLinks() build
+
 VTK_ABI_NAMESPACE_BEGIN
 class vtkIdList;
 class vtkIdTypeArray;
@@ -550,6 +552,12 @@ protected:
   vtkSmartPointer<vtkCellArray> Connectivity;
   vtkSmartPointer<vtkAbstractCellLinks> Links;
   vtkSmartPointer<vtkDataArray> Types;
+
+  // cvista: serializes the lazy BuildLinks() so that the inline link accessors
+  // (GetPointCells/GetCellNeighbors/...) can build concurrently under the
+  // STDThread default without racing. BuildLinks() builds into a local and
+  // publishes the fully-built links as its last step (see BuildLinks()).
+  std::mutex BuildLinksMutex;
 
   // Set of all cell types present in the grid. All entries are unique.
   vtkSmartPointer<vtkCellTypes> DistinctCellTypes;
