@@ -157,6 +157,16 @@
 #include <vtkWarpVector.h>
 #include <vtkWindowedSincPolyDataFilter.h>
 
+// vtkParticleTracer + the temporal velocity source that drives it (defined below).
+#include <vtkImageAlgorithm.h>
+#include <vtkInformation.h>
+#include <vtkInformationVector.h>
+#include <vtkObjectFactory.h>
+#include <vtkParticleTracer.h>
+#include <vtkParticleTracerBase.h>
+#include <vtkStreamingDemandDrivenPipeline.h>
+#include <vtkTrivialProducer.h>
+
 #include <cmath>
 
 namespace smpparity
@@ -478,6 +488,85 @@ vtkSmartPointer<vtkHyperTreeGrid> makeHTG()
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Temporal velocity source for the vtkParticleTracer case.
+//
+// vtkParticleTracer is a *temporal* filter: it advances seeds through a flow
+// field that the pipeline serves one time step at a time. No lightweight
+// temporal source ships in cvista's minimal profile (only heavy readers), so we
+// supply a tiny one here. It advertises several equally-spaced time steps over a
+// fixed image domain and, at each step, fills a steady rotational velocity field
+// (-y, x, 0.3) -- bounded, divergence-light, everywhere defined, so seeds spiral
+// through many cells without leaving the domain. The field is time-independent,
+// which keeps every particle's trajectory a deterministic function of its seed;
+// the tracer is exercised over real time-step streaming all the same.
+class SmpParityTemporalVelocitySource : public vtkImageAlgorithm
+{
+public:
+  static SmpParityTemporalVelocitySource* New();
+  vtkTypeMacro(SmpParityTemporalVelocitySource, vtkImageAlgorithm);
+
+protected:
+  SmpParityTemporalVelocitySource() { this->SetNumberOfInputPorts(0); }
+  ~SmpParityTemporalVelocitySource() override = default;
+
+  static constexpr int kExtent[6] = { 0, 20, 0, 20, 0, 20 };
+  static constexpr double kSpacing[3] = { 0.5, 0.5, 0.5 };
+  static constexpr double kOrigin[3] = { -5.0, -5.0, -5.0 };
+
+  int RequestInformation(vtkInformation*, vtkInformationVector**,
+    vtkInformationVector* outputVector) override
+  {
+    vtkInformation* outInfo = outputVector->GetInformationObject(0);
+    outInfo->Set(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT(), kExtent, 6);
+    outInfo->Set(vtkDataObject::SPACING(), kSpacing, 3);
+    outInfo->Set(vtkDataObject::ORIGIN(), kOrigin, 3);
+
+    const double timeSteps[5] = { 0.0, 1.0, 2.0, 3.0, 4.0 };
+    const double timeRange[2] = { 0.0, 4.0 };
+    outInfo->Set(vtkStreamingDemandDrivenPipeline::TIME_STEPS(), timeSteps, 5);
+    outInfo->Set(vtkStreamingDemandDrivenPipeline::TIME_RANGE(), timeRange, 2);
+    return 1;
+  }
+
+  int RequestData(vtkInformation*, vtkInformationVector**,
+    vtkInformationVector* outputVector) override
+  {
+    vtkInformation* outInfo = outputVector->GetInformationObject(0);
+    vtkImageData* output = vtkImageData::GetData(outInfo);
+
+    output->SetExtent(kExtent[0], kExtent[1], kExtent[2], kExtent[3], kExtent[4], kExtent[5]);
+    output->SetSpacing(kSpacing[0], kSpacing[1], kSpacing[2]);
+    output->SetOrigin(kOrigin[0], kOrigin[1], kOrigin[2]);
+
+    double t = 0.0;
+    if (outInfo->Has(vtkStreamingDemandDrivenPipeline::UPDATE_TIME_STEP()))
+    {
+      t = outInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_TIME_STEP());
+    }
+    output->GetInformation()->Set(vtkDataObject::DATA_TIME_STEP(), t);
+
+    const vtkIdType np = output->GetNumberOfPoints();
+    vtkNew<vtkDoubleArray> vel;
+    vel->SetName("vel");
+    vel->SetNumberOfComponents(3);
+    vel->SetNumberOfTuples(np);
+    for (vtkIdType i = 0; i < np; ++i)
+    {
+      double p[3];
+      output->GetPoint(i, p);
+      vel->SetTuple3(i, -p[1], p[0], 0.3);
+    }
+    output->GetPointData()->SetVectors(vel);
+    return 1;
+  }
+
+private:
+  SmpParityTemporalVelocitySource(const SmpParityTemporalVelocitySource&) = delete;
+  void operator=(const SmpParityTemporalVelocitySource&) = delete;
+};
+vtkStandardNewMacro(SmpParityTemporalVelocitySource);
 
 const char* RiskName(Risk r)
 {
@@ -1045,6 +1134,42 @@ std::vector<Case> RegisterCases()
       f->SetIntegrationDirectionToForward();
       f->SetMaximumPropagation(40.0);
       f->SetInitialIntegrationStep(0.2);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+
+  // vtkParticleTracer advances seeds through a temporal flow field, threaded over
+  // particles via vtkSMPTools. Each particle's output row is claimed by an atomic
+  // counter (info.PointId = particleCount++) in thread-arrival order, but every
+  // particle is integrated with its own thread-local integrator/interpolator, so
+  // its positions are a deterministic function of its seed. Threading therefore
+  // only permutes whole-particle output rows -> orderRelaxed: positions/count must
+  // match serial as a set and be run-to-run stable, only the row order may vary. A
+  // red even under order-relaxed means per-seed positions or count diverge = a real
+  // threading defect (shared/accumulated integrator state), not a benign ordering
+  // effect. The functor forces serial below 100 particles, so we seed a 6x6x6 grid
+  // (216 seeds) to guarantee the parallel path is exercised.
+  add(
+    "vtkParticleTracer", "Filters/FlowPaths", Risk::Iso,
+    [](const Inputs&) {
+      auto field = vtkSmartPointer<SmpParityTemporalVelocitySource>::New();
+
+      auto seeds = vtkSmartPointer<vtkPolyData>::New();
+      vtkNew<vtkPoints> spts;
+      for (int k = 0; k < 6; ++k)
+        for (int j = 0; j < 6; ++j)
+          for (int i = 0; i < 6; ++i)
+            spts->InsertNextPoint(-3.0 + 1.2 * i, -3.0 + 1.2 * j, -3.0 + 1.2 * k);
+      seeds->SetPoints(spts);
+      auto seedSource = vtkSmartPointer<vtkTrivialProducer>::New();
+      seedSource->SetOutput(seeds);
+
+      vtkNew<vtkParticleTracer> f;
+      f->SetInputConnection(0, field->GetOutputPort());
+      f->AddSourceConnection(seedSource->GetOutputPort());
+      f->SetInputArrayToProcess(
+        0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "vel");
+      f->SetIntegratorType(vtkParticleTracerBase::RUNGE_KUTTA4);
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
