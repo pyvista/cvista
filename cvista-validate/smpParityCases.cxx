@@ -701,6 +701,12 @@ std::vector<Case> RegisterCases()
   add("vtkMeshQuality", "Filters/Verdict", Risk::PerElement, [](const Inputs& in) {
     vtkNew<vtkMeshQuality> f;
     f->SetInputData(in.ugrid);
+    // Size-normalized measures divide each per-cell value by an FP-summed average
+    // cell size; exercise those (default measures don't) to gate that reduction.
+    f->SetTetQualityMeasureToRelativeSizeSquared();
+    f->SetHexQualityMeasureToRelativeSizeSquared();
+    f->SetTriangleQualityMeasureToRelativeSizeSquared();
+    f->SetQuadQualityMeasureToRelativeSizeSquared();
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkCellQuality", "Filters/Verdict", Risk::PerElement, [](const Inputs& in) {
@@ -733,7 +739,12 @@ std::vector<Case> RegisterCases()
   add("vtkGradientFilter", "Filters/General", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkGradientFilter> f;
     f->SetInputData(in.ugrid);
-    f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
+    f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "vectors");
+    // Exercise the optional derived-quantity outputs (default off), whose threaded
+    // paths are otherwise never gated. These require a vector input.
+    f->SetComputeDivergence(true);
+    f->SetComputeVorticity(true);
+    f->SetComputeQCriterion(true);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkAttributeSmoothingFilter", "Filters/Geometry", Risk::Reduce, [](const Inputs& in) {
@@ -1226,6 +1237,23 @@ std::vector<Case> RegisterCases()
       f->UseScalarTreeOn();
       vtkNew<vtkSpanSpace> tree;
       f->SetScalarTree(tree);
+      return vtkSmartPointer<vtkAlgorithm>(f);
+    },
+    /*orderRelaxed=*/true);
+  // ComputeNormals averages per-point normals (an FP reduction that is NOT
+  // thread-order stable). cvista neutralizes it by forcing the whole extraction
+  // serial when ComputeNormals is on (the `|| GetComputeNormals()` guard on every
+  // EXECUTE_SMPFOR/EXECUTE_REDUCED_SMPFOR). This case locks that guard: drop it
+  // and the threaded AverageNormals reduction diverges from serial here.
+  add(
+    "vtkContour3DLinearGrid/normals", "Filters/Core", Risk::Iso,
+    [](const Inputs& in) {
+      vtkNew<vtkContour3DLinearGrid> f;
+      f->SetInputData(in.ugrid);
+      f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
+      f->SetValue(0, 130.0);
+      f->MergePointsOn();
+      f->ComputeNormalsOn();
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
     /*orderRelaxed=*/true);
