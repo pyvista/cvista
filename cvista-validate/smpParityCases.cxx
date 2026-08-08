@@ -701,6 +701,12 @@ std::vector<Case> RegisterCases()
   add("vtkMeshQuality", "Filters/Verdict", Risk::PerElement, [](const Inputs& in) {
     vtkNew<vtkMeshQuality> f;
     f->SetInputData(in.ugrid);
+    // Size-normalized measures divide each per-cell value by an FP-summed average
+    // cell size; exercise those (default measures don't) to gate that reduction.
+    f->SetTetQualityMeasureToRelativeSizeSquared();
+    f->SetHexQualityMeasureToRelativeSizeSquared();
+    f->SetTriangleQualityMeasureToRelativeSizeSquared();
+    f->SetQuadQualityMeasureToRelativeSizeSquared();
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkCellQuality", "Filters/Verdict", Risk::PerElement, [](const Inputs& in) {
@@ -733,7 +739,12 @@ std::vector<Case> RegisterCases()
   add("vtkGradientFilter", "Filters/General", Risk::Reduce, [](const Inputs& in) {
     vtkNew<vtkGradientFilter> f;
     f->SetInputData(in.ugrid);
-    f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
+    f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "vectors");
+    // Exercise the optional derived-quantity outputs (default off), whose threaded
+    // paths are otherwise never gated. These require a vector input.
+    f->SetComputeDivergence(true);
+    f->SetComputeVorticity(true);
+    f->SetComputeQCriterion(true);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
   add("vtkAttributeSmoothingFilter", "Filters/Geometry", Risk::Reduce, [](const Inputs& in) {
