@@ -22,6 +22,7 @@
 #include "vtkUnsignedCharArray.h"
 
 #include <algorithm>
+#include <atomic> // cvista: release fence when publishing lazily-built Links
 
 VTK_ABI_NAMESPACE_BEGIN
 static constexpr unsigned char MASKED_CELL_VALUE =
@@ -522,26 +523,43 @@ void vtkExplicitStructuredGrid::BuildLinks()
     return;
   }
 
+  // cvista: make the lazy build thread-safe, mirroring vtkPolyData::BuildLinks().
+  // The inline link accessors (GetPointCells/...) do `if (!this->Links)
+  // BuildLinks()`, which under the STDThread default runs concurrently from SMP
+  // worker threads. The original code published this->Links before
+  // vtkAbstractCellLinks::BuildLinks() populated it, so a concurrent reader could
+  // observe an empty/half-built links object. Serialize builders with a mutex;
+  // build the FIRST-build path into a local and publish it fully-built last. The
+  // rebuild-in-place branch keeps its original behavior (main-thread path).
+  std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
+  if (this->Links)
+  {
+    if (this->Points->GetMTime() > this->Links->GetMTime())
+    {
+      this->Links->SetDataSet(this);
+    }
+    this->Links->BuildLinks();
+    return;
+  }
+
   // Different types of links depending on whether the data can be edited after
   // initial creation.
-  if (!this->Links)
+  vtkSmartPointer<vtkAbstractCellLinks> links;
+  if (!this->Editable)
   {
-    if (!this->Editable)
-    {
-      this->Links = vtkSmartPointer<vtkStaticCellLinks>::New();
-    }
-    else
-    {
-      this->Links = vtkSmartPointer<vtkCellLinks>::New();
-      static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(this->GetNumberOfPoints());
-    }
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkStaticCellLinks>::New();
   }
-  else if (this->Points->GetMTime() > this->Links->GetMTime())
+  else
   {
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkCellLinks>::New();
+    static_cast<vtkCellLinks*>(links.Get())->Allocate(this->GetNumberOfPoints());
   }
-  this->Links->BuildLinks();
+  links->SetDataSet(this);
+  links->BuildLinks();
+  // Release fence: make the populated links visible before the pointer publish
+  // (see vtkPolyData::BuildLinks() for the rationale).
+  std::atomic_thread_fence(std::memory_order_release);
+  this->Links = links; // publish fully-built links last
 }
 
 //------------------------------------------------------------------------------

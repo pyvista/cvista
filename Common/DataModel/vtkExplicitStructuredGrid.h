@@ -49,6 +49,8 @@
 #include "vtkPointSet.h"
 #include "vtkStructuredData.h" // For static method usage
 
+#include <mutex> // cvista: serialize the lazy BuildLinks() build
+
 VTK_ABI_NAMESPACE_BEGIN
 class vtkCellArray;
 
@@ -368,6 +370,13 @@ protected:
 
   vtkSmartPointer<vtkCellArray> Cells;
   vtkSmartPointer<vtkAbstractCellLinks> Links;
+
+  // cvista: serializes the lazy BuildLinks() so the inline link accessors
+  // (GetPointCells/...) can build concurrently under the STDThread default
+  // without racing; BuildLinks() publishes the fully-built links as its last
+  // step (see BuildLinks()).
+  std::mutex BuildLinksMutex;
+
   int Extent[6];
   char* FacesConnectivityFlagsArrayName;
 
