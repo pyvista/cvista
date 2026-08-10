@@ -214,7 +214,19 @@ struct MarkPolys : MarkCellBoundary
     const vtkIdType* pts;
     bool isFirst = vtkSMPTools::GetSingleThread();
 
-    for (cellId = 0; cellId < endCellId; ++cellId)
+    // cvista: iterate the batch range [cellId, endCellId) as delivered by
+    // vtkSMPTools::For. The stock code reset the loop variable to 0, so under a
+    // threaded SMP backend every worker reprocessed [0, endCellId): the low
+    // cellIds are handled by multiple threads at once. That is (a) a data race --
+    // concurrent non-atomic writes to the shared CellMarks/PtMarks/FaceMarks
+    // arrays -- and (b) roughly O(N*nthreads) redundant work that inverts the
+    // parallelism on the polydata path. Output happens to stay correct because
+    // the marks are monotone-idempotent (`=1` and `|=`), so the gate cannot see
+    // it; it is still UB and a perf cliff. Harmless under stock's Sequential
+    // backend (one [0, numPolys) batch); a real defect under the STDThread
+    // default. The sibling UGrid/structured functors already iterate the
+    // delivered range. Byte-exact vs Sequential.
+    for (; cellId < endCellId; ++cellId)
     {
       if (isFirst)
       {

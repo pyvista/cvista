@@ -698,6 +698,15 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.ugrid);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // PolyData input exercises the MarkPolys threaded functor (the ugrid case
+  // above hits a different, correct functor). GenerateBoundaryFaces drives the
+  // per-cell `FaceMarks |= ...` write whose thread-order correctness this gates.
+  add("vtkMarkBoundaryFilter/poly", "Filters/Geometry", Risk::PerElement, [](const Inputs& in) {
+    vtkNew<vtkMarkBoundaryFilter> f;
+    f->SetInputData(in.poly);
+    f->GenerateBoundaryFacesOn();
+    return vtkSmartPointer<vtkAlgorithm>(f);
+  });
   add("vtkMeshQuality", "Filters/Verdict", Risk::PerElement, [](const Inputs& in) {
     vtkNew<vtkMeshQuality> f;
     f->SetInputData(in.ugrid);
