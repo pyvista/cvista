@@ -6,8 +6,10 @@
 #include <vtkCellData.h>
 #include <vtkCompositeDataIterator.h>
 #include <vtkCompositeDataSet.h>
+#include <vtkAbstractArray.h>
 #include <vtkDataArray.h>
 #include <vtkDataArrayRange.h>
+#include <vtkFieldData.h>
 #include <vtkDataObject.h>
 #include <vtkDataObjectTreeIterator.h>
 #include <vtkDataSet.h>
@@ -29,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -146,7 +149,14 @@ std::string compareArray(const std::string& what, vtkDataArray* a, vtkDataArray*
       if (comps > 0)
         os << " (tuple " << worker.FirstBad / comps << ", comp " << worker.FirstBad % comps
            << ")";
-      os << " serial=" << worker.BadA << " parallel=" << worker.BadB;
+      const double delta = std::abs(static_cast<double>(worker.BadA) - static_cast<double>(worker.BadB));
+      // ULP distance for the double magnitude, to distinguish sub-ULP FP-reduction
+      // noise from a genuine numerical divergence.
+      const double mag = std::max(std::abs(static_cast<double>(worker.BadA)),
+        std::abs(static_cast<double>(worker.BadB)));
+      const double ulp = mag > 0.0 ? std::nextafter(mag, 2.0 * mag + 1.0) - mag : 0.0;
+      os << std::setprecision(17) << " serial=" << worker.BadA << " parallel=" << worker.BadB
+         << " |delta|=" << delta << " (~" << (ulp > 0.0 ? delta / ulp : 0.0) << " ULP)";
     }
     return os.str();
   }
@@ -183,6 +193,52 @@ std::string compareAttributes(
     const char* bn = bb ? bb->GetName() : "";
     if (std::strcmp(an ? an : "", bn ? bn : "") != 0)
       return tag + ": active attribute " + std::to_string(attr) + " differs";
+  }
+  return "";
+}
+
+// FieldData holds GLOBAL (non-per-element) values: integrated areas, volumes and
+// other totals a filter rolls up across every cell. Because they are not tied to a
+// point or cell they are order-independent, so a divergence here is a real parity
+// failure in BOTH the strict AND the order-relaxed path -- and the sorted-point-key
+// comparison the order-relaxed path uses never looks at FieldData, so without this
+// a thread-order-dependent reduced total (e.g. vtkMultiObjectMassProperties'
+// TotalArea/TotalVolume) sails through green. Name-matched, byte-exact, like the
+// point/cell attribute comparison. Non-numeric field arrays (a string "info"
+// blob) are compared by shape only -- they are metadata, not a parity quantity.
+std::string compareFieldData(const std::string& tag, vtkFieldData* a, vtkFieldData* b)
+{
+  if (!a && !b)
+    return "";
+  if (!a || !b)
+    return tag + ": one side has no field data";
+  if (a->GetNumberOfArrays() != b->GetNumberOfArrays())
+  {
+    std::ostringstream os;
+    os << tag << ": array count " << a->GetNumberOfArrays() << " vs " << b->GetNumberOfArrays();
+    return os.str();
+  }
+  for (int i = 0; i < a->GetNumberOfArrays(); ++i)
+  {
+    vtkAbstractArray* aa = a->GetAbstractArray(i);
+    const char* nm = aa ? aa->GetName() : nullptr;
+    vtkAbstractArray* bb = nm ? b->GetAbstractArray(nm) : b->GetAbstractArray(i);
+    const std::string label = tag + "[" + (nm ? nm : "#") + std::to_string(i) + "]";
+    if (!aa || !bb)
+      return label + ": array missing on one side";
+    vtkDataArray* da = vtkDataArray::SafeDownCast(aa);
+    vtkDataArray* db = vtkDataArray::SafeDownCast(bb);
+    if (da && db)
+    {
+      const std::string d = compareArray(label, da, db);
+      if (!d.empty())
+        return d;
+    }
+    else if (aa->GetNumberOfComponents() != bb->GetNumberOfComponents() ||
+      aa->GetNumberOfTuples() != bb->GetNumberOfTuples())
+    {
+      return label + ": non-numeric field array shape differs";
+    }
   }
   return "";
 }
@@ -387,6 +443,13 @@ std::string CompareDataObjects(vtkDataObject* a, vtkDataObject* b)
     if (!d.empty())
       return d;
     d = compareAttributes("celldata", dsa->GetCellData(), dsb->GetCellData());
+    if (!d.empty())
+      return d;
+  }
+
+  // FieldData (global summary values) for any data object, dataset or not.
+  {
+    const std::string d = compareFieldData("fielddata", a->GetFieldData(), b->GetFieldData());
     if (!d.empty())
       return d;
   }
@@ -645,6 +708,16 @@ std::string CompareGeometrySet(vtkDataObject* a, vtkDataObject* b)
   if (cellDescriptors(dsa) != cellDescriptors(dsb))
     return "cell set differs (same count, different cells/connectivity/cell-data)" +
       pointDeviation(dsa, dsb);
+
+  // FieldData is global, not per-point, so point-order relaxation does not apply to
+  // it: compare it byte-exact exactly as the strict path does. This is where a
+  // thread-order-dependent rolled-up total would surface on an otherwise
+  // order-relaxed geometry output.
+  {
+    const std::string d = compareFieldData("fielddata", a->GetFieldData(), b->GetFieldData());
+    if (!d.empty())
+      return d;
+  }
 
   return "";
 }
