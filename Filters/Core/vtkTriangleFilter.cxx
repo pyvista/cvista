@@ -74,6 +74,9 @@ int vtkTriangleFilter::RequestData(vtkInformation* vtkNotUsed(request),
       {
         outCellId = output->GetNumberOfCells();
         vtkNew<vtkCellArray> newCells;
+        // Output is uniformly single-point verts; declare fixed-size storage
+        // up front so the redundant offsets array is never materialized.
+        newCells->UseFixedSizeDefaultStorage(1);
         newCells->AllocateCopy(inVerts);
 
         auto iter = vtk::TakeSmartPointer(inVerts->NewIterator());
@@ -135,6 +138,9 @@ int vtkTriangleFilter::RequestData(vtkInformation* vtkNotUsed(request),
       {
         outCellId = output->GetNumberOfCells();
         vtkNew<vtkCellArray> newCells;
+        // Output is uniformly 2-point lines; declare fixed-size storage up
+        // front so the redundant offsets array is never materialized.
+        newCells->UseFixedSizeDefaultStorage(2);
         newCells->AllocateCopy(inLines);
 
         auto iter = vtk::TakeSmartPointer(inLines->NewIterator());
@@ -213,6 +219,9 @@ int vtkTriangleFilter::RequestData(vtkInformation* vtkNotUsed(request),
     else
     {
       outCellId = output->GetNumberOfCells();
+      // Output is uniformly triangles; declare fixed-size storage up front so
+      // the redundant offsets array is never materialized.
+      newPolys->UseFixedSizeDefaultStorage(3);
       newPolys->AllocateCopy(inPolys);
 
       vtkNew<vtkIdList> ptIds;
@@ -290,6 +299,9 @@ int vtkTriangleFilter::RequestData(vtkInformation* vtkNotUsed(request),
     if (newPolys == nullptr)
     {
       newPolys = vtkSmartPointer<vtkCellArray>::New();
+      // Decomposed strips are uniformly triangles; declare fixed-size storage
+      // up front so the redundant offsets array is never materialized.
+      newPolys->UseFixedSizeDefaultStorage(3);
       newPolys->AllocateCopy(inStrips);
     }
 
