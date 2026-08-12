@@ -66,6 +66,35 @@ def _dsa():
     from cvista.numpy_interface import dataset_adapter as dsa  # noqa: F401
 check("cvista.numpy_interface.dataset_adapter", _dsa)
 
+def _flat():
+    # Flat lazy namespace: class access with no knowledge of the hosting module.
+    from cvista import vtkPolyData, vtkSphereSource, vtkXMLPolyDataReader  # noqa: F401
+    import cvista
+    from cvista.vtkCommonDataModel import vtkPolyData as direct
+    assert cvista.vtkPolyData is direct, "flat resolve != direct module import"
+    assert "vtkPolyData" in dir(cvista), "flat names missing from dir(cvista)"
+    try:
+        cvista.vtkDoesNotExist
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("unknown flat name did not raise AttributeError")
+check("flat namespace (from cvista import vtkPolyData)", _flat)
+
+def _flat_index_complete():
+    # Every indexed name must resolve on a full install -- catches index drift.
+    import cvista
+    from cvista import _class_index
+    bad = []
+    for name in _class_index.INDEX:
+        try:
+            getattr(cvista, name)
+        except Exception as e:  # noqa: BLE001
+            bad.append((name, repr(e)))
+    assert not bad, f"{len(bad)} indexed names failed, first 5: {bad[:5]}"
+    print(f"       flat index: all {len(_class_index.INDEX)} names resolve", flush=True)
+check("flat index exhaustive resolve", _flat_index_complete)
+
 def _filter():
     from cvista.vtkFiltersSources import vtkSphereSource
     from cvista.vtkFiltersCore import vtkTriangleFilter

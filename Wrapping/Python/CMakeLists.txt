@@ -78,6 +78,12 @@ endif ()
 set(_cvista_all)
 set(_vtk_python_imports)
 set(_vtk_python_external_imports)
+# Ordered wrapped-module names + their Python targets, consumed by the flat
+# class-index generation below.  The order of `vtk_python_wrapped_modules` is
+# the dependency order all.py star-imports in, and the index generator must use
+# the SAME order so its collision resolution matches `from cvista.all import *`.
+set(_cvista_index_modules)
+set(_cvista_index_module_targets)
 foreach (_vtk_python_module IN LISTS vtk_python_wrapped_modules)
   get_property(_vtk_python_library_name
     TARGET    "${_vtk_python_module}"
@@ -88,6 +94,10 @@ foreach (_vtk_python_module IN LISTS vtk_python_wrapped_modules)
     "from .${_vtk_python_library_name} import *\n")
   string(APPEND _vtk_python_external_imports
     "from cvista.${_vtk_python_library_name} import *\n")
+  list(APPEND _cvista_index_modules "${_vtk_python_library_name}")
+  if (TARGET "${_vtk_python_library_name}Python")
+    list(APPEND _cvista_index_module_targets "${_vtk_python_library_name}Python")
+  endif ()
 endforeach ()
 
 set(_vtk_python_files)
@@ -106,9 +116,17 @@ configure_file(
 list(APPEND _vtk_python_files
   "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_pyi.py")
 
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cvista/generate_index.py"
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_index.py"
+  COPYONLY)
+list(APPEND _vtk_python_files
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_index.py")
+
 if (BUILD_SHARED_LIBS)
   install(
     FILES       "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_pyi.py"
+                "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_index.py"
     DESTINATION "${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista"
     COMPONENT   "python")
 endif ()
@@ -257,6 +275,51 @@ add_custom_target(vtk_python_copy ALL
   DEPENDS
     ${python_copied_modules}
     ${_vtk_python_zip})
+
+# ---- Flat class index (cvista extension) ------------------------------------
+# Generate `cvista/_class_index.py` (public name -> hosting module) by importing
+# every wrapped module of THIS build -- see cvista/generate_index.py for the
+# semantics and cvista/__init__.py.in for the consuming module __getattr__.
+# Mirrors the .pyi generation in vtkModuleWrapPython.cmake, but lives here
+# (a cvista-owned file) so upstream-sync diffs stay clean.  Skipped for static
+# builds (no shared-module import path) -- the flat namespace degrades
+# gracefully when the index is absent.
+option(CVISTA_CLASS_INDEX "Generate the flat class index (cvista/_class_index.py)" ON)
+mark_as_advanced(CVISTA_CLASS_INDEX)
+
+if (CVISTA_CLASS_INDEX AND BUILD_SHARED_LIBS)
+  if (TARGET VTK::vtkpython)
+    set(_cvista_index_python_exe "$<TARGET_FILE:VTK::vtkpython>")
+  else ()
+    set(_cvista_index_python_exe "${Python3_EXECUTABLE}")
+  endif ()
+
+  set(_cvista_index_file
+    "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/_class_index.py")
+
+  add_custom_command(
+    OUTPUT    "${_cvista_index_file}"
+    COMMAND   ${_cvista_index_python_exe} # Do not quote; may contain arguments.
+              -m cvista.generate_index
+              -p "cvista"
+              -o "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista"
+              ${_cvista_index_modules}
+    WORKING_DIRECTORY
+              "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}"
+    DEPENDS   ${_cvista_index_module_targets}
+              "${CMAKE_CURRENT_SOURCE_DIR}/cvista/generate_index.py"
+              vtk_python_copy
+    COMMENT   "Generating the cvista flat class index"
+    ${_vtk_python_depends_args})
+
+  add_custom_target(cvista_class_index ALL
+    DEPENDS "${_cvista_index_file}")
+
+  install(
+    FILES       "${_cvista_index_file}"
+    DESTINATION "${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista"
+    COMPONENT   "python")
+endif ()
 
 if (VTK_BUILD_TESTING)
   add_subdirectory(Testing)

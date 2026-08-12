@@ -191,3 +191,75 @@ def on_vtk_module_init_completed():
         LOADED_MODULES.add(module_name)
         for import_name in MODULE_MAPPER.get(module_name, []):
             importlib.import_module(import_name)
+
+
+#------------------------------------------------------------------------------
+# Flat lazy namespace (cvista extension): `from cvista import vtkPolyData`.
+#
+# Consumers should not need to know which internal module hosts a class -- that
+# layout is an implementation detail cvista reserves the right to change (tier
+# splits, kit moves, performance rewrites).  `_class_index.py` is GENERATED at
+# build time (cvista/generate_index.py) by importing every wrapped module of
+# this exact build, so it can never drift from the shipped binaries; name
+# collisions resolve star-import style (later module in dependency order wins),
+# matching `from cvista.all import *`.
+#
+# Resolution is lazy: nothing is imported until the first attribute access, and
+# only the one hosting module is imported then.  In the 3-wheel tier split the
+# single tiered build indexes EVERY tier's classes, so on a partial install a
+# known name whose module is absent raises a helpful install-the-missing-tier
+# ImportError (via `_module_tiers.py`, emitted into the core wheel by
+# partition_wheels.py, which owns tier assignment) instead of a bare
+# AttributeError.
+
+def __getattr__(name):
+    if name.startswith('_'):
+        # Never index private/dunder names; also keeps protocol probes
+        # (__getstate__, __path__, ...) cheap and out of the machinery below.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        from . import _class_index
+    except ImportError:
+        # Build trees / embedded builds without a generated index: flat access
+        # is unavailable, explicit module imports still work.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    module_name = _class_index.INDEX.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        module = importlib.import_module(f'{__name__}.{module_name}')
+    except ImportError as exc:
+        # The name is known to this build but its module is not importable:
+        # on a tiered install that means the hosting tier wheel is missing.
+        tier = None
+        try:
+            from . import _module_tiers
+            tier = _module_tiers.TIERS.get(module_name)
+        except ImportError:
+            pass
+        if tier and tier != 'core':
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which ships in the '
+                f'cvista-{tier} tier wheel and is not installed. '
+                f'Install it with: pip install cvista[{tier}]  '
+                f'(or cvista[all] for everything).'
+            )
+        else:
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which is not '
+                f'importable in this install.'
+            )
+        raise ImportError(msg) from exc
+    return getattr(module, name)
+
+
+def __dir__():
+    names = set(globals())
+    names.update(__all__)
+    try:
+        from . import _class_index
+    except ImportError:
+        pass
+    else:
+        names.update(_class_index.INDEX)
+    return sorted(names)

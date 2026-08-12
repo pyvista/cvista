@@ -112,6 +112,36 @@ pip install cvista
 cvista ships a single stable-ABI wheel for CPython 3.12 and newer, including future minors with
 no rebuild.
 
+## The flat namespace
+
+VTK makes you memorize which internal module hosts each class
+(`from vtkmodules.vtkFiltersCore import vtkDecimatePro`), and that layout shifts
+between releases. cvista treats the module layout as an implementation detail:
+every public class resolves lazily from the top-level package, and this is the
+**supported, stable import surface**:
+
+```python
+from cvista import vtkPolyData, vtkDecimatePro, vtkSphereSource
+```
+
+Nothing loads until first access, and an access imports only the one hosting
+module. The name-to-module index (`cvista/_class_index.py`) is generated at
+build time from the actual compiled modules, so it can never drift from the
+binaries it ships with — and internal relocations (tier splits, kit moves,
+rewrites) never break consumer imports again.
+
+Explicit module imports (`from cvista.vtkFiltersCore import vtkDecimatePro`)
+still work, but the module layout is not a stability contract; the flat
+namespace is. On a partial tier install, accessing a class from a missing tier
+raises an `ImportError` that names the wheel to install:
+
+```
+>>> from cvista import vtkPolyDataMapper   # core-only install
+ImportError: 'vtkPolyDataMapper' lives in cvista.vtkRenderingCore, which ships
+in the cvista-rendering tier wheel and is not installed. Install it with:
+pip install cvista[rendering]  (or cvista[all] for everything).
+```
+
 ## Using cvista with PyVista
 
 PyVista imports `vtkmodules`, so it needs to be told to import `cvista`. There are two paths.
