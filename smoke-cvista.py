@@ -84,9 +84,12 @@ check("flat namespace (from cvista import vtkPolyData)", _flat)
 def _flat_index_complete():
     # Every name hosted by a WRAPPED (compiled) module must resolve on a full
     # install -- that is the guarantee the flat namespace makes, and this catches
-    # index drift. Pure-Python helpers (util.*, numpy_interface.*) may carry
-    # optional third-party deps (e.g. util.xarray_support needs xarray/cftime),
-    # so an unmet OPTIONAL dependency is reported but not failed on.
+    # index drift. Pure-Python helpers (dotted names: util.*, numpy_interface.*)
+    # are only reported: they carry optional third-party deps (numpy, and
+    # xarray/cftime for util.xarray_support) that need not be present. The split
+    # keys on the hosting module rather than the error text, because
+    # util.pickle_support swallows its own numpy failure and re-raises a bare
+    # ImportError with no `name` set.
     import cvista
     from cvista import _class_index
     hard, soft = [], []
@@ -94,11 +97,10 @@ def _flat_index_complete():
         try:
             getattr(cvista, name)
         except Exception as e:  # noqa: BLE001
-            optional = "." in module and "optional dependency" in str(e)
-            (soft if optional else hard).append((name, module, repr(e)[:120]))
+            (soft if "." in module else hard).append((name, module, repr(e)[:120]))
     if soft:
-        print(f"       {len(soft)} name(s) need optional deps (OK): "
-              f"{sorted({m for _, m, _ in soft})}", flush=True)
+        print(f"       {len(soft)} helper name(s) unavailable, optional deps "
+              f"not installed (OK): {sorted({m for _, m, _ in soft})}", flush=True)
     assert not hard, f"{len(hard)} indexed names failed, first 5: {hard[:5]}"
     print(f"       flat index: {len(_class_index.INDEX) - len(soft)} names resolve", flush=True)
 check("flat index exhaustive resolve", _flat_index_complete)

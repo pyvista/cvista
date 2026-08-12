@@ -85,18 +85,24 @@ from cvista import _class_index, vtkPolyDataMapper
 print("  flat vtkPolyDataMapper resolves after rendering install [OK]")
 import cvista
 # Names hosted by a WRAPPED module must all resolve once every tier is stacked --
-# that is the flat namespace's guarantee. Pure-Python helpers may carry optional
-# third-party deps (util.xarray_support -> xarray/cftime); those are reported,
-# not failed on, since the tier wheels deliberately do not vendor them.
+# that is the flat namespace's guarantee, and this is where it is enforced.
+#
+# Pure-Python helpers (dotted module names: util.*, numpy_interface.*) are only
+# REPORTED. They carry optional third-party deps -- numpy, xarray/cftime -- which
+# these wheels deliberately do not vendor and which this venv installs with
+# --no-deps, so they are legitimately absent here. Note the split cannot be made
+# by sniffing the error text: util.pickle_support catches its own numpy failure
+# and re-raises a bare ImportError with no `name` set, so the hosting module is
+# the only reliable signal.
 hard, soft = [], []
 for _name, _mod in _class_index.INDEX.items():
     try:
         getattr(cvista, _name)
     except Exception as e:  # noqa: BLE001
-        optional = "." in _mod and "optional dependency" in str(e)
-        (soft if optional else hard).append((_name, _mod, repr(e)[:120]))
+        (soft if "." in _mod else hard).append((_name, _mod, repr(e)[:120]))
 if soft:
-    print(f"  {len(soft)} name(s) need optional deps (OK): {sorted({m for _, m, _ in soft})}")
+    print(f"  {len(soft)} helper name(s) unavailable, optional deps not installed (OK): "
+          f"{sorted({m for _, m, _ in soft})}")
 if hard:
     print(f"  *** {len(hard)} indexed names failed to resolve, first 10: {hard[:10]} ***")
     raise SystemExit(1)
