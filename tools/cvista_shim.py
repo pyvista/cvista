@@ -75,6 +75,17 @@ class _LegacyVtkModule(types.ModuleType):
     """
 
     def __getattr__(self, name):
+        # NEVER forward dunders to cvista. The import machinery probes
+        # `getattr(module, '__package__', None)` and only initializes the
+        # attribute when that returns None; forwarding handed it cvista's own
+        # '__package__' ('cvista', since cvista IS a package), so `vtk` ended up
+        # with __package__='cvista' against __spec__.parent='' and every
+        # subsequent import raised "DeprecationWarning: __package__ !=
+        # __spec__.parent" -- fatal under PyVista's filterwarnings=error.
+        # Same reasoning covers __path__, __all__, __file__ and friends.
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(name)
+
         import cvista
 
         try:
@@ -103,6 +114,7 @@ class _CvistaRedirect(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     PREFIX = "vtkmodules"
     TARGET = "cvista"
     LEGACY = "vtk"
+    IDENTITY = "__cvista_true_identity__"
 
     def find_spec(self, name, path=None, target=None):
         if name == self.PREFIX or name.startswith(self.PREFIX + "."):
@@ -114,12 +126,28 @@ class _CvistaRedirect(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def create_module(self, spec):
         if spec.name == self.LEGACY:
             mod = _LegacyVtkModule(self.LEGACY)
+            # Set explicitly rather than relying on _init_module_attrs: `vtk` is a
+            # top-level module, so its package is '' (see __getattr__ above).
+            mod.__package__ = ''
             sys.modules[spec.name] = mod
             return mod
         suffix = spec.name[len(self.PREFIX):]  # e.g. ".vtkFiltersHybrid" or ""
         target = self.TARGET + suffix
         mod = importlib.import_module(target)
         self._reexport_relocated(mod, suffix.lstrip("."))
+        # Aliasing means ONE module object is reachable under two names, and the
+        # import machinery unconditionally stamps the requested spec onto whatever
+        # create_module returns -- rewriting the real cvista module's __name__ /
+        # __spec__ / __package__ to the vtkmodules ones. That corrupts the genuine
+        # module: its __package__ ('cvista') then disagrees with its __spec__.parent
+        # (''), and every import performed from cvista's own globals raises
+        # "DeprecationWarning: __package__ != __spec__.parent" -- fatal under
+        # PyVista's filterwarnings=error. Stash the true identity here and restore
+        # it in exec_module, which runs after the machinery has stamped the module.
+        mod.__dict__.setdefault(
+            self.IDENTITY,
+            (mod.__name__, mod.__spec__, getattr(mod, "__package__", None)),
+        )
         sys.modules[spec.name] = mod  # alias under the requested vtkmodules name
         return mod
 
@@ -138,7 +166,12 @@ class _CvistaRedirect(importlib.abc.MetaPathFinder, importlib.abc.Loader):
                         pass
 
     def exec_module(self, module):
-        pass  # already executed by import_module in create_module
+        # Already executed by import_module in create_module. Runs after
+        # _init_module_attrs stamped the requested (vtkmodules) spec onto the
+        # shared object, so this is where the real cvista identity goes back.
+        identity = module.__dict__.get(self.IDENTITY)
+        if identity is not None:
+            module.__name__, module.__spec__, module.__package__ = identity
 
 
 if not any(isinstance(f, _CvistaRedirect) for f in sys.meta_path):
