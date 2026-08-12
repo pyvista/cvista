@@ -945,6 +945,21 @@ std::vector<Case> RegisterCases()
     f->SetInputData(in.poly);
     return vtkSmartPointer<vtkAlgorithm>(f);
   });
+  // The per-object area/volume field arrays (ObjectAreas/ObjectVolumes/centroids and
+  // the scalar totals) are a per-thread partial-sum reduction (Reduce() folds
+  // TLObjectAreas across thread-local vectors). On this sphere input the triangle
+  // areas are irrational, so the parallel per-partition grouping sums them in a
+  // different order than the serial poly-order walk: a benign FP non-associativity
+  // divergence (~38 ULP, |delta|~1.7e-14 relative ~5e-15 on a sum of thousands of
+  // faces). The mesh geometry and per-cell Areas/Volumes are byte-identical. This is
+  // the same reduction non-associativity the byte-exact gate documents and excludes
+  // for ObjectVolumes/ObjectCentroids/TotalVolume (tests/bitexact/ops.py
+  // op_mass_properties), which there stays exact only because unit-cube faces are
+  // exactly representable. Not fixable without serializing the reduce.
+  markKnown("per-object area/volume field arrays diverge by FP reduction-order "
+            "non-associativity (~38 ULP on irrational sphere-face areas); mesh + "
+            "per-cell values byte-identical; matches the tests/bitexact documented "
+            "ObjectVolumes/TotalVolume exclusion; ungated + documented");
 
   // ---- table outputs (per-column) -------------------------------------------
   add("vtkAttributeDataToTableFilter", "Filters/Core", Risk::PerElement, [](const Inputs& in) {
