@@ -1,10 +1,20 @@
-"""Validation shim: redirect `vtkmodules[.*]` imports to `cvista[.*]`.
+"""Validation shim: redirect `vtkmodules[.*]` and legacy `vtk` imports to `cvista[.*]`.
 
 Runs at interpreter startup (sitecustomize is auto-imported), so the redirect is
-active before pyvista's own conftest/_vtk lazy-loader imports anything. Stock
-`vtk`/`vtkmodules` are UNINSTALLED in this venv, so any import that slips past the
-redirect fails loudly (ModuleNotFoundError) instead of silently testing stock VTK
--- we want a loud miss, never a false green.
+active before pyvista's own conftest/_vtk lazy-loader imports anything.
+
+PyVista itself is installed --no-deps precisely so it cannot drag stock `vtk` in,
+but a transitive dependency of the test group still can (trame-pyvista pulls the
+trame stack). So do NOT assume stock VTK is absent from this venv: assume only
+that this finder sits at sys.meta_path[0] and therefore WINS. It claims every
+`vtkmodules*` name AND the top-level `vtk` name, so a stock install sitting in
+site-packages is shadowed rather than silently exercised -- the point being a
+loud miss, never a false green.
+
+The legacy `vtk` interception matters because stock's `vtk.py` is an eager
+star-import of every vtkmodules module. Left unshadowed, one `import vtk` from a
+consumer (trame-vtk's serializers do exactly this) drags in module names the fork
+deliberately trims and dies on the first one. See _LegacyVtkModule.
 
 Unlike the README's minimal find_spec shim, this registers the resolved cvista
 module under the *requested* vtkmodules name (aliases in sys.modules), which the
@@ -23,6 +33,7 @@ import importlib
 import importlib.abc
 import importlib.util
 import sys
+import types
 
 # Original stock-VTK module -> [(cvista's new module, (relocated class names, ...))].
 # Mirrors the C++ module moves in cvista (FiltersHybrid -> FiltersHybridRendering,
@@ -47,16 +58,64 @@ _RELOCATED = {
 }
 
 
+class _LegacyVtkModule(types.ModuleType):
+    """Stand-in for stock VTK's top-level monolithic ``vtk`` module.
+
+    Legacy consumers still do a bare ``import vtk`` and reach for
+    ``vtk.vtkPolyData`` -- trame-vtk's serializers are one
+    (``trame_vtk/modules/vtk/serializers/serialize.py``). Stock's ``vtk.py`` is
+    an eager ``from vtkmodules.<every module> import *``, which cannot work
+    against a trimmed fork: it names modules cvista deliberately does not build
+    (``vtkViewsInfovis``, ...), so the redirect below would raise
+    ``ModuleNotFoundError`` for a module the caller never actually wanted.
+
+    Resolving lazily through cvista's flat namespace instead gives the same
+    ``vtk.vtkFoo`` surface without eagerly importing anything, and a class the
+    fork does not ship fails only if someone actually asks for it.
+    """
+
+    def __getattr__(self, name):
+        import cvista
+
+        try:
+            return getattr(cvista, name)
+        except ImportError as exc:  # trimmed-away module: report it as absent
+            raise AttributeError(str(exc)) from exc
+        except AttributeError:
+            # Older cvista wheels predate the flat namespace (no _class_index),
+            # so nothing resolves off the package root. Fall back to the eager
+            # `cvista.all` aggregate, which every build ships.
+            all_module = importlib.import_module("cvista.all")
+            return getattr(all_module, name)
+
+    def __dir__(self):
+        import cvista
+
+        names = set(dir(cvista))
+        try:
+            names.update(dir(importlib.import_module("cvista.all")))
+        except ImportError:
+            pass
+        return sorted(names)
+
+
 class _CvistaRedirect(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     PREFIX = "vtkmodules"
     TARGET = "cvista"
+    LEGACY = "vtk"
 
     def find_spec(self, name, path=None, target=None):
         if name == self.PREFIX or name.startswith(self.PREFIX + "."):
             return importlib.util.spec_from_loader(name, self)
+        if name == self.LEGACY:
+            return importlib.util.spec_from_loader(name, self)
         return None
 
     def create_module(self, spec):
+        if spec.name == self.LEGACY:
+            mod = _LegacyVtkModule(self.LEGACY)
+            sys.modules[spec.name] = mod
+            return mod
         suffix = spec.name[len(self.PREFIX):]  # e.g. ".vtkFiltersHybrid" or ""
         target = self.TARGET + suffix
         mod = importlib.import_module(target)
