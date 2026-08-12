@@ -84,15 +84,22 @@ print("  vtkIOExport (rendering->io chain) importable [OK]")
 from cvista import _class_index, vtkPolyDataMapper
 print("  flat vtkPolyDataMapper resolves after rendering install [OK]")
 import cvista
-bad = []
-for _name in _class_index.INDEX:
+# Names hosted by a WRAPPED module must all resolve once every tier is stacked --
+# that is the flat namespace's guarantee. Pure-Python helpers may carry optional
+# third-party deps (util.xarray_support -> xarray/cftime); those are reported,
+# not failed on, since the tier wheels deliberately do not vendor them.
+hard, soft = [], []
+for _name, _mod in _class_index.INDEX.items():
     try:
         getattr(cvista, _name)
     except Exception as e:  # noqa: BLE001
-        bad.append((_name, repr(e)))
-if bad:
-    print(f"  *** {len(bad)} indexed names failed to resolve, first 10: {bad[:10]} ***")
+        optional = "." in _mod and "optional dependency" in str(e)
+        (soft if optional else hard).append((_name, _mod, repr(e)[:120]))
+if soft:
+    print(f"  {len(soft)} name(s) need optional deps (OK): {sorted({m for _, m, _ in soft})}")
+if hard:
+    print(f"  *** {len(hard)} indexed names failed to resolve, first 10: {hard[:10]} ***")
     raise SystemExit(1)
-print(f"  flat index exhaustive resolve: all {len(_class_index.INDEX)} names [OK]")
+print(f"  flat index exhaustive resolve: {len(_class_index.INDEX) - len(soft)} names [OK]")
 PY
 echo "=== STACKING VALIDATED ==="

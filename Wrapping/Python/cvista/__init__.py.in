@@ -229,25 +229,35 @@ def __getattr__(name):
     try:
         module = importlib.import_module(f'{__name__}.{module_name}')
     except ImportError as exc:
-        # The name is known to this build but its module is not importable:
-        # on a tiered install that means the hosting tier wheel is missing.
+        # The name is known to this build but its module is not importable.
+        # Three distinguishable causes, most actionable first.
         tier = None
         try:
             from . import _module_tiers
             tier = _module_tiers.TIERS.get(module_name)
         except ImportError:
             pass
-        if tier and tier != 'core':
+        # (a) a THIRD-PARTY import inside the module is unmet -- the pure-Python
+        # helpers (e.g. util.xarray_support) carry optional dependencies.
+        missing = getattr(exc, 'name', None)
+        if missing and not missing.startswith(__name__):
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which requires the '
+                f'optional dependency {missing!r}. Install it to use this name.'
+            )
+        # (b) the hosting module ships in a tier wheel that is not installed.
+        elif tier and tier != 'core':
             msg = (
                 f'{name!r} lives in {__name__}.{module_name}, which ships in the '
                 f'cvista-{tier} tier wheel and is not installed. '
                 f'Install it with: pip install cvista[{tier}]  '
                 f'(or cvista[all] for everything).'
             )
+        # (c) anything else -- a genuinely broken/absent module in this build.
         else:
             msg = (
                 f'{name!r} lives in {__name__}.{module_name}, which is not '
-                f'importable in this install.'
+                f'importable in this install ({exc}).'
             )
         raise ImportError(msg) from exc
     return getattr(module, name)

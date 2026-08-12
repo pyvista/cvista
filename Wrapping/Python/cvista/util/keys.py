@@ -18,10 +18,22 @@ from cvista.vtkCommonCore import vtkInformationStringVectorKey as StringVectorKe
 from cvista.vtkCommonCore import vtkInformationUnsignedLongKey as UnsignedLongKey
 from cvista.vtkCommonCore import vtkInformationVariantKey as VariantKey
 from cvista.vtkCommonCore import vtkInformationVariantVectorKey as VariantVectorKey
-from cvista.vtkCommonExecutionModel import vtkInformationDataObjectMetaDataKey as DataObjectMetaDataKey
 from cvista.vtkCommonExecutionModel import vtkInformationExecutivePortKey as ExecutivePortKey
 from cvista.vtkCommonExecutionModel import vtkInformationExecutivePortVectorKey as ExecutivePortVectorKey
-from cvista.vtkCommonExecutionModel import vtkInformationIntegerRequestKey as IntegerRequestKey
+
+# cvista trims these two key types from the build (cvista-config/_nowrap_classes.cmake,
+# and DataObjectMetaDataKey is also in _nocompile_classes.cmake), so they are absent
+# from the wrapped vtkCommonExecutionModel. Importing them unconditionally made this
+# whole module fail to import -- taking MakeKey and every other key type down with it.
+# Bind them to None when absent so the module stays usable in a trimmed build.
+try:
+    from cvista.vtkCommonExecutionModel import vtkInformationDataObjectMetaDataKey as DataObjectMetaDataKey
+except ImportError:  # pragma: no cover - depends on build configuration
+    DataObjectMetaDataKey = None
+try:
+    from cvista.vtkCommonExecutionModel import vtkInformationIntegerRequestKey as IntegerRequestKey
+except ImportError:  # pragma: no cover - depends on build configuration
+    IntegerRequestKey = None
 
 def MakeKey(key_type, name, location, *args):
     """Given a key type, make a new key of given name

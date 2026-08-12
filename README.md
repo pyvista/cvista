@@ -130,6 +130,13 @@ build time from the actual compiled modules, so it can never drift from the
 binaries it ships with — and internal relocations (tier splits, kit moves,
 rewrites) never break consumer imports again.
 
+The pure-Python helpers are in there too, so the array and algorithm utilities
+need no module paths either:
+
+```python
+from cvista import numpy_to_vtk, vtk_to_numpy, VTKPythonAlgorithmBase
+```
+
 Explicit module imports (`from cvista.vtkFiltersCore import vtkDecimatePro`)
 still work, but the module layout is not a stability contract; the flat
 namespace is. On a partial tier install, accessing a class from a missing tier
