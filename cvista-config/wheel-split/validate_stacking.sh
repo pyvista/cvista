@@ -33,6 +33,17 @@ for absent in ("vtkRenderingCore", "vtkIOCore", "vtkIOXML", "vtkIOLegacy",
         print(f"  *** {absent} present (unexpected in core-only) ***"); raise SystemExit(1)
     except ImportError:
         print(f"  {absent}: absent [OK]")
+# Flat namespace: core classes resolve without naming the hosting module...
+from cvista import vtkPolyData, vtkDecimatePro
+print("  flat core resolve OK:", vtkPolyData().GetClassName(), vtkDecimatePro().GetClassName())
+# ...and a missing tier's class raises the install hint, NOT a bare AttributeError.
+for name, tier in (("vtkXMLPolyDataReader", "io"), ("vtkPolyDataMapper", "rendering")):
+    try:
+        getattr(cvista, name)
+        print(f"  *** flat {name} resolved on core-only install ***"); raise SystemExit(1)
+    except ImportError as e:
+        assert f"cvista[{tier}]" in str(e), f"missing tier hint for {name}: {e}"
+        print(f"  flat {name} -> install-hint ImportError naming {tier} tier [OK]")
 PY
 
 echo "=== 2) add IO tier -> every reader/writer works, core compute intact ==="
@@ -50,6 +61,10 @@ r = vtkXMLPolyDataReader(); r.SetFileName(f); r.Update()
 print("  io tier XML round-trip OK, points:", r.GetOutput().GetNumberOfPoints())
 print("  vtkExodusIIReader:", type(vtkExodusIIReader()).__name__, "[io tier OK, stacked on core]")
 print("  vtkSliceCubes (relocated):", type(vtkSliceCubes()).__name__, "[io tier OK]")
+# Flat namespace: the io class that raised on core-only now resolves.
+from cvista import vtkXMLPolyDataReader as flat_reader
+assert flat_reader is vtkXMLPolyDataReader
+print("  flat vtkXMLPolyDataReader resolves after io install [OK]")
 PY
 
 echo "=== 3) add RENDERING tier -> imports (rendering depends on io underneath) ==="
@@ -64,5 +79,33 @@ print("  vtkPolyDataSilhouette (relocated) importable from rendering tier [OK]:"
 # Rendering module that depends on io (scene export -> chemistry -> XML parser).
 from cvista.vtkIOExport import vtkExporter
 print("  vtkIOExport (rendering->io chain) importable [OK]")
+# Flat namespace: with all tiers stacked every indexed name must resolve --
+# the strongest guarantee the flat API offers, checked exhaustively.
+from cvista import _class_index, vtkPolyDataMapper
+print("  flat vtkPolyDataMapper resolves after rendering install [OK]")
+import cvista
+# Names hosted by a WRAPPED module must all resolve once every tier is stacked --
+# that is the flat namespace's guarantee, and this is where it is enforced.
+#
+# Pure-Python helpers (dotted module names: util.*, numpy_interface.*) are only
+# REPORTED. They carry optional third-party deps -- numpy, xarray/cftime -- which
+# these wheels deliberately do not vendor and which this venv installs with
+# --no-deps, so they are legitimately absent here. Note the split cannot be made
+# by sniffing the error text: util.pickle_support catches its own numpy failure
+# and re-raises a bare ImportError with no `name` set, so the hosting module is
+# the only reliable signal.
+hard, soft = [], []
+for _name, _mod in _class_index.INDEX.items():
+    try:
+        getattr(cvista, _name)
+    except Exception as e:  # noqa: BLE001
+        (soft if "." in _mod else hard).append((_name, _mod, repr(e)[:120]))
+if soft:
+    print(f"  {len(soft)} helper name(s) unavailable, optional deps not installed (OK): "
+          f"{sorted({m for _, m, _ in soft})}")
+if hard:
+    print(f"  *** {len(hard)} indexed names failed to resolve, first 10: {hard[:10]} ***")
+    raise SystemExit(1)
+print(f"  flat index exhaustive resolve: {len(_class_index.INDEX) - len(soft)} names [OK]")
 PY
 echo "=== STACKING VALIDATED ==="

@@ -66,6 +66,45 @@ def _dsa():
     from cvista.numpy_interface import dataset_adapter as dsa  # noqa: F401
 check("cvista.numpy_interface.dataset_adapter", _dsa)
 
+def _flat():
+    # Flat lazy namespace: class access with no knowledge of the hosting module.
+    from cvista import vtkPolyData, vtkSphereSource, vtkXMLPolyDataReader  # noqa: F401
+    import cvista
+    from cvista.vtkCommonDataModel import vtkPolyData as direct
+    assert cvista.vtkPolyData is direct, "flat resolve != direct module import"
+    assert "vtkPolyData" in dir(cvista), "flat names missing from dir(cvista)"
+    try:
+        cvista.vtkDoesNotExist
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("unknown flat name did not raise AttributeError")
+check("flat namespace (from cvista import vtkPolyData)", _flat)
+
+def _flat_index_complete():
+    # Every name hosted by a WRAPPED (compiled) module must resolve on a full
+    # install -- that is the guarantee the flat namespace makes, and this catches
+    # index drift. Pure-Python helpers (dotted names: util.*, numpy_interface.*)
+    # are only reported: they carry optional third-party deps (numpy, and
+    # xarray/cftime for util.xarray_support) that need not be present. The split
+    # keys on the hosting module rather than the error text, because
+    # util.pickle_support swallows its own numpy failure and re-raises a bare
+    # ImportError with no `name` set.
+    import cvista
+    from cvista import _class_index
+    hard, soft = [], []
+    for name, module in _class_index.INDEX.items():
+        try:
+            getattr(cvista, name)
+        except Exception as e:  # noqa: BLE001
+            (soft if "." in module else hard).append((name, module, repr(e)[:120]))
+    if soft:
+        print(f"       {len(soft)} helper name(s) unavailable, optional deps "
+              f"not installed (OK): {sorted({m for _, m, _ in soft})}", flush=True)
+    assert not hard, f"{len(hard)} indexed names failed, first 5: {hard[:5]}"
+    print(f"       flat index: {len(_class_index.INDEX) - len(soft)} names resolve", flush=True)
+check("flat index exhaustive resolve", _flat_index_complete)
+
 def _filter():
     from cvista.vtkFiltersSources import vtkSphereSource
     from cvista.vtkFiltersCore import vtkTriangleFilter

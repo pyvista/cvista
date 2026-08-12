@@ -6,7 +6,7 @@ Output: 3 wheels in <outdir> — cvista, cvista-rendering, cvista-io — all own
         in the shared `cvista/` import package (no file overlap; core owns __init__.py).
         rendering/io declare `Requires-Dist: cvista==<ver>` so ABIs never mismatch.
 """
-import os, sys, subprocess, shutil
+import os, re, sys, subprocess, shutil
 from pathlib import Path
 
 # Derived from the actual built wheel by CI (see the split job). The abi3 build
@@ -27,13 +27,24 @@ SUMMARY = {
     "io": "cvista IO tier: every VTK reader/writer (XML/legacy/PLY/image/HDF/Exodus/...). Requires cvista.",
 }
 
+# Requires-Python must be derived from the wheel's own python tag, NOT hardcoded:
+# pip filters candidate FILES on their per-file requires-python (PEP 503
+# data-requires-python), so stamping the abi3 floor (>=3.12) onto the legacy
+# cp310/cp311 tier wheels made those wheels unreachable — a 3.10/3.11 resolver
+# skipped them despite the cpython tag matching. cp312-abi3 -> >=3.12,
+# cp310-cp310 -> >=3.10, etc.
+_m = re.match(r"cp(\d)(\d+)-", PYTAG)
+if not _m:
+    sys.exit(f"cannot derive Requires-Python floor from wheel tag {PYTAG!r}")
+REQUIRES_PYTHON = f">={_m.group(1)}.{_m.group(2)}"
+
 def metadata(dist, reqs):
     lines = [
         "Metadata-Version: 2.1",
         f"Name: {dist.replace('_','-')}",
         f"Version: {VER}",
         f"Summary: {SUMMARY[[k for k,v in TIERS.items() if v[0]==dist][0]]}",
-        "Requires-Python: >=3.12",  # abi3 floor cp312 (matches the built wheel)
+        f"Requires-Python: {REQUIRES_PYTHON}",
     ]
     for r in reqs:
         lines.append(f"Requires-Dist: {r}")
