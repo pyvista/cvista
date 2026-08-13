@@ -30,8 +30,10 @@ Two kinds of module are indexed:
   packages at module scope (numpy, and optionally xarray/GUI toolkits) that a
   wheel-build environment is not guaranteed to have; parsing keeps the index
   deterministic and identical across build environments instead of silently
-  varying with whatever happened to be installed.  They are indexed AFTER the
-  compiled modules, matching the order ``all.py`` star-imports them in.
+  varying with whatever happened to be installed.  ``all.py`` is parsed the
+  same way to find which helper names it actually binds: those, and only those,
+  may override a compiled module.  Every other helper name is added only where
+  the compiled modules leave a gap.
 
 Usage (mirrors generate_pyi.py):
 
@@ -99,6 +101,31 @@ def public_names_from_source(path):
     return public, [name for name in reexports if not name.startswith('_')]
 
 
+def all_py_helper_imports(package_dir):
+    """What ``all.py`` itself binds from the pure-Python helper packages.
+
+    Returns ``[(module_name, names_or_None), ...]`` in source order, where
+    ``None`` marks a star-import.  ``None`` (rather than an empty list) is
+    returned when ``all.py`` is not present, which the caller treats as "no
+    helper may override a compiled module".
+    """
+    path = package_dir / 'all.py'
+    if not path.is_file():
+        return None
+    tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+    found = []
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level == 0 or not node.module:
+            continue
+        if node.module.split('.')[0] not in PYTHON_HELPER_PACKAGES:
+            continue
+        if any(alias.name == '*' for alias in node.names):
+            found.append((node.module, None))
+        else:
+            found.append((node.module, [alias.asname or alias.name for alias in node.names]))
+    return found
+
+
 def helper_modules(package_dir):
     """Discover pure-Python helper modules, in a stable (sorted) order."""
     found = []
@@ -124,22 +151,53 @@ def build_index(package, modules, package_dir=None):
         for name in public:
             index[name] = module_name
     # Pure-Python helpers, parsed rather than imported (see module docstring).
-    # A name DEFINED in a helper follows the same later-wins rule as above, but a
-    # mere RE-EXPORT only fills a gap: it must never displace the module that
-    # actually defines the name. Without that rule a re-export in an
-    # optional-dependency module (util.xarray_support imports VTKPythonAlgorithmBase
-    # from util.vtkAlgorithm, and sorts after it) would capture the name and make it
-    # unresolvable whenever that optional dependency is absent.
+    #
+    # Only a helper that ``all.py`` itself imports may displace a compiled
+    # module, and then only for the names all.py actually binds. all.py is the
+    # definition of the flat namespace: it star-imports the compiled modules and
+    # then adds three specific helper imports, so `from cvista.all import *`
+    # takes VTK_DOUBLE_MAX from the compiled vtkCommonCore (1e+299) while taking
+    # vtkVariantEqual from util.vtkVariant. Indexing every helper's definitions
+    # as an override instead got the first of those wrong: util/vtkConstants.py
+    # is a legacy pure-Python copy whose VTK_DOUBLE/FLOAT/LONG limits no longer
+    # agree with the compiled headers, and it was shadowing the real values.
+    #
+    # Every other helper name only FILLS A GAP -- it must never displace the
+    # module that already provides the name. That keeps convenience helpers
+    # (numpy_to_vtk, ...) in the flat namespace without letting, say, a
+    # re-export in an optional-dependency module (util.xarray_support imports
+    # VTKPythonAlgorithmBase from util.vtkAlgorithm, and sorts after it) capture
+    # a name and make it unresolvable whenever that dependency is absent.
     if package_dir is not None:
-        pending_reexports = []
-        for module_name, path in helper_modules(package_dir):
-            defined, reexported = public_names_from_source(path)
+        parsed = {
+            module_name: public_names_from_source(path)
+            for module_name, path in helper_modules(package_dir)
+        }
+        for module_name, names in all_py_helper_imports(package_dir) or ():
+            if module_name not in parsed:
+                continue
+            defined, reexported = parsed[module_name]
+            bound = defined + reexported if names is None else names
+            for name in bound:
+                if not name.startswith('_'):
+                    index[name] = module_name
+        # Among THEMSELVES the helpers keep later-module-wins, so a name defined
+        # in both util and numpy_interface resolves where it always has. Only
+        # the compiled modules are now out of their reach.
+        helper_defined = {}
+        helper_reexported = {}
+        for module_name, (defined, reexported) in parsed.items():
             for name in defined:
-                index[name] = module_name
-            pending_reexports.append((module_name, reexported))
-        for module_name, reexported in pending_reexports:
+                helper_defined[name] = module_name
+        for module_name, (defined, reexported) in parsed.items():
             for name in reexported:
-                index.setdefault(name, module_name)
+                helper_reexported.setdefault(name, module_name)
+        # Definitions before re-exports, so a definition still beats a mere
+        # re-export when neither is claimed by all.py.
+        for name, module_name in helper_defined.items():
+            index.setdefault(name, module_name)
+        for name, module_name in helper_reexported.items():
+            index.setdefault(name, module_name)
     return index
 
 

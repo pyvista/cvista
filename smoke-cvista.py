@@ -105,6 +105,55 @@ def _flat_index_complete():
     print(f"       flat index: {len(_class_index.INDEX) - len(soft)} names resolve", flush=True)
 check("flat index exhaustive resolve", _flat_index_complete)
 
+# `all.py` IS the definition of the flat namespace: it star-imports the compiled
+# modules in dependency order, then binds a few names from the pure-Python
+# helpers. So `from cvista import X` must give the same object as
+# `cvista.all.X`. Resolving to *something* is not enough -- 9.6.2.4 shipped
+# VTK_DOUBLE_MAX as 1e+99 (the stale copy in util/vtkConstants.py) instead of
+# the compiled 1e+299, and the exhaustive-resolve check above was happy with it.
+# `sys` and `absolute_import` are stdlib/__future__ names that leak into stock
+# VTK's `all` namespace via star-import; the index deliberately excludes them.
+ALL_NOT_INDEXED = {"sys", "absolute_import"}
+
+# A wrapped module that hosts a class of its own name loses to the module: PEP
+# 562's __getattr__ only runs when normal lookup fails, and importing
+# cvista.vtkWebGLExporter binds the MODULE onto the package for good. Fixing it
+# means intercepting attribute access on the package itself, which is a bigger
+# decision than this patch -- so it is reported on every run rather than hidden.
+KNOWN_MODULE_SHADOWED = {"vtkWebGLExporter"}
+
+def _flat_matches_all():
+    import cvista
+    import cvista.all as vtkall
+    names = [n for n in dir(vtkall) if not n.startswith("_")]
+    wrong, missing = [], []
+    for name in names:
+        want = getattr(vtkall, name)
+        try:
+            got = getattr(cvista, name)
+        except AttributeError:
+            missing.append(name)
+            continue
+        if got is want:
+            continue
+        try:
+            same = bool(got == want)
+        except Exception:  # noqa: BLE001
+            same = False
+        if not same:
+            wrong.append(f"{name}: flat={got!r} all={want!r}")
+    shadowed = sorted(w.split(":")[0] for w in wrong)
+    shadowed = [n for n in shadowed if n in KNOWN_MODULE_SHADOWED]
+    if shadowed:
+        print(f"       KNOWN: {shadowed} resolve to the submodule, not the class",
+              flush=True)
+    wrong = [w for w in wrong if w.split(":")[0] not in KNOWN_MODULE_SHADOWED]
+    unexpected = sorted(set(missing) - ALL_NOT_INDEXED)
+    assert not wrong, f"{len(wrong)} name(s) differ from cvista.all: {wrong[:5]}"
+    assert not unexpected, f"{len(unexpected)} name(s) missing from flat: {unexpected[:5]}"
+    print(f"       {len(names)} cvista.all names agree with the flat namespace", flush=True)
+check("flat namespace agrees with cvista.all", _flat_matches_all)
+
 def _filter():
     from cvista.vtkFiltersSources import vtkSphereSource
     from cvista.vtkFiltersCore import vtkTriangleFilter
