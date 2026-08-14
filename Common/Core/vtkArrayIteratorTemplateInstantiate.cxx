@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-License-Identifier: BSD-3-Clause
+// VTK_DEPRECATED_IN_9_7_0()
+#define VTK_DEPRECATION_LEVEL 0
+#define vtkArrayIteratorTemplateInstantiate_cxx
+
+#include "vtkArrayIteratorTemplate.txx"
+
+#include "vtkOStreamWrapper.h"
+
+VTK_ABI_NAMESPACE_BEGIN
+vtkInstantiateTemplateMacro(template class VTKCOMMONCORE_EXPORT vtkArrayIteratorTemplate);
+template class VTKCOMMONCORE_EXPORT vtkArrayIteratorTemplate<vtkStdString>;
+template class VTKCOMMONCORE_EXPORT vtkArrayIteratorTemplate<vtkVariant>;
+VTK_ABI_NAMESPACE_END

@@ -1,0 +1,22 @@
+NAME
+  VTK::FiltersParallelVerdict
+LIBRARY_NAME
+  vtkFiltersParallelVerdict
+KIT
+  VTK::Parallel
+GROUPS
+  MPI
+DESCRIPTION
+  Parallel mesh-quality computation.
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::FiltersVerdict
+  VTK::ParallelCore
+TEST_DEPENDS
+  VTK::IOLegacy
+  VTK::TestingCore
+TEST_OPTIONAL_DEPENDS
+  VTK::ParallelMPI

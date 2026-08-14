@@ -1,0 +1,39 @@
+NAME
+  VTK::RenderingOpenXR
+LIBRARY_NAME
+  vtkRenderingOpenXR
+LICENSE_FILES
+  LICENSE
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+  VTK::CommonMath
+  VTK::RenderingCore
+  VTK::RenderingOpenGL2
+  VTK::RenderingVR
+  VTK::glad
+PRIVATE_DEPENDS
+  VTK::CommonDataModel
+  VTK::CommonMisc
+  VTK::CommonSystem
+  VTK::CommonTransforms
+  VTK::FiltersSources
+  VTK::FiltersTexture
+  VTK::ImagingSources
+  VTK::InteractionWidgets
+  VTK::IOCore
+  VTK::IOGeometry
+  VTK::jsoncpp
+  VTK::vtksys
+TEST_DEPENDS
+  VTK::CommonCore
+  VTK::CommonTransforms
+  VTK::FiltersGeneral
+  VTK::IOPLY
+  VTK::RenderingCore
+  VTK::RenderingOpenGL2
+  VTK::TestingCore
+  VTK::TestingRendering

@@ -1,0 +1,9 @@
+NAME
+  VTK::vtkvtkm
+LIBRARY_NAME
+  vtkvtkm
+CONDITION
+  FALSE
+DEPENDS
+  VTK::vtkviskores
+THIRD_PARTY

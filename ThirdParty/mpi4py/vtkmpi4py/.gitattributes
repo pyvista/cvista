@@ -1,0 +1,2 @@
+* -whitespace
+src/MPI.c  hooks-max-size=14000000

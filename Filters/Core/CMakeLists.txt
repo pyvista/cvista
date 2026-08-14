@@ -1,0 +1,158 @@
+set(classes
+  vtk3DLinearGridCrinkleExtractor
+  vtk3DLinearGridPlaneCutter
+  vtkAppendArcLength
+  vtkAppendCompositeDataLeaves
+  vtkAppendDataSets
+  vtkAppendFilter
+  vtkAppendPartitionedDataSetCollection
+  vtkAppendPolyData
+  vtkAppendSelection
+  vtkArrayCalculator
+  vtkArrayRename
+  vtkAssignAttribute
+  vtkAttributeDataToFieldDataFilter
+  vtkAttributeDataToTableFilter
+  vtkBinCellDataFilter
+  vtkBinnedDecimation
+  vtkCellCenters
+  vtkCellDataToPointData
+  vtkCenterOfMass
+  vtkCleanPolyData
+  vtkClipPolyData
+  vtkCompositeCutter
+  vtkConvexHull
+  vtkCompositeDataProbeFilter
+  vtkConnectivityFilter
+  vtkConstrainedSmoothingFilter
+  vtkContour3DLinearGrid
+  vtkContourFilter
+  vtkContourGrid
+  vtkContourHelper
+  vtkConvertToMultiBlockDataSet
+  vtkConvertToPartitionedDataSetCollection
+  vtkConvertToPolyhedra
+  vtkCutter
+  vtkDataObjectGenerator
+  vtkDataObjectToDataSetFilter
+  vtkDataSetEdgeSubdivisionCriterion
+  vtkDataSetToDataObjectFilter
+  vtkDecimatePolylineAngleStrategy
+  vtkDecimatePolylineCustomFieldStrategy
+  vtkDecimatePolylineDistanceStrategy
+  vtkDecimatePolylineFilter
+  vtkDecimatePro
+  vtkDelaunay2D
+  vtkDelaunay3D
+  vtkEdgeSubdivisionCriterion
+  vtkElevationFilter
+  vtkExecutionTimer
+  vtkExplicitStructuredGridCrop
+  vtkExplicitStructuredGridToUnstructuredGrid
+  vtkExtractCells
+  vtkExtractCellsAlongPolyLine
+  vtkExtractEdges
+  vtkFeatureEdges
+  vtkFieldDataToAttributeDataFilter
+  vtkFieldDataToDataSetAttribute
+  vtkFlyingEdges2D
+  vtkFlyingEdges3D
+  vtkFlyingEdgesPlaneCutter
+  vtkGenerateIds
+  vtkGenerateRegionIds
+  vtkGlyph2D
+  vtkGlyph3D
+  vtkGridSynchronizedTemplates3D
+  vtkHedgeHog
+  vtkHilbertCurveSorter
+  vtkHull
+  vtkHyperTreeGridProbeFilter
+  vtkHyperTreeGridProbeFilterUtilities
+  vtkImageAppend
+  vtkImageDataToExplicitStructuredGrid
+  vtkImplicitPolyDataDistance
+  vtkImplicitProjectOnPlaneDistance
+  vtkMarchingCubes
+  vtkMarchingSquares
+  vtkMaskFields
+  vtkMaskPoints
+  vtkMaskPolyData
+  vtkMassProperties
+  vtkMergeDataObjectFilter
+  vtkMergeFields
+  vtkMergeFilter
+  vtkMoleculeAppend
+  vtkMultiObjectMassProperties
+  vtkOrientPolyData
+  vtkPackLabels
+  vtkPassThrough
+  vtkPlaneCutter
+  vtkPointDataToCellData
+  vtkPolyDataConnectivityFilter
+  vtkPolyDataEdgeConnectivityFilter
+  vtkPolyDataNormals
+  vtkPolyDataPlaneClipper
+  vtkPolyDataPlaneCutter
+  vtkPolyDataTangents
+  vtkPolyDataToUnstructuredGrid
+  vtkProbeFilter
+  vtkQuadricClustering
+  vtkQuadricDecimation
+  vtkRearrangeFields
+  vtkRectilinearSynchronizedTemplates
+  vtkRemoveDuplicatePolys
+  vtkRemoveUnusedPoints
+  vtkResampleToImage
+  vtkResampleWithDataSet
+  vtkReverseSense
+  vtkSimpleElevationFilter
+  vtkSmoothPolyDataFilter
+  vtkSphereTreeFilter
+  vtkSplitSharpEdgesPolyData
+  vtkStructuredDataPlaneCutter
+  vtkStaticCleanPolyData
+  vtkStaticCleanUnstructuredGrid
+  vtkStreamerBase
+  vtkStreamingTessellator
+  vtkStripper
+  vtkStructuredGridAppend
+  vtkStructuredGridOutlineFilter
+  vtkSurfaceNets2D
+  vtkSurfaceNets3D
+  vtkSurfaceNetsAtlas
+  vtkSynchronizedTemplates2D
+  vtkSynchronizedTemplates3D
+  vtkSynchronizedTemplatesCutter3D
+  vtkTensorGlyph
+  vtkThreshold
+  vtkThresholdPoints
+  vtkThresholdScalars
+  vtkTransposeTable
+  vtkTriangleFilter
+  vtkTriangleMeshPointNormals
+  vtkTubeBender
+  vtkTubeFilter
+  vtkUnstructuredGridQuadricDecimation
+  vtkUnstructuredGridToExplicitStructuredGrid
+  vtkVectorDot
+  vtkVectorNorm
+  vtkVoronoi2D
+  vtkWindowedSincPolyDataFilter)
+
+set(headers
+  vtkDecimatePolylineStrategy.h)
+
+set(private_classes
+  vtkSurfaceNets3DNonManifoldCases)
+
+vtk_module_add_module(VTK::FiltersCore
+  CLASSES ${classes}
+  HEADERS ${headers}
+  PRIVATE_CLASSES ${private_classes})
+
+vtk_add_test_mangling(VTK::FiltersCore)
+
+# Add precompiled header to improve build performance
+if(VTK_USE_PCH)
+  vtk_module_precompile_headers(VTK::FiltersCore PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/vtkFiltersCorePCH.h>")
+endif()

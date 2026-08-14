@@ -1,0 +1,110 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-License-Identifier: BSD-3-Clause
+#include "vtkWebGPULight.h"
+
+#include "vtkCamera.h"
+#include "vtkObjectFactory.h"
+#include "vtkOverrideAttribute.h"
+#include "vtkTransform.h"
+#include "vtkWebGPURenderer.h"
+
+#include <cstring>
+
+VTK_ABI_NAMESPACE_BEGIN
+vtkStandardNewMacro(vtkWebGPULight);
+
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkWebGPULight::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "WebGPU", nullptr);
+  return renderingBackendAttribute;
+}
+
+//------------------------------------------------------------------------------
+void vtkWebGPULight::Render(vtkRenderer* renderer, int)
+{
+  this->CacheLightInformation(renderer, renderer->GetActiveCamera());
+}
+
+//------------------------------------------------------------------------------
+void vtkWebGPULight::CacheLightInformation(vtkRenderer* renderer, vtkCamera* camera)
+{
+  // Init the cache with right information
+  LightInfo& li = this->CachedLightInfo;
+  li.Type = this->LightType;
+  li.Color[0] = { static_cast<vtkTypeFloat32>(this->DiffuseColor[0] * this->Intensity) };
+  li.Color[1] = { static_cast<vtkTypeFloat32>(this->DiffuseColor[1] * this->Intensity) };
+  li.Color[2] = { static_cast<vtkTypeFloat32>(this->DiffuseColor[2] * this->Intensity) };
+  li.Positional = 0;
+  li.ConeAngle = 0;
+  li.Exponent = 0;
+  std::memset(&li.DirectionVC, 0, sizeof(li.DirectionVC));
+  std::memset(&li.PositionVC, 0, sizeof(li.PositionVC));
+  std::memset(&li.Attenuation, 0, sizeof(li.Attenuation));
+
+  // Headlights use the camera direction directly in the shader, so no direction transform needed.
+  // All other light types (camera lights, scene lights) require the view-space direction.
+  // We check the light's own type rather than the renderer's cached LightingComplexity because
+  // the complexity is updated after light->Render() is called, causing a first-frame stale read.
+  if (!this->LightTypeIsHeadlight())
+  {
+    auto wgpuRenderer = reinterpret_cast<vtkWebGPURenderer*>(renderer);
+    vtkTransform* viewTF = camera->GetModelViewTransformObject();
+    // get required info from light
+    double* lfp = this->GetTransformedFocalPoint();
+    double* lp = this->GetTransformedPosition();
+    double lightDir[3];
+    vtkMath::Subtract(lfp, lp, lightDir);
+    vtkMath::Normalize(lightDir);
+    double tDirView[3];
+    viewTF->TransformNormal(lightDir, tDirView);
+
+    if (!this->LightTypeIsSceneLight() && wgpuRenderer->GetUserLightTransform() != nullptr)
+    {
+      double* tDir = wgpuRenderer->GetUserLightTransform()->TransformNormal(tDirView);
+      li.DirectionVC[0] = tDir[0];
+      li.DirectionVC[1] = tDir[1];
+      li.DirectionVC[2] = tDir[2];
+    }
+    else
+    {
+      li.DirectionVC[0] = tDirView[0];
+      li.DirectionVC[1] = tDirView[1];
+      li.DirectionVC[2] = tDirView[2];
+    }
+
+    if (this->Positional)
+    {
+      double* attn = this->AttenuationValues;
+      li.Attenuation[0] = attn[0];
+      li.Attenuation[1] = attn[1];
+      li.Attenuation[2] = attn[2];
+      double tlpView[3];
+      viewTF->TransformPoint(lp, tlpView);
+      if (!this->LightTypeIsSceneLight() && wgpuRenderer->GetUserLightTransform() != nullptr)
+      {
+        double* tlp = wgpuRenderer->GetUserLightTransform()->TransformPoint(tlpView);
+        li.PositionVC[0] = tlp[0];
+        li.PositionVC[1] = tlp[1];
+        li.PositionVC[2] = tlp[2];
+      }
+      else
+      {
+        li.PositionVC[0] = tlpView[0];
+        li.PositionVC[1] = tlpView[1];
+        li.PositionVC[2] = tlpView[2];
+      }
+      li.ConeAngle = this->ConeAngle;
+      li.Exponent = this->Exponent;
+      li.Positional = this->Positional;
+    }
+  }
+}
+
+//------------------------------------------------------------------------------
+void vtkWebGPULight::PrintSelf(ostream& os, vtkIndent indent)
+{
+  this->Superclass::PrintSelf(os, indent);
+}
+VTK_ABI_NAMESPACE_END

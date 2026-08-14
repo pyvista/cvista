@@ -1,0 +1,20 @@
+NAME
+  VTK::ioss
+LIBRARY_NAME
+  vtkioss
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+PRIVATE_DEPENDS
+  VTK::cgns
+  VTK::exodusII
+  VTK::fmt
+  VTK::zlib
+OPTIONAL_DEPENDS
+  VTK::mpi
+  VTK::catalyst
+TEST_DEPENDS
+  VTK::TestingCore
+  VTK::fmt
+THIRD_PARTY

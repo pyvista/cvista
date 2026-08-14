@@ -1,0 +1,117 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-License-Identifier: BSD-3-Clause
+/**
+ * @def   vtkDataArrayIteratorMacro
+ * @brief   (deprecated) A macro for obtaining iterators to
+ * vtkDataArray data when the array implementation and type are unknown.
+ *
+ * @deprecated This macro is deprecated and should not be used any longer. See
+ * vtkArrayDispatch.h and vtkDataArrayRange.h for replacements.
+ *
+ * See vtkTemplateMacro.
+ * This macro is similar, but defines several additional typedefs and variables
+ * for safely iterating through data in a vtkAbstractArray container:
+ *  - vtkDAValueType is typedef'd to the array's element value type.
+ *  - vtkDAContainerType is typedef'd to the most derived class of
+ *    vtkAbstractArray for which a suitable iterator has been found.
+ *  - vtkDAIteratorType is typedef'd to the most suitable iterator type found.
+ *  - vtkDABegin is an object of vtkDAIteratorType that points to the first
+ *    component of the first tuple in the array.
+ *  - vtkDAEnd is an object of vtkDAIteratorType that points to the element
+ *    *after* the last component of the last tuple in the array.
+ * The primary advantage to using this macro is that arrays with non-standard
+ * memory layouts will be safely handled, and dangerous calls to GetVoidPointer
+ * are avoided.
+ * For arrays with > 1 component, the iterator will proceed through all
+ * components of a tuple before moving on to the next tuple.
+ * This matches the memory layout of the standard vtkDataArray subclasses such
+ * as vtkFloatArray.
+ *
+ * For the standard vtkDataArray implementations (which are subclasses of
+ * vtkAOSDataArrayTemplate), the iterators will simply be pointers to the raw
+ * memory of the array.
+ * This allows very fast iteration when possible, and permits compiler
+ * optimizations in the standard template library to occur (such as reducing
+ * std::copy to memmove).
+ *
+ * For other arrays, there is no reliably safe way to iterate over the array elements.
+ * In such cases, this macro performs the legacy behavior of casting
+ * vtkAbstractArray::GetVoidPointer(...) to vtkDAValueType* to create the
+ * iterators.
+ *
+ * To use this macro, create a templated worker function:
+ *
+ * @code
+ * template <class Iterator>
+ * void myFunc(Iterator begin, Iterator end, ...) {...}
+ *
+ * and then call the vtkDataArrayIteratorMacro inside of a switch statement
+ * using the above objects and typedefs as needed:
+ *
+ * vtkAbstractArray *someArray = ...;
+ * switch (someArray->GetDataType())
+ * {
+ *   vtkDataArrayIteratorMacro(someArray, myFunc(vtkDABegin, vtkDAEnd, ...));
+ * }
+ * @endcode
+ *
+ * @sa
+ * vtkArrayDispatch vtkGenericDataArray
+ * vtkTemplateMacro
+ */
+
+#ifndef vtkDataArrayIteratorMacro_h
+#define vtkDataArrayIteratorMacro_h
+
+#include "vtkAOSDataArrayTemplate.h" // For classes referred to in the macro
+#include "vtkSetGet.h"               // For vtkTemplateMacro
+
+// Silence 'unused typedef' warnings on GCC.
+// use of the typedef in question depends on the macro
+// argument _call and thus should not be removed.
+#if defined(__GNUC__)
+#define _vtkDAIMUnused __attribute__((unused))
+#else
+#define _vtkDAIMUnused
+#endif
+
+// VTK_DEPRECATED_IN_9_7_0
+#if defined(__GNUC__) || defined(__clang__)
+#define VTK_MACRO_DEPRECATION_WARNING                                                              \
+  _Pragma("GCC warning \"vtkDataArrayIteratorMacro is deprecated in 9.7.0\"")
+#elif defined(_MSC_VER)
+#define VTK_MACRO_DEPRECATION_WARNING                                                              \
+  __pragma(message("warning: vtkDataArrayIteratorMacro is deprecated in 9.7.0"))
+#else
+#define VTK_MACRO_DEPRECATION_WARNING
+#endif
+
+#define vtkDataArrayIteratorMacro(_array, _call)                                                   \
+  VTK_MACRO_DEPRECATION_WARNING                                                                    \
+  vtkTemplateMacro(                                                                                \
+    vtkAbstractArray* _aa(_array); if (vtkAOSDataArrayTemplate<VTK_TT>* _dat =                     \
+                                         vtkAOSDataArrayTemplate<VTK_TT>::FastDownCast(_aa)) {     \
+      typedef VTK_TT vtkDAValueType;                                                               \
+      typedef vtkAOSDataArrayTemplate<vtkDAValueType> vtkDAContainerType;                          \
+      typedef vtkDAContainerType::Iterator vtkDAIteratorType;                                      \
+      vtkDAIteratorType vtkDABegin(_dat->Begin());                                                 \
+      vtkDAIteratorType vtkDAEnd(_dat->End());                                                     \
+      (void)vtkDABegin; /* Prevent warnings when unused */                                         \
+      (void)vtkDAEnd;                                                                              \
+      _call;                                                                                       \
+    } else {                                                                                       \
+      /* This is not ideal, as no explicit iterator has been declared. */                          \
+      /* Cast the void pointer and hope for the best!                  */                          \
+      typedef VTK_TT vtkDAValueType;                                                               \
+      typedef vtkAbstractArray vtkDAContainerType _vtkDAIMUnused;                                  \
+      typedef vtkDAValueType* vtkDAIteratorType; /* NOLINTNEXTLINE(bugprone-unsafe-functions) */   \
+      vtkDAIteratorType vtkDABegin = static_cast<vtkDAIteratorType>(_aa->GetVoidPointer(0));       \
+      vtkDAIteratorType vtkDAEnd = vtkDABegin + _aa->GetMaxId() + 1;                               \
+      (void)vtkDABegin;                                                                            \
+      (void)vtkDAEnd;                                                                              \
+      _call;                                                                                       \
+    })
+
+#endif // vtkDataArrayIteratorMacro_h
+
+// VTK-HeaderTest-Exclude: vtkDataArrayIteratorMacro.h

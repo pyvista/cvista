@@ -1,0 +1,7 @@
+NAME
+  VTK::lz4
+LIBRARY_NAME
+  vtklz4
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

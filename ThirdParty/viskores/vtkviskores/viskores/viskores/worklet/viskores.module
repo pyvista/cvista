@@ -1,0 +1,12 @@
+NAME
+  viskores_worklet
+GROUPS
+  Core
+DEPENDS
+  viskores_cont
+  viskores_exec
+TEST_DEPENDS
+  viskores_source
+  viskores_worklet
+  viskores_filter
+  viskores_io

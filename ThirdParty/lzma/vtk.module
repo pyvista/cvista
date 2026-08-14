@@ -1,0 +1,7 @@
+NAME
+  VTK::lzma
+LIBRARY_NAME
+  vtklzma
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

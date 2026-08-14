@@ -1,0 +1,7 @@
+NAME
+  VTK::verdict
+LIBRARY_NAME
+  vtkverdict
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

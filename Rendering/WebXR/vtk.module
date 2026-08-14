@@ -1,0 +1,27 @@
+NAME
+  VTK::RenderingWebXR
+LIBRARY_NAME
+  vtkRenderingWebXR
+CONDITION
+  EMSCRIPTEN OR VTK_WRAP_PYTHON
+LICENSE_FILES
+  LICENSE
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause AND MIT
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+  Copyright © 2018, 2019 Vhite Rabbit
+  Copyright © 2018, 2019 Jonathan Hale
+DEPENDS
+  VTK::CommonCore
+  VTK::CommonMath
+  VTK::RenderingCore
+  VTK::RenderingOpenGL2
+  VTK::RenderingVR
+  VTK::glad
+PRIVATE_DEPENDS
+  VTK::jsoncpp
+TEST_DEPENDS
+  VTK::TestingCore
+  VTK::TestingRendering
+INCLUDE_MARSHAL

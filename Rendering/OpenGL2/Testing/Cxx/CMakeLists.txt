@@ -1,0 +1,167 @@
+vtk_module_test_data(
+  Data/pen_1.cur
+  Data/pen_1.xcursor
+  Data/overlap_faces.vtm
+  Data/overlap_faces/overlap_faces_0_0.vtp
+  Data/overlap_faces/overlap_faces_1_0.vtp
+  Data/overlap_faces/overlap_faces_2_0.vtp
+  )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  set(_vtk_test_cxx_wasm_enabled_in_browser ON)
+endif ()
+vtk_add_test_cxx(vtkRenderingOpenGL2CxxTests tests
+  TestArrayTextureBufferCacheGrowth.cxx,NO_DATA,NO_VALID,NO_SERDES
+  TestArrayTextureBufferCachePurge.cxx,NO_DATA,NO_VALID,NO_SERDES
+  TestArrayTextureBufferCacheSharing.cxx,NO_DATA,NO_VALID,NO_SERDES
+  TestArrayTextureBufferPartialUpload.cxx,NO_DATA,NO_VALID,NO_SERDES
+  TestBatchOrderRendering.cxx
+  TestBlockVisibility.cxx
+  TestBlurAndSobelPasses.cxx
+  TestCameraShiftScale.cxx,NO_DATA
+  TestCoincidentFloor.cxx
+  TestCompositeDataOverlappingCells.cxx,
+  TestCompositeDataPointGaussian.cxx,NO_DATA
+  TestCompositeDataPointGaussianSelection.cxx,NO_DATA
+  TestComputeShader.cxx,NO_DATA,NO_VALID,NO_OUTPUT
+  TestCubeMap.cxx
+  TestCubeMap2.cxx
+  TestCubeMapRerender.cxx
+  TestCustomCursorShape.cxx,NO_VALID
+  TestDepthOfFieldPass.cxx
+  TestDepthPeelingOcclusionQuery.cxx
+  TestDepthPeelingPass.cxx
+  TestDepthPeelingPassViewport.cxx
+  TestDirectSelectionRendering.cxx
+  TestEDLPass.cxx
+  TestEquirectangularToCubeMap.cxx
+  TestFXAAFilter.cxx
+  TestFXAAPass.cxx
+  TestFXAAWithEDLPass.cxx
+  TestFlipRenderFramebuffer.cxx
+  TestFloor.cxx,LOOSE_VALID
+  TestFluidMapper.cxx
+  TestFramebufferHDR.cxx,NO_SERDES
+  TestFramebufferPass.cxx
+  TestGaussianBlurPass.cxx
+  TestGlyph3DMapperCellPicking.cxx
+  TestGlyph3DMapperCulling.cxx
+  TestGlyph3DMapperEdges.cxx
+  TestGlyph3DMapperPickability.cxx,NO_DATA
+  TestGlyph3DMapperTreeIndexingCompositeGlyphs.cxx,NO_DATA
+  TestHiddenLineRemovalPass.cxx
+  TestIndexBufferObjectTriangulation.cxx,NO_DATA,NO_VALID,NO_OUTPUT
+  TestLightingMapLuminancePass.cxx
+  TestLightingMapNormalsPass.cxx
+  TestMultiTexturing.cxx,NO_SERDES
+  TestMultiTexturingInterpolateScalars.cxx
+  TestNormalMapping.cxx
+  TestNormalMappingWithEdges.cxx
+  TestOffscreenRenderingResize.cxx
+  TestOutlineGlowPass.cxx
+  TestOrderIndependentTranslucentPass.cxx
+  TestPanoramicProjectionPass.cxx,NO_DATA
+  TestPBRClearCoat.cxx
+  TestPBREdgeTint.cxx
+  TestPBRHdrEnvironment.cxx
+  TestPBRAnisotropy.cxx
+  TestPBRColorMap.cxx,NO_DATA
+  TestPBRColorMultiplier.cxx
+  TestPBRIrradianceHDR.cxx
+  TestPBRMapping.cxx
+  TestPBRMaterials.cxx
+  TestPBRMaterialsCoat.cxx
+  TestPBRTextureInterpolateScalars.cxx
+  TestPBRMultipleScatteringIBL.cxx
+  TestPointFillPass.cxx
+
+  TestPointGaussianMapper.cxx
+  TestPointGaussianMapperAnisotropic.cxx
+  TestPointGaussianMapperOpacity.cxx
+  TestPointGaussianSelection.cxx,NO_DATA
+  TestProgramPointSize.cxx
+  TestPropPicker2Renderers.cxx,NO_DATA
+  TestRemoveActorNonCurrentContext.cxx
+  TestRenderToImage.cxx
+  TestSetZBuffer.cxx,NO_SERDES
+  TestShadowMapBakerPass.cxx,NO_SERDES
+  TestShadowMapPass.cxx
+  TestSharedRenderWindow.cxx,NO_SERDES
+  TestSimpleMotionBlur.cxx,NO_SERDES
+  TestSkyboxBlur.cxx
+  TestSkyboxCubeRotation.cxx
+  TestSkyboxNoBlur.cxx
+  TestSkyboxWithRenderPass.cxx
+  TestSobelGradientMagnitudePass.cxx
+  TestSphereMap.cxx
+  TestSpherePoints.cxx
+  TestSphereVertex.cxx
+  TestSRGB.cxx
+  TestSSAAPass.cxx
+  TestSSAAPassDepthRestore.cxx
+  TestSSAAPassChangeRenderers.cxx,NO_VALID
+  TestSSAAPassMultiViewports.cxx
+  TestSSAAPassMultiViewportGetZ.cxx,NO_DATA,NO_VALID
+  TestSSAOPass.cxx
+  TestSSAOPassMultiViewports.cxx
+  TestSSAOPassWithRenderer.cxx
+  TestSurfaceInterpolationSwitch.cxx
+  TestTessellationShader.cxx,NO_DATA,NO_SERDES
+  TestTexture16Bits.cxx,NO_DATA
+  TestTexture32Bits.cxx,NO_DATA
+  TestTextureBufferEmulation.cxx,NO_DATA,NO_VALID,NO_OUTPUT
+  TestTextureInterpolateScalars.cxx
+  TestToneMappingPass.cxx,NO_DATA
+  TestUserShader.cxx
+  TestUserShader2.cxx,NO_SERDES
+  TestUserShader2D.cxx,NO_DATA,NO_SERDES
+  TestValuePassFloatingPoint.cxx
+  TestValuePassFloatingPoint2.cxx
+  TestVBOPLYMapper.cxx
+  TestVBOPointsLines.cxx
+  TestWindowBlits.cxx,NO_SERDES
+  UnitTestOpenGLUniforms.cxx,NO_DATA,NO_VALID,NO_OUTPUT
+  )
+
+# Allow local customization of timeout for this test.
+if(NOT VTK_TEST_TIMEOUT_TestFramebufferHDR)
+  set(VTK_TEST_TIMEOUT_TestFramebufferHDR 300)
+endif()
+set_tests_properties(VTK::RenderingOpenGL2Cxx-TestFramebufferHDR
+  PROPERTIES TIMEOUT ${VTK_TEST_TIMEOUT_TestFramebufferHDR})
+
+if (NOT VTK_OPENGL_USE_GLES)
+  # vtkFastLabeledDataMapper needs geometry shaders and GLES does not have them.
+  vtk_add_test_cxx(vtkRenderingOpenGL2CxxTests tests
+    TestLabeledDataMappers.cxx,NO_SERDES)
+endif ()
+
+if (VTK_USE_WIN32_OPENGL)
+  vtk_add_test_cxx(vtkRenderingOpenGL2CxxTests tests
+    TestWin32OpenGLDXRenderWindow.cxx,NO_SERDES)
+endif ()
+
+if (VTK_OPENGL_HAS_EGL AND NOT WIN32)
+  vtk_add_test_cxx(vtkRenderingOpenGL2CxxTests tests
+    TestEGLRenderWindowResize.cxx)
+endif ()
+
+vtk_test_cxx_executable(vtkRenderingOpenGL2CxxTests tests
+  DISABLE_FLOATING_POINT_EXCEPTIONS
+  RENDERING_FACTORY
+  )
+
+if (VTK_USE_WIN32_OPENGL)
+  # TestWin32OpenGLDXRenderWindow requires DirectX
+  find_package(DirectX REQUIRED)
+  target_link_libraries(vtkRenderingOpenGL2CxxTests PRIVATE DirectX::d3d11 DirectX::dxgi)
+endif ()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  if (VTK_WEBASSEMBLY_THREADS)
+    # Proxy to pthreads is required to ensure threads can be created asynchronously.
+    target_link_options(vtkRenderingOpenGL2CxxTests
+      PRIVATE
+        "-sPROXY_TO_PTHREAD=1")
+  endif ()
+endif ()

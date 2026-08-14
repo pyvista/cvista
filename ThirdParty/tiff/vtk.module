@@ -1,0 +1,10 @@
+NAME
+  VTK::tiff
+LIBRARY_NAME
+  vtktiff
+PRIVATE_DEPENDS
+  VTK::jpeg
+  VTK::zlib
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

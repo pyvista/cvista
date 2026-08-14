@@ -1,0 +1,7 @@
+NAME
+  VTK::pegtl
+LIBRARY_NAME
+  vtkpegtl
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

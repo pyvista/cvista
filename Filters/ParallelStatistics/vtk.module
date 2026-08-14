@@ -1,0 +1,40 @@
+NAME
+  VTK::FiltersParallelStatistics
+LIBRARY_NAME
+  vtkFiltersParallelStatistics
+KIT
+  VTK::Parallel
+GROUPS
+  Parallel
+DESCRIPTION
+  Filters to compute statistics in distributed-memory parallel environments.
+SPDX_LICENSE_IDENTIFIER
+  LicenseRef-BSD-3-Clause-Sandia-USGov
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+  Copyright Sandia Corporation
+SPDX_CUSTOM_LICENSE_FILE
+  LICENSE
+SPDX_CUSTOM_LICENSE_NAME
+  BSD-3-Clause-Sandia-USGov
+LICENSE_FILES
+  LICENSE
+DEPENDS
+  VTK::FiltersStatistics
+PRIVATE_DEPENDS
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+  VTK::CommonSystem
+  VTK::ParallelCore
+  VTK::FiltersCellGrid
+  VTK::FiltersVerdict
+  VTK::IOLegacy
+TEST_DEPENDS
+  VTK::CommonSystem
+  VTK::TestingCore
+TEST_OPTIONAL_DEPENDS
+  VTK::ParallelMPI
+  VTK::IOParallelXML
+  VTK::IOIOSS
+  VTK::IOExodus

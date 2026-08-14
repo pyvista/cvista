@@ -1,0 +1,166 @@
+# This file suppresses all tests known to currently fail under TSan.
+# This allows programmers to run TSan locally and ensure they do not
+# introduce additional test failures with their code changes.
+#
+# To use this file:
+# TSAN_OPTIONS="suppressions=/path/to/VTK/Utilities/DynamicAnalysis/tsan.supp" ctest -R XXX
+#
+# Or in lldb: settings set target.env-vars TSAN_OPTIONS="suppressions=/path/to/VTK/Utilities/DynamicAnalysis/tsan.supp"
+#
+# See https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
+#
+# Of course, eventually, little by little, we should get all these issues fixed and this file
+# should ideally end up empty.
+#
+# TSan umbrella issue: https://gitlab.kitware.com/vtk/vtk/-/work_items/19331
+
+# Suppress all interceptors in libgdal
+called_from_lib:libgdal
+
+# test: RenderingAnnotationPython-cubeAxes2, FiltersCorePython-capCow, FiltersCorePython-clipArt, FiltersCorePython-fieldToSGrid, FiltersCorePython-reverseNormals
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/19355
+race:ReplaceCellPointAtIdImpl::operator()
+
+# test: FiltersPointsPython-TestDensifyPointCloudFilter, FiltersGeneralPython-TestCellLocators, CommonDataModelCxx-TimePointLocators
+race:BucketList<int>::MapOffsets<int>::operator()
+
+# test: FiltersModelingPython-TestTrimmedExtrusionFilter, FiltersCoreCxx-TestExtractCellsAlongPolyLine, CommonDataModelPython-TestStaticPointLocator3
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/18842
+race:MapOffsets<int>::operator()
+
+# test: FiltersCoreCxx-TestResampleWithDataSet2, FiltersCoreCxx-TestProbeFilterImageInput, FiltersCoreCxx-TestResampleToImage2D
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/19325
+race:vtkProbeFilter::ProbeImagePointsInCell
+
+# test: FiltersCorePython-teapotHulls
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/19328
+race:vtkHull::ComputePlaneDistances
+
+# test: CommonDataModelCxx-TestSMPFeatures
+# This is a bug in the test, not the VTK library, but the same bug exists in the library, see suppression right above.
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/19328
+race:TestSMPFeatures.cxx
+
+# test: FiltersExtractionCxx-TestExtractionExpression
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/19329
+race:FrustumPlanesType::Initialize
+
+# test: FiltersExtractionCxx-TestExtractionExpression
+race:vtkSelection::EvaluateFunctor::operator()
+
+# test: FiltersCorePython-TestSurfaceNets2D2, FiltersExtractionCxx-TestExtractionExpression, CommonDataModelPython-SelectionLoop, FiltersCoreCxx-TestThresholdComponents
+# This is a case of writing same value to same address
+race:GeneratePointMap
+
+# test: FiltersFlowPathsPython-TestFindCell
+race:TracerIntegrator::CompositeOverSeeds::operator()
+
+# test: FiltersCorePython-TestContour3DLinearGrid
+race:ContourCellsBase<vtkAOSDataArrayTemplate<float>, vtkAOSDataArrayTemplate<float>, vtkAOSDataArrayTemplate<double>>::ProduceTriangles::operator()
+
+# test: FiltersCorePython-Test3DLinearGridCrinkleExtractor
+race:ExtractPointsAndCells::operator()
+
+# test: FiltersCoreCxx-TestFlyingEdges, FiltersCorePython-TestOrientedFlyingEdgesPlaneCutter
+race:ProcessYZEdges
+
+# test: FiltersCorePython-TestBinnedDecimation
+race:SelectOutput<int>::operator()
+race:InitializePointMap<int>::operator()
+
+# test: FiltersFlowPathsPython-TestCellLocatorInterpolatedVelocityField
+race:vtkPolyLine::GenerateSlidingNormals
+
+# test: FiltersCorePython-TestUnstructuredGridPlaneCutter
+race:ProduceTriangles::Impl::operator()
+
+# test: FiltersSMPCxx-TestSMPContour
+race:vtkSMPMergePoints::Merge
+
+# test: FiltersPointsPython-TestSignedDistanceFilter
+race:vtkExtractSurfaceAlgorithm<float>::GenerateTrisImpl::operator()
+
+# test: FiltersExtractionCxx-TestHyperTreeGridSelection
+race:vtkHyperTreeGridGeometryEntry::Initialize
+
+# test: FiltersStatisticsCxx-TestExtractHistogram
+race:FiniteMinAndMaxWithBlankingFunctor<vtkIntArray>::Initialize
+
+# test: FiltersGeneralCxx-TestWarpScalarGenerateEnclosure
+race:MarkCellBoundary::MarkCell
+
+# test: FiltersGeneralPython-TestDiscreteFlyingEdges2D
+race:vtkDiscreteFlyingEdges2DAlgorithm<unsigned short>::GenerateLinesImpl::operator()
+
+# test: FiltersGeneralPython-TestDiscreteFlyingEdgesClipper2D, FiltersGeneralPython-TestFEDiscreteClipper2D, TestDiscreteFlyingEdgesClipper2D
+race:ClassifyYEdges
+
+# test: TestFEDiscreteClipper2D
+race:ClassifyXEdges
+
+# test: FiltersGeneralPython-TestFEDiscreteClipper2D
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/19330
+race:LabelVector::IsLabelValue
+
+# test: FiltersGeneralPython-TestStaticCellLocatorPlaneIntersection
+race:CellPlaneCandidates<int>::operator()
+
+# test: CommonExecutionModelCxx-TestAbortSMPFilter
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/20050
+race:vtkAlgorithm::CheckAbort()
+
+# test: CommonExecutionModelCxx-TestAbortSMPFilter
+race:vtkParallelMergeCells::MapCellsImpl::operator()
+
+# test: FiltersCorePython-TestConvertToPolyhedra, CommonDataModelCxx-TestBezier, CommonDataModelPython-TestConvexPointSet, CommonDataModelPython-TestHyperTreeGrid3DMandel, CommonDataModelPython-scalarConn, FiltersCorePython-Delaunay3DAlphaTest, FiltersCorePython-contourCells, CommonDataModelCxx-TestPolyhedron0, CommonDataModelCxx-TestPolyhedron1, TestPolyhedralCellsInUG, FiltersGeometryPython-structuredGridBlanking, FiltersParallelDIY2Cxx-TestExtractSubsetWithSeed, FiltersFlowPathsCxx-TestStreamSurface, FiltersGeometryPython-geometryFilterGhosts
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/20048
+race:FaceForwardList<int>::PopulateCellArray
+race:ShrinkingFacesOperator
+race:FaceOperator
+
+# test: FiltersCoreCxx-TestUnstructuredGridToExplicitStructuredGridEmpty, IOSegYCxx-TestSegY2DReaderZoom
+race:ExtractDSCellGeometry<int>
+
+# test: FiltersCorePython-TestContourCases
+race:vtkArrayCalculatorFunctor<vtkExprTkFunctionParser, vtkAOSDataArrayTemplate<double>>::Initialize
+
+# test: TestPolyhedronDecompose
+race:ArrayPair<vtkDataArray, vtkDataArray, double>::InterpolateEdge
+race:GenerateExpPoints<vtkAOSDataArrayTemplate<float>, vtkAOSDataArrayTemplate<float>, int>::operator()
+
+# test: TestCellGridToUnstructuredGrid
+race:vtkDGTranscribeCellGridCells::GeneratePointData
+
+# test: FiltersMeshingCxx-TestVoronoi2DSurfaceNets
+race:OutputVoronoi::operator()
+race:OutputSurfaceNet::operator()
+
+# test: FiltersMeshingPython-TestVoronoi3D2
+race:SurfaceOutput::operator()
+
+# test: TestRedistributeDataSetFilter
+race:GrahamScanAlgorithm
+
+# test: FiltersVerdictCxx-TestCellQuality
+# https://gitlab.kitware.com/vtk/vtk/-/work_items/20057
+race:vtkPixel::TriangulateLocalIds
+race:vtkCell::Triangulate
+
+# test: FiltersCoreCxx-TestArrayCalculator
+race:vtkArrayCalculator::InitializeFunctionParser
+
+# test: FiltersGeometryPython-TestMarkBoundaryFilter2
+race:MarkCellBoundary::MarkStructuredCell
+
+# test: FiltersCellGridCxx-TestCellGridEvaluator
+race:::operator()(vtkDGArraysInputAccessor
+
+# test: RenderingVolumeOpenGL2Cxx-TestSurfaceProbeVolumeMapperColoring
+race:vtkColorTransferFunctionMapData::operator()
+
+# test: TestHyperTreeGridEvaluateCoarse
+race:vtkHyperTreeGridEvaluateCoarse::ProcessChild
+
+# test: FiltersStatisticsPython-TestVisualStatistics
+race:HistogramWorker::Process
+

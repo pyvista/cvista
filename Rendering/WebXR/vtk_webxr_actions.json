@@ -1,0 +1,34 @@
+{
+  "actions": [
+    {
+      "name": "triggeraction",
+      "hand": "left",
+      "button": "trigger"
+    },
+    {
+      "name": "triggeraction",
+      "hand": "right",
+      "button": "trigger"
+    },
+    {
+      "name": "complexgestureaction",
+      "hand": "left",
+      "button": "button1"
+    },
+    {
+      "name": "complexgestureaction",
+      "hand": "right",
+      "button": "button1"
+    },
+    {
+      "name": "handpose",
+      "hand": "left",
+      "mode": "aim"
+    },
+    {
+      "name": "handpose",
+      "hand": "right",
+      "mode": "aim"
+    }
+  ]
+}

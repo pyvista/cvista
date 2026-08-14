@@ -1,0 +1,10 @@
+NAME
+  VTK::libharu
+LIBRARY_NAME
+  vtklibharu
+PRIVATE_DEPENDS
+  VTK::png
+  VTK::zlib
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

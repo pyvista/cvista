@@ -1,0 +1,9 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-License-Identifier: BSD-3-Clause
+
+// This file generates an instantiation of vtkStructuredPointArray.
+
+#define VTK_STRUCTURED_POINT_ARRAY_INSTANTIATING
+#include "vtkStructuredPointArray.txx"
+
+VTK_STRUCTURED_POINT_ARRAY_INSTANTIATE(@INSTANTIATION_VALUE_TYPE@)

@@ -1,0 +1,7 @@
+NAME
+  VTK::ogg
+LIBRARY_NAME
+  vtkogg
+TEST_DEPENDS
+  VTK::TestingCore
+THIRD_PARTY

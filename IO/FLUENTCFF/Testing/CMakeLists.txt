@@ -1,0 +1,49 @@
+vtk_module_test_data(
+  Data/room.cas.h5
+  Data/room.dat.h5
+  Data/FLUENTCFF/room.vtm
+  Data/FLUENTCFF/room/room_0.vtu
+
+  Data/mesh_3ddp.cas.h5
+  Data/mesh_3ddp.dat.h5
+  Data/FLUENTCFF/mesh_3ddp.vtm
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_0.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_1.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_2.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_3.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_4.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_5.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_6.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_7.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_8.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_9.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_10.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_11.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_12.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_13.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_14.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_15.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_16.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_17.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_18.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_19.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_20.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_21.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_22.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_23.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_26.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_27.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_28.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_29.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_30.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_31.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_32.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_33.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_34.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_35.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_36.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_37.vtu
+  Data/FLUENTCFF/mesh_3ddp/mesh_3ddp_38.vtu
+)
+
+add_subdirectory(Cxx)

@@ -1,0 +1,21 @@
+NAME
+  VTK::FiltersTopology
+LIBRARY_NAME
+  vtkFiltersTopology
+KIT
+  VTK::Filters
+GROUPS
+  StandAlone
+DESCRIPTION
+  Topological analysis of VTK data objects.
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+TEST_DEPENDS
+  VTK::IOLegacy
+  VTK::TestingRendering

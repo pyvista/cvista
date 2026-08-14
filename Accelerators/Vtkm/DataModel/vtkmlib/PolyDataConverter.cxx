@@ -1,0 +1,176 @@
+// SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+// SPDX-FileCopyrightText: Copyright (c) Kitware, Inc.
+// SPDX-FileCopyrightText: Copyright 2012 Sandia Corporation.
+// SPDX-License-Identifier: LicenseRef-BSD-3-Clause-Sandia-USGov
+#include "PolyDataConverter.h"
+
+#include "ArrayConverters.h"
+#include "CellSetConverters.h"
+#include "DataSetConverters.h"
+
+// datasets we support
+#include "vtkCellArray.h"
+#include "vtkCellData.h"
+#include "vtkCellType.h"
+#include "vtkDataObject.h"
+#include "vtkDataSetAttributes.h"
+#include "vtkNew.h"
+#include "vtkPointData.h"
+#include "vtkPolyData.h"
+#include "vtkSMPTools.h"
+
+#include <viskores/cont/ErrorBadType.h>
+
+VTK_ABI_NAMESPACE_BEGIN
+namespace
+{
+
+}
+VTK_ABI_NAMESPACE_END
+namespace tovtkm
+{
+VTK_ABI_NAMESPACE_BEGIN
+
+//------------------------------------------------------------------------------
+// convert an polydata type
+viskores::cont::DataSet Convert(vtkPolyData* input, FieldsFlag fields, bool forceViskores)
+{
+  // the poly data is an interesting issue with the fact that the
+  // vtk datastructure can contain multiple types.
+  // we should look at querying the cell types, so we can use single cell
+  // set where possible
+  viskores::cont::DataSet dataset;
+
+  // Only set coordinates if they exists in the vtkPolyData
+  if (input->GetPoints())
+  {
+    // first step convert the points over to an array handle
+    viskores::cont::CoordinateSystem coords = Convert(input->GetPoints());
+    dataset.AddCoordinateSystem(coords);
+  }
+
+  // first check if we only have polys/lines/verts
+  bool filled = false;
+  const bool onlyPolys = (input->GetNumberOfCells() == input->GetNumberOfPolys());
+  const bool onlyLines = (input->GetNumberOfCells() == input->GetNumberOfLines());
+  const bool onlyVerts = (input->GetNumberOfCells() == input->GetNumberOfVerts());
+
+  const vtkIdType numPoints = input->GetNumberOfPoints();
+  if (onlyPolys)
+  {
+    vtkCellArray* cells = input->GetPolys();
+    const vtkIdType homoSize = IsHomogeneous(cells);
+    if (homoSize == 3)
+    {
+      // We are all triangles
+      auto dcells = ConvertSingleType(cells, VTK_TRIANGLE, numPoints, forceViskores);
+      dataset.SetCellSet(dcells);
+      filled = true;
+    }
+    else if (homoSize == 4)
+    {
+      // We are all quads
+      auto dcells = ConvertSingleType(cells, VTK_QUAD, numPoints, forceViskores);
+      dataset.SetCellSet(dcells);
+      filled = true;
+    }
+    else
+    {
+      // need to construct a vtkUnsignedCharArray* types mapping for our zoo data
+      // we can do this by mapping number of points per cell to the type
+      // 3 == tri, 4 == quad, else polygon
+      vtkSmartPointer<vtkDataArray> types = CreatePolygonalCellTypes(cells);
+
+      auto dcells = Convert(types, cells, numPoints, forceViskores);
+      dataset.SetCellSet(dcells);
+      filled = true;
+    }
+  }
+  else if (onlyLines)
+  {
+    vtkCellArray* cells = input->GetLines();
+    const vtkIdType homoSize = IsHomogeneous(cells);
+    if (homoSize == 2)
+    {
+      // We are all lines
+      auto dcells = ConvertSingleType(cells, VTK_LINE, numPoints, forceViskores);
+      dataset.SetCellSet(dcells);
+      filled = true;
+    }
+    else
+    {
+      throw viskores::cont::ErrorBadType("Viskores does not currently support PolyLine cells.");
+    }
+  }
+  else if (onlyVerts)
+  {
+    vtkCellArray* cells = input->GetVerts();
+    const vtkIdType homoSize = IsHomogeneous(cells);
+    if (homoSize == 1)
+    {
+      // We are all single vertex
+      auto dcells = ConvertSingleType(cells, VTK_VERTEX, numPoints, forceViskores);
+      dataset.SetCellSet(dcells);
+      filled = true;
+    }
+    else
+    {
+      throw viskores::cont::ErrorBadType("Viskores does not currently support PolyVertex cells.");
+    }
+  }
+  else
+  {
+    throw viskores::cont::ErrorBadType(
+      "Viskores does not currently support mixed cell types or triangle strips in vtkPolyData.");
+  }
+
+  if (!filled)
+  {
+    // todo: we need to convert a mixed type which
+  }
+
+  ProcessFields(input, dataset, fields);
+
+  return dataset;
+}
+
+VTK_ABI_NAMESPACE_END
+} // namespace tovtkm
+
+namespace fromvtkm
+{
+VTK_ABI_NAMESPACE_BEGIN
+
+//------------------------------------------------------------------------------
+bool Convert(const viskores::cont::DataSet& voutput, vtkPolyData* output, vtkDataSet* input,
+  bool forceViskores)
+{
+  vtkPoints* points = fromvtkm::Convert(voutput.GetCoordinateSystem());
+  output->SetPoints(points);
+  points->FastDelete();
+
+  // this should be fairly easy as the cells are all a single cell type
+  // so we just need to determine what cell type it is and copy the results
+  // into a new array
+  auto const& outCells = voutput.GetCellSet();
+  vtkNew<vtkCellArray> cells;
+  const bool cellsConverted = fromvtkm::Convert(outCells, cells.GetPointer(), forceViskores);
+  if (!cellsConverted)
+  {
+    return false;
+  }
+
+  output->SetPolys(cells.GetPointer());
+
+  // next we need to convert any extra fields from viskores over to vtk
+  bool arraysConverted = ConvertArrays(voutput, output);
+
+  // Pass information about attributes.
+  PassAttributesInformation(input->GetPointData(), output->GetPointData());
+  PassAttributesInformation(input->GetCellData(), output->GetCellData());
+
+  return arraysConverted;
+}
+
+VTK_ABI_NAMESPACE_END
+} // namespace fromvtkm
