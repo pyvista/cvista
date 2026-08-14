@@ -82,11 +82,36 @@ echo ">>> PyVista @ $(git -C "$PVDIR" rev-parse --short HEAD) (pinned $REF)"
 # published release (cvista is already satisfied).
 /tmp/pv/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" cvista
 /tmp/pv/bin/pip -q install --find-links "$WHEELDIR" cvista
-# vtkmodules.* -> cvista.* redirect, active at interpreter startup via sitecustomize
-# (.pth). Same shim the bit-exact / PGO harnesses use.
-SP=$(/tmp/pv/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
-cp "$SRC/tools/cvista_shim.py" "$SP/_cvista_shim.py"
-echo "import _cvista_shim" > "$SP/_cvista_shim.pth"
+# Two ways to drive cvista, selected by CVISTA_PYVISTA_MODE:
+#
+#   shim (default) - vtkmodules.* -> cvista.* redirect via sitecustomize (.pth),
+#                    the same shim the bit-exact / PGO harnesses use. Resolves by
+#                    MODULE PATH, so it exercises cvista's module layout.
+#   flat           - no shim; PyVista resolves every class by NAME off the cvista
+#                    package root (PYVISTA_VTK_BACKEND=cvista).
+#
+# The two are not interchangeable, and that is the point. Under the shim a class
+# is found in the module it lives in, so the flat index is never consulted and a
+# defect in it cannot surface -- which is exactly how 9.6.2.4 shipped a flat
+# VTK_DOUBLE_MAX of 1e+99 with this gate green. Only the flat mode exercises the
+# namespace that `from cvista import X` actually uses.
+MODE="${CVISTA_PYVISTA_MODE:-shim}"
+if [ "$MODE" = "flat" ]; then
+    # Requires a pinned PyVista with backend selection (PyVista/pyvista#8787).
+    if ! /tmp/pv/bin/python -c 'import pyvista; pyvista.vtk_backend' 2>/dev/null; then
+        echo "::warning title=flat-namespace gate inert::PyVista @ $REF has no PYVISTA_VTK_BACKEND support (needs pyvista#8787); flat-namespace gate did not run"
+        echo ">>> SKIPPED: pinned PyVista cannot select a backend yet"
+        exit 0
+    fi
+    export PYVISTA_VTK_BACKEND=cvista
+    export VTK_MODULE_NAME=cvista
+    echo ">>> mode: FLAT (PYVISTA_VTK_BACKEND=cvista, no shim)"
+else
+    SP=$(/tmp/pv/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
+    cp "$SRC/tools/cvista_shim.py" "$SP/_cvista_shim.py"
+    echo "import _cvista_shim" > "$SP/_cvista_shim.pth"
+    echo ">>> mode: SHIM (vtkmodules -> cvista)"
+fi
 # Put the venv's bin on PATH: we invoke python by absolute path (no `activate`),
 # so without this the CLI tests that shell out to the bare `pyvista`/`pytest`
 # console-scripts get FileNotFoundError.
@@ -94,6 +119,20 @@ export PATH="/tmp/pv/bin:$PATH"
 
 # --- identity: prove PyVista is driving cvista through the shim ----------------
 /tmp/pv/bin/python - <<'PY'
+import os
+
+if os.environ.get("PYVISTA_VTK_BACKEND") == "cvista":
+    import pyvista, cvista
+    assert pyvista.vtk_backend() == "cvista", \
+        f"PyVista is not on the cvista backend (got {pyvista.vtk_backend()!r})"
+    from pyvista import _vtk
+    assert _vtk.vtkPolyData is cvista.vtkPolyData, \
+        "PyVista resolved vtkPolyData somewhere other than the flat namespace"
+    print("backend    ->", pyvista.vtk_backend())
+    print("cvista     ->", cvista.__file__)
+    print("pyvista    ->", pyvista.__version__, pyvista.__file__)
+    raise SystemExit(0)
+
 import vtkmodules
 assert "cvista" in (vtkmodules.__file__ or ""), \
     f"vtkmodules NOT redirected to cvista (got {vtkmodules.__file__!r}) -- shim failed"
@@ -157,6 +196,12 @@ echo "=== core tests ==="
     --junitxml="$OUT/junit-core.xml" \
     tests/ 2>&1 | tee "$OUT/pytest-core.log"
 STATUS_CORE=${PIPESTATUS[0]}
+
+if [ "${PYVISTA_FLAT_CORE_ONLY:-0}" = "1" ]; then
+    echo ">>> core-only run (PYVISTA_FLAT_CORE_ONLY=1); skipping plotting"
+    echo ">>> logs:  $OUT/pytest-core.log"
+    exit "$STATUS_CORE"
+fi
 
 echo "=== plotting tests ==="
 "${XVFB[@]}" /tmp/pv/bin/python -m pytest "${SHARED[@]}" "${DESELECT[@]+"${DESELECT[@]}"}" \
