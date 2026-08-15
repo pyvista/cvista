@@ -363,15 +363,59 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           # Trigger the gate when a PR touches anything PyVista-gate-related: the
-          # pin, the deselect list (every fix PR un-deselects a test), or the
-          # harness. Not subject to label timing — fires on opened/synchronize.
+          # pin, the deselect list (every fix PR un-deselects a test), the
+          # harness, or anything that shapes the Python namespace PyVista imports
+          # through -- the wrapping, the wheel split, the shim. #253 rewrote
+          # Wrapping/Python/cvista/generate_index.py and this gate reported "no
+          # PyVista-related changes", so a wrong VTK_DOUBLE_MAX reached PyPI with
+          # a green PR. Not subject to label timing — fires on opened/synchronize.
           changed=false
           if [ "$EVENT" = "pull_request" ] && \
-             git diff --name-only "$BASE" "$HEAD" | grep -qE '^(tests/pyvista/|ci/run-pyvista\.sh$)'; then
+             git diff --name-only "$BASE" "$HEAD" | grep -qE '^(tests/pyvista/|ci/run-pyvista\.sh$|Wrapping/Python/|cvista-config/wheel-split/|tools/cvista_shim\.py$)'; then
             changed=true
           fi
           echo "PyVista-related files changed on this PR: $changed"
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+  pyvista-flat:
+    name: PyVista via the flat namespace (py3.13)
+    needs: [build, changes]
+    # The flat namespace is what `from cvista import X` uses, and it is NOT what
+    # the shim gate exercises: under the shim a class is found in the module it
+    # lives in, so the index is never consulted. 9.6.2.4 shipped VTK_DOUBLE_MAX
+    # as 1e+99 through the flat namespace with the shim gate green.
+    #
+    # Deliberately on the PR fast path, unlike the full `pyvista` job: it runs
+    # core only (no plotting, no image cache), which is where a wrong constant or
+    # a misrouted class shows up, and costs a few minutes rather than 45.
+    if: >-
+      github.event_name == 'merge_group' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.pyvista_ref == 'true')
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      CVISTA_PYVISTA_MODE: flat
+      PYVISTA_FLAT_CORE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Xvfb + Mesa software GL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: PyVista core suite through the flat namespace
+        run: ci/run-pyvista.sh dist python
 
   pyvista:
     name: PyVista suite (built cvista wheel, py3.13)

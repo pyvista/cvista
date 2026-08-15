@@ -50,6 +50,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-notes-preflight:
+    name: Release notes account for every commit
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Every commit since the previous tag is cited in the notes
+        run: ci/check-release-notes.sh "${{ github.event.release.tag_name }}"
+
   # Build the 3 tier wheels on linux/macOS/Windows (uploads cvista-tier-wheels-*).
   # On a release the version comes from the git tag via setuptools-scm.
   build:
