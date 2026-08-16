@@ -4,6 +4,7 @@
 #include "vtkDataArray.h"
 
 #include "vtkArrayDispatch.h"
+#include "vtkCVISTAByteCopy.h"
 #include "vtkDataArrayRange.h"
 
 namespace
@@ -60,7 +61,14 @@ void vtkDataArray::GetTuples(vtkIdList* tupleIds, vtkAbstractArray* aa)
     return;
   }
 
+  if (cvista::CanByteCopy(this, da))
+  {
+    cvista::GatherTuples(this, tupleIds->GetPointer(0), da, tupleIds->GetNumberOfIds());
+    return;
+  }
+
   GetTuplesFromListWorker worker(tupleIds);
+  // cvista: cross-type only, see the note in vtkDataArray_DeepCopy.cxx.
   if (!vtkArrayDispatch::Dispatch2::Execute(this, da, worker))
   {
     // Use fallback if dispatch fails.

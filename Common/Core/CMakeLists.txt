@@ -700,6 +700,7 @@ endif ()
 set(nowrap_headers
   vtkAffineArray.h
   vtkAffineImplicitBackend.h
+  vtkCVISTAByteCopy.h
   vtkCVISTASMPDefaults.h
   vtkCollectionRange.h
   vtkCompositeArray.h
