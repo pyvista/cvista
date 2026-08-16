@@ -168,7 +168,10 @@ vtkSmartPointer<vtkDataArray> computeLInfNorm(vtkDataArray* array)
   vtkSmartPointer<vtkDataArray> norm;
   norm.TakeReference(array->NewInstance());
   norm->SetNumberOfTuples(array->GetNumberOfTuples());
-  if (!vtkArrayDispatch::Dispatch2::Execute(array, norm, InfNorm{}))
+  // cvista: `norm` is array->NewInstance() a few lines up, so the two are always
+  // the same value type and the N^2 matrix can only ever hit its diagonal.
+  // SameValueType instantiates N workers instead of N^2 for identical behaviour.
+  if (!vtkArrayDispatch::Dispatch2SameValueType::Execute(array, norm, InfNorm{}))
   {
     vtkSMPTools::For(0, array->GetNumberOfTuples(),
       [&norm, array](vtkIdType begin, vtkIdType end)

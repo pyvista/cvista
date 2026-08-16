@@ -126,3 +126,55 @@ def test_deep_copy_is_not_on_the_per_element_fallback(dtype):
         f'{reference:.0f} ms/GB for float64. That ratio means it is on the virtual '
         f'per-tuple fallback rather than the byte copy in vtkDataArray_DeepCopy.cxx.'
     )
+
+
+@pytest.mark.parametrize('dtype', DTYPES, ids=lambda d: np.dtype(d).name)
+def test_copy_component_round_trips(dtype):
+    """CopyComponent is strided, so a wrong stride or width shows up here."""
+    values = (np.arange(300) % 100).astype(dtype).reshape(100, 3)
+    array = numpy_to_vtk(values, deep=True)
+
+    single = array.NewInstance()
+    single.SetNumberOfComponents(1)
+    single.SetNumberOfTuples(100)
+    single.CopyComponent(0, array, 1)
+
+    np.testing.assert_array_equal(vtk_to_numpy(single), values[:, 1])
+
+
+@pytest.mark.parametrize('dtype', DTYPES, ids=lambda d: np.dtype(d).name)
+def test_insert_and_get_tuples_round_trip(dtype):
+    """The byte paths under InsertTuples/GetTuples must preserve order and values."""
+    values = (np.arange(200) % 100).astype(dtype)
+    array = numpy_to_vtk(values, deep=True)
+
+    inserted = array.NewInstance()
+    inserted.SetNumberOfComponents(1)
+    inserted.InsertTuples(0, 200, 0, array)
+    np.testing.assert_array_equal(vtk_to_numpy(inserted), values)
+
+    got = array.NewInstance()
+    got.SetNumberOfComponents(1)
+    got.SetNumberOfTuples(50)
+    array.GetTuples(10, 59, got)
+    np.testing.assert_array_equal(vtk_to_numpy(got), values[10:60])
+
+
+@pytest.mark.parametrize(
+    ('src_dtype', 'dst_dtype'),
+    [(np.float32, np.float64), (np.int32, np.float64), (np.uint8, np.float32)],
+    ids=['f32-f64', 'i32-f64', 'u8-f32'],
+)
+def test_cross_type_deep_copy_still_converts(src_dtype, dst_dtype):
+    """Cross-type conversion keeps the dispatcher; the byte path must not steal it.
+
+    A byte copy here would reinterpret the bits instead of converting, so this
+    fails loudly if the same-type guard is ever loosened.
+    """
+    values = (np.arange(500) % 100).astype(src_dtype)
+    src = numpy_to_vtk(values, deep=True)
+    dst = numpy_to_vtk(np.zeros(500, dtype=dst_dtype), deep=True)
+
+    dst.DeepCopy(src)
+
+    np.testing.assert_array_equal(vtk_to_numpy(dst), values.astype(dst_dtype))
