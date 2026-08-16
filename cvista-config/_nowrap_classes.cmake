@@ -928,7 +928,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkSelectionAlgorithm
   vtkSelectionSource
   vtkSEPReader
-  vtkShortArray
   vtkSignedDistance
   vtkSimpleBondPerceiver
   vtkSimpleCellTessellator
@@ -1075,10 +1074,8 @@ set(CVISTA_NOWRAP_CLASSES
   vtkTrivialConsumer
   vtkTulipReader
   vtkTypeFloat64Array
-  vtkTypeInt16Array
   vtkTypeInt8Array
   vtkTypeListMacros
-  vtkTypeUInt64Array
   vtkUncertaintyTubeFilter
   vtkUndirectedGraphAlgorithm
   vtkUniformGridAMRAlgorithm
@@ -1087,8 +1084,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkUniformGridPartitioner
   vtkUniformHyperTreeGridSource
   vtkUnsignedDistance
-  vtkUnsignedLongArray
-  vtkUnsignedLongLongArray
   vtkUnstructuredGridBaseAlgorithm
   vtkUnstructuredGridBunykRayCastFunction
   vtkUnstructuredGridCellIterator
