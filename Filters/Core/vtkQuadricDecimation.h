@@ -45,7 +45,8 @@
 #ifndef vtkQuadricDecimation_h
 #define vtkQuadricDecimation_h
 
-#include "vtkFiltersCoreModule.h" // For export macro
+#include "cvistaCellConnectivity.h" // For the width-generic working-Mesh cell reader
+#include "vtkFiltersCoreModule.h"    // For export macro
 #include "vtkPolyDataAlgorithm.h"
 #include "vtkWrappingHints.h" // For VTK_MARSHALAUTO
 
@@ -336,27 +337,27 @@ protected:
   int NumberOfComponents;
   vtkPolyData* Mesh;
 
-  // Hoisted typed connectivity pointers for the working Mesh's Polys cell array
-  // in the dominant Int64-AOS storage case (vtkCellArray's default storage).
-  // When FastConn64Conn is non-null, the per-cell point-id fetches read the cell
-  // span inline (see GetMeshCellPointsFast) instead of calling the out-of-line,
-  // cross-shared-library vtkCellArray::GetCellAtId (which also re-runs its
-  // StorageType switch every cell). The working Mesh is built from input->GetPolys()
-  // only (no verts/lines/strips), so the global cell id equals the Polys-local
-  // cell id, and the connectivity buffer is only mutated in place
+  // Width-generic native reader over the working Mesh's Polys connectivity,
+  // resolved once (see InitMeshConn) so the per-cell point-id fetches read ids
+  // straight from the native int32/int64 buffers -- widening each value to
+  // vtkIdType only at the point of use -- instead of calling the out-of-line,
+  // cross-shared-library vtkCellArray::GetCellAtId (which re-runs its StorageType
+  // switch every cell and, when the storage width != vtkIdType, copies the cell
+  // into a shared scratch vtkIdList first). The working Mesh is built from
+  // input->GetPolys() only (no verts/lines/strips), so the global cell id equals
+  // the Polys-local cell id, and the connectivity buffer is only mutated in place
   // (ReplaceCellPoint) or marked deleted (DeleteCell) during decimation -- never
-  // reallocated -- so the cached pointers stay valid and reflect mutations. The
-  // values read are byte-identical to GetCellAtId's zero-copy CanShareConnPtr
-  // path; no FP. nullptr => fall back to vtkPolyData::GetCellPoints.
-  const vtkTypeInt64* FastConn64Offsets = nullptr;
-  const vtkTypeInt64* FastConn64Conn = nullptr;
-  // Resolve FastConn64* from the working Mesh after BuildCells/BuildLinks.
-  void InitFastConn();
-  // Fetch a working-Mesh cell's point ids. Uses the hoisted Int64-AOS pointers
-  // (inline span read, no cross-shared-library call) when available, else falls
-  // back to vtkPolyData::GetCellPoints. Bit-exact with GetCellPoints. Defined in
-  // the .cxx (all call sites are in that TU, so it inlines there).
-  void GetMeshCellPoints(vtkIdType cellId, vtkIdType& npts, const vtkIdType*& pts);
+  // reallocated -- so the captured pointers stay valid and reflect mutations. The
+  // values read are the exact ids GetCellAtId returns; no FP.
+  cvistaCellConnectivity MeshConn;
+  // Capture MeshConn from the working Mesh after BuildCells/BuildLinks.
+  void InitMeshConn();
+  // Fetch a working-Mesh cell's point ids into the caller's pts[3] buffer, reading
+  // straight from the native connectivity via MeshConn (no shared scratch, no
+  // cross-shared-library call) when available, else via vtkPolyData::GetCellPoints.
+  // Bit-exact with GetCellPoints. Deleted/empty cells set npts=0. Defined in the
+  // .cxx (all call sites are in that TU, so it inlines there).
+  void GetMeshCellPoints(vtkIdType cellId, vtkIdType& npts, vtkIdType pts[3]);
 
   struct ErrorQuadric
   {
