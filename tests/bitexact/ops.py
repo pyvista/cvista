@@ -127,6 +127,7 @@ try:
         vtkMultiObjectMassProperties,
         vtkOrientPolyData,
         vtkProbeFilter,
+        vtkStaticCleanPolyData,
         vtkStaticCleanUnstructuredGrid,
         vtkTubeFilter,
     )
@@ -1684,6 +1685,24 @@ def op_cleanpoly_fast(dtype, size):
     # multiset, point order negotiable. Stock VTK ignores CVISTA_FAST and runs the
     # reference vtkMergePoints clean.
     c = vtkCleanPolyData()
+    c.SetInputData(make_coincident_poly_cd(size, dtype))
+    with fast_mode():
+        c.Update()
+    return c.GetOutput()
+
+
+def op_staticcleanpoly_fast(dtype, size):
+    # Coincident-point merge of a polys-only triangle mesh through
+    # vtkStaticCleanPolyData via the OPT-IN vendored parallel OpenMP kernel
+    # (pyvista-algorithms clean, Filters/Core/cvistaFastStaticCleanPoly), reached
+    # when cvista.EnableFast()/CVISTA_FAST is set. Stock vtkStaticCleanPolyData
+    # merges with vtkStaticPointLocator (bin order) and keeps polys 1:1, copying
+    # the canonical point's data; the kernel renumbers the merged points +
+    # connectivity in its own hash/thread-dependent order, so the case is compared
+    # POINTS-relaxed: same merged point set (coords + point-data) and same triangle
+    # multiset, point order negotiable. Stock VTK ignores CVISTA_FAST and runs the
+    # reference locator merge.
+    c = vtkStaticCleanPolyData()
     c.SetInputData(make_coincident_poly_cd(size, dtype))
     with fast_mode():
         c.Update()
@@ -6074,6 +6093,9 @@ OPS = {
     "datasetsurface_fast": dict(fn=op_datasetsurface_fast, group="filter", dtypes=["float32", "float64"], sizes=[30, 40], order_relaxed=True, points_relaxed=True),
     "staticclean_fast": dict(fn=op_staticclean_fast, group="filter", dtypes=["float32", "float64"], sizes=[8, 12], order_relaxed=True, points_relaxed=True),
     "cleanpoly_fast": dict(fn=op_cleanpoly_fast, group="filter", dtypes=["float32", "float64"], sizes=[12, 24], order_relaxed=True, points_relaxed=True),
+    # Polys-only vtkStaticCleanPolyData routed to the same vendored OpenMP clean
+    # kernel via EnableFast (Filters/Core/cvistaFastStaticCleanPoly); points-relaxed.
+    "staticcleanpoly_fast": dict(fn=op_staticcleanpoly_fast, group="filter", dtypes=["float32", "float64"], sizes=[12, 24], order_relaxed=True, points_relaxed=True),
     # Large duplicated mesh that triggers the pvaClean radix-dedup hash-collision
     # path (size=400 -> ~160k unique points, reliably collision-prone). Guards
     # against the un-merged-duplicate regression. Heavier than the smoke cases

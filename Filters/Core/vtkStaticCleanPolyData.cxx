@@ -18,6 +18,8 @@
 #include "vtkStaticPointLocator.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 
+#include "cvistaFastStaticCleanPoly.h" // cvista opt-in fast coincident-point merge
+
 #include <algorithm>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -105,6 +107,25 @@ int vtkStaticCleanPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   {
     vtkDebugMacro(<< "No data to Operate On!");
     return 1;
+  }
+
+  // cvista opt-in fast path: vendored OpenMP coincident-point merge for the common
+  // polys-only exact-merge case. Engages only under cvista.EnableFast()/CVISTA_FAST;
+  // returns false (and we fall through to the standard path) for anything it does
+  // not handle exactly (verts/lines/strips, real tolerance, point-data averaging,
+  // merge-by-data-array, the merge-map field-array output, global-ids/ghosts, or
+  // any cell that would degenerate under the merge).
+  {
+    const double effTol =
+      (this->ToleranceIsAbsolute ? this->AbsoluteTolerance : this->Tolerance * input->GetLength());
+    const bool hasMergingArray = (this->MergingArray && this->MergingArray[0] != '\0' &&
+      input->GetPointData()->GetArray(this->MergingArray) != nullptr);
+    if (cvista::FastStaticCleanPolyData(input, output, effTol, this->RemoveUnusedPoints,
+          this->AveragePointData, this->ProduceMergeMap, hasMergingArray,
+          this->OutputPointsPrecision))
+    {
+      return 1;
+    }
   }
 
   // we'll be needing these
