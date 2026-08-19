@@ -305,6 +305,7 @@ set(headers
   vtkVector.h)
 
 set(nowrap_headers
+  cvistaCellConnectivity.h
   vtkCompositeDataSetNodeReference.h
   vtkCompositeDataSetRange.h
   vtkDataObjectImplicitBackendInterface.h
