@@ -162,7 +162,6 @@ int vtkClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
   vtkIdList* cellIds;
   double s;
   vtkIdType npts;
-  const vtkIdType* pts;
   vtkIdType i;
   int j;
   vtkIdType estimatedSize;
@@ -475,7 +474,10 @@ int vtkClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
     {
       for (j = 0; j < numNew[i]; j++)
       {
-        conn[i]->GetCellAtId(traversalId[i], npts, pts);
+        // Only the cell size is needed here (to pick the generated cell type),
+        // never the point ids, so query the size directly and skip widening the
+        // cell into the shared scratch list. See cvistaCellConnectivity.h.
+        npts = conn[i]->GetCellSize(traversalId[i]);
         traversalId[i]++;
         types[i]->InsertNextValue(getGeneratedCellType(cell, npts, sameCell[i]));
       }
