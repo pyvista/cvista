@@ -48,6 +48,22 @@ tests/core/test_dataobject.py::test_save_compression                            
 # compile on modern libc++ (<strstream> removed) and only backs XdmfReader.
 tests/core/test_reader.py::test_xdmf_reader
 
+# --- intentional cvista build exclusion: no parallel-IO modules (won't fix) ----
+# cvista's module closure excludes vtkIOParallel (vtkEnSightWriter) and
+# vtkIOParallelExodus (vtkPExodusIIReader). The pinned PyVista ref predates the
+# skip_vtk_backend markers (PyVista/pyvista#8787) that skip these upstream, so
+# deselect them here until a bump lands past that PR.
+tests/core/test_grid.py::test_ensight_save[.case-True]
+tests/core/test_utilities.py::test_writer_data_mode_mixin[EnSightWriter]
+tests/core/test_utilities.py::test_write_path_of_ensight_writer
+tests/core/test_reader.py::test_get_reader_pexodus_pattern[mesh.e.4.0]
+tests/core/test_reader.py::test_get_reader_pexodus_pattern[mesh.n.12.11]
+tests/core/test_reader.py::test_get_reader_pexodus_pattern[mesh.E.4.0]
+tests/core/test_reader.py::test_get_reader_pexodus_pattern[mesh.N.12.11]
+tests/core/test_reader.py::test_get_reader_pexodus_pattern_force_ext[.e.4.0-PExodusIIReader]
+tests/core/test_reader.py::test_parallel_exodus_reader
+tests/test_cli.py::test_convert_compound_extension[download_parallel_exodus-.e.4.0-.vtm]
+
 # --- upstream PyVista issues at the pinned ref (not cvista) --------------------
 # PyVista's own code does `self.pickpoint = ...`, which its own new-attribute
 # guard rejects (no VTK involved) -- a bug at the pinned ref.
