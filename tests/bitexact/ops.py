@@ -417,6 +417,34 @@ try:
         vtkStructuredGridGeometryFilter,
     )
     # === end Wave 14 imports ===
+    # === Wave 15: native-int32-connectivity readers (just-modified filters) ===
+    # Bounded import block (additive-OPS merge convention). These filters were just
+    # modified to read cvista's native int32 cell connectivity and had NO gate
+    # coverage; this wave adds one op each. Every class below was confirmed
+    # IMPORTABLE (compiled AND wrapped) in BOTH stock vtk==9.6.2 and the cvista
+    # core-tier wheel, and is ABSENT from cvista-config/_nowrap_classes.cmake and
+    # _nocompile_classes.cmake with its module WANTed in _modules_minimal.cmake
+    # (FiltersCore / FiltersGeometry / FiltersGeneral) -- an unwrapped class would
+    # ImportError and red the whole suite. Module homes verified empirically:
+    #   FiltersCore:     vtkExtractEdges, vtkBinnedDecimation, vtkQuadricClustering
+    #   FiltersGeometry: vtkMarkBoundaryFilter, vtkAttributeSmoothingFilter
+    #   FiltersGeneral:  vtkRemovePolyData
+    # vtkIdTypeArray drives vtkRemovePolyData::SetCellIds; VTK_POLYHEDRON is imported
+    # locally in the polyhedron-UG builder (mirroring make_hex_ugrid's local
+    # VTK_HEXAHEDRON import). vtkUnstructuredGridToExplicitStructuredGrid is NOT
+    # re-imported here -- it is already covered by op_ug_to_esg (Wave 13).
+    from vtkmodules.vtkFiltersCore import (
+        vtkBinnedDecimation,
+        vtkExtractEdges,
+        vtkQuadricClustering,
+    )
+    from vtkmodules.vtkFiltersGeometry import (
+        vtkAttributeSmoothingFilter,
+        vtkMarkBoundaryFilter,
+    )
+    from vtkmodules.vtkFiltersGeneral import vtkRemovePolyData
+    from vtkmodules.vtkCommonCore import vtkIdTypeArray
+    # === end Wave 15 imports ===
     from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
     _HAVE_VTK = True
@@ -5990,6 +6018,179 @@ def op_delaunay3d(dtype, size):
     return f.GetOutput()
 # === end Wave 9 op bodies ===
 
+
+# === Wave 15: native-int32-connectivity reader op bodies ===
+# One op per just-modified filter (each reads cvista's native int32 cell
+# connectivity and previously had NO gate coverage). Parity classification is
+# per-op below; strict entries carry NO relaxation flag (a COUNT/POSITION/VALUE
+# red there is a real int32/topology divergence to escalate, not to relax away),
+# order/points-relaxed entries reorder their emitted primitives and are compared
+# as a canonicalized mesh (same content, negotiable order). Inputs are the shared
+# deterministic builders (make_hex_ugrid / make_sphere), so both backends start
+# from byte-identical inputs.
+def op_extractedges(dtype, size):
+    # vtkExtractEdges over a hex UG -> the unique-edge line polydata. The edge set is
+    # discovered under vtkSMPTools (threaded static edge locator), so line cells may be
+    # EMITTED in a thread-dependent order -> order_relaxed. The output copies the input
+    # points unchanged and in input order (npts == input npts), so point order is NOT
+    # relaxed; the width-relaxed float compare absorbs any f64-preserve vs f32-downcast
+    # difference in the copied point coordinates.
+    f = vtkExtractEdges()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_binneddecimation(dtype, size):
+    # vtkBinnedDecimation on a triangulated sphere: bins points into a size^3 grid and
+    # emits one representative point per occupied bin, retriangulating. Threaded bin
+    # assignment + point/cell emission run in their own order and the representative
+    # points are new (bin-derived), so BOTH point and cell order are negotiable ->
+    # order_relaxed + points_relaxed (canonicalized by coords + point-data). This still
+    # validates the full decimated point set and triangle multiset.
+    f = vtkBinnedDecimation()
+    f.SetInputData(make_sphere(size, size))
+    f.SetNumberOfDivisions(size, size, size)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_quadricclustering(dtype, size):
+    # vtkQuadricClustering on a triangulated sphere: collapses points into a size^3
+    # clustering grid, each cluster's output point placed by its accumulated quadric.
+    # Clustering reorders points and triangles -> order_relaxed + points_relaxed
+    # (canonicalized by coords; this op emits no point data). Content (cluster point
+    # set + triangle multiset) is still fully compared.
+    f = vtkQuadricClustering()
+    f.SetInputData(make_sphere(size, size))
+    f.SetNumberOfXDivisions(size)
+    f.SetNumberOfYDivisions(size)
+    f.SetNumberOfZDivisions(size)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_markboundary(dtype, size):
+    # vtkMarkBoundaryFilter on a hex UG: passes the grid through UNCHANGED (points,
+    # connectivity, cell types, original point scalar all preserved in order) and adds
+    # a uint8 BoundaryPoints point array + uint8 BoundaryCells cell array, each indexed
+    # by point/cell id. Order-preserving, every emitted array is position-deterministic
+    # -> STRICT gate, no relaxation flag.
+    f = vtkMarkBoundaryFilter()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_attrsmoothing(dtype, size):
+    # vtkAttributeSmoothingFilter on a hex UG carrying the radial point scalar 'v':
+    # Laplacian-style smoothing of the point data over the mesh connectivity for 5
+    # iterations. Topology + point order are preserved (npts == input npts, same
+    # order), so the compared arrays are position-deterministic -> STRICT gate, no
+    # relaxation flag. NOTE: the per-point smoothed value is a floating accumulation
+    # over each point's neighbourhood repeated 5x; if cvista's threaded reduction ever
+    # diverges from stock in the last ULP, reclassify this single op as
+    # points_relaxed + point_data_tol=1e-12 (the documented thread-partial escape,
+    # cf. the clippoly_fast entry) -- do NOT relax the others.
+    f = vtkAttributeSmoothingFilter()
+    f.SetInputData(make_hex_ugrid(size, dtype))
+    f.SetNumberOfIterations(5)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_removepolydata(dtype, size):
+    # vtkRemovePolyData on a triangulated sphere: removes a deterministic subset of
+    # cells (every 3rd triangle by id) selected via SetCellIds(a vtkIdTypeArray). The
+    # retained cells + their points are copied through in input order -> STRICT gate,
+    # no relaxation flag. The cell-id list is built from a plain range so both backends
+    # request the identical removal set.
+    sph = make_sphere(size, size)
+    ids = vtkIdTypeArray()
+    for cid in range(0, sph.GetNumberOfCells(), 3):
+        ids.InsertNextValue(cid)
+    f = vtkRemovePolyData()
+    f.SetInputData(sph)
+    f.SetCellIds(ids)
+    f.Update()
+    return f.GetOutput()
+
+
+def _make_polyhedron_ugrid(n, dtype):
+    """An n^3 lattice of unit cubes, each expressed as ONE VTK_POLYHEDRON cell (six
+    quad faces), carrying a deterministic radial point scalar 'v'. Adjacent cells
+    share internal faces, so a surface/boundary pass must read each polyhedron's face
+    stream (cvista's native int32 cell connectivity) and de-duplicate shared faces --
+    exactly the vtkPolyhedron edges/boundary path. Points + faces are built from pure
+    integer index algebra so both backends start byte-identical."""
+    from vtkmodules.vtkCommonDataModel import VTK_POLYHEDRON
+
+    lin = np.arange(n + 1, dtype=dtype)
+    gx, gy, gz = np.meshgrid(lin, lin, lin, indexing="ij")
+    pts = np.ascontiguousarray(
+        np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    )
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(pts, deep=1))
+    ug = vtkUnstructuredGrid()
+    ug.SetPoints(vp)
+    ug.Allocate(n * n * n)
+    P = n + 1
+
+    def pid(i, j, k):
+        return int(i + P * (j + P * k))
+
+    faces_local = (
+        ((0, 0, 0), (0, 1, 0), (0, 1, 1), (0, 0, 1)),
+        ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)),
+        ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)),
+        ((0, 1, 0), (1, 1, 0), (1, 1, 1), (0, 1, 1)),
+        ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)),
+        ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)),
+    )
+    for k in range(n):
+        for j in range(n):
+            for i in range(n):
+                uniq = set()
+                faces = vtkCellArray()
+                for f in faces_local:
+                    ids = vtkIdList()
+                    for (di, dj, dk) in f:
+                        p = pid(i + di, j + dj, k + dk)
+                        ids.InsertNextId(p)
+                        uniq.add(p)
+                    faces.InsertNextCell(ids)
+                uids = tuple(sorted(uniq))
+                # 4-arg InsertNextCell(type, npts_unique, ptIds, faces:vtkCellArray) --
+                # the VTK 9.6 polyhedron overload (the flat integer face-stream forms
+                # were dropped in favor of the vtkCellArray face representation).
+                ug.InsertNextCell(VTK_POLYHEDRON, len(uids), uids, faces)
+    c = n / 2.0
+    field = (
+        (pts[:, 0] - c) ** 2 + (pts[:, 1] - c) ** 2 + (pts[:, 2] - c) ** 2
+    ).astype(dtype)
+    arr = numpy_to_vtk(np.ascontiguousarray(field), deep=1)
+    arr.SetName("v")
+    ug.GetPointData().SetScalars(arr)
+    return ug
+
+
+def op_polyhedron_surface(dtype, size):
+    # vtkDataSetSurfaceFilter over a UG of VTK_POLYHEDRON cells -> exercises the
+    # vtkPolyhedron edges/boundary path: each polyhedron's face stream is read and
+    # boundary faces are extracted while shared internal faces are de-duplicated. The
+    # boundary-face de-dup keys on a face hash, so both faces and surface points may be
+    # emitted in a hash/insertion-dependent order -> order_relaxed + points_relaxed
+    # (canonicalized by coords + point-data). This validates the boundary face multiset
+    # and surface point set (content), which is what the int32 connectivity read
+    # governs.
+    s = vtkDataSetSurfaceFilter()
+    s.SetInputData(_make_polyhedron_ugrid(size, dtype))
+    s.Update()
+    return s.GetOutput()
+# === end Wave 15 op bodies ===
+
+
 OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
@@ -6435,6 +6636,29 @@ OPS = {
     "shrinkpoly": dict(fn=op_shrinkpoly, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
     "quantizepoly": dict(fn=op_quantizepoly, group="filter", dtypes=["float32", "float64"], sizes=[4, 6]),
     # === end Wave 14 ===
+    # === Wave 15: native-int32-connectivity readers (just-modified filters) ===
+    # (own border per the additive-OPS merge convention). One op per filter that was
+    # just modified to read cvista's native int32 cell connectivity and had NO prior
+    # gate coverage. Parity flags are per-op (rationale in each op body):
+    #   * markboundary / attrsmoothing / removepolydata preserve point+cell order and
+    #     emit position-deterministic arrays -> STRICT (no flag). A COUNT/POSITION/
+    #     VALUE red there is a real int32/topology divergence to escalate.
+    #   * extractedges is THREADED and reorders emitted line cells (points preserved)
+    #     -> order_relaxed only.
+    #   * binneddecimation / quadricclustering / polyhedron_surface reorder BOTH points
+    #     and cells (threaded binning / clustering / boundary-face de-dup) -> order_
+    #     relaxed + points_relaxed; content (point set + cell multiset) is still fully
+    #     compared.
+    # vtkUnstructuredGridToExplicitStructuredGrid (also just modified) is deliberately
+    # NOT added here -- it is already covered by "ug_to_esg" (Wave 13).
+    "extractedges": dict(fn=op_extractedges, group="filter", dtypes=["float32", "float64"], sizes=[8, 12], order_relaxed=True),
+    "binneddecimation": dict(fn=op_binneddecimation, group="filter", dtypes=["float64"], sizes=[24, 40], order_relaxed=True, points_relaxed=True),
+    "quadricclustering": dict(fn=op_quadricclustering, group="filter", dtypes=["float64"], sizes=[24, 40], order_relaxed=True, points_relaxed=True),
+    "markboundary": dict(fn=op_markboundary, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "attrsmoothing": dict(fn=op_attrsmoothing, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "removepolydata": dict(fn=op_removepolydata, group="filter", dtypes=["float64"], sizes=[24, 40]),
+    "polyhedron_surface": dict(fn=op_polyhedron_surface, group="filter", dtypes=["float32", "float64"], sizes=[2, 3], order_relaxed=True, points_relaxed=True),
+    # === end Wave 15 ===
 }
 
 MODIFIED_OPS = {k for k, v in OPS.items() if v["group"] == "modified"}

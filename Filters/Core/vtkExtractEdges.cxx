@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkExtractEdges.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
 #include "vtkCellArray.h"
 #include "vtkCellArrayIterator.h"
@@ -188,6 +189,15 @@ struct ExtractPolyDataEdges : public ExtractEdges
     vtkIdType npts;
     const vtkIdType* pts;
 
+    // Read connectivity straight from the native (int32) storage rather than
+    // through the widening iterator accessor (see cvistaCellConnectivity.h).
+    // Each thread invocation captures its own cheap local views; they only
+    // hold pointers, so they are never shared across threads. Falls back to
+    // the iterator accessor for any non-AOS/fixed-size storage.
+    cvistaCellConnectivity linesConn(this->Lines);
+    cvistaCellConnectivity polysConn(this->Polys);
+    cvistaCellConnectivity stripsConn(this->Strips);
+
     // We use a bit of hack here. To keep things simple in vtkSMPTools::For()
     // the numCells in the for loop may not match the numCells in each of the
     // line, polys, and strips, so may have to truncate the traversal.
@@ -195,12 +205,27 @@ struct ExtractPolyDataEdges : public ExtractEdges
     vtkIdType endLinesId = (endCellId < this->NumLines ? endCellId : this->NumLines);
     for (; linesId < endLinesId; ++linesId)
     {
-      linesIter->GetCellAtId(linesId, npts, pts);
-      for (auto i = 0; i < (npts - 1); ++i)
+      vtkIdType lnpts;
+      if (linesConn.IsValid())
       {
-        vtkIdType v0 = pts[i];
-        vtkIdType v1 = pts[i + 1];
-        edges.emplace_back(v0, v1, linesId);
+        const vtkIdType cbeg = linesConn.CellBegin(linesId);
+        lnpts = linesConn.CellSize(linesId);
+        for (auto i = 0; i < (lnpts - 1); ++i)
+        {
+          vtkIdType v0 = linesConn[cbeg + i];
+          vtkIdType v1 = linesConn[cbeg + i + 1];
+          edges.emplace_back(v0, v1, linesId);
+        }
+      }
+      else
+      {
+        linesIter->GetCellAtId(linesId, npts, pts);
+        for (auto i = 0; i < (npts - 1); ++i)
+        {
+          vtkIdType v0 = pts[i];
+          vtkIdType v1 = pts[i + 1];
+          edges.emplace_back(v0, v1, linesId);
+        }
       }
     } // for all line cells in this batch
 
@@ -209,12 +234,26 @@ struct ExtractPolyDataEdges : public ExtractEdges
     vtkIdType endPolysId = (endCellId < this->NumPolys ? endCellId : this->NumPolys);
     for (; polysId < endPolysId; ++polysId)
     {
-      polysIter->GetCellAtId(polysId, npts, pts);
-      for (auto i = 0; i < npts; ++i)
+      if (polysConn.IsValid())
       {
-        vtkIdType v0 = pts[i];
-        vtkIdType v1 = pts[(i + 1) % npts];
-        edges.emplace_back(v0, v1, polysId);
+        const vtkIdType cbeg = polysConn.CellBegin(polysId);
+        const vtkIdType pnpts = polysConn.CellSize(polysId);
+        for (auto i = 0; i < pnpts; ++i)
+        {
+          vtkIdType v0 = polysConn[cbeg + i];
+          vtkIdType v1 = polysConn[cbeg + (i + 1) % pnpts];
+          edges.emplace_back(v0, v1, polysId);
+        }
+      }
+      else
+      {
+        polysIter->GetCellAtId(polysId, npts, pts);
+        for (auto i = 0; i < npts; ++i)
+        {
+          vtkIdType v0 = pts[i];
+          vtkIdType v1 = pts[(i + 1) % npts];
+          edges.emplace_back(v0, v1, polysId);
+        }
       }
     } // for all polygons in this batch
 
@@ -223,18 +262,38 @@ struct ExtractPolyDataEdges : public ExtractEdges
     vtkIdType endStripsId = (endCellId < this->NumStrips ? endCellId : this->NumStrips);
     for (; stripsId < endStripsId; ++stripsId)
     {
-      stripsIter->GetCellAtId(stripsId, npts, pts);
-      vtkIdType v0 = pts[0];
-      vtkIdType v1 = pts[1];
-      vtkIdType v2;
-      for (auto i = 0; i < (npts - 2); ++i)
+      if (stripsConn.IsValid())
       {
-        v2 = pts[i + 1];
-        edges.emplace_back(v0, v1, stripsId);
-        edges.emplace_back(v1, v2, stripsId);
-        edges.emplace_back(v2, v0, stripsId);
-        v0 = v1;
-        v1 = v2;
+        const vtkIdType cbeg = stripsConn.CellBegin(stripsId);
+        const vtkIdType snpts = stripsConn.CellSize(stripsId);
+        vtkIdType v0 = stripsConn[cbeg + 0];
+        vtkIdType v1 = stripsConn[cbeg + 1];
+        vtkIdType v2;
+        for (auto i = 0; i < (snpts - 2); ++i)
+        {
+          v2 = stripsConn[cbeg + i + 1];
+          edges.emplace_back(v0, v1, stripsId);
+          edges.emplace_back(v1, v2, stripsId);
+          edges.emplace_back(v2, v0, stripsId);
+          v0 = v1;
+          v1 = v2;
+        }
+      }
+      else
+      {
+        stripsIter->GetCellAtId(stripsId, npts, pts);
+        vtkIdType v0 = pts[0];
+        vtkIdType v1 = pts[1];
+        vtkIdType v2;
+        for (auto i = 0; i < (npts - 2); ++i)
+        {
+          v2 = pts[i + 1];
+          edges.emplace_back(v0, v1, stripsId);
+          edges.emplace_back(v1, v2, stripsId);
+          edges.emplace_back(v2, v0, stripsId);
+          v0 = v1;
+          v1 = v2;
+        }
       }
     } // for all triangle strip cells in this batch
   }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkUnstructuredGridToExplicitStructuredGrid.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkDataArray.h"
@@ -125,6 +126,13 @@ int vtkUnstructuredGridToExplicitStructuredGrid::RequestData(
 
   // Copy unstructured cells
   vtkCellArray* cells = output->GetCells();
+  // Read each input cell's point ids straight from native (int32) storage
+  // instead of widening the cell into the shared scratch list. Cell ids in an
+  // unstructured grid index its connectivity array directly, and this loop only
+  // reads the input (it writes the separate output array), so the captured
+  // pointers stay valid. Fall back to the classic accessor for any storage the
+  // fast reader cannot handle. See cvistaCellConnectivity.h.
+  const cvistaCellConnectivity inConn(input->GetCells());
   for (vtkIdType i = 0; i < nbCells && !abort; i++)
   {
     if (progressCount >= progressInterval)
@@ -163,24 +171,39 @@ int vtkUnstructuredGridToExplicitStructuredGrid::RequestData(
 
     vtkIdType npts;
     const vtkIdType* pts;
-    input->GetCellPoints(i, npts, pts);
+    vtkIdType nativeIds[8];
+    const vtkIdType* cellPts;
+    if (inConn.IsValid())
+    {
+      const vtkIdType cbeg = inConn.CellBegin(i);
+      for (int k = 0; k < 8; ++k)
+      {
+        nativeIds[k] = inConn[cbeg + k];
+      }
+      cellPts = nativeIds;
+    }
+    else
+    {
+      input->GetCellPoints(i, npts, pts);
+      cellPts = pts;
+    }
     if (cellType == VTK_VOXEL)
     {
       // Change point order: voxels and hexahedron don't have same connectivity.
       vtkIdType ids[8];
-      ids[0] = pts[0];
-      ids[1] = pts[1];
-      ids[2] = pts[3];
-      ids[3] = pts[2];
-      ids[4] = pts[4];
-      ids[5] = pts[5];
-      ids[6] = pts[7];
-      ids[7] = pts[6];
+      ids[0] = cellPts[0];
+      ids[1] = cellPts[1];
+      ids[2] = cellPts[3];
+      ids[3] = cellPts[2];
+      ids[4] = cellPts[4];
+      ids[5] = cellPts[5];
+      ids[6] = cellPts[7];
+      ids[7] = cellPts[6];
       cells->ReplaceCellAtId(cellId, 8, ids);
     }
     else
     {
-      cells->ReplaceCellAtId(cellId, 8, pts);
+      cells->ReplaceCellAtId(cellId, 8, cellPts);
     }
     output->GetCellData()->CopyData(input->GetCellData(), i, cellId);
     if (hasBlanks)

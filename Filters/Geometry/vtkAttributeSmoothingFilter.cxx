@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkAttributeSmoothingFilter.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
 #include "vtkCellArray.h"
 #include "vtkCellArrayIterator.h"
@@ -97,6 +98,10 @@ struct BuildStencil
   void operator()(vtkIdType ptId, vtkIdType endPtId)
   {
     vtkCellArrayIterator* iter = this->Iter.Local();
+    // Per-thread native connectivity view over the line cells; read ids without
+    // widening the whole cell into the shared scratch vtkIdList (see
+    // cvistaCellConnectivity.h). Falls back to the iterator when unavailable.
+    cvistaCellConnectivity conn(this->Lines);
     vtkIdType& maxStencilSize = this->MaxSize.Local();
     vtkStaticCellLinksTemplate<vtkIdType>* links = this->Links;
     vtkIdType npts;
@@ -125,8 +130,20 @@ struct BuildStencil
 
         for (i = 0; i < numEdges; ++i)
         {
-          iter->GetCellAtId(edges[i], npts, pts);
-          vtkIdType id = (pts[0] != ptId ? pts[0] : pts[1]);
+          vtkIdType p0, p1;
+          if (conn.IsValid())
+          {
+            const vtkIdType cbeg = conn.CellBegin(edges[i]);
+            p0 = conn[cbeg];
+            p1 = conn[cbeg + 1];
+          }
+          else
+          {
+            iter->GetCellAtId(edges[i], npts, pts);
+            p0 = pts[0];
+            p1 = pts[1];
+          }
+          vtkIdType id = (p0 != ptId ? p0 : p1);
           c[i] = id;
           this->Points->GetPoint(id, y);
           w[i] = vtkMath::Distance2BetweenPoints(x, y);
@@ -292,6 +309,9 @@ struct SmoothAttributes
   void operator()(vtkIdType ptId, vtkIdType endPtId)
   {
     vtkCellArrayIterator* iter = this->Iter.Local();
+    // Per-thread native connectivity view over the stencil cells (see
+    // cvistaCellConnectivity.h). Falls back to the iterator when unavailable.
+    cvistaCellConnectivity conn(this->Stencils);
 
     vtkIdType npts;
     const vtkIdType* pts;
@@ -309,7 +329,17 @@ struct SmoothAttributes
       if (!this->Smooth || this->Smooth[ptId] == SmoothPoint)
       {
         // Retrieve the current stencil surrounding this point.
-        iter->GetCellAtId(ptId, npts, pts);
+        vtkIdType cbeg = 0;
+        const bool native = conn.IsValid();
+        if (native)
+        {
+          npts = conn.CellSize(ptId);
+          cbeg = conn.CellBegin(ptId);
+        }
+        else
+        {
+          iter->GetCellAtId(ptId, npts, pts);
+        }
         vtkIdType offset = this->Stencils->GetOffset(ptId);
         const double* weights = this->Weights + offset;
 
@@ -323,7 +353,7 @@ struct SmoothAttributes
         w[0] = relaxF;
         for (auto i = 0; i < npts; ++i)
         {
-          pIds[i + 1] = pts[i];
+          pIds[i + 1] = native ? conn[cbeg + i] : pts[i];
           w[i + 1] = weights[i];
         }
 
@@ -357,6 +387,9 @@ void MarkPDBoundary(vtkPolyData* extractedEdges, vtkPolyData* inPolyData, unsign
   vtkCellArray* lines = extractedEdges->GetLines();
   vtkIdType numLines = lines->GetNumberOfCells();
   auto iter = vtk::TakeSmartPointer(lines->NewIterator());
+  // Native connectivity view over the line cells (see cvistaCellConnectivity.h);
+  // read the two endpoint ids without widening the cell into the scratch list.
+  cvistaCellConnectivity conn(lines);
   vtkIdType npts;
   const vtkIdType* pts;
   vtkNew<vtkIdList> neis;
@@ -365,12 +398,24 @@ void MarkPDBoundary(vtkPolyData* extractedEdges, vtkPolyData* inPolyData, unsign
   // are boundary edges.
   for (auto lineId = 0; lineId < numLines; ++lineId)
   {
-    iter->GetCellAtId(lineId, npts, pts);
-    inPolyData->GetCellEdgeNeighbors((-1), pts[0], pts[1], neis);
+    vtkIdType p0, p1;
+    if (conn.IsValid())
+    {
+      const vtkIdType cbeg = conn.CellBegin(lineId);
+      p0 = conn[cbeg];
+      p1 = conn[cbeg + 1];
+    }
+    else
+    {
+      iter->GetCellAtId(lineId, npts, pts);
+      p0 = pts[0];
+      p1 = pts[1];
+    }
+    inPolyData->GetCellEdgeNeighbors((-1), p0, p1, neis);
     if (neis->GetNumberOfIds() == 1)
     { // it's a boundary edge
-      smooth[pts[0]] = Boundary;
-      smooth[pts[1]] = Boundary;
+      smooth[p0] = Boundary;
+      smooth[p1] = Boundary;
     }
   }
 } // MarkPDBoundary
@@ -416,21 +461,35 @@ void MarkAdjacent(vtkPolyData* extractedEdges, unsigned char* smooth)
   vtkCellArray* lines = extractedEdges->GetLines();
   vtkIdType numLines = lines->GetNumberOfCells();
   auto iter = vtk::TakeSmartPointer(lines->NewIterator());
+  // Native connectivity view over the line cells (see cvistaCellConnectivity.h).
+  cvistaCellConnectivity conn(lines);
   vtkIdType npts;
   const vtkIdType* pts;
 
   for (auto lineId = 0; lineId < numLines; ++lineId)
   {
-    iter->GetCellAtId(lineId, npts, pts);
-    unsigned char s0 = smooth[pts[0]];
-    unsigned char s1 = smooth[pts[1]];
+    vtkIdType p0, p1;
+    if (conn.IsValid())
+    {
+      const vtkIdType cbeg = conn.CellBegin(lineId);
+      p0 = conn[cbeg];
+      p1 = conn[cbeg + 1];
+    }
+    else
+    {
+      iter->GetCellAtId(lineId, npts, pts);
+      p0 = pts[0];
+      p1 = pts[1];
+    }
+    unsigned char s0 = smooth[p0];
+    unsigned char s1 = smooth[p1];
     if (s0 == Boundary && s1 == NoSmooth)
     {
-      smooth[pts[1]] = SmoothPoint;
+      smooth[p1] = SmoothPoint;
     }
     else if (s1 == Boundary && s0 == NoSmooth)
     {
-      smooth[pts[0]] = SmoothPoint;
+      smooth[p0] = SmoothPoint;
     }
   }
 } // MarkAdjacent
