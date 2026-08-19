@@ -3,6 +3,7 @@
 
 #include "vtkDataSetSurfaceFilter.h"
 
+#include "cvistaCellConnectivity.h" // For the width-generic native cell reader
 #include "vtkBezierCurve.h"
 #include "vtkBezierQuadrilateral.h"
 #include "vtkBezierTriangle.h"
@@ -1503,6 +1504,12 @@ int vtkDataSetSurfaceFilter::UnstructuredGridExecuteInternal(
   auto getCellTypeFast = [&](vtkIdType cid) -> int {
     return ugCellTypes ? static_cast<int>(ugCellTypes->GetValue(cid)) : input->GetCellType(cid);
   };
+  // Width-generic native reader for the non-Int64-AOS storage (notably cvista's
+  // int32 default): on those layouts ugConn64Conn is null, so without this every
+  // cell would take the out-of-line, cross-shared-library vtkCellArray::GetCellAtId
+  // below and its per-cell StorageType switch. This reads the ids straight from
+  // the native connectivity and widens each into the reused scratch inline.
+  cvistaCellConnectivity ugConnView(ugConn);
   auto getCellPointsFast = [&](vtkIdType cid, vtkIdType& n, const vtkIdType*& p) {
     if (ugConn64Conn)
     {
@@ -1510,6 +1517,21 @@ int vtkDataSetSurfaceFilter::UnstructuredGridExecuteInternal(
       const vtkTypeInt64 begin = ugConn64Offsets[cid];
       n = static_cast<vtkIdType>(ugConn64Offsets[cid + 1] - begin);
       p = reinterpret_cast<const vtkIdType*>(ugConn64Conn + begin);
+    }
+    else if (ugConnView.IsValid())
+    {
+      // Native (int32/fixed-size) read: widen straight from the connectivity into
+      // the reused scratch, skipping the cross-shared-library GetCellAtId dispatch.
+      // Same values, same scratch handoff as GetCellAtId(cid, n, p, pointIdList).
+      n = ugConnView.CellSize(cid);
+      const vtkIdType begin = ugConnView.CellBegin(cid);
+      pointIdList->SetNumberOfIds(n);
+      vtkIdType* d = pointIdList->GetPointer(0);
+      for (vtkIdType j = 0; j < n; ++j)
+      {
+        d[j] = ugConnView[begin + j];
+      }
+      p = d;
     }
     else if (ugConn)
     {
