@@ -3,6 +3,7 @@
 
 #include "vtkMarkBoundaryFilter.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellData.h"
 #include "vtkDataSet.h"
 #include "vtkGenericCell.h"
@@ -210,6 +211,10 @@ struct MarkPolys : MarkCellBoundary
   {
     auto& cellIter = this->CellIter.Local();
     auto& neighbors = this->Neighbors.Local();
+    // Per-thread native connectivity view over the poly cells; read point ids
+    // without widening the whole cell into the shared scratch vtkIdList (see
+    // cvistaCellConnectivity.h). Falls back to the iterator when unavailable.
+    cvistaCellConnectivity conn(this->Polys);
     vtkIdType npts, edgePts[2];
     const vtkIdType* pts;
     bool isFirst = vtkSMPTools::GetSingleThread();
@@ -243,11 +248,21 @@ struct MarkPolys : MarkCellBoundary
       }
 
       // Mark boundary polygons. A boundary polygon has an edge used by only the boundary polygon.
-      cellIter->GetCellAtId(cellId, npts, pts);
+      vtkIdType cbeg = 0;
+      const bool native = conn.IsValid();
+      if (native)
+      {
+        npts = conn.CellSize(cellId);
+        cbeg = conn.CellBegin(cellId);
+      }
+      else
+      {
+        cellIter->GetCellAtId(cellId, npts, pts);
+      }
       for (auto i = 0; i < npts; ++i)
       {
-        edgePts[0] = pts[i];
-        edgePts[1] = pts[(i + 1) % npts];
+        edgePts[0] = native ? conn[cbeg + i] : pts[i];
+        edgePts[1] = native ? conn[cbeg + (i + 1) % npts] : pts[(i + 1) % npts];
         this->Links->GetCells(2, edgePts, neighbors);
         if (neighbors->GetNumberOfIds() < 2)
         {

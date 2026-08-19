@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkExecutive.h"
@@ -1527,6 +1528,11 @@ void vtkQuadricClustering::FindFeaturePoints(
     }
   }
 
+  // Read edge connectivity straight from the native (int32) storage rather
+  // than through the widening GetCellAtId accessor (see cvistaCellConnectivity.h).
+  // Read-only; the edge cells are not modified here. Falls back to the classic
+  // accessor for any non-AOS/fixed-size storage.
+  cvistaCellConnectivity edgesConn(edges);
   for (vtkIdType i = 0; i < numPts; i++)
   {
     if (pointTable[i][1] == 1)
@@ -1541,16 +1547,28 @@ void vtkQuadricClustering::FindFeaturePoints(
     {
       for (int j = 0; j < 2; j++)
       {
-        edges->GetCellAtId(pointTable[i][j + 2], numCellPts, cellPointIds);
-        if (cellPointIds[0] == pointTable[i][0])
+        vtkIdType cp0, cp1;
+        if (edgesConn.IsValid())
         {
-          edgePts->GetPoint(cellPointIds[0], point1);
-          edgePts->GetPoint(cellPointIds[1], point2);
+          const vtkIdType cb = edgesConn.CellBegin(pointTable[i][j + 2]);
+          cp0 = edgesConn[cb + 0];
+          cp1 = edgesConn[cb + 1];
         }
         else
         {
-          edgePts->GetPoint(cellPointIds[1], point1);
-          edgePts->GetPoint(cellPointIds[0], point2);
+          edges->GetCellAtId(pointTable[i][j + 2], numCellPts, cellPointIds);
+          cp0 = cellPointIds[0];
+          cp1 = cellPointIds[1];
+        }
+        if (cp0 == pointTable[i][0])
+        {
+          edgePts->GetPoint(cp0, point1);
+          edgePts->GetPoint(cp1, point2);
+        }
+        else
+        {
+          edgePts->GetPoint(cp1, point1);
+          edgePts->GetPoint(cp0, point2);
         }
         featureEdges[j][0] = point2[0] - point1[0];
         featureEdges[j][1] = point2[1] - point1[1];
