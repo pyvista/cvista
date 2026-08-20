@@ -1276,7 +1276,7 @@ std::vector<Case> RegisterCases()
       f->SetInputData(in.ugrid);
       f->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "RTData");
       f->SetValue(0, 130.0);
-      f->MergePointsOn();
+      f->SetMergePointsOn();
       f->ComputeNormalsOn();
       return vtkSmartPointer<vtkAlgorithm>(f);
     },
