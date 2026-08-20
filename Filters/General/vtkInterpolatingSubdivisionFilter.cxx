@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkInterpolatingSubdivisionFilter.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkEdgeTable.h"
@@ -187,6 +188,18 @@ void vtkInterpolatingSubdivisionFilter::GenerateSubdivisionCells(
   vtkIdType newCellPts[3];
   vtkCellData* inputCD = inputDS->GetCellData();
 
+  // Read triangle point ids straight from native (int32) storage instead of the
+  // widening GetCellPoints accessor (see cvistaCellConnectivity.h). The view
+  // addresses the polys array by local cell id, which equals the dataset-global
+  // cell id used below only when no verts or lines precede the polys. With
+  // CheckForTriangles on (the default) the base class rejects any non-triangle
+  // mesh, so that always holds; guard on it anyway so a mixed mesh
+  // (CheckForTriangles off) falls back to the classic accessor and stays
+  // bit-identical. This is a read-only pass, so the captured pointers stay valid.
+  const cvistaCellConnectivity conn(inputDS->GetPolys());
+  const bool nativeOk =
+    conn.IsValid() && inputDS->GetNumberOfVerts() == 0 && inputDS->GetNumberOfLines() == 0;
+
   // Now create new cells from existing points and generated edge points
   for (cellId = 0; cellId < numCells; cellId++)
   {
@@ -195,11 +208,25 @@ void vtkInterpolatingSubdivisionFilter::GenerateSubdivisionCells(
       continue;
     }
     // get the original point ids and the ids stored as cell data
-    inputDS->GetCellPoints(cellId, npts, pts);
+    vtkIdType cellPtIds[3];
+    if (nativeOk)
+    {
+      const vtkIdType cbeg = conn.CellBegin(cellId);
+      cellPtIds[0] = conn[cbeg];
+      cellPtIds[1] = conn[cbeg + 1];
+      cellPtIds[2] = conn[cbeg + 2];
+    }
+    else
+    {
+      inputDS->GetCellPoints(cellId, npts, pts);
+      cellPtIds[0] = pts[0];
+      cellPtIds[1] = pts[1];
+      cellPtIds[2] = pts[2];
+    }
     edgeData->GetTuple(cellId, edgePts);
 
     id = 0;
-    newCellPts[id++] = pts[0];
+    newCellPts[id++] = cellPtIds[0];
     newCellPts[id++] = (int)edgePts[1];
     newCellPts[id] = (int)edgePts[0];
     newId = outputPolys->InsertNextCell(3, newCellPts);
@@ -207,14 +234,14 @@ void vtkInterpolatingSubdivisionFilter::GenerateSubdivisionCells(
 
     id = 0;
     newCellPts[id++] = (int)edgePts[1];
-    newCellPts[id++] = pts[1];
+    newCellPts[id++] = cellPtIds[1];
     newCellPts[id] = (int)edgePts[2];
     newId = outputPolys->InsertNextCell(3, newCellPts);
     outputCD->CopyData(inputCD, cellId, newId);
 
     id = 0;
     newCellPts[id++] = (int)edgePts[2];
-    newCellPts[id++] = pts[2];
+    newCellPts[id++] = cellPtIds[2];
     newCellPts[id] = (int)edgePts[0];
     newId = outputPolys->InsertNextCell(3, newCellPts);
     outputCD->CopyData(inputCD, cellId, newId);

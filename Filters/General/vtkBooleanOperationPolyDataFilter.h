@@ -82,6 +82,18 @@ public:
   vtkGetMacro(Tolerance, double);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkBooleanOperationPolyDataFilter();
   ~vtkBooleanOperationPolyDataFilter() override;
@@ -106,6 +118,11 @@ private:
   void CopyCells(vtkPolyData* in, vtkPolyData* out, int idx,
     vtkDataSetAttributes::FieldList& pointFieldList, vtkDataSetAttributes::FieldList& cellFieldList,
     vtkIdList* cellIds, bool reverseCells);
+
+  /**
+   * Desired precision for the output points.
+   */
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   /**
    * Tolerance used to determine when a point's absolute

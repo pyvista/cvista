@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkOrientPolyData.h"
 
+#include "cvistaFastOrient.h"      // cvista opt-in parallel orientation pass
+#include "vtkCVISTASMPDefaults.h"  // cvista::FastModeEnabled
+
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkIdList.h"
@@ -10,6 +13,7 @@
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPolygon.h"
 #include "vtkPriorityQueue.h"
 
@@ -64,6 +68,12 @@ void vtkOrientPolyData::TraverseAndOrder(vtkPolyData* input, vtkPolyData* output
   vtkIdType numNeiPts;
   vtkIdType neighbor;
 
+  // Resolve the input's typed cell links once so the per-edge neighbor lookup
+  // below is inlined here (no cross-.so PLT hop into libvtkCommonDataModel and
+  // no per-call link re-fetch). Bit-for-bit identical to
+  // input->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(input);
+
   // propagate wave until nothing left in wave
   while ((numIds = wave->GetNumberOfIds()) > 0)
   {
@@ -79,7 +89,7 @@ void vtkOrientPolyData::TraverseAndOrder(vtkPolyData* input, vtkPolyData* output
 
       for (j = 0, j1 = 1; j < npts; ++j, (j1 = (++j1 < npts) ? j1 : 0)) // for each edge neighbor
       {
-        input->GetCellEdgeNeighbors(cellId, pts[j], pts[j1], cellIds);
+        edgeNeighbors.Get(cellId, pts[j], pts[j1], cellIds);
 
         //  Check the direction of the neighbor ordering.  Should be
         //  consistent with us (i.e., if we are n1->n2, neighbor should be n2->n1).
@@ -175,6 +185,36 @@ int vtkOrientPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   output->SetLinks(links);
   links->SetDataSet(output);
   links->ShallowCopy(input->GetLinks());
+
+  // cvista opt-in fast lane: replace the serial single-threaded BFS wave
+  // (TraverseAndOrder), the last fully serial order-locked stage in the default
+  // vtkPolyDataNormals (Consistency=1) pipeline, with a deterministic parallel
+  // orientation kernel. Restricted to the MANIFOLD, consistency-only case; the
+  // AutoOrientNormals / NonManifoldTraversal / non-manifold paths fall through to
+  // the byte-exact serial code below.
+  //
+  // TRADEOFF (what EnableFast buys/costs here): this is NOT byte-exact with stock
+  // VTK 9.6.2 -- it is orientation-relaxed. Positions, the cell-to-slot mapping,
+  // and each cell's point-id multiset are identical to stock, and adjacent cells
+  // are always mutually consistent; the one thing that may differ is the absolute
+  // winding chosen for a whole connected component. Stock seeds each component
+  // from the first cell it visits in BFS order; the kernel seeds from the
+  // component's lowest global cell id instead (so the choice is deterministic and
+  // thread-count invariant). When the two seeds imply opposite windings, that
+  // entire component is wound the other way, which FLIPS THE SIGN of any normals
+  // vtkPolyDataNormals then computes for it -- geometrically valid and internally
+  // consistent, but possibly opposite to stock for that component. This only ever
+  // happens with fast mode ON; the default path (below) is unchanged and
+  // byte-exact. No-op unless cvista::FastModeEnabled().
+  if (cvista::FastModeEnabled())
+  {
+    if (cvista::FastOrientPolyData(input, output, this->Consistency, this->FlipNormals,
+          this->AutoOrientNormals, this->NonManifoldTraversal))
+    {
+      this->UpdateProgress(1.00);
+      return 1;
+    }
+  }
 
   ///////////////////////////////////////////////////////////////////
   //  Traverse all polygons insuring proper direction of ordering.  This

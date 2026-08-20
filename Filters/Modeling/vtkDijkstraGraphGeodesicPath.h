@@ -98,6 +98,18 @@ public:
    */
   virtual void GetCumulativeWeights(vtkDoubleArray* weights);
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkDijkstraGraphGeodesicPath();
   ~vtkDijkstraGraphGeodesicPath() override;
@@ -144,6 +156,8 @@ protected:
   vtkTypeBool RepelPathFromVertices;
 
   vtkPoints* RepelVertices;
+
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkDijkstraGraphGeodesicPath(const vtkDijkstraGraphGeodesicPath&) = delete;

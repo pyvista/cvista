@@ -20,6 +20,7 @@
 #include "vtkUnsignedCharArray.h"
 
 #include <algorithm>
+#include <atomic> // cvista: release fence when publishing lazily-built Links
 
 VTK_ABI_NAMESPACE_BEGIN
 static constexpr unsigned char MASKED_CELL_VALUE =
@@ -520,26 +521,43 @@ void vtkExplicitStructuredGrid::BuildLinks()
     return;
   }
 
+  // cvista: make the lazy build thread-safe, mirroring vtkPolyData::BuildLinks().
+  // The inline link accessors (GetPointCells/...) do `if (!this->Links)
+  // BuildLinks()`, which under the STDThread default runs concurrently from SMP
+  // worker threads. The original code published this->Links before
+  // vtkAbstractCellLinks::BuildLinks() populated it, so a concurrent reader could
+  // observe an empty/half-built links object. Serialize builders with a mutex;
+  // build the FIRST-build path into a local and publish it fully-built last. The
+  // rebuild-in-place branch keeps its original behavior (main-thread path).
+  std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
+  if (this->Links)
+  {
+    if (this->Points->GetMTime() > this->Links->GetMTime())
+    {
+      this->Links->SetDataSet(this);
+    }
+    this->Links->BuildLinks();
+    return;
+  }
+
   // Different types of links depending on whether the data can be edited after
   // initial creation.
-  if (!this->Links)
+  vtkSmartPointer<vtkAbstractCellLinks> links;
+  if (!this->Editable)
   {
-    if (!this->Editable)
-    {
-      this->Links = vtkSmartPointer<vtkStaticCellLinks>::New();
-    }
-    else
-    {
-      this->Links = vtkSmartPointer<vtkCellLinks>::New();
-      static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(this->GetNumberOfPoints());
-    }
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkStaticCellLinks>::New();
   }
-  else if (this->Points->GetMTime() > this->Links->GetMTime())
+  else
   {
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkCellLinks>::New();
+    static_cast<vtkCellLinks*>(links.Get())->Allocate(this->GetNumberOfPoints());
   }
-  this->Links->BuildLinks();
+  links->SetDataSet(this);
+  links->BuildLinks();
+  // Release fence: make the populated links visible before the pointer publish
+  // (see vtkPolyData::BuildLinks() for the rationale).
+  std::atomic_thread_fence(std::memory_order_release);
+  this->Links = links; // publish fully-built links last
 }
 
 //------------------------------------------------------------------------------
@@ -654,7 +672,13 @@ void vtkExplicitStructuredGrid::ComputeFacesConnectivityFlagsArray()
 
   for (vtkIdType c = 0; c < nbCells; c++)
   {
-    vtkIdType* cellPtsIds = this->GetCellPoints(c);
+    // Snapshot this cell's point ids into an owned buffer before the neighbor
+    // GetCellPoints() call below. The raw accessor returns a pointer into the
+    // shared vtkCellArray temp-cell scratch under int32 cell storage, so the
+    // second call would otherwise alias the first (a hex is always 8 points).
+    vtkIdType* rawCellPtsIds = this->GetCellPoints(c);
+    vtkIdType cellPtsIds[8];
+    std::copy(rawCellPtsIds, rawCellPtsIds + 8, cellPtsIds);
 
     unsigned char mask = 0;
     vtkIdType neighbors[6];
@@ -1041,8 +1065,17 @@ int vtkExplicitStructuredGrid::FindConnectedFaces(int foundFaces[3])
                 ijkId[0] + neiAxisMod[0], ijkId[1] + neiAxisMod[1], ijkId[2] + neiAxisMod[2]);
               if (this->IsCellVisible(neiCellId))
               {
-                // Find if they are connected and by which faces they are connected
-                cellPtsIds = this->GetCellPoints(id0);
+                // Find if they are connected and by which faces they are connected.
+                // Snapshot id0's point ids into an owned buffer before the neighbor
+                // GetCellPoints() call: the raw accessor returns a pointer into the
+                // shared vtkCellArray temp-cell scratch under int32 cell storage, so
+                // the two pointers would otherwise alias (a hex is always 8 points).
+                vtkIdType cellPtsBuf[8];
+                {
+                  vtkIdType* rawCellPtsIds = this->GetCellPoints(id0);
+                  std::copy(rawCellPtsIds, rawCellPtsIds + 8, cellPtsBuf);
+                }
+                cellPtsIds = cellPtsBuf;
                 neiCellPtsIds = this->GetCellPoints(neiCellId);
                 for (int n = 0; n < 6; n++)
                 {

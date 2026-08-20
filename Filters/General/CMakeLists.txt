@@ -137,11 +137,22 @@ set(classes
   vtkWarpVector
   vtkYoungsMaterialInterface)
 
-set(templates
-  vtkJoinTables.txx)
+set(templates)
 
 set(no_wrap_classes
   vtkReflectionUtilities)
+
+# cvista SIMD: vtkWarpVector.cxx carries the target_clones("default","avx2")
+# multi-versioned warp kernel (cvistaWarpVectorRange). xo = xi + sf*v is the
+# canonical a*b+c FMA shape; FMA contraction would diverge from stock VTK 9.6.2
+# by 1 ULP on adversarial data, so this TU MUST compile with -ffp-contract=off
+# for the avx2 (and default) clone to stay bit-exact. The global build does not
+# set -ffp-contract, so set it here.
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set_source_files_properties(vtkWarpVector.cxx
+    PROPERTIES
+      COMPILE_OPTIONS -ffp-contract=off)
+endif()
 
 vtk_module_add_module(VTK::FiltersGeneral
   CLASSES ${classes}

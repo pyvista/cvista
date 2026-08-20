@@ -460,6 +460,8 @@ protected:
   int MinorVersion;
   int MaxTessellationLevel;
   int MaxTextureSize;
+  int MaxDrawBuffers;
+  int MaxColorAttachments;
   std::string Vendor;
   std::string Renderer;
   std::string Version;

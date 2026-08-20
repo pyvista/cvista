@@ -32,12 +32,15 @@
 #include "vtkStructuredData.h"
 #include "vtkStructuredGrid.h"
 #include "vtkTetra.h"
+#include "vtkTypeInt32Array.h" // cvista: width-relaxed int32 OriginalPointIds storage
 #include "vtkUniformGrid.h"
 #include "vtkUnsignedCharArray.h"
 #include "vtkUnstructuredGrid.h"
 #include "vtkVoxel.h"
 #include "vtkWedge.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -831,6 +834,21 @@ struct LocalDataType
   // Later on (in Reduce()), a thread id is assigned to the thread.
   int ThreadId;
 
+  // cvista: deterministic ordering. vtkSMPTools::For partitions the work range
+  // into many contiguous chunks which are dispatched to a thread pool; a single
+  // thread-local may therefore process several non-contiguous chunks in
+  // execution (nondeterministic) order. To make the composited output
+  // byte-identical to the Sequential backend (which visits the whole range
+  // in increasing index order), each invocation of operator() captures its
+  // freshly produced cells into a per-chunk LocalDataType record tagged with a
+  // sort key. The records are then ordered by (SortEpoch, SortBegin) before
+  // output offsets are assigned in Reduce(). SortBegin is the chunk's begin
+  // index; SortEpoch disambiguates successive vtkSMPTools::For invocations
+  // (used by the structured path, which calls For once per grid face) whose
+  // begin indices would otherwise overlap.
+  vtkIdType SortEpoch;
+  vtkIdType SortBegin;
+
   // If point merging is specified, then a non-null point map is provided.
   TInputIdType* PointMap;
 
@@ -861,6 +879,8 @@ struct LocalDataType
 
   LocalDataType()
   {
+    this->SortEpoch = 0;
+    this->SortBegin = 0;
     this->PointMap = nullptr;
     this->Cell.TakeReference(vtkGenericCell::New());
     this->CellIds.TakeReference(vtkIdList::New());
@@ -948,10 +968,12 @@ struct LocalDataType
   }
 };
 
+// cvista: the composited output is assembled from per-chunk LocalDataType
+// records (owned by ExtractCellBoundaries::ChunkData), ordered deterministically
+// in Reduce(). Threads holds non-owning pointers to those records in output
+// order; the composite functors index it as (*Threads)[thread].
 template <typename TInputIdType>
-using ThreadIterType = typename vtkSMPThreadLocal<LocalDataType<TInputIdType>>::iterator;
-template <typename TInputIdType>
-using ThreadOutputType = std::vector<ThreadIterType<TInputIdType>>;
+using ThreadOutputType = std::vector<LocalDataType<TInputIdType>*>;
 
 //--------------------------------------------------------------------------
 // Given a cell and a bunch of supporting objects (to support computing and
@@ -1284,6 +1306,16 @@ struct ExtractCellBoundaries
   using TThreadOutputType = ThreadOutputType<TInputIdType>;
   TThreadOutputType* Threads;
 
+  // cvista: per-chunk output records (see LocalDataType::SortEpoch). Each
+  // invocation of a subclass operator() moves its freshly produced cells into a
+  // new record appended here (under ChunkMutex). Reduce() sorts these records
+  // by (SortEpoch, SortBegin) so the composited output matches the Sequential
+  // backend byte-for-byte. CurrentEpoch tags chunks with the index of the
+  // current vtkSMPTools::For invocation.
+  std::vector<std::unique_ptr<LocalDataType<TInputIdType>>> ChunkData;
+  std::mutex ChunkMutex;
+  vtkIdType CurrentEpoch = 0;
+
   ExtractCellBoundaries(vtkGeometryFilter* self, const char* cellVis,
     const unsigned char* cellGhosts, const unsigned char* pointGhost,
     vtkExcludedFaces<TInputIdType>* exc, TThreadOutputType* threads)
@@ -1322,6 +1354,36 @@ struct ExtractCellBoundaries
 
   // operator() implemented by dataset-specific subclasses
 
+  // cvista: bump the epoch before each vtkSMPTools::For invocation so that chunks
+  // from successive invocations sort after those of earlier ones. Paths that
+  // issue a single For (UG, vtkDataSet) never need to call this; the structured
+  // path issues one For per grid face and calls it between them.
+  void NextEpoch() { ++this->CurrentEpoch; }
+
+  // cvista: capture the cells a subclass operator() just produced into a new
+  // per-chunk record tagged with the chunk's sort key. The thread-local's cell
+  // arrays are moved out (leaving them empty but still configured), so the same
+  // thread-local can be reused for its next chunk. 'begin' is the chunk's begin
+  // index within the current vtkSMPTools::For range.
+  void CaptureChunk(LocalDataType<TInputIdType>& localData, vtkIdType begin)
+  {
+    auto record = std::make_unique<LocalDataType<TInputIdType>>();
+    record->SortEpoch = this->CurrentEpoch;
+    record->SortBegin = begin;
+    // Move the produced cells out of the (reusable) thread-local accumulators.
+    using std::swap;
+    swap(record->Verts.Cells, localData.Verts.Cells);
+    swap(record->Verts.OrigCellIds, localData.Verts.OrigCellIds);
+    swap(record->Lines.Cells, localData.Lines.Cells);
+    swap(record->Lines.OrigCellIds, localData.Lines.OrigCellIds);
+    swap(record->Polys.Cells, localData.Polys.Cells);
+    swap(record->Polys.OrigCellIds, localData.Polys.OrigCellIds);
+    swap(record->Strips.Cells, localData.Strips.Cells);
+    swap(record->Strips.OrigCellIds, localData.Strips.OrigCellIds);
+    std::lock_guard<std::mutex> lock(this->ChunkMutex);
+    this->ChunkData.emplace_back(std::move(record));
+  }
+
   // Composite local thread data; i.e., rather than linearly appending data from each
   // thread into the filter's output, this performs a parallel append.
   virtual void Reduce()
@@ -1334,14 +1396,26 @@ struct ExtractCellBoundaries
     this->StripsNumPts = this->StripsNumCells = 0;
     int threadId = 0;
 
-    // Loop over the local data generated by each thread. Setup the
+    // cvista: order the per-chunk records so the composited output is identical to
+    // the Sequential backend (which visits the work range in increasing index
+    // order). Sorting by (SortEpoch, SortBegin) reproduces that order exactly:
+    // chunks partition each vtkSMPTools::For range contiguously and disjointly,
+    // and cells within a chunk are already produced in increasing index order.
+    std::stable_sort(this->ChunkData.begin(), this->ChunkData.end(),
+      [](const std::unique_ptr<LocalDataType<TInputIdType>>& a,
+        const std::unique_ptr<LocalDataType<TInputIdType>>& b) {
+        return a->SortEpoch != b->SortEpoch ? a->SortEpoch < b->SortEpoch
+                                            : a->SortBegin < b->SortBegin;
+      });
+
+    // Loop over the per-chunk records in deterministic order. Setup the
     // offsets and such to insert into the output cell arrays.
-    auto tItr = this->LocalData.begin();
-    auto tEnd = this->LocalData.end();
-    for (; tItr != tEnd; ++tItr)
+    this->Threads->reserve(this->ChunkData.size());
+    for (auto& recordPtr : this->ChunkData)
     {
+      LocalDataType<TInputIdType>* tItr = recordPtr.get();
       tItr->ThreadId = threadId++;
-      this->Threads->emplace_back(tItr); // need pointers to local thread data
+      this->Threads->emplace_back(tItr); // need pointers to per-chunk data
 
       tItr->VertsConnOffset = this->VertsNumPts;
       tItr->VertsOffset = this->VertsNumCells;
@@ -1524,6 +1598,8 @@ struct ExtractUG : public ExtractCellBoundaries<TInputIdType>
       FaceOperator{}(cells->GetOffsetsArray(), cells->GetConnectivityArray(),
         this->Grid->GetCellTypes(), this, beginHash, endHash);
     }
+    // cvista: capture this chunk's cells for deterministic compositing.
+    this->CaptureChunk(this->LocalData.Local(), beginHash);
   }
 
   // Composite local thread data
@@ -1859,6 +1935,11 @@ struct ExtractStructured : public ExtractCellBoundaries<TInputIdType>
           0.1 * this->CurrentAxis + (0.1 * faceEndCellId / this->NumberOfFaces));
       }
     }
+    // cvista: capture this chunk's cells for deterministic compositing. The
+    // structured path issues a separate vtkSMPTools::For per grid face; each is
+    // tagged with a distinct epoch (see NextEpoch calls in Execute) so chunks
+    // from different faces never interleave.
+    this->CaptureChunk(this->LocalData.Local(), faceBeginCellId);
   } // operator()
 
   // Composite local thread data
@@ -1888,6 +1969,7 @@ struct ExtractStructured : public ExtractCellBoundaries<TInputIdType>
         {
           extract->NumberOfFaces = std::abs(extent[2 * iAxis + 1] - extent[2 * iAxis]) *
             std::abs(extent[2 * jAxis] - extent[2 * jAxis + 1]);
+          extract->NextEpoch(); // cvista: order this face's chunks after prior faces
           vtkSMPTools::For(0, extract->NumberOfFaces, *extract);
         }
         // axisMax-face
@@ -1898,6 +1980,7 @@ struct ExtractStructured : public ExtractCellBoundaries<TInputIdType>
         {
           extract->NumberOfFaces = std::abs(extent[2 * iAxis + 1] - extent[2 * iAxis]) *
             std::abs(extent[2 * jAxis] - extent[2 * jAxis + 1]);
+          extract->NextEpoch(); // cvista: order this face's chunks after prior faces
           vtkSMPTools::For(0, extract->NumberOfFaces, *extract);
         }
       }
@@ -1914,6 +1997,7 @@ struct ExtractStructured : public ExtractCellBoundaries<TInputIdType>
         jAxis = (axis + 2) % 3;
         extract->NumberOfFaces = std::abs(extent[2 * iAxis + 1] - extent[2 * iAxis]) *
           std::abs(extent[2 * jAxis] - extent[2 * jAxis + 1]);
+        extract->NextEpoch(); // cvista: order this face's chunks after prior faces
         vtkSMPTools::For(0, extract->NumberOfFaces, *extract);
       }
     }
@@ -1985,6 +2069,8 @@ struct ExtractDS : public ExtractCellBoundaries<TInputIdType>
       } // if cell visible
 
     } // for all cells in this batch
+    // cvista: capture this chunk's cells for deterministic compositing.
+    this->CaptureChunk(localData, beginCellId);
     if (isFirst)
     {
       this->Self->UpdateProgress(static_cast<double>(0.8 * endCellId / this->NumberOfCells));
@@ -1998,43 +2084,67 @@ struct ExtractDS : public ExtractCellBoundaries<TInputIdType>
 // Helper class to record original point and cell ids. This is for copying
 // cell data, and also to produce output arrays indicating where output
 // cells originated from (typically used in picking).
+//
+// Width-relaxed storage: use vtkTypeInt32Array when the id count fits in
+// int32 (count <= 0x7FFFFFFF), otherwise vtkIdTypeArray.  This must match
+// the type produced by PassPointIds / PassCellIds so that vtkAppendPolyData
+// (used by PyVista's MultiBlock extract_surface) sees a consistent type
+// across all blocks and does not drop the array via IsSimilar().
 struct IdRecorder
 {
-  vtkSmartPointer<vtkIdTypeArray> Ids;
+  vtkSmartPointer<vtkDataArray> Ids;
 
   IdRecorder(
-    vtkTypeBool passThru, const char* name, vtkDataSetAttributes* attrD, vtkIdType allocSize)
+    vtkTypeBool passThru, const char* name, vtkDataSetAttributes* attrD, vtkIdType count)
   {
     if (passThru)
     {
-      this->Ids.TakeReference(vtkIdTypeArray::New());
-      this->Ids->SetName(name);
-      this->Ids->ReserveValues(allocSize);
+      if (count <= static_cast<vtkIdType>(0x7FFFFFFF))
+      {
+        auto* a = vtkTypeInt32Array::New();
+        a->SetName(name);
+        a->SetNumberOfComponents(1);
+        this->Ids.TakeReference(a);
+      }
+      else
+      {
+        auto* a = vtkIdTypeArray::New();
+        a->SetName(name);
+        a->SetNumberOfComponents(1);
+        this->Ids.TakeReference(a);
+      }
       attrD->AddArray(this->Ids.Get());
-    }
-  }
-  IdRecorder(vtkTypeBool passThru, const char* name, vtkDataSetAttributes* attrD)
-  {
-    if (passThru)
-    {
-      this->Ids.TakeReference(vtkIdTypeArray::New());
-      this->Ids->SetName(name);
-      this->Ids->SetNumberOfComponents(1);
-      attrD->AddArray(this->Ids.Get());
-    }
-    else
-    {
-      this->Ids = nullptr;
     }
   }
   void Insert(vtkIdType destId, vtkIdType origId)
   {
     if (this->Ids.Get() != nullptr)
     {
-      this->Ids->InsertValue(destId, origId);
+      this->Ids->InsertTuple1(destId, static_cast<double>(origId));
     }
   }
-  vtkIdType* GetPointer() { return this->Ids->GetPointer(0); }
+  // Fill [0, count) with identity values using a parallel SMP loop.
+  void FillIdentity(vtkIdType count)
+  {
+    if (!this->Ids.Get())
+      return;
+    if (auto* a = vtkTypeInt32Array::SafeDownCast(this->Ids.Get()))
+    {
+      auto* ptr = a->GetPointer(0);
+      vtkSMPTools::For(0, count, [ptr](vtkIdType b, vtkIdType e) {
+        for (; b < e; ++b)
+          ptr[b] = static_cast<vtkTypeInt32>(b);
+      });
+    }
+    else if (auto* a = vtkIdTypeArray::SafeDownCast(this->Ids.Get()))
+    {
+      auto* ptr = a->GetPointer(0);
+      vtkSMPTools::For(0, count, [ptr](vtkIdType b, vtkIdType e) {
+        for (; b < e; ++b)
+          ptr[b] = b;
+      });
+    }
+  }
   vtkTypeBool PassThru() { return this->Ids.Get() != nullptr; }
   void ReserveValues(vtkIdType num)
   {
@@ -2047,7 +2157,7 @@ struct IdRecorder
   {
     if (this->Ids.Get() != nullptr)
     {
-      this->Ids->SetNumberOfValues(num);
+      this->Ids->SetNumberOfTuples(num);
     }
   }
 }; // id recorder
@@ -2424,18 +2534,19 @@ struct CompositeCells
 }; // CompositeCells
 
 // Composite threads to produce originating cell ids
-template <typename TInputIdType, typename TOutputIdType>
+// cvista: templated on TOutId so the same scatter drives int32 or int64 storage.
+template <typename TInputIdType, typename TOutputIdType, typename TOutId = vtkIdType>
 struct CompositeCellIds
 {
   ExtractCellBoundaries<TInputIdType>* Extractor;
   ::CompositeCells<TInputIdType, TOutputIdType>* CompositeCells;
   ThreadOutputType<TInputIdType>* Threads;
-  vtkIdType* OrigIds;
+  TOutId* OrigIds;
   vtkGeometryFilter* Filter;
 
   CompositeCellIds(ExtractCellBoundaries<TInputIdType>* extract,
     ::CompositeCells<TInputIdType, TOutputIdType>* compositeCells,
-    ThreadOutputType<TInputIdType>* threads, vtkIdType* origIds, vtkGeometryFilter* filter)
+    ThreadOutputType<TInputIdType>* threads, TOutId* origIds, vtkGeometryFilter* filter)
     : Extractor(extract)
     , CompositeCells(compositeCells)
     , Threads(threads)
@@ -2451,7 +2562,7 @@ struct CompositeCellIds
 
     for (vtkIdType cellId = 0; cellId < numCells; ++cellId)
     {
-      this->OrigIds[globalCellId++] = cat->OrigCellIds[cellId];
+      this->OrigIds[globalCellId++] = static_cast<TOutId>(cat->OrigCellIds[cellId]);
     }
   }
 
@@ -2554,23 +2665,17 @@ int ExecutePolyData(vtkGeometryFilter* self, vtkDataSet* dataSetInput, vtkPolyDa
   }
 
   IdRecorder origCellIds(
-    self->GetPassThroughCellIds(), self->GetOriginalCellIdsName(), output->GetCellData());
+    self->GetPassThroughCellIds(), self->GetOriginalCellIdsName(), output->GetCellData(),
+    numCells);
   IdRecorder origPointIds(
-    self->GetPassThroughPointIds(), self->GetOriginalPointIdsName(), output->GetPointData());
+    self->GetPassThroughPointIds(), self->GetOriginalPointIdsName(), output->GetPointData(),
+    numPts);
 
   // vtkPolyData points are not culled
   if (origPointIds.PassThru())
   {
     origPointIds.SetNumberOfValues(numPts);
-    vtkIdType* origPointIdsPtr = origPointIds.GetPointer();
-    vtkSMPTools::For(0, numPts,
-      [&origPointIdsPtr](vtkIdType pId, vtkIdType endPId)
-      {
-        for (; pId < endPId; ++pId)
-        {
-          origPointIdsPtr[pId] = pId;
-        }
-      });
+    origPointIds.FillIdentity(numPts);
   }
 
   // Special case when data is just passed through
@@ -2583,15 +2688,7 @@ int ExecutePolyData(vtkGeometryFilter* self, vtkDataSet* dataSetInput, vtkPolyDa
     if (origCellIds.PassThru())
     {
       origCellIds.SetNumberOfValues(numCells);
-      vtkIdType* origCellIdsPtr = origCellIds.GetPointer();
-      vtkSMPTools::For(0, numCells,
-        [&origCellIdsPtr](vtkIdType cId, vtkIdType endCId)
-        {
-          for (; cId < endCId; ++cId)
-          {
-            origCellIdsPtr[cId] = cId;
-          }
-        });
+      origCellIds.FillIdentity(numCells);
     }
 
     return 1;
@@ -2841,19 +2938,11 @@ struct CharacterizeGrid
 };
 
 //------------------------------------------------------------------------------
-// Threaded creation to generate array of originating point ids.
-template <typename TInputIdType>
-void PassPointIds(const char* name, vtkIdType numInputPts, vtkIdType numOutputPts,
-  TInputIdType* ptMap, vtkPointData* outPD)
+// Threaded populate of the originating-point-id array (templated on the output
+// container's value type so the same scatter drives int32 or int64 storage).
+template <typename TOutId, typename TInputIdType>
+void PassPointIdsFill(TOutId* origIds, vtkIdType numInputPts, TInputIdType* ptMap)
 {
-  vtkNew<vtkIdTypeArray> origPtIds;
-  origPtIds->SetName(name);
-  origPtIds->SetNumberOfComponents(1);
-  origPtIds->SetNumberOfTuples(numOutputPts);
-  outPD->AddArray(origPtIds);
-  vtkIdType* origIds = origPtIds->GetPointer(0);
-
-  // Now threaded populate the array
   vtkSMPTools::For(0, numInputPts,
     [&origIds, &ptMap](vtkIdType ptId, vtkIdType endPtId)
     {
@@ -2861,10 +2950,41 @@ void PassPointIds(const char* name, vtkIdType numInputPts, vtkIdType numOutputPt
       {
         if (ptMap[ptId] >= 0)
         {
-          origIds[ptMap[ptId]] = ptId;
+          origIds[ptMap[ptId]] = static_cast<TOutId>(ptId);
         }
       }
     });
+}
+
+//------------------------------------------------------------------------------
+// Threaded creation to generate array of originating point ids.
+template <typename TInputIdType>
+void PassPointIds(const char* name, vtkIdType numInputPts, vtkIdType numOutputPts,
+  TInputIdType* ptMap, vtkPointData* outPD)
+{
+  // cvista: width-relaxed storage. The values are input point ids (sacred); the
+  // CONTAINER is int32 when every id fits in 0x7FFFFFFF, else int64. Halves the
+  // array footprint on large extracted surfaces. The bitexact gate width-
+  // normalizes integer arrays, and the render hardware-selection path reads this
+  // passthrough array width-agnostically (vtkOpenGL*PolyDataMapper).
+  if (numInputPts <= static_cast<vtkIdType>(0x7FFFFFFF))
+  {
+    vtkNew<vtkTypeInt32Array> origPtIds;
+    origPtIds->SetName(name);
+    origPtIds->SetNumberOfComponents(1);
+    origPtIds->SetNumberOfTuples(numOutputPts);
+    outPD->AddArray(origPtIds);
+    PassPointIdsFill(origPtIds->GetPointer(0), numInputPts, ptMap);
+  }
+  else
+  {
+    vtkNew<vtkIdTypeArray> origPtIds;
+    origPtIds->SetName(name);
+    origPtIds->SetNumberOfComponents(1);
+    origPtIds->SetNumberOfTuples(numOutputPts);
+    outPD->AddArray(origPtIds);
+    PassPointIdsFill(origPtIds->GetPointer(0), numInputPts, ptMap);
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -2875,17 +2995,42 @@ void PassCellIds(const char* name, ExtractCellBoundaries<TInputIdType>* extract,
   ThreadOutputType<TInputIdType>* threads, vtkCellData* outCD, vtkGeometryFilter* filter)
 {
   vtkIdType numOutputCells = extract->NumCells;
-  vtkNew<vtkIdTypeArray> origCellIds;
-  origCellIds->SetName(name);
-  origCellIds->SetNumberOfComponents(1);
-  origCellIds->SetNumberOfTuples(numOutputCells);
-  outCD->AddArray(origCellIds);
-  vtkIdType* origIds = origCellIds->GetPointer(0);
 
-  // Now populate the original cell ids
-  CompositeCellIds<TInputIdType, TOutputIdType> compIds(
-    extract, compositeCells, threads, origIds, filter);
-  vtkSMPTools::For(0, static_cast<vtkIdType>(threads->size()), compIds);
+  // cvista: width-relaxed storage. The values are input cell ids (sacred); the
+  // CONTAINER is int32 when every id fits in 0x7FFFFFFF, else int64. The input
+  // id type TInputIdType is selected by dispatch to vtkTypeInt32 only when the
+  // input cell (and point) count is <= VTK_TYPE_INT32_MAX, so when it is int32
+  // every stored input cell id provably fits int32. The bitexact gate width-
+  // normalizes integer arrays, and the render hardware-selection path reads this
+  // passthrough array width-agnostically (vtkOpenGL*PolyDataMapper).
+  if (sizeof(TInputIdType) <= sizeof(vtkTypeInt32))
+  {
+    vtkNew<vtkTypeInt32Array> origCellIds;
+    origCellIds->SetName(name);
+    origCellIds->SetNumberOfComponents(1);
+    origCellIds->SetNumberOfTuples(numOutputCells);
+    outCD->AddArray(origCellIds);
+    vtkTypeInt32* origIds = origCellIds->GetPointer(0);
+
+    // Now populate the original cell ids
+    CompositeCellIds<TInputIdType, TOutputIdType, vtkTypeInt32> compIds(
+      extract, compositeCells, threads, origIds, filter);
+    vtkSMPTools::For(0, static_cast<vtkIdType>(threads->size()), compIds);
+  }
+  else
+  {
+    vtkNew<vtkIdTypeArray> origCellIds;
+    origCellIds->SetName(name);
+    origCellIds->SetNumberOfComponents(1);
+    origCellIds->SetNumberOfTuples(numOutputCells);
+    outCD->AddArray(origCellIds);
+    vtkIdType* origIds = origCellIds->GetPointer(0);
+
+    // Now populate the original cell ids
+    CompositeCellIds<TInputIdType, TOutputIdType, vtkIdType> compIds(
+      extract, compositeCells, threads, origIds, filter);
+    vtkSMPTools::For(0, static_cast<vtkIdType>(threads->size()), compIds);
+  }
 }
 
 } // anonymous

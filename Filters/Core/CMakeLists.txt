@@ -144,11 +144,19 @@ set(headers
 
 set(private_classes
   vtkSurfaceNets3DNonManifoldCases)
+set(private_headers
+  vtkPolyDataEdgeNeighbors.h)
 
 vtk_module_add_module(VTK::FiltersCore
   CLASSES ${classes}
   HEADERS ${headers}
-  PRIVATE_CLASSES ${private_classes})
+  SOURCES cvistaFastClean.cxx cvistaFastCleanPoly.cxx cvistaFastStaticCleanPoly.cxx
+    cvistaFastConnectivity.cxx cvistaFastClipPoly.cxx
+    cvistaFastOrient.cxx
+  PRIVATE_CLASSES ${private_classes}
+  PRIVATE_HEADERS ${private_headers}
+    cvistaFastClean.h cvistaFastCleanPoly.h cvistaFastStaticCleanPoly.h cvistaFastConnectivity.h cvistaFastClipPoly.h cvistaFastOrient.h
+    pvaClean.h pvaHash96.h pvaLinearProbeTable.h pvaParallelRadixSort.h pvaOrient.h)
 
 vtk_add_test_mangling(VTK::FiltersCore)
 
@@ -156,3 +164,27 @@ vtk_add_test_mangling(VTK::FiltersCore)
 if(VTK_USE_PCH)
   vtk_module_precompile_headers(VTK::FiltersCore PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/vtkFiltersCorePCH.h>")
 endif()
+
+# compile those TUs with OpenMP when available, and keep them out of the unity
+# build so the vendored header stays isolated. Without OpenMP the adapters
+# compile to stubs (the Fast* entry points return false -> standard path).
+#
+# The vendored kernel uses OpenMP 4.0 constructs (`for simd`) and GCC/Clang
+# atomic/prefetch builtins; MSVC's default `/openmp` is only 2.0, so we do NOT
+# enable the fast lane on MSVC -- the adapters compile to the bit-exact stub and
+# Windows falls back to stock vtkCleanPolyData / vtkStaticClean (no behavioural
+# change, the fast lane is opt-in to begin with).
+set_source_files_properties(
+  cvistaFastClean.cxx cvistaFastCleanPoly.cxx cvistaFastStaticCleanPoly.cxx
+  cvistaFastConnectivity.cxx cvistaFastClipPoly.cxx
+  cvistaFastOrient.cxx
+  PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+find_package(OpenMP QUIET)
+if (OpenMP_CXX_FOUND AND NOT MSVC)
+  vtk_module_link(VTK::FiltersCore PRIVATE OpenMP::OpenMP_CXX)
+  set_property(
+    SOURCE cvistaFastClean.cxx cvistaFastCleanPoly.cxx cvistaFastStaticCleanPoly.cxx
+      cvistaFastConnectivity.cxx cvistaFastClipPoly.cxx
+      cvistaFastOrient.cxx
+    APPEND PROPERTY COMPILE_DEFINITIONS CVISTA_HAVE_OPENMP=1)
+endif ()

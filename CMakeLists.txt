@@ -143,11 +143,12 @@ set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
 set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 
-#-----------------------------------------------------------------------------
-# Add the Remote Subdirectory
-if (VTK_ENABLE_REMOTE_MODULES)
-  add_subdirectory(Remote)
-endif ()
+# cvista: the Remote/ subdirectory (download-on-demand external modules:
+# MomentInvariants, RenderingLookingGlass, vtkDICOM) was physically removed from
+# this Python-only wheel fork. It is never built: minimal.cmake hard-sets
+# VTK_ENABLE_REMOTE_MODULES=OFF, so neither the add_subdirectory() here nor the
+# `Remote` entry in vtk_source_directories below ever ran. The option +
+# both wiring sites are dropped with the tree.
 
 #-----------------------------------------------------------------------------
 # Does VTK require support for 64 bit file systems
@@ -453,6 +454,19 @@ if (vtk_rejected_modules)
   list(REMOVE_DUPLICATES vtk_rejected_modules)
 endif ()
 
+# cvista: these module directories were physically removed from this Python-only
+# fork (never built: Java, Catalyst, MPI, WebGPU, serialization). vtk_module_scan
+# reports a rejected module whose vtk.module file is absent as "unrecognized"
+# (CMake/vtkModule.cmake:1217) and fails the configure. Since the modules no
+# longer exist there is nothing to reject -- drop them from the reject list.
+list(REMOVE_ITEM vtk_rejected_modules
+  VTK::Java
+  VTK::catalyst
+  VTK::mpi
+  VTK::RenderingWebGPU
+  VTK::SerializationManager
+  VTK::TestingSerialization)
+
 set_property(GLOBAL
   PROPERTY
     "_vtk_module_autoinit_include" "\"vtkAutoInit.h\"")
@@ -477,21 +491,21 @@ endif ()
 
 include(vtkModule)
 include(vtkModuleDebugging)
+# cvista: Accelerators, Geovis, GUISupport, and Serialization were physically
+# removed from this Python-only wheel fork (never in the minimal closure).
+# vtk_module_find_modules silently ignores a missing directory, so their stale
+# entries here were inert -- dropped to keep the source-dir list truthful.
 set(vtk_source_directories
-  "${CMAKE_CURRENT_SOURCE_DIR}/Accelerators"
   "${CMAKE_CURRENT_SOURCE_DIR}/Charts"
   "${CMAKE_CURRENT_SOURCE_DIR}/Common"
   "${CMAKE_CURRENT_SOURCE_DIR}/Domains"
   "${CMAKE_CURRENT_SOURCE_DIR}/Filters"
-  "${CMAKE_CURRENT_SOURCE_DIR}/Geovis"
-  "${CMAKE_CURRENT_SOURCE_DIR}/GUISupport"
   "${CMAKE_CURRENT_SOURCE_DIR}/Imaging"
   "${CMAKE_CURRENT_SOURCE_DIR}/Infovis"
   "${CMAKE_CURRENT_SOURCE_DIR}/Interaction"
   "${CMAKE_CURRENT_SOURCE_DIR}/IO"
   "${CMAKE_CURRENT_SOURCE_DIR}/Parallel"
   "${CMAKE_CURRENT_SOURCE_DIR}/Rendering"
-  "${CMAKE_CURRENT_SOURCE_DIR}/Serialization"
   "${CMAKE_CURRENT_SOURCE_DIR}/Testing"
   "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty"
   "${CMAKE_CURRENT_SOURCE_DIR}/Utilities"
@@ -499,16 +513,8 @@ set(vtk_source_directories
   "${CMAKE_CURRENT_SOURCE_DIR}/Web"
   "${CMAKE_CURRENT_SOURCE_DIR}/Wrapping")
 
-set(remote_default ON)
-if (VTK_WHEEL_BUILD)
-  set(remote_default OFF)
-endif ()
-option(VTK_ENABLE_REMOTE_MODULES "Enable remote modules" ON)
-mark_as_advanced(VTK_ENABLE_REMOTE_MODULES)
-if (VTK_ENABLE_REMOTE_MODULES)
-  list(APPEND vtk_source_directories
-    "${CMAKE_CURRENT_SOURCE_DIR}/Remote")
-endif ()
+# cvista: VTK_ENABLE_REMOTE_MODULES + the Remote/ source directory were removed
+# (see the note above). This Python-only wheel never fetches remote modules.
 
 vtk_module_find_modules(vtk_module_files ${vtk_source_directories})
 vtk_module_find_kits(vtk_kit_files ${vtk_source_directories})
@@ -726,7 +732,7 @@ if (VTK_WRAP_PYTHON)
   vtk_module_wrap_python(
     MODULES         ${vtk_modules}
     INSTALL_EXPORT  VTKPython
-    PYTHON_PACKAGE  "vtkmodules"
+    PYTHON_PACKAGE  "cvista"
     LIBRARY_DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     MODULE_DESTINATION  "${VTK_PYTHON_SITE_PACKAGES_SUFFIX}"
     CMAKE_DESTINATION   "${vtk_cmake_destination}"
@@ -760,18 +766,8 @@ if (VTK_WRAP_PYTHON)
     COMPONENT   "development")
 endif ()
 
-if (VTK_WRAP_JAVA)
-  find_package(Java 11 REQUIRED COMPONENTS Development)
-
-  # We need to set CMAKE_Java variables before enable_language to
-  # retain specified JDK in ENV{JAVA_HOME}.
-  set(CMAKE_Java_ARCHIVE ${Java_JAR_EXECUTABLE})
-  set(CMAKE_Java_COMPILER ${Java_JAVAC_EXECUTABLE})
-  set(CMAKE_Java_RUNTIME ${Java_JAVA_EXECUTABLE})
-
-  enable_language(Java)
-  add_subdirectory(Wrapping/Java)
-endif ()
+# cvista: Java wrapping removed (Python-only wheel). The Wrapping/Java tree and the
+# VTK::Java module were deleted; VTK_WRAP_JAVA is unsupported in this fork.
 
 if (VTK_WRAP_JAVASCRIPT)
   include (vtkModuleWrapJavaScript)
@@ -882,16 +878,10 @@ if (VTK_BUILD_TESTING)
   add_subdirectory(Testing/Install)
 endif ()
 
-# The doxygen documentation needs to be aware of all modules.
-option(VTK_BUILD_DOCUMENTATION "Build the Doxygen VTK documentation" OFF)
-if (VTK_BUILD_DOCUMENTATION)
-  add_subdirectory(Utilities/Doxygen)
-endif ()
-
-option(VTK_BUILD_SPHINX_DOCUMENTATION "Build the Sphinx documentation for VTK" OFF)
-if (VTK_BUILD_SPHINX_DOCUMENTATION)
-  add_subdirectory(Utilities/Sphinx)
-endif ()
+# cvista is a Python-wheel-only fork; the Doxygen/Sphinx documentation builds and
+# their generator trees (Utilities/Doxygen, Utilities/Sphinx) were removed. The
+# old VTK_BUILD_DOCUMENTATION / VTK_BUILD_SPHINX_DOCUMENTATION option blocks +
+# add_subdirectory() calls are dropped with them.
 
 # Adds a test to verify consistent use of VTK_MARSHAL(AUTO|MANUAL) macros.
 # This is a pure python test, it doesn't need any compiled VTK modules.

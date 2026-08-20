@@ -139,6 +139,19 @@ public:
   vtkSetMacro(Orientation, unsigned int);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default; falls back to single precision when the
+   *   input has no explicit points, e.g. an image or rectilinear grid).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
   static void InterpolateEdge(vtkDataSetAttributes* attributes, vtkIdType toId, vtkIdType fromId1,
     vtkIdType fromId2, double t);
 
@@ -219,6 +232,8 @@ protected:
   unsigned int Orientation;
   double PlaneNormal[6][3]; // normal of each plane
   double PlanePoint[6][3];  // point on the plane
+
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkBoxClipDataSet(const vtkBoxClipDataSet&) = delete;

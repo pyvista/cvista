@@ -37,8 +37,24 @@ macro(_generate_array_specialization array_prefix vtk_type concrete_type depreca
   else ()
     string(REPLACE " " "_" _suffix "${concrete_type}")
   endif ()
-  list(APPEND "bulk_instantiation_sources_${_suffix}"
-    "#include \"${_className}.cxx.inc\"")
+  if (CVISTA_SPLIT_BULK_INSTANTIATE)
+    # cvista split mode: compile each generated specialization (e.g. the
+    # vtkType*Array.cxx that define vtkTypeFloat32Array::New() etc.) as its own TU
+    # directly, rather than #include-ing it into the per-type bulk TU. Without this
+    # these New() definitions would be generated but never compiled -> undefined
+    # references at link time. (9.7 renamed the include fragment to .cxx.inc; the
+    # split path compiles the standalone .cxx TU, the bulk path #includes .cxx.inc.)
+    list(APPEND sources
+      "${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx")
+    if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+      set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx"
+        PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
+                   COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
+    endif ()
+  else ()
+    list(APPEND "bulk_instantiation_sources_${_suffix}"
+      "#include \"${_className}.cxx.inc\"")
+  endif ()
 
   unset(VTK_DEPRECATION)
   unset(VTK_TYPE_NAME)
@@ -64,7 +80,15 @@ foreach (array_prefix IN ITEMS ScaledSOA StdFunction)
   endforeach ()
 endforeach ()
 
-foreach (array_prefix IN ITEMS Affine Composite Constant Indexed SOA Strided StructuredPoint)
+# cvista: dead-family trim (CVISTA_DROP_DEAD_ARRAYS, default ON). The keep set is
+# 9.7's implicit/AOS/SOA specialization families used by PyVista (ImageData/
+# structured grids + the dispatcher); Strided is the dead family omitted by default.
+# (9.7 dropped ScaledSOA/StdFunction from this list and added StructuredPoint.)
+set(_cvista_specialization_prefixes Affine Composite Constant Indexed SOA StructuredPoint)
+if (NOT CVISTA_DROP_DEAD_ARRAYS)
+  list(APPEND _cvista_specialization_prefixes Strided)
+endif ()
+foreach (array_prefix IN LISTS _cvista_specialization_prefixes)
   foreach (type IN LISTS vtk_fixed_size_numeric_types)
     vtk_fixed_size_type_to_without_prefix("${type}" "vtk" without_vtk_prefix)
     _generate_array_specialization("${array_prefix}" "${without_vtk_prefix}" "${type}" "")
@@ -128,7 +152,20 @@ foreach (type IN LISTS vtk_fixed_size_numeric_types)
     # append generated source to the bulk instantiation of concrete_type
     vtk_get_fixed_size_type_mapping("${type}" numeric_type)
     string(REPLACE " " "_" _suffix "${numeric_type}")
-    list(APPEND "bulk_instantiation_sources_${_suffix}"
-      "#include \"${type}Array.cxx.inc\"")
+    if (CVISTA_SPLIT_BULK_INSTANTIATE)
+      # cvista split mode: compile the plain vtkType*Array.cxx (vtkTypeFloat64Array
+      # etc., which define their New()/ctor) as its own TU instead of #include-ing
+      # it into the per-type bulk TU (9.7 renamed the include fragment to .cxx.inc).
+      list(APPEND sources
+        "${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx")
+      if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx"
+          PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
+                     COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
+      endif ()
+    else ()
+      list(APPEND "bulk_instantiation_sources_${_suffix}"
+        "#include \"${type}Array.cxx.inc\"")
+    endif ()
   endif ()
 endforeach ()

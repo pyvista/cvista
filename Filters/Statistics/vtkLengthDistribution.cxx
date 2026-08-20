@@ -22,6 +22,7 @@ void vtkLengthDistribution::PrintSelf(ostream& os, vtkIndent indent)
   this->Superclass::PrintSelf(os, indent);
   os << indent << "SampleSize: " << this->SampleSize << "\n";
   os << indent << "SortSample: " << (this->SortSample ? "T" : "F") << "\n";
+  os << indent << "Seed: " << this->Seed << "\n";
 }
 
 double vtkLengthDistribution::GetLengthQuantile(double qq)
@@ -81,7 +82,10 @@ int vtkLengthDistribution::RequestData(
   vtkNew<vtkIdList> dummyIds;
   dataIn->GetCellPoints(0, dummyIds.GetPointer());
 
-  vtkReservoirSampler<vtkIdType> sampler;
+  // Seed the sampler so both the cell subset and the per-cell connectivity
+  // picks are deterministic -- otherwise vtkReservoirSampler draws from
+  // std::random_device and each thread (and each run) samples differently.
+  vtkReservoirSampler<vtkIdType> sampler(this->Seed);
   std::vector<vtkIdType> ids = sampler(numSamples, dataIn->GetNumberOfCells());
   vtkSMPTools::For(0, static_cast<vtkIdType>(ids.size()),
     [&dataIn, &lengths, &sampler, &ids](vtkIdType begin, vtkIdType end)

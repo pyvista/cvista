@@ -12,6 +12,7 @@
 #include "vtkIntersectionPolyDataFilter.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkSmartPointer.h"
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -212,6 +213,7 @@ void vtkBooleanOperationPolyDataFilter::PrintSelf(ostream& os, vtkIndent indent)
   this->Superclass::PrintSelf(os, indent);
 
   os << indent << "Tolerance: " << this->Tolerance << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
   os << indent << "Operation: ";
   switch (this->Operation)
   {
@@ -273,6 +275,27 @@ void vtkBooleanOperationPolyDataFilter ::CopyCells(vtkPolyData* in, vtkPolyData*
   if (out->GetPoints() == nullptr)
   {
     vtkSmartPointer<vtkPoints> points = vtkSmartPointer<vtkPoints>::New();
+    // Set the desired precision for the output points. By default match the
+    // precision of the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force it.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      if (in->GetPoints())
+      {
+        points->SetDataType(in->GetPoints()->GetDataType());
+      }
+      else
+      {
+        points->SetDataType(VTK_FLOAT);
+      }
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      points->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      points->SetDataType(VTK_DOUBLE);
+    }
     out->SetPoints(points);
   }
 

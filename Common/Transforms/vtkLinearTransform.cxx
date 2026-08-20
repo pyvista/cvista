@@ -5,6 +5,7 @@
 #include "vtkArrayDispatch.h"
 #include "vtkArrayDispatchDataSetArrayList.h"
 #include "vtkDataArray.h"
+#include "vtkCVISTASMPDefaults.h" // cvista: opt into default multithreading (bit-exact)
 #include "vtkMath.h"
 #include "vtkMatrix4x4.h"
 #include "vtkPoints.h"
@@ -79,6 +80,43 @@ inline void vtkLinearTransformNormal(T1 mat[4][4], T2 in[3], T3 out[3])
 }
 
 //------------------------------------------------------------------------------
+// cvista SIMD: the contiguous 4x4 matrix*point inner loop, hoisted into a
+// dedicated free function so it can carry the target_clones("default","avx2")
+// function-multi-versioning attribute. GCC emits a baseline (SSE2) .default
+// clone + an .avx2 clone + an IFUNC resolver (runtime CPUID dispatch) so a
+// single portable wheel (no -march bump) runs wide SIMD where available. This
+// is the prime compute-bound vertical kernel (9 mul + 9 add per point,
+// contiguous in/out, no gather/reduction). BIT-EXACTNESS of the avx2 clone
+// requires the TU be compiled with -ffp-contract=off (set via
+// set_source_files_properties in CMakeLists): the matrix*point expression is
+// the canonical a*b+c FMA shape and FMA contraction would diverge from stock
+// VTK by 1 ULP on adversarial data. target_clones controls ISA only; the
+// off-contract flag governs all clones. The cvista-prefixed name keeps the
+// symbol distinct for objdump verification.
+//
+// cvista PORTABILITY: target_clones("default","avx2") is GCC x86-only function
+// multiversioning. AppleClang (Apple Silicon / non-x86) rejects it ("function
+// multiversioning is not supported on the current target") and MSVC has no such
+// attribute, so guard it to real GCC-on-x86 and expand to nothing elsewhere.
+// Those targets build the same plain baseline kernel (still -ffp-contract=off
+// and thus bit-exact) without the runtime AVX2 clone — the Linux bitexact gate
+// exercises the AVX2 path; macOS/Windows wheels use the portable baseline.
+#if defined(__GNUC__) && !defined(__clang__) && (defined(__x86_64__) || defined(__i386__))
+#define CVISTA_AVX2_TARGET_CLONES __attribute__((target_clones("default", "avx2")))
+#else
+#define CVISTA_AVX2_TARGET_CLONES
+#endif
+template <class TIn, class TOut, class T>
+CVISTA_AVX2_TARGET_CLONES void cvistaLinearTransformPointRange(
+  T matrix[4][4], const TIn* pin, TOut* pout, vtkIdType count)
+{
+  for (vtkIdType i = 0; i < count; ++i, pin += 3, pout += 3)
+  {
+    vtkLinearTransformPoint(matrix, pin, pout);
+  }
+}
+
+//------------------------------------------------------------------------------
 struct vtkLinearTransformPointsWorker
 {
   template <class TArrayIn, class TArrayOut, class T>
@@ -91,10 +129,9 @@ struct vtkLinearTransformPointsWorker
       {
         auto pin = inArray->GetPointer(3 * ptId);
         auto pout = outArray->GetPointer(3 * (outBeginTuple + ptId));
-        for (; ptId < endPtId; ++ptId, pin += 3, pout += 3)
-        {
-          vtkLinearTransformPoint(matrix, pin, pout);
-        }
+        // cvista: dispatch the contiguous range to the AVX2/SSE2 multi-versioned
+        // kernel (see cvistaLinearTransformPointRange above).
+        cvistaLinearTransformPointRange(matrix, pin, pout, endPtId - ptId);
       });
   }
 };
@@ -238,23 +275,29 @@ void vtkLinearTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPts)
   vtkDataArray* outArray = outPts->GetData();
   outArray->SetNumberOfTuples(m + n);
 
-  vtkLinearTransformPointsWorker worker;
-  if (!vtkArrayDispatch::Dispatch2ByArray<vtkArrayDispatch::AOSPointArrays,
-        vtkArrayDispatch::AOSPointArrays>::Execute(inArray, outArray, worker, m, matrix))
-  {
-    // for anything that isn't float or double
-    vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
-      [&](vtkIdType ptId, vtkIdType endPtId)
+  // cvista: run the (pre-sized, per-tuple-independent => bit-exact under any thread
+  // count) transform under the default-threading policy.
+  cvista::RunSafeFilterParallel(
+    [&]()
+    {
+      vtkLinearTransformPointsWorker worker;
+      if (!vtkArrayDispatch::Dispatch2ByArray<vtkArrayDispatch::AOSPointArrays,
+            vtkArrayDispatch::AOSPointArrays>::Execute(inArray, outArray, worker, m, matrix))
       {
-        double point[3];
-        for (; ptId < endPtId; ++ptId)
-        {
-          inPts->GetPoint(ptId, point);
-          vtkLinearTransformPoint(matrix, point, point);
-          outPts->SetPoint(m + ptId, point);
-        }
-      });
-  }
+        // for anything that isn't float or double
+        vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
+          [&](vtkIdType ptId, vtkIdType endPtId)
+          {
+            double point[3];
+            for (; ptId < endPtId; ++ptId)
+            {
+              inPts->GetPoint(ptId, point);
+              vtkLinearTransformPoint(matrix, point, point);
+              outPts->SetPoint(m + ptId, point);
+            }
+          });
+      }
+    });
 }
 
 //------------------------------------------------------------------------------
@@ -274,25 +317,29 @@ void vtkLinearTransform::TransformNormals(vtkDataArray* inNms, vtkDataArray* out
   // operate directly on the memory to avoid GetTuple()/SetPoint() calls.
   outNms->SetNumberOfTuples(m + n);
 
-  vtkLinearTransformNormalsWorker worker;
-  if (!vtkArrayDispatch::Dispatch2ByArray<vtkArrayDispatch::AOSPointArrays,
-        vtkArrayDispatch::AOSPointArrays>::Execute(inNms, outNms, worker, m, matrix))
-  {
-    // for anything that isn't float or double
-    vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
-      [&](vtkIdType ptId, vtkIdType endPtId)
+  cvista::RunSafeFilterParallel(
+    [&]()
+    {
+      vtkLinearTransformNormalsWorker worker;
+      if (!vtkArrayDispatch::Dispatch2ByArray<vtkArrayDispatch::AOSPointArrays,
+            vtkArrayDispatch::AOSPointArrays>::Execute(inNms, outNms, worker, m, matrix))
       {
-        double norm[3];
-        for (; ptId < endPtId; ++ptId)
-        {
-          inNms->GetTuple(ptId, norm);
-          // use TransformVector because matrix is already transposed & inverted
-          vtkLinearTransformVector(matrix, norm, norm);
-          vtkMath::Normalize(norm);
-          outNms->SetTuple(m + ptId, norm);
-        }
-      });
-  }
+        // for anything that isn't float or double
+        vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
+          [&](vtkIdType ptId, vtkIdType endPtId)
+          {
+            double norm[3];
+            for (; ptId < endPtId; ++ptId)
+            {
+              inNms->GetTuple(ptId, norm);
+              // use TransformVector because matrix is already transposed & inverted
+              vtkLinearTransformVector(matrix, norm, norm);
+              vtkMath::Normalize(norm);
+              outNms->SetTuple(m + ptId, norm);
+            }
+          });
+      }
+    });
 }
 
 //------------------------------------------------------------------------------
@@ -308,22 +355,26 @@ void vtkLinearTransform::TransformVectors(vtkDataArray* inVrs, vtkDataArray* out
   // operate directly on the memory to avoid GetTuple()/SetTuple() calls.
   outVrs->SetNumberOfTuples(m + n);
 
-  vtkLinearTransformVectorsWorker worker;
-  if (!vtkArrayDispatch::Dispatch2ByArray<vtkArrayDispatch::AOSPointArrays,
-        vtkArrayDispatch::AOSPointArrays>::Execute(inVrs, outVrs, worker, m, matrix))
-  {
-    // for anything that isn't float or double
-    vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
-      [&](vtkIdType ptId, vtkIdType endPtId)
+  cvista::RunSafeFilterParallel(
+    [&]()
+    {
+      vtkLinearTransformVectorsWorker worker;
+      if (!vtkArrayDispatch::Dispatch2ByArray<vtkArrayDispatch::AOSPointArrays,
+            vtkArrayDispatch::AOSPointArrays>::Execute(inVrs, outVrs, worker, m, matrix))
       {
-        double vec[3];
-        for (; ptId < endPtId; ++ptId)
-        {
-          inVrs->GetTuple(ptId, vec);
-          vtkLinearTransformVector(matrix, vec, vec);
-          outVrs->SetTuple(m + ptId, vec);
-        }
-      });
-  }
+        // for anything that isn't float or double
+        vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
+          [&](vtkIdType ptId, vtkIdType endPtId)
+          {
+            double vec[3];
+            for (; ptId < endPtId; ++ptId)
+            {
+              inVrs->GetTuple(ptId, vec);
+              vtkLinearTransformVector(matrix, vec, vec);
+              outVrs->SetTuple(m + ptId, vec);
+            }
+          });
+      }
+    });
 }
 VTK_ABI_NAMESPACE_END

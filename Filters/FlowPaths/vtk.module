@@ -25,7 +25,6 @@ PRIVATE_DEPENDS
   VTK::FiltersGeometry
   VTK::FiltersModeling
   VTK::FiltersSources
-  VTK::IOCore
   VTK::ParallelCore
   VTK::eigen
 TEST_DEPENDS

@@ -116,7 +116,14 @@ public:
   // Output data. Threads write to partitioned memory.
   TPtr NewScalars;
   vtkCellArray* NewTris;
-  float* NewPoints;
+  // cvista: NewPoints is double (was float) so the index->physical interpolation
+  // and the subsequent vtkImageTransform scaling happen in double and round to
+  // float ONCE at output time -- matching vtkSynchronizedTemplates3D, which
+  // interpolates in double and stores into a float vtkPoints. Eliminates the
+  // double-rounding that made FlyingEdges drift ~1 float32 ULP from the stock
+  // (SynchronizedTemplates) contour. NewGradients stays float (gradients are
+  // computed and consumed as float exactly as upstream).
+  double* NewPoints;
   float* NewGradients;
   float* NewNormals;
   bool NeedGradients;
@@ -201,7 +208,7 @@ public:
   void InterpolateAxesEdge(double t, unsigned char loc, const TPtr s, const int incs[3],
     vtkIdType vId, vtkIdType ijk0[3], vtkIdType ijk1[3], float g0[3])
   {
-    float* x = this->NewPoints + 3 * vId;
+    double* x = this->NewPoints + 3 * vId;
     x[0] = ijk0[0] + t * (ijk1[0] - ijk0[0]) + this->Min0;
     x[1] = ijk0[1] + t * (ijk1[1] - ijk0[1]) + this->Min1;
     x[2] = ijk0[2] + t * (ijk1[2] - ijk0[2]) + this->Min2;
@@ -728,7 +735,7 @@ void vtkFlyingEdges3DAlgorithm<TArray>::InterpolateEdge(double value, vtkIdType 
 
   // Okay interpolate
   double t = (value - *s0) / (*s1 - *s0);
-  float* xPtr = this->NewPoints + 3 * vId;
+  double* xPtr = this->NewPoints + 3 * vId;
   xPtr[0] = ijk0[0] + t * (ijk1[0] - ijk0[0]) + this->Min0;
   xPtr[1] = ijk0[1] + t * (ijk1[1] - ijk0[1]) + this->Min1;
   xPtr[2] = ijk0[2] + t * (ijk1[2] - ijk0[2]) + this->Min2;
@@ -1433,7 +1440,7 @@ void vtkFlyingEdges3DAlgorithm<TArray>::Contour(vtkFlyingEdges3D* self, vtkImage
     {
       newPts->GetData()->SetNumberOfTuples(totalPts);
       algo.NewPoints =
-        vtkAOSDataArrayTemplate<float>::FastDownCast(newPts->GetData())->GetPointer(0);
+        vtkAOSDataArrayTemplate<double>::FastDownCast(newPts->GetData())->GetPointer(0);
       newTris->ResizeExact(numOutTris, 3 * numOutTris);
       algo.NewTris = newTris;
       if (newScalars)
@@ -1624,7 +1631,9 @@ int vtkFlyingEdges3D::RequestData(
   vtkNew<vtkCellArray> newTris;
   newTris->UseFixedSizeDefaultStorage(3);
   vtkNew<vtkPoints> newPts;
-  newPts->SetDataTypeToFloat();
+  // cvista: accumulate coordinates in double (see NewPoints note above); the
+  // double->float downcast happens once after vtkImageTransform, below.
+  newPts->SetDataTypeToDouble();
   vtkSmartPointer<vtkDataArray> newScalars;
   vtkSmartPointer<vtkFloatArray> newNormals;
   vtkSmartPointer<vtkFloatArray> newGradients;
@@ -1684,8 +1693,21 @@ int vtkFlyingEdges3D::RequestData(
     output->GetPointData()->SetActiveAttribute(idx, vtkDataSetAttributes::VECTORS);
   }
 
-  // Transform output if image orientation is not axis aligned
+  // Transform output if image orientation is not axis aligned. This runs while
+  // the points are still double, so the index->physical scaling stays in double.
   vtkImageTransform::TransformPointSet(input, output);
+
+  // cvista: downcast the double coordinates to float ONCE, reproducing upstream
+  // FlyingEdges' float output dtype -- but with a single rounding from the true
+  // double physical coordinate, which is what vtkSynchronizedTemplates3D (the
+  // stock vtkContourFilter image path) produces. Without this, FlyingEdges
+  // rounded twice (index->float, then transform->float) and drifted ~1 ULP.
+  if (vtkPoints* outPts = output->GetPoints())
+  {
+    vtkNew<vtkFloatArray> fCoords;
+    fCoords->DeepCopy(outPts->GetData()); // double -> float, single round
+    outPts->SetData(fCoords);
+  }
 
   return 1;
 }

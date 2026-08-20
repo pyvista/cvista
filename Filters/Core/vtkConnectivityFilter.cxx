@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkConnectivityFilter.h"
 
+#include "cvistaFastConnectivity.h" // cvista opt-in parallel union-find region labeling
 #include "vtkCell.h"
 #include "vtkCellData.h"
 #include "vtkDataSet.h"
@@ -102,6 +103,12 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
 
   vtkPolyData* pdOutput = vtkPolyData::SafeDownCast(output);
   vtkUnstructuredGrid* ugOutput = vtkUnstructuredGrid::SafeDownCast(output);
+
+  // Hoist the input downcast: the type of "input" is invariant for the whole
+  // traversal, so SafeDownCast was being re-run (RTTI string-compare walk) once
+  // per cell inside the polyhedron guards below. Compute it once here and reuse
+  // the cached pointer; identical value every iteration, no logic/order change.
+  vtkUnstructuredGrid* inputUG = vtkUnstructuredGrid::SafeDownCast(input);
 
   vtkIdType numPts, numCells, cellId, i, j, pt;
   vtkPoints* newPts;
@@ -211,32 +218,48 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
     this->ExtractionMode != VTK_EXTRACT_CELL_SEEDED_REGIONS &&
     this->ExtractionMode != VTK_EXTRACT_CLOSEST_POINT_REGION)
   { // visit all cells marking with region number
-    for (cellId = 0; cellId < numCells; cellId++)
+    // cvista opt-in fast lane: for ALL_REGIONS + geometric connectivity, replace
+    // the serial wave-BFS (TraverseAndMark, the measured #1 self-time hotspot)
+    // with a parallel union-find. Region ids are bit-identical (both number by
+    // increasing min cell index); only output point order relaxes. No-op unless
+    // cvista::FastModeEnabled() and the supported regime -> falls through to the
+    // stock BFS below otherwise.
+    bool fastDone = false;
+    if (this->ExtractionMode == VTK_EXTRACT_ALL_REGIONS)
     {
-      if (cellId && !(cellId % 5000))
+      fastDone = cvista::FastConnectivityAllRegions(input, numPts, numCells,
+        this->InScalars != nullptr, this->Visited, this->PointMap, this->NewScalars,
+        this->NewCellScalars, this->RegionSizes, this->PointNumber, this->RegionNumber);
+    }
+    if (!fastDone)
+    {
+      for (cellId = 0; cellId < numCells; cellId++)
       {
-        if (this->CheckAbort())
+        if (cellId && !(cellId % 5000))
         {
-          break;
-        }
-        this->UpdateProgress(0.1 + 0.8 * cellId / numCells);
-      }
-
-      if (this->Visited[cellId] < 0)
-      {
-        this->NumCellsInRegion = 0;
-        this->Wave->InsertNextId(cellId);
-        this->TraverseAndMark(input);
-
-        if (this->NumCellsInRegion > maxCellsInRegion)
-        {
-          maxCellsInRegion = this->NumCellsInRegion;
-          largestRegionId = this->RegionNumber;
+          if (this->CheckAbort())
+          {
+            break;
+          }
+          this->UpdateProgress(0.1 + 0.8 * cellId / numCells);
         }
 
-        this->RegionSizes->InsertValue(this->RegionNumber++, this->NumCellsInRegion);
-        this->Wave->Reset();
-        this->Wave2->Reset();
+        if (this->Visited[cellId] < 0)
+        {
+          this->NumCellsInRegion = 0;
+          this->Wave->InsertNextId(cellId);
+          this->TraverseAndMark(input);
+
+          if (this->NumCellsInRegion > maxCellsInRegion)
+          {
+            maxCellsInRegion = this->NumCellsInRegion;
+            largestRegionId = this->RegionNumber;
+          }
+
+          this->RegionSizes->InsertValue(this->RegionNumber++, this->NumCellsInRegion);
+          this->Wave->Reset();
+          this->Wave2->Reset();
+        }
       }
     }
   }
@@ -361,11 +384,13 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
     {
       if (this->Visited[cellId] >= 0)
       {
+        // Hoist the cell-type read: it was fetched virtually up to 3x per cell
+        // (polyhedron test + both InsertNextCell calls). Identical value, no FP.
+        const int cellType = input->GetCellType(cellId);
         // special handling for polyhedron cells
-        if (vtkUnstructuredGrid::SafeDownCast(input) &&
-          input->GetCellType(cellId) == VTK_POLYHEDRON)
+        if (cellType == VTK_POLYHEDRON && inputUG)
         {
-          vtkUnstructuredGrid::SafeDownCast(input)->GetFaceStream(cellId, this->PointIds);
+          inputUG->GetFaceStream(cellId, this->PointIds);
           vtkUnstructuredGrid::ConvertFaceStreamPointIds(this->PointIds, this->PointMap);
         }
         else
@@ -380,11 +405,11 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
         vtkIdType newCellId = -1;
         if (pdOutput)
         {
-          newCellId = pdOutput->InsertNextCell(input->GetCellType(cellId), this->PointIds);
+          newCellId = pdOutput->InsertNextCell(cellType, this->PointIds);
         }
         else if (ugOutput)
         {
-          newCellId = ugOutput->InsertNextCell(input->GetCellType(cellId), this->PointIds);
+          newCellId = ugOutput->InsertNextCell(cellType, this->PointIds);
         }
         if (newCellId >= 0)
         {
@@ -410,11 +435,12 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
         }
         if (inReg)
         {
+          // Hoist the cell-type read (fetched virtually up to 3x per cell).
+          const int cellType = input->GetCellType(cellId);
           // special handling for polyhedron cells
-          if (vtkUnstructuredGrid::SafeDownCast(input) &&
-            input->GetCellType(cellId) == VTK_POLYHEDRON)
+          if (cellType == VTK_POLYHEDRON && inputUG)
           {
-            vtkUnstructuredGrid::SafeDownCast(input)->GetFaceStream(cellId, this->PointIds);
+            inputUG->GetFaceStream(cellId, this->PointIds);
             vtkUnstructuredGrid::ConvertFaceStreamPointIds(this->PointIds, this->PointMap);
           }
           else
@@ -429,11 +455,11 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
           vtkIdType newCellId = -1;
           if (pdOutput)
           {
-            newCellId = pdOutput->InsertNextCell(input->GetCellType(cellId), this->PointIds);
+            newCellId = pdOutput->InsertNextCell(cellType, this->PointIds);
           }
           else if (ugOutput)
           {
-            newCellId = ugOutput->InsertNextCell(input->GetCellType(cellId), this->PointIds);
+            newCellId = ugOutput->InsertNextCell(cellType, this->PointIds);
           }
           if (newCellId >= 0)
           {
@@ -449,11 +475,13 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
     {
       if (this->Visited[cellId] == largestRegionId)
       {
+        // Hoist the cell-type read (fetched virtually up to 3x per cell), matching
+        // the sibling extraction branches above. Identical value, no FP.
+        const int cellType = input->GetCellType(cellId);
         // special handling for polyhedron cells
-        if (vtkUnstructuredGrid::SafeDownCast(input) &&
-          input->GetCellType(cellId) == VTK_POLYHEDRON)
+        if (cellType == VTK_POLYHEDRON && inputUG)
         {
-          vtkUnstructuredGrid::SafeDownCast(input)->GetFaceStream(cellId, this->PointIds);
+          inputUG->GetFaceStream(cellId, this->PointIds);
           vtkUnstructuredGrid::ConvertFaceStreamPointIds(this->PointIds, this->PointMap);
         }
         else
@@ -468,11 +496,11 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
         vtkIdType newCellId = -1;
         if (pdOutput)
         {
-          newCellId = pdOutput->InsertNextCell(input->GetCellType(cellId), this->PointIds);
+          newCellId = pdOutput->InsertNextCell(cellType, this->PointIds);
         }
         else if (ugOutput)
         {
-          newCellId = ugOutput->InsertNextCell(input->GetCellType(cellId), this->PointIds);
+          newCellId = ugOutput->InsertNextCell(cellType, this->PointIds);
         }
         if (newCellId >= 0)
         {
@@ -550,6 +578,18 @@ void vtkConnectivityFilter::TraverseAndMark(vtkDataSet* input)
           for (k = 0; k < numCells; k++)
           {
             cellId = this->CellIds->GetId(k);
+            // Skip cells already marked visited: when later popped they are a
+            // no-op (the pop-time `Visited[cellId] < 0` guard rejects them).
+            // Filtering them here removes only future no-ops and leaves the
+            // relative order of the surviving (not-yet-visited) cells in the
+            // wave unchanged, so the first-encounter order of cells/points --
+            // and hence region ids, point numbering and cell ordering -- is
+            // bit-identical. This just avoids the redundant Wave2 push and the
+            // later pop + guard work for cells that are already done.
+            if (this->Visited[cellId] >= 0)
+            {
+              continue;
+            }
             if (this->InScalars)
             {
               int numScalars, ii;

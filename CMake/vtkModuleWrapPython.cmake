@@ -260,6 +260,131 @@ $<$<BOOL:${_vtk_python_hierarchy_files}>:\n--types \'$<JOIN:${_vtk_python_hierar
   endforeach ()
   cmake_policy(POP)
 
+  # --- cvista wrapper-unity: batch generated *Python.cxx into chunked unity TUs ---
+  # Each generated per-class wrapper re-parses the same vtkPython*.h stack (~40% of
+  # its -O3 compile). Concatenating N wrappers into one TU amortizes that parse once,
+  # measured ~48% less wrapper-compile CPU at -O3 (CommonCore 339 wrappers: 329s->170s,
+  # compiles clean). We chunk (not one giant TU) so the work stays splittable across
+  # -j cores. The per-class .cxx are still generated (custom_command outputs) and pulled
+  # in via OBJECT_DEPENDS; only the compiled translation units change, never the emitted
+  # code -> API/symbols are byte-identical. INERT unless CVISTA_WRAP_UNITY is ON.
+  #
+  # GCC<12 GUARD: concatenating wrappers changes the order in which template
+  # instantiations are first seen within one TU. devtoolset-10 GCC 10.2.1 (the
+  # manylinux2014 wheel container) then EAGERLY instantiates vtkConstantArray<int>
+  # = vtkImplicitArray<vtkConstantImplicitBackend<int>,13> before its backend
+  # header is complete, so implicit_array_traits<...>::rtype resolves to `void`
+  # and the "mandatory read trait" static_assert + a cascade of "ValueType {aka
+  # void}" errors fire (seen first in vtkStructuredGridPython.cxx batched into a
+  # CommonDataModel unity TU). The SAME wrapper compiles clean STANDALONE on GCC
+  # 10 (verified) and the whole unity scheme compiles clean on the local GCC 14,
+  # so this is purely a GCC<12 + concatenation ordering interaction. Disable the
+  # unity batching there (fall back to per-class wrappers — slower to compile but
+  # correct); GCC>=12 / clang keep the speed lever. Set CVISTA_WRAP_UNITY=0 to force
+  # off everywhere.
+  set(_cvista_unity_ok "${CVISTA_WRAP_UNITY}")
+  if (_cvista_unity_ok AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+      CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12")
+    message(STATUS
+      "cvista: GCC ${CMAKE_CXX_COMPILER_VERSION} (<12) — disabling wrapper-unity "
+      "batching (vtkImplicitArray eager-instantiation incompatibility); using "
+      "per-class Python wrappers.")
+    set(_cvista_unity_ok OFF)
+  endif ()
+  if (_cvista_unity_ok AND _vtk_python_sources)
+    # The module headers list can contain duplicate entries (CMake auto-dedups
+    # target_sources, but our #include-based unity does not), which would emit a
+    # wrapper's PyVTKAddFile_/symbols into two chunks -> multiple-definition at link.
+    list(REMOVE_DUPLICATES _vtk_python_sources)
+    set(_cvista_chunk "${CVISTA_WRAP_UNITY_CHUNK}")
+    if (NOT _cvista_chunk OR _cvista_chunk LESS 2)
+      set(_cvista_chunk 32)
+    endif ()
+    list(LENGTH _vtk_python_sources _cvista_nsrc)
+    # Unitize every module with >1 wrapper. A module with <=chunk wrappers collapses
+    # to a single unity TU (max parse-amortization); larger ones split into chunks so
+    # the work stays splittable across -j cores.
+    if (_cvista_nsrc GREATER 1)
+      set(_cvista_unity_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_vtk_python_library_name}Python")
+      set(_cvista_unity_sources)
+      set(_cvista_idx 0)
+      set(_cvista_chunk_id 0)
+      set(_cvista_chunk_files)
+      set(_cvista_chunk_includes "")
+      foreach (_cvista_src IN LISTS _vtk_python_sources)
+        string(APPEND _cvista_chunk_includes "#include \"${_cvista_src}\"\n")
+        list(APPEND _cvista_chunk_files "${_cvista_src}")
+        math(EXPR _cvista_idx "${_cvista_idx} + 1")
+        if (_cvista_idx GREATER_EQUAL _cvista_chunk)
+          set(_cvista_unity_file
+            "${_cvista_unity_dir}/cvista_unity_${_cvista_chunk_id}.cxx")
+          file(GENERATE OUTPUT "${_cvista_unity_file}" CONTENT "${_cvista_chunk_includes}")
+          set_source_files_properties("${_cvista_unity_file}" PROPERTIES
+            GENERATED TRUE
+            OBJECT_DEPENDS "${_cvista_chunk_files}")
+          list(APPEND _cvista_unity_sources "${_cvista_unity_file}")
+          set(_cvista_idx 0)
+          set(_cvista_chunk_files)
+          set(_cvista_chunk_includes "")
+          math(EXPR _cvista_chunk_id "${_cvista_chunk_id} + 1")
+        endif ()
+      endforeach ()
+      # trailing partial chunk
+      if (_cvista_chunk_files)
+        set(_cvista_unity_file
+          "${_cvista_unity_dir}/cvista_unity_${_cvista_chunk_id}.cxx")
+        file(GENERATE OUTPUT "${_cvista_unity_file}" CONTENT "${_cvista_chunk_includes}")
+        set_source_files_properties("${_cvista_unity_file}" PROPERTIES
+          GENERATED TRUE
+          OBJECT_DEPENDS "${_cvista_chunk_files}")
+        list(APPEND _cvista_unity_sources "${_cvista_unity_file}")
+      endif ()
+      set(_vtk_python_sources "${_cvista_unity_sources}")
+    endif ()
+  endif ()
+
+  # --- cvista wrapper size-opt: compile the (cold) Python wrapper TUs for size ---
+  # The generated *Python.cxx are argument-marshalling shims, not hot code, yet
+  # they inherit the project -O3 like everything else. Recompiling ONLY them at
+  # -Oz/-Os trades ~nothing in runtime for real wrapper-.so size. Appended after
+  # the inherited flags, and the last -O wins, so this overrides -O3 for these TUs
+  # only. Applies to the unity TUs when CVISTA_WRAP_UNITY is on, else the per-class
+  # wrappers. Gated by env CVISTA_WRAP_OPTSIZE (matches the CVISTA_ICF/CVISTA_STRIP
+  # idiom). Default ON (validated parity-green); set CVISTA_WRAP_OPTSIZE=0 to disable.
+  #
+  # Flag spelling is compiler-aware: -Oz exists only on clang and GCC>=12. The
+  # local nix toolchain is GCC 14 (-Oz fine), but the manylinux2014 wheel
+  # container ships devtoolset-10 GCC 10.2.1, where `cc1plus` hard-errors
+  # "argument to '-O' should be ... 'g','s' or 'fast'" on -Oz. Fall back to -Os
+  # there (GCC's size-opt; the practical delta vs -Oz on these marshalling shims
+  # is negligible, and under LTO the link-time -O3 governs anyway).
+  #
+  # cvista PORTABILITY: -Oz/-Os are GNU/clang spellings. MSVC `cl` does not accept
+  # them ("-Oz" reaches cl as "/Oz" -> D9002 "ignoring unknown option" and the
+  # size intent is silently dropped). MSVC's size-opt analogue is /O1 (favor
+  # small code). AppleClang accepts -Oz natively. Branch on compiler so the GNU
+  # path is byte-IDENTICAL (Linux codegen unchanged -> bitexact gate preserved)
+  # and MSVC gets a real flag instead of an ignored one. The whole lever stays
+  # behind CVISTA_WRAP_OPTSIZE.
+  if (_vtk_python_sources AND NOT "$ENV{CVISTA_WRAP_OPTSIZE}" STREQUAL "0")
+    if (MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+      # /O1 = minimize size (MSVC has no -Oz/-Os equivalent; /Os tunes the
+      # speed-vs-size heuristic but does not by itself enable size-opt).
+      set(_cvista_wrap_optsize "/O1")
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+        CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12")
+      # GCC<12 (manylinux2014 devtoolset-10): -Oz unsupported, use -Os.
+      set(_cvista_wrap_optsize "-Os")
+    else ()
+      # GCC>=12 and clang/AppleClang: -Oz (aggressive size). Linux path -> unchanged.
+      set(_cvista_wrap_optsize "-Oz")
+    endif ()
+    set_source_files_properties(${_vtk_python_sources} PROPERTIES
+      COMPILE_OPTIONS "${_cvista_wrap_optsize}")
+    unset(_cvista_wrap_optsize)
+  endif ()
+
   set("${sources}"
     "${_vtk_python_sources}"
     PARENT_SCOPE)
@@ -586,6 +711,45 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
   target_compile_definitions("${_vtk_python_target}"
     PRIVATE
       "-DPYTHON_PACKAGE=\"${_vtk_python_PYTHON_PACKAGE}\"")
+
+  # cvista: Python stable-ABI (abi3). See cvista-config/minimal.cmake and
+  # docs/abi3-feasibility.md. Compiles the generated wrapper TUs against the
+  # CPython limited API so a single cp3x-abi3 wheel serves all newer CPython, and
+  # names the module with the stable-ABI ".abi3.so" suffix (loaded by any
+  # CPython >= the Py_LIMITED_API floor) instead of the version-specific
+  # ".cpython-3XX-<plat>.so". (9.7 renamed the wrapper target to Py${name} =
+  # ${_vtk_python_target}, so abi3 properties are set on that target.)
+  if (CVISTA_ABI3)
+    target_compile_definitions("${_vtk_python_target}"
+      PRIVATE
+        "Py_LIMITED_API=${CVISTA_ABI3_VERSION}")
+    # Stable-ABI module filename: clear the version-specific SOABI postfix
+    # (e.g. ".cpython-3XX-<plat>") that the SOABI argument installs via
+    # CMAKE_<CONFIG>_POSTFIX, and replace the suffix with the abi3 form so the
+    # module loads on any CPython >= the Py_LIMITED_API floor.
+    set(_cvista_abi3_configs ${CMAKE_CONFIGURATION_TYPES})
+    if (NOT _cvista_abi3_configs)
+      set(_cvista_abi3_configs "${CMAKE_BUILD_TYPE}")
+    endif ()
+    foreach (_cvista_abi3_config IN LISTS _cvista_abi3_configs)
+      string(TOUPPER "${_cvista_abi3_config}" _cvista_abi3_upper)
+      if (_cvista_abi3_upper)
+        set_property(TARGET "${_vtk_python_target}" PROPERTY "${_cvista_abi3_upper}_POSTFIX" "")
+      endif ()
+    endforeach ()
+    if (WIN32)
+      set_property(TARGET "${_vtk_python_target}" PROPERTY SUFFIX ".pyd")
+      # NOTE: the abi3 (Py_LIMITED_API) Windows link fixes live in
+      # Utilities/Python/CMakeLists.txt (one global fix for ALL Python-using
+      # links, incl. the WrappingPythonCore module which is NOT a wrapper target
+      # created here): the CPython libs/ dir is added to the linker search path
+      # so MSVC's #pragma comment(lib,"python3.lib") auto-link resolves (LNK1104),
+      # and Python3::Module's import lib is retargeted to the stable-ABI stub
+      # python3.lib so the .pyd depends on python3.dll, not python3XX.dll.
+    else ()
+      set_property(TARGET "${_vtk_python_target}" PROPERTY SUFFIX ".abi3.so")
+    endif ()
+  endif ()
 
   target_link_libraries("${_vtk_python_target}"
     PRIVATE
@@ -1230,7 +1394,7 @@ static void ${_vtk_python_TARGET_NAME}_load() {\n")
       add_custom_command(
         OUTPUT    ${_vtk_python_pyi_files}
         COMMAND   ${_vtk_python_exe} # Do not quote; may contain arguments.
-                  -m vtkmodules.generate_pyi
+                  -m cvista.generate_pyi
                   -p "${_vtk_python_PYTHON_PACKAGE}"
                   ${_generate_pyi_static_importer_arg}
                   -o "${CMAKE_BINARY_DIR}/${_vtk_python_MODULE_DESTINATION}/${_vtk_python_package_dir}"

@@ -14,7 +14,12 @@
 #include "vtkSystemIncludes.h"
 #include "vtkWrappingPythonCoreModule.h" // For export macro
 
+#if defined(Py_LIMITED_API)
+extern VTKWRAPPINGPYTHONCORE_EXPORT PyTypeObject* PyVTKNamespace_TypePtr;
+#define PyVTKNamespace_Type (*PyVTKNamespace_TypePtr)
+#else
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyTypeObject PyVTKNamespace_Type;
+#endif
 
 #define PyVTKNamespace_Check(obj) (Py_TYPE(obj) == &PyVTKNamespace_Type)
 

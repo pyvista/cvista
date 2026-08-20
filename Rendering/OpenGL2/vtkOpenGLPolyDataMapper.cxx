@@ -498,7 +498,12 @@ std::string vtkOpenGLPolyDataMapper::GetTextureCoordinateName(const char* tname)
 //------------------------------------------------------------------------------
 bool vtkOpenGLPolyDataMapper::HaveTextures(vtkActor* actor)
 {
-  return (this->GetNumberOfTextures(actor) > 0);
+  // Cheap presence check: avoid building (and discarding) the full texinfo
+  // vector -- which copies every texture-name std::string out of the property
+  // map -- just to ask whether the count is > 0. Equivalent to
+  // GetNumberOfTextures(actor) > 0 but with no heap allocation.
+  return this->ColorTextureMap || actor->GetTexture() ||
+    !actor->GetProperty()->GetAllTextures().empty();
 }
 
 typedef std::pair<vtkTexture*, std::string> texinfo;
@@ -506,7 +511,18 @@ typedef std::pair<vtkTexture*, std::string> texinfo;
 //------------------------------------------------------------------------------
 unsigned int vtkOpenGLPolyDataMapper::GetNumberOfTextures(vtkActor* actor)
 {
-  return static_cast<unsigned int>(this->GetTextures(actor).size());
+  // Count without copying the texture names into a temporary vector.
+  unsigned int n = 0;
+  if (this->ColorTextureMap)
+  {
+    ++n;
+  }
+  if (actor->GetTexture())
+  {
+    ++n;
+  }
+  n += static_cast<unsigned int>(actor->GetProperty()->GetAllTextures().size());
+  return n;
 }
 
 //------------------------------------------------------------------------------
@@ -528,6 +544,34 @@ std::vector<texinfo> vtkOpenGLPolyDataMapper::GetTextures(vtkActor* actor)
     res.emplace_back(ti.second, ti.first);
   }
   return res;
+}
+
+//------------------------------------------------------------------------------
+const std::vector<texinfo>& vtkOpenGLPolyDataMapper::GetCachedTextures(vtkActor* actor)
+{
+  // The texture *set* (which textures, and their uniform names) is a function
+  // of this mapper (ColorTextureMap / batched block textures), the actor
+  // (SetTexture), and the actor's property (per-name textures) -- each of which
+  // bumps its own MTime when that set changes. Recompute only when one of those
+  // advances or the actor changes; otherwise reuse the previously built vector.
+  // This avoids rebuilding the vector and copying every texture-name std::string
+  // on every per-primitive, per-frame call while staying byte-identical.
+  vtkProperty* prop = actor->GetProperty();
+  vtkMTimeType mapperTime = this->GetMTime();
+  vtkMTimeType actorTime = actor->GetMTime();
+  vtkMTimeType propertyTime = prop->GetMTime();
+  if (!this->CachedTexturesValid || this->CachedTexturesActor != actor ||
+    this->CachedTexturesMapperTime != mapperTime || this->CachedTexturesActorTime != actorTime ||
+    this->CachedTexturesPropertyTime != propertyTime)
+  {
+    this->CachedTextures = this->GetTextures(actor);
+    this->CachedTexturesActor = actor;
+    this->CachedTexturesMapperTime = mapperTime;
+    this->CachedTexturesActorTime = actorTime;
+    this->CachedTexturesPropertyTime = propertyTime;
+    this->CachedTexturesValid = true;
+  }
+  return this->CachedTextures;
 }
 
 //------------------------------------------------------------------------------
@@ -939,7 +983,7 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderLight(
     vtkShaderProgram::Substitute(FSSource, "//VTK::TCoord::Impl", "");
 
     // get color and material from textures
-    std::vector<texinfo> textures = this->GetTextures(actor);
+    const std::vector<texinfo>& textures = this->GetCachedTextures(actor);
     bool albedo = false;
     bool material = false;
     bool emissive = false;
@@ -1168,7 +1212,7 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderLight(
     vtkShaderProgram::Substitute(FSSource, "//VTK::TCoord::Impl", "");
 
     // get color and material from textures
-    std::vector<texinfo> textures = this->GetTextures(actor);
+    const std::vector<texinfo>& textures = this->GetCachedTextures(actor);
 
     for (auto& t : textures)
     {
@@ -1577,7 +1621,7 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderTCoord(
     return;
   }
 
-  std::vector<texinfo> textures = this->GetTextures(actor);
+  const std::vector<texinfo>& textures = this->GetCachedTextures(actor);
   if (textures.empty())
   {
     return;
@@ -2221,9 +2265,10 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderNormal(
       vtkShaderProgram::Substitute(FSSource, "//VTK::Normal::Impl", toString.str());
 
       // normal mapping
-      std::vector<texinfo> textures = this->GetTextures(actor);
-      bool normalMapping = std::find_if(textures.begin(), textures.end(), [](const texinfo& tex)
-                             { return tex.second == "normalTex"; }) != textures.end();
+      const std::vector<texinfo>& textures = this->GetCachedTextures(actor);
+      bool normalMapping =
+        std::find_if(textures.begin(), textures.end(),
+          [](const texinfo& tex) { return tex.second == "normalTex"; }) != textures.end();
       bool coatNormalMapping = hasClearCoat &&
         std::find_if(textures.begin(), textures.end(),
           [](const texinfo& tex) { return tex.second == "coatNormalTex"; }) != textures.end();
@@ -2697,7 +2742,7 @@ bool vtkOpenGLPolyDataMapper::GetNeedToRebuildShaders(
   if (this->VBOs->GetNumberOfComponents("tcoord"))
   {
     vtkMTimeType texMTime = 0;
-    std::vector<texinfo> textures = this->GetTextures(actor);
+    const std::vector<texinfo>& textures = this->GetCachedTextures(actor);
     for (size_t i = 0; i < textures.size(); ++i)
     {
       vtkTexture* texture = textures[i].first;
@@ -2863,7 +2908,7 @@ void vtkOpenGLPolyDataMapper::SetMapperShaderParameters(
     cellBO.Program->SetUniformi(
       "showTexturesOnBackface", actor->GetProperty()->GetShowTexturesOnBackface() ? 1 : 0);
 
-    std::vector<texinfo> textures = this->GetTextures(actor);
+    const std::vector<texinfo>& textures = this->GetCachedTextures(actor);
     for (size_t i = 0; i < textures.size(); ++i)
     {
       vtkTexture* texture = textures[i].first;
@@ -3042,7 +3087,7 @@ void vtkOpenGLPolyDataMapper::SetLightingShaderParameters(
 
     if (oglRen->GetUseSphericalHarmonics() && sh)
     {
-      std::string uniforms[3] = { "shRed", "shGreen", "shBlue" };
+      static const char* const uniforms[3] = { "shRed", "shGreen", "shBlue" };
       for (int i = 0; i < 3; i++)
       {
         float coeffs[9];
@@ -3059,7 +3104,7 @@ void vtkOpenGLPolyDataMapper::SetLightingShaderParameters(
         coeffs[7] *= -1.092548f * 0.25f;
         coeffs[8] *= 0.546274f * 0.25f;
 
-        cellBO.Program->SetUniform1fv(uniforms[i].c_str(), 9, coeffs);
+        cellBO.Program->SetUniform1fv(uniforms[i], 9, coeffs);
       }
     }
   }
@@ -3433,8 +3478,10 @@ void vtkOpenGLPolyDataMapper::UpdateMaximumPointCellIds(vtkRenderer* ren, vtkAct
   vtkIdType maxPointId = this->CurrentInput->GetPoints()->GetNumberOfPoints() - 1;
   if (this->CurrentInput && this->CurrentInput->GetPointData())
   {
-    vtkIdTypeArray* pointArrayId = this->PointIdArrayName
-      ? vtkArrayDownCast<vtkIdTypeArray>(
+    // cvista: width-agnostic id read (GetRange works on any vtkDataArray); the
+    // int32-or-int64 passthrough array must size the id-bit allocation correctly.
+    vtkDataArray* pointArrayId = this->PointIdArrayName
+      ? vtkDataArray::SafeDownCast(
           this->CurrentInput->GetPointData()->GetArray(this->PointIdArrayName))
       : nullptr;
     if (pointArrayId)
@@ -3469,8 +3516,9 @@ void vtkOpenGLPolyDataMapper::UpdateMaximumPointCellIds(vtkRenderer* ren, vtkAct
 
   if (this->CurrentInput && this->CurrentInput->GetCellData())
   {
-    vtkIdTypeArray* cellArrayId = this->CellIdArrayName
-      ? vtkArrayDownCast<vtkIdTypeArray>(
+    // cvista: width-agnostic id read (GetRange works on any vtkDataArray).
+    vtkDataArray* cellArrayId = this->CellIdArrayName
+      ? vtkDataArray::SafeDownCast(
           this->CurrentInput->GetCellData()->GetArray(this->CellIdArrayName))
       : nullptr;
     if (cellArrayId)
@@ -4778,8 +4826,14 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
 
   if (currPass == vtkHardwareSelector::POINT_ID_LOW24)
   {
-    vtkIdTypeArray* pointArrayId = this->PointIdArrayName
-      ? vtkArrayDownCast<vtkIdTypeArray>(pd->GetArray(this->PointIdArrayName))
+    // cvista: width-agnostic id-array read. The point-id passthrough array may be
+    // stored as int32 (width-relaxed) or int64; fetch as vtkDataArray and read
+    // values via GetComponent so an int32 container is NOT silently dropped (a
+    // vtkArrayDownCast<vtkIdTypeArray> on an int32 array returns null -> the id
+    // remap would be skipped). Point/cell indices are < 2^53 so the double round
+    // trip is exact, identical to the former vtkIdType GetValue.
+    vtkDataArray* pointArrayId = this->PointIdArrayName
+      ? vtkDataArray::SafeDownCast(pd->GetArray(this->PointIdArrayName))
       : nullptr;
 
     // do we need to do anything to the point id data?
@@ -4800,7 +4854,7 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
         inval |= rawplowdata[pos + 1];
         inval = inval << 8;
         inval |= rawplowdata[pos];
-        vtkIdType outval = pointArrayId->GetValue(inval);
+        vtkIdType outval = static_cast<vtkIdType>(pointArrayId->GetComponent(inval, 0));
         plowdata[pos] = outval & 0xff;
         plowdata[pos + 1] = (outval & 0xff00) >> 8;
         plowdata[pos + 2] = (outval & 0xff0000) >> 16;
@@ -4810,8 +4864,14 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
 
   if (currPass == vtkHardwareSelector::POINT_ID_HIGH24)
   {
-    vtkIdTypeArray* pointArrayId = this->PointIdArrayName
-      ? vtkArrayDownCast<vtkIdTypeArray>(pd->GetArray(this->PointIdArrayName))
+    // cvista: width-agnostic id-array read. The point-id passthrough array may be
+    // stored as int32 (width-relaxed) or int64; fetch as vtkDataArray and read
+    // values via GetComponent so an int32 container is NOT silently dropped (a
+    // vtkArrayDownCast<vtkIdTypeArray> on an int32 array returns null -> the id
+    // remap would be skipped). Point/cell indices are < 2^53 so the double round
+    // trip is exact, identical to the former vtkIdType GetValue.
+    vtkDataArray* pointArrayId = this->PointIdArrayName
+      ? vtkDataArray::SafeDownCast(pd->GetArray(this->PointIdArrayName))
       : nullptr;
 
     // do we need to do anything to the point id data?
@@ -4829,7 +4889,7 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
         inval |= rawplowdata[pos + 1];
         inval = inval << 8;
         inval |= rawplowdata[pos];
-        vtkIdType outval = pointArrayId->GetValue(inval);
+        vtkIdType outval = static_cast<vtkIdType>(pointArrayId->GetComponent(inval, 0));
         phighdata[pos] = (outval & 0xff000000) >> 24;
         phighdata[pos + 1] = (outval & 0xff00000000) >> 32;
         phighdata[pos + 2] = (outval & 0xff0000000000) >> 40;
@@ -4878,8 +4938,9 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
   // process the cellid array?
   if (currPass == vtkHardwareSelector::CELL_ID_LOW24)
   {
-    vtkIdTypeArray* cellArrayId = this->CellIdArrayName
-      ? vtkArrayDownCast<vtkIdTypeArray>(cd->GetArray(this->CellIdArrayName))
+    // cvista: width-agnostic id-array read (see point-id note above).
+    vtkDataArray* cellArrayId = this->CellIdArrayName
+      ? vtkDataArray::SafeDownCast(cd->GetArray(this->CellIdArrayName))
       : nullptr;
     unsigned char* clowdata = sel->GetPixelBuffer(vtkHardwareSelector::CELL_ID_LOW24);
 
@@ -4904,7 +4965,7 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
           this->CellCellMap->ConvertOpenGLCellIdToVTKCellId(this->PointPicking, inval);
         if (cellArrayId)
         {
-          outval = cellArrayId->GetValue(outval);
+          outval = static_cast<vtkIdType>(cellArrayId->GetComponent(outval, 0));
         }
         clowdata[pos] = outval & 0xff;
         clowdata[pos + 1] = (outval & 0xff00) >> 8;
@@ -4915,8 +4976,9 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
 
   if (currPass == vtkHardwareSelector::CELL_ID_HIGH24)
   {
-    vtkIdTypeArray* cellArrayId = this->CellIdArrayName
-      ? vtkArrayDownCast<vtkIdTypeArray>(cd->GetArray(this->CellIdArrayName))
+    // cvista: width-agnostic id-array read (see point-id note above).
+    vtkDataArray* cellArrayId = this->CellIdArrayName
+      ? vtkDataArray::SafeDownCast(cd->GetArray(this->CellIdArrayName))
       : nullptr;
     unsigned char* chighdata = sel->GetPixelBuffer(vtkHardwareSelector::CELL_ID_HIGH24);
 
@@ -4938,7 +5000,7 @@ void vtkOpenGLPolyDataMapper::ProcessSelectorPixelBuffers(
           this->CellCellMap->ConvertOpenGLCellIdToVTKCellId(this->PointPicking, inval);
         if (cellArrayId)
         {
-          outval = cellArrayId->GetValue(outval);
+          outval = static_cast<vtkIdType>(cellArrayId->GetComponent(outval, 0));
         }
         chighdata[pos] = (outval & 0xff000000) >> 24;
         chighdata[pos + 1] = (outval & 0xff00000000) >> 32;

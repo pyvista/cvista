@@ -1,0 +1,275 @@
+r"""
+Currently, this package is experimental and may change in the future.
+"""
+from __future__ import absolute_import
+import sys
+import importlib.util
+
+from pathlib import Path
+
+from importlib.abc import MetaPathFinder
+from importlib.machinery import ExtensionFileLoader
+
+LOADING_STACK = []
+LIB_EXTS = [".pyd", ".so"]
+
+def find_lib_path(paths, vtk_module_name):
+    for ext in LIB_EXTS:
+        for base_path in paths:
+            # vtk-wheel => vtkCommonCore.cpython-310-darwin.so
+            # paraview  => vtkCommonCore.so
+            # Caution: vtkIOXML vs vtkIOXMLParser
+            for f in Path(base_path).glob(f"{vtk_module_name}[.-]*"):
+                resolved_file = f.resolve()
+                if resolved_file.is_file() and ext in resolved_file.suffixes:
+                    return str(resolved_file)
+
+
+class VTKMetaHook(MetaPathFinder):
+    """Attach a custom  loaded for vtk native library loading to defer loading of pure python dependencies"""
+    def find_spec(self, fullname, path, target=None):
+        if fullname.startswith("cvista.vtk"):
+            vtk_module_name = fullname.split(".")[1]
+            module_path = find_lib_path(path, vtk_module_name)
+            if module_path is None:
+                return None
+
+            LOADING_STACK.append(fullname)
+            return importlib.util.spec_from_file_location(fullname, module_path, loader=VTKLoader(fullname, module_path))
+
+        return None
+
+
+class VTKLoader(ExtensionFileLoader):
+    """Flush any pending dependency load once initialize() phase is done"""
+    def exec_module(self, module):
+        super().exec_module(module)
+
+        # Process pending dependencies only if the module match the first load request
+        if len(LOADING_STACK) and LOADING_STACK[0] == module.__name__:
+            LOADING_STACK.clear()
+            on_vtk_module_init_completed()
+
+
+
+# Register our hook for vtk library loader
+sys.meta_path.insert(0, VTKMetaHook())
+
+
+def _windows_dll_path():
+    import os
+    _vtk_python_path = '@VTK_PYTHON_SITE_PACKAGES_SUFFIX@/cvista'
+    _vtk_dll_path = '@CMAKE_INSTALL_BINDIR@'
+    # Compute the DLL path based on the location of the file and traversing up
+    # the installation prefix to append the DLL path.
+    _vtk_dll_directory = os.path.dirname(os.path.abspath(__file__))
+    # Loop while we have components to remove.
+    while _vtk_python_path not in ('', '.', '/'):
+        # Strip a directory away.
+        _vtk_python_path = os.path.dirname(_vtk_python_path)
+        _vtk_dll_directory = os.path.dirname(_vtk_dll_directory)
+    _vtk_dll_directory = os.path.join(_vtk_dll_directory, _vtk_dll_path)
+    if os.path.exists(_vtk_dll_directory):
+        # We never remove this path; it is required for VTK to work and there's
+        # no scope where we can easily remove the directory again.
+        _ = os.add_dll_directory(_vtk_dll_directory)
+
+    # Build tree support.
+    try:
+        from . import _build_paths
+
+        # Add any paths needed for the build tree.
+        for path in _build_paths.paths:
+            if os.path.exists(path):
+                _ = os.add_dll_directory(path)
+    except ImportError:
+        # Relocatable install tree (or non-Windows).
+        pass
+
+
+# CPython 3.8 added behaviors which modified the DLL search path on Windows to
+# only search "blessed" paths. When importing SMTK, ensure that SMTK's DLLs are
+# in this set of "blessed" paths.
+if sys.version_info >= (3, 8) and sys.platform == 'win32':
+    _windows_dll_path()
+
+
+#------------------------------------------------------------------------------
+# this little trick is for static builds of VTK. In such builds, if
+# the user imports this Python package in a non-statically linked Python
+# interpreter i.e. not of the of the VTK-python executables, then we import the
+# static components importer module.
+def _load_cvista_static():
+    if 'cvista_vtkCommonCore' not in sys.builtin_module_names:
+        import _cvista_static
+
+@_cvista_static_import@
+
+
+#------------------------------------------------------------------------------
+# list the contents
+__all__ = [
+    @_cvista_all@
+]
+#------------------------------------------------------------------------------
+# Opt-in NON-EXACT fast mode (cvista extension).
+#
+# Some cvista filters have a multithreaded fast path whose output is NOT byte-exact
+# vs stock VTK -- e.g. order-relaxed topology emission, where the SAME cells are
+# produced but their ORDER (and thus the raw connectivity bytes) depends on thread
+# scheduling. These stay OFF by default so cvista is a byte-exact drop-in. Call
+# EnableFast() to opt in; points / point-data / the cell set stay correct, only
+# cell ORDER becomes non-deterministic. Backed by the CVISTA_FAST env var, which the
+# native filters read live, so this can be toggled at runtime.
+import os as _os
+
+def EnableFast():
+    """Opt in to cvista's non-exact multithreaded fast paths (see module docs)."""
+    _os.environ["CVISTA_FAST"] = "1"
+
+def DisableFast():
+    """Turn the non-exact fast paths back off (the default)."""
+    _os.environ.pop("CVISTA_FAST", None)
+
+def IsFastEnabled():
+    """True if the non-exact fast mode is currently enabled."""
+    return _os.environ.get("CVISTA_FAST", "").lower() in ("1", "on", "true", "yes")
+
+# Expose the fast-mode toggles for `from cvista import *` and discoverability.
+__all__ += ["EnableFast", "DisableFast", "IsFastEnabled"]
+
+#------------------------------------------------------------------------------
+# get the version
+__version__ = "@VTK_MAJOR_VERSION@.@VTK_MINOR_VERSION@.@VTK_BUILD_VERSION@"
+
+#------------------------------------------------------------------------------
+# describe import dependencies to properly define Python @override
+MODULE_MAPPER = {
+    "vtkCommonDataModel": [
+        "cvista.util.data_model",
+    ],
+    "vtkCommonExecutionModel": [
+        "cvista.util.execution_model",
+    ],
+    # vtkRenderingCore's factory-allocated classes (e.g. vtkSkybox -> vtkOpenGLSkybox)
+    # are wrapped in vtkRenderingOpenGL2.  PyVTKObject_FromPointer looks up the
+    # concrete class name in the Python class registry immediately after the C++
+    # factory returns the override object; if vtkRenderingOpenGL2 has not yet been
+    # imported that lookup returns nullptr and the object is wrapped as the base
+    # class instead of the override.  Force the import here so the registry is
+    # populated before any vtkRenderingCore factory call can resolve.
+    "vtkRenderingCore": [
+        "cvista.vtkRenderingOpenGL2",
+    ],
+}
+LOADED_MODULES = set()
+PENDING_LOADED_MODULES = set()
+
+def register_vtk_module_dependencies(vtk_module_name, *import_names):
+    """Method to call for registering external override on vtkmodule load"""
+    MODULE_MAPPER.setdefault(vtk_module_name, []).extend(import_names)
+
+    # If already loaded let's make sure we import it now
+    if vtk_module_name in LOADED_MODULES:
+        for import_name in import_names:
+            importlib.import_module(import_name)
+
+
+def on_vtk_module_init(module_name):
+    """Automatically called by vtkmodule when they are loaded"""
+    if module_name in LOADED_MODULES:
+        return
+
+    PENDING_LOADED_MODULES.add(module_name)
+
+
+def on_vtk_module_init_completed():
+    pending = list(PENDING_LOADED_MODULES)
+    PENDING_LOADED_MODULES.clear()
+
+    for module_name in pending:
+        LOADED_MODULES.add(module_name)
+        for import_name in MODULE_MAPPER.get(module_name, []):
+            importlib.import_module(import_name)
+
+
+#------------------------------------------------------------------------------
+# Flat lazy namespace (cvista extension): `from cvista import vtkPolyData`.
+#
+# Consumers should not need to know which internal module hosts a class -- that
+# layout is an implementation detail cvista reserves the right to change (tier
+# splits, kit moves, performance rewrites).  `_class_index.py` is GENERATED at
+# build time (cvista/generate_index.py) by importing every wrapped module of
+# this exact build, so it can never drift from the shipped binaries; name
+# collisions resolve star-import style (later module in dependency order wins),
+# matching `from cvista.all import *`.
+#
+# Resolution is lazy: nothing is imported until the first attribute access, and
+# only the one hosting module is imported then.  In the 3-wheel tier split the
+# single tiered build indexes EVERY tier's classes, so on a partial install a
+# known name whose module is absent raises a helpful install-the-missing-tier
+# ImportError (via `_module_tiers.py`, emitted into the core wheel by
+# partition_wheels.py, which owns tier assignment) instead of a bare
+# AttributeError.
+
+def __getattr__(name):
+    if name.startswith('_'):
+        # Never index private/dunder names; also keeps protocol probes
+        # (__getstate__, __path__, ...) cheap and out of the machinery below.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        from . import _class_index
+    except ImportError:
+        # Build trees / embedded builds without a generated index: flat access
+        # is unavailable, explicit module imports still work.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    module_name = _class_index.INDEX.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        module = importlib.import_module(f'{__name__}.{module_name}')
+    except ImportError as exc:
+        # The name is known to this build but its module is not importable.
+        # Three distinguishable causes, most actionable first.
+        tier = None
+        try:
+            from . import _module_tiers
+            tier = _module_tiers.TIERS.get(module_name)
+        except ImportError:
+            pass
+        # (a) a THIRD-PARTY import inside the module is unmet -- the pure-Python
+        # helpers (e.g. util.xarray_support) carry optional dependencies.
+        missing = getattr(exc, 'name', None)
+        if missing and not missing.startswith(__name__):
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which requires the '
+                f'optional dependency {missing!r}. Install it to use this name.'
+            )
+        # (b) the hosting module ships in a tier wheel that is not installed.
+        elif tier and tier != 'core':
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which ships in the '
+                f'cvista-{tier} tier wheel and is not installed. '
+                f'Install it with: pip install cvista[{tier}]  '
+                f'(or cvista[all] for everything).'
+            )
+        # (c) anything else -- a genuinely broken/absent module in this build.
+        else:
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which is not '
+                f'importable in this install ({exc}).'
+            )
+        raise ImportError(msg) from exc
+    return getattr(module, name)
+
+
+def __dir__():
+    names = set(globals())
+    names.update(__all__)
+    try:
+        from . import _class_index
+    except ImportError:
+        pass
+    else:
+        names.update(_class_index.INDEX)
+    return sorted(names)

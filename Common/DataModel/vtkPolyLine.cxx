@@ -466,6 +466,11 @@ void vtkPolyLine::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPo
   this->LineScalars->SetNumberOfComponents(cellScalars->GetNumberOfComponents());
   this->LineScalars->SetNumberOfTuples(2);
   vtkNew<vtkCellArray> lines;
+  // appendLines() below reads this scratch array through GetConnectivityAOSArray64()
+  // under VTK_USE_64BIT_IDS, which returns nullptr (→ null deref) when the array is
+  // 32-bit. A default-constructed vtkCellArray uses 32-bit storage under cvista's
+  // int32 default, so force 64-bit storage here to match the id-width read path.
+  lines->Use64BitStorage();
   vtkIdType numberOfCurrentLines = 0, numberOfPreviousLines = 0;
 
   const auto appendLines = [&]()

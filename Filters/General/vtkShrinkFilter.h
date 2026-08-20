@@ -40,6 +40,19 @@ public:
   vtkGetMacro(ShrinkFactor, double);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default; falls back to single precision when the
+   *   input has no explicit points, e.g. an image or rectilinear grid).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkShrinkFilter();
   ~vtkShrinkFilter() override;
@@ -51,6 +64,7 @@ protected:
   int RequestData(vtkInformation*, vtkInformationVector**, vtkInformationVector*) override;
 
   double ShrinkFactor;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkShrinkFilter(const vtkShrinkFilter&) = delete;

@@ -108,6 +108,18 @@ public:
   vtkGetVectorMacro(ExtrusionPoint, double, 3);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkLinearExtrusionFilter();
   ~vtkLinearExtrusionFilter() override = default;
@@ -118,6 +130,7 @@ protected:
   double ScaleFactor;
   double Vector[3];
   double ExtrusionPoint[3];
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   void (vtkLinearExtrusionFilter::*ExtrudePoint)(double x[3], vtkIdType id, vtkDataArray* normals);
   void ViaNormal(double x[3], vtkIdType id, vtkDataArray* normals);

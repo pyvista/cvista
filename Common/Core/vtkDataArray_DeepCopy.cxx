@@ -29,6 +29,21 @@ struct threadedCopyFunctor
   }
 };
 
+// cvista: byte-wise twin of threadedCopyFunctor above, for the untemplated
+// same-type AOS path in DeepCopy. Identical work, expressed in bytes so it does
+// not need a ValueType and therefore costs no template instantiations.
+struct threadedByteCopyFunctor
+{
+  char* src;
+  char* dst;
+  vtkIdType tupleBytes;
+  void operator()(vtkIdType begin, vtkIdType end) const
+  {
+    memcpy(dst + begin * tupleBytes, src + begin * tupleBytes,
+      static_cast<size_t>((end - begin) * tupleBytes));
+  }
+};
+
 //--------Copy tuples from src to dest------------------------------------------
 struct DeepCopyWorker
 {
@@ -150,11 +165,48 @@ void vtkDataArray::DeepCopy(vtkDataArray* da)
 
     if (numTuples != 0)
     {
-      DeepCopyWorker worker;
-      if (!vtkArrayDispatch::Dispatch2::Execute(da, this, worker))
+      // cvista: same-type AOS -> AOS is a straight byte copy, which is exactly
+      // what DeepCopyWorker's AoS specialization below does. Doing it here,
+      // untemplated, keeps that path for EVERY value type at zero instantiation
+      // cost, because Dispatch2 only reaches the specialization for value types
+      // that are in vtkArrayDispatch::Arrays. With the list trimmed
+      // (CVISTA_DISPATCH_MINIMAL, see vtkCreateArrayDispatchArrayList.cmake) a
+      // copy of e.g. the int32 connectivity array otherwise fell through to the
+      // virtual per-tuple fallback and cost ~2.5 ns per element rather than
+      // memcpy bandwidth: 7x to 75x slower than stock VTK for the six value
+      // types off the list.
+      //
+      // Thresholds mirror the templated worker exactly so the types already on
+      // the fast path keep their current behaviour, threading included.
+      if (this->GetDataType() == da->GetDataType() &&
+        this->GetArrayType() == vtkArrayTypes::VTK_AOS_DATA_ARRAY &&
+        da->GetArrayType() == vtkArrayTypes::VTK_AOS_DATA_ARRAY)
       {
-        // If dispatch fails, use fallback:
-        worker(da, this);
+        const vtkIdType tupleBytes = static_cast<vtkIdType>(numComps) * this->GetDataTypeSize();
+        char* src = static_cast<char*>(da->GetVoidPointer(0));
+        char* dst = static_cast<char*>(this->GetVoidPointer(0));
+        if (numTuples < 1024 * 1024)
+        {
+          memcpy(dst, src, static_cast<size_t>(numTuples * tupleBytes));
+        }
+        else
+        {
+          threadedByteCopyFunctor worker;
+          worker.src = src;
+          worker.dst = dst;
+          worker.tupleBytes = tupleBytes;
+          int numThreads = std::min(vtkSMPTools::GetEstimatedNumberOfThreads(), 16);
+          vtkSMPTools::For(0, numTuples, numTuples / numThreads, worker);
+        }
+      }
+      else
+      {
+        DeepCopyWorker worker;
+        if (!vtkArrayDispatch::Dispatch2::Execute(da, this, worker))
+        {
+          // If dispatch fails, use fallback:
+          worker(da, this);
+        }
       }
     }
 

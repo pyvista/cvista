@@ -35,7 +35,6 @@ PRIVATE_DEPENDS
   VTK::CommonSystem
   VTK::CommonTransforms
   VTK::FiltersGeneric
-  VTK::IOLegacy
 TEST_DEPENDS
   VTK::FiltersFlowPaths
   VTK::FiltersParallelDIY2

@@ -334,6 +334,7 @@ public:
    */
   void SetOffset(vtkIdType cellId, vtkIdType offset)
   {
+    this->WidenStorageForValue(offset);
     this->Offsets->SetComponent(cellId, 0, static_cast<double>(offset));
   }
 
@@ -1541,6 +1542,23 @@ protected:
 private:
   vtkCellArray(const vtkCellArray&) = delete;
   void operator=(const vtkCellArray&) = delete;
+
+  // cvista width-relaxed rule ([[cvista-int32-default-width-relaxed]]): cell arrays
+  // default to 32-bit offset/connectivity storage (half the footprint of stock
+  // VTK's 64-bit default) and auto-widen to 64-bit only when a value cannot be
+  // represented in int32. This guard is called by every value-writing path
+  // before it stores; on the common path it is a single predicted-not-taken
+  // branch. `maxValue` must be the largest value that path is about to store
+  // (largest offset and/or connectivity id). Out-of-line ConvertTo64BitStorage
+  // runs only on the rare overflow.
+  void WidenStorageForValue(vtkIdType maxValue)
+  {
+    if (this->StorageType == StorageTypes::Int32 &&
+      maxValue > static_cast<vtkIdType>(0x7FFFFFFF))
+    {
+      this->ConvertTo64BitStorage();
+    }
+  }
 };
 
 template <typename ArrayT>
@@ -1650,14 +1668,18 @@ struct GetCellAtIdImpl : public vtkCellArray::DispatchUtilities
     const auto& beginOffset = offsetsRange[cellId];
     const auto& endOffset = offsetsRange[cellId + 1];
     const vtkIdType cellSize = static_cast<vtkIdType>(endOffset - beginOffset);
-    const auto cellConnectivity = GetRange(conn).begin() + beginOffset;
+    // Index the connectivity range with operator[] rather than materializing a
+    // base pointer via begin(). For AOS arrays operator[] inlines to a direct
+    // buffer access, whereas begin() lowers to an out-of-line vtkDataArray
+    // GetPointer() call (a per-cell PLT call across the shared library).
+    auto connRange = GetRange(conn);
 
     // ValueType differs from vtkIdType, so we have to copy into a temporary buffer:
     ids->SetNumberOfIds(cellSize);
     vtkIdType* idPtr = ids->GetPointer(0);
     for (vtkIdType i = 0; i < cellSize; ++i)
     {
-      idPtr[i] = static_cast<vtkIdType>(cellConnectivity[i]);
+      idPtr[i] = static_cast<vtkIdType>(connRange[beginOffset + i]);
     }
   }
 
@@ -1669,12 +1691,13 @@ struct GetCellAtIdImpl : public vtkCellArray::DispatchUtilities
     const auto& beginOffset = offsetsRange[cellId];
     const auto& endOffset = offsetsRange[cellId + 1];
     cellSize = static_cast<vtkIdType>(endOffset - beginOffset);
-    const auto cellConnectivity = GetRange(conn).begin() + beginOffset;
+    // See note above: operator[] inlines for AOS arrays, begin() does not.
+    auto connRange = GetRange(conn);
 
     // ValueType differs from vtkIdType, so we have to copy into a temporary buffer:
     for (vtkIdType i = 0; i < cellSize; ++i)
     {
-      cellPoints[i] = static_cast<vtkIdType>(cellConnectivity[i]);
+      cellPoints[i] = static_cast<vtkIdType>(connRange[beginOffset + i]);
     }
   }
 
@@ -1708,13 +1731,15 @@ struct GetCellAtIdImpl : public vtkCellArray::DispatchUtilities
     const auto& beginOffset = offsetsRange[cellId];
     const auto& endOffset = offsetsRange[cellId + 1];
     cellSize = static_cast<vtkIdType>(endOffset - beginOffset);
-    const auto cellConnectivity = GetRange(conn).begin() + beginOffset;
+    // See note in the vtkIdList* overload: operator[] inlines for AOS arrays,
+    // begin() lowers to an out-of-line GetPointer() call.
+    auto connRange = GetRange(conn);
 
     temp->SetNumberOfIds(cellSize);
     vtkIdType* tempPtr = temp->GetPointer(0);
     for (vtkIdType i = 0; i < cellSize; ++i)
     {
-      tempPtr[i] = static_cast<vtkIdType>(cellConnectivity[i]);
+      tempPtr[i] = static_cast<vtkIdType>(connRange[beginOffset + i]);
     }
 
     cellPoints = tempPtr;
@@ -1835,6 +1860,20 @@ inline vtkIdType vtkCellArray::GetCellPointAtId(vtkIdType cellId, vtkIdType cell
 //----------------------------------------------------------------------------
 vtkIdType vtkCellArray::InsertNextCell(vtkIdType npts, const vtkIdType* pts) VTK_SIZEHINT(pts, npts)
 {
+  // Widen to 64-bit if any stored value (the new offset = current connectivity
+  // size + npts, or any point id in pts) would overflow int32.
+  if (this->StorageType == StorageTypes::Int32)
+  {
+    vtkIdType maxVal = this->GetNumberOfConnectivityIds() + npts;
+    for (vtkIdType i = 0; i < npts; ++i)
+    {
+      if (pts[i] > maxVal)
+      {
+        maxVal = pts[i];
+      }
+    }
+    this->WidenStorageForValue(maxVal);
+  }
   vtkIdType cellId;
   this->Dispatch(vtkCellArray_detail::InsertNextCellImpl{}, npts, pts, cellId);
   return cellId;
@@ -1843,6 +1882,9 @@ vtkIdType vtkCellArray::InsertNextCell(vtkIdType npts, const vtkIdType* pts) VTK
 //----------------------------------------------------------------------------
 vtkIdType vtkCellArray::InsertNextCell(int npts)
 {
+  // Incremental API: this writes only the new offset (= connectivity size +
+  // npts); connectivity ids arrive later via InsertCellPoint, guarded there.
+  this->WidenStorageForValue(this->GetNumberOfConnectivityIds() + npts);
   vtkIdType cellId;
   this->Dispatch(vtkCellArray_detail::InsertNextCellImpl{}, npts, cellId);
   return cellId;
@@ -1851,32 +1893,29 @@ vtkIdType vtkCellArray::InsertNextCell(int npts)
 //----------------------------------------------------------------------------
 inline void vtkCellArray::InsertCellPoint(vtkIdType id)
 {
+  this->WidenStorageForValue(id);
   this->Dispatch(vtkCellArray_detail::InsertCellPointImpl{}, id);
 }
 
 //----------------------------------------------------------------------------
 inline void vtkCellArray::UpdateCellCount(int npts)
 {
+  // Updates the current cell's end offset (= connectivity size).
+  this->WidenStorageForValue(this->GetNumberOfConnectivityIds());
   this->Dispatch(vtkCellArray_detail::UpdateCellCountImpl{}, npts);
 }
 
 //----------------------------------------------------------------------------
 vtkIdType vtkCellArray::InsertNextCell(vtkIdList* pts)
 {
-  vtkIdType cellId;
-  this->Dispatch(
-    vtkCellArray_detail::InsertNextCellImpl{}, pts->GetNumberOfIds(), pts->GetPointer(0), cellId);
-  return cellId;
+  return this->InsertNextCell(pts->GetNumberOfIds(), pts->GetPointer(0));
 }
 
 //----------------------------------------------------------------------------
 vtkIdType vtkCellArray::InsertNextCell(vtkCell* cell)
 {
   vtkIdList* pts = cell->GetPointIds();
-  vtkIdType cellId;
-  this->Dispatch(
-    vtkCellArray_detail::InsertNextCellImpl{}, pts->GetNumberOfIds(), pts->GetPointer(0), cellId);
-  return cellId;
+  return this->InsertNextCell(pts->GetNumberOfIds(), pts->GetPointer(0));
 }
 
 //----------------------------------------------------------------------------

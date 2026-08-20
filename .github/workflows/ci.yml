@@ -1,0 +1,676 @@
+# CI gate — runs on every PR to main AND on every push to main. The Linux build
+# leg, the two Linux-only numeric gates, AND the macOS/Windows build legs all run
+# on every PR (the all-OS legs are no longer main-only — see build-other-os). We
+# accept slower PRs to guarantee a non-Linux build break can never land on main.
+# Jobs:
+#
+#   build (linux)   : cibuildwheel builds the SINGLE cp312-abi3 wheel in the
+#              manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1) container and
+#              runs the in-container offscreen smoke (pyproject [tool.cibuildwheel]
+#              test-command). Python 3.11 has been dropped (maintainer directive):
+#              the wheel is a single Py_LIMITED_API 0x030c0000 abi3 wheel tagged
+#              cp312-abi3 that loads on CPython 3.12+. cibuildwheel's abi3 dedup
+#              means the cp312-* cp313-* cp314-* selectors yield exactly ONE build
+#              and ONE wheel. cibuildwheel handles host-checkout -> build in the
+#              container -> auditwheel repair (--plat manylinux_2_28_x86_64), so we
+#              don't hand-roll any docker. Uploads cvista-wheels-linux-cp312abi3.
+#              GCC 14 activates the GCC>=12-gated unity + array-split build-time
+#              levers that are inert on the old manylinux2014/GCC-10.2.1 image.
+#   build (macos/windows) : the build-other-os matrix — one job per OS (macos-14,
+#              windows-latest), each running the cp312+ abi3 build through
+#              cibuildwheel on a native runner and the in-cibuildwheel smoke. Runs
+#              on EVERY PR (and push-to-main + workflow_dispatch) so AppleClang/MSVC
+#              build breaks are caught BEFORE merge, not after. Per-OS ccache keeps
+#              the warm cost bounded (keyed cvista-cibw-ccache-<os>)
+#              shares the python-independent C++ across runs. Each OS uploads
+#              cvista-wheels-<os> (a DISJOINT artifact prefix from the Linux gate).
+#   bitexact : install the cp312-abi3 LINUX wheel on the host (per-python via
+#              setup-python) alongside stock vtk==9.6.2 and assert byte-for-byte
+#              identical output (maxULP=0). No container — only the build needs old
+#              glibc; the wheel runs anywhere >= glibc 2.28. ABI3-AWARE parity
+#              (BITEXACT_ABI3=1): only type __flags__ HEAPTYPE/IMMUTABLETYPE
+#              diverges; numpy zero-copy preserved. Matrixed over py3.12 + py3.13
+#              (both install the one abi3 wheel). stock vtk==9.6.2 only ships Linux
+#              wheels, so this gate is Linux-only.
+#   renderexact : same idea for the RENDERING pipeline (tests/renderexact). Renders
+#              the scenes offscreen via vtkEGLRenderWindow under stock vtk and cvista
+#              through the SAME host Mesa software GL (llvmpipe) and asserts
+#              pixel-for-pixel identical RGBA + Z framebuffers. A sibling of bitexact
+#              (reuses the Linux build artifact). Run on py3.13 (the abi3 wheel);
+#              render output is wheel-format-independent. Linux-only (same stock-vtk
+#              reason).
+#   build-lto / bitexact-lto / renderexact-lto : MAIN-ONLY legs (skipped on PRs
+#              via `if: github.event_name != 'pull_request'`). They rebuild the
+#              Linux wheel in the SHIPPED config (-flto=auto + -O3, both CVISTA_LTO
+#              and CVISTA_GATE_O2 unset) and re-run the byte-for-byte + pixel-exact
+#              gates against it, so the configuration we actually release is
+#              bit-exact-validated on every merge — without paying LTO's ~2-3x
+#              build cost on PRs. Separate ccache namespace + artifact prefix
+#              (…-lto-…) so they never perturb the fast PR build or its seed.
+# Publishing lives in release-tiers.yml, NOT here. On `release: published` that
+# workflow builds the abi3 (cp312+) AND legacy cp310/cp311 wheels, partitions each
+# into the three stackable projects (cvista / cvista-rendering / cvista-io), and
+# trusted-publishes them. This workflow builds + bit-exact/pixel-exact-validates
+# the shipped config on every merge; it no longer publishes anything.
+name: CI
+
+on:
+  # Runs on merges to main too, so each main build refreshes the per-leg ccache
+  # seed that PR builds restore (the "cold≈warm" lever). PR builds restore the
+  # most recent seed via restore-keys; this push build saves a new one.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # `labeled` so adding `pyvista-full` to an already-open PR fires the gate (the
+    # default opened/synchronize/reopened set does not trigger on a label add).
+    types: [opened, synchronize, reopened, labeled]
+  # NOTE: publishing to PyPI is NOT done here. The three stackable wheels
+  # (cvista / cvista-rendering / cvista-io) are built and published by
+  # release-tiers.yml on `release: published`. This workflow no longer has a
+  # release trigger or a publish job — cvista is the core tier, nothing more.
+  # The merge queue runs the full gate — including the heavy `pyvista` job — on
+  # the queued commit BEFORE the squash lands, so a red run blocks the merge.
+  # Jobs gated `if: github.event_name != 'pull_request'` (build-lto + *-lto) also
+  # run here, so the merge queue validates the SHIPPED config too.
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build cp312-abi3 (manylinux_2_28)
+    # Heavy VTK C++ compile — runs on the Blacksmith 16-vcpu runner when the org/
+    # repo variable CVISTA_RUNNER_LINUX is set, else falls back to github-hosted
+    # ubuntu-latest. The compile width auto-tracks the runner's cores (no pinned
+    # CVISTA_BUILD_JOBS — see pyproject), so changing the variable to a bigger/
+    # smaller tier is the ONLY knob; nothing here hardcodes a core count.
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+    # Hard cap so a hung compile/link can't run to GitHub's 360-min default and
+    # burn paid-runner minutes. Warm ccache build is well under this.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # VTK derives its version from full history
+
+      # --- ccache cross-RUN SEED (the cold≈warm lever) ------------------------
+      # The single Linux abi3 leg keeps ONE container alive for the whole cp
+      # matrix, so the in-container /ccache (pyproject linux env) already shares
+      # the python-independent C++ across the abi3 dedup WITHIN a run. THIS step
+      # adds cross-RUN persistence: restore a per-leg ccache seeded by the most
+      # recent push-to-main build (`restore-keys` prefix match). The C++ kit
+      # objects are python-independent and byte-stable across commits that don't
+      # touch them, so a PR's "cold" build restores the seed and recompiles only
+      # its changed TUs (+ the non-cacheable codegen/link floor). `key` is unique
+      # per run (github.run_id) so every run SAVES a fresh seed at job end; on
+      # push-to-main that becomes the new seed PRs restore. Branch scoping: a PR
+      # can read caches from its base branch (main) and its own branch, so the
+      # seed naturally comes from main.
+      - name: Make ccache dir world-writable (container build user differs)
+        run: mkdir -p /tmp/cvista-cibw-ccache && chmod 0777 /tmp/cvista-cibw-ccache
+      - name: Restore ccache seed (cross-run)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache
+          key: cvista-ccache-linux-cp312abi3-${{ github.run_id }}
+          restore-keys: |
+            cvista-ccache-linux-cp312abi3-
+
+      - name: Build wheel + offscreen smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          # Single abi3 wheel: cp312-* cp313-* cp314-* all dedup to ONE cp312-abi3
+          # build (pyproject `build` selector already restricts to cp312+).
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # PR/push builds are LTO-OFF + -O2 for a fast/cheap BIT-EXACT gate:
+          #   CVISTA_LTO=0      drops -flto (changes inlining, not FP values).
+          #   CVISTA_GATE_O2=1  drops the per-TU optimizer from -O3 to -O2 (faster
+          #                   codegen; bit-exact — no -ffast-math, so IEEE FP is
+          #                   identical at -O2 and -O3). Release builds
+          #                   (wheels-cibuildwheel.yml) leave both unset -> -O3 +
+          #                   LTO, so shipped wheels stay fully optimized.
+          #   CVISTA_SOURCE_UNITY=1  per-module source UNITY_BUILD (byte-identical
+          #                   objects; GCC>=12-gated, active on this 2_28 image),
+          #                   together with the GCC<12-gated wrapper-unity
+          #                   (CVISTA_WRAP_UNITY, default ON) and the array-TU split.
+          CIBW_ENVIRONMENT: CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
+          # Mount the restored host ccache dir into the build container so ccache
+          # actually reads/writes the persisted seed (CCACHE_DIR=/ccache is set in
+          # pyproject [tool.cibuildwheel.linux.environment]). Without this mount
+          # the in-container /ccache is discarded at container exit and the seed is
+          # never consulted.
+          CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache:/ccache"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cvista-wheels-linux-cp312abi3
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # === 3-wheel tier split =====================================================
+  # Build + partition + pack + stack-validate the three tier wheels (cvista /
+  # cvista-rendering / cvista-io) on linux/macOS/Windows. The build logic lives in
+  # the reusable workflow `_tier-wheels.yml` — the SAME one the release pipeline
+  # (release-tiers.yml) calls — so there is one source of truth. Heavy (full
+  # build), gated off normal PRs: on-demand via `gh workflow run ci.yml --ref
+  # <branch>` (workflow_dispatch) or by adding the `wheel-split` label to a PR.
+  split:
+    name: 3-wheel tier split
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'wheel-split')
+    uses: ./.github/workflows/_tier-wheels.yml
+
+  build-other-os:
+    name: build ${{ matrix.os }}
+    # macOS/Windows build on EVERY PR (and main + workflow_dispatch). We accept a
+    # slower PR gate to never let a non-Linux build break land on main again: a
+    # GCC/x86-only construct (e.g. target_clones FMV) compiles clean on the Linux
+    # leg but fails AppleClang/MSVC, and a main-only gate caught it only post-merge.
+    # Cost is bounded — single cp312-abi3 wheel, one job per OS.
+    # runs-on comes from matrix.runner: the Blacksmith macOS (M4) / Windows-2025
+    # runner when the CVISTA_RUNNER_MACOS / CVISTA_RUNNER_WINDOWS variable is set, else
+    # the github-hosted default. `os` is kept ONLY as the stable artifact suffix so
+    # downstream jobs (publish, bitexact) keep finding cvista-wheels-macos-14 /
+    # cvista-wheels-windows-latest unchanged. runner.os (Windows/macOS) still drives
+    # the per-OS `if:` steps and is correct on Blacksmith runners too.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      # One job per non-Linux OS. Each runs the cp312+ abi3 build through
+      # cibuildwheel; the backend emits the single cp312-abi3 wheel per OS. All
+      # config (archs, init-cache, repair tool, per-OS test-command smoke) lives in
+      # pyproject.toml [tool.cibuildwheel.macos|windows]. These legs prove the wheel
+      # BUILDS + imports on its native platform; the numeric/pixel gates stay
+      # Linux-only (stock vtk==9.6.2 is Linux-only).
+      matrix:
+        include:
+          - os: macos-14
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+          - os: windows-latest
+            runner: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+    # MSVC/AppleClang full VTK compile; cap below the 360-min default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Per-OS cross-run ccache (Linux/macOS). The constant build dir + CCACHE_BASEDIR
+      # fix make the python-independent C++ a cache hit across runs.
+      - name: Restore ccache (cross-run)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache
+          key: cvista-cibw-ccache-${{ matrix.os }}-${{ github.sha }}
+          restore-keys: cvista-cibw-ccache-${{ matrix.os }}-
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for the whole job. The Ninja
+      # generator does NOT auto-run vcvars, so without this cmake auto-selects the
+      # mingw GCC that ships on the windows runner (C:\mingw64\bin\cc.exe) — or
+      # finds no cl at all — and fails ("CMAKE_C_COMPILER: cl is not a full path").
+      # ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so cl must be on PATH.
+      - name: Set up MSVC (vcvars) for the Ninja build
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build wheel + smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        # No env here: per-OS config (archs, CVISTA_CMAKE_INIT, ccache launcher,
+        # test-command) is all in pyproject [tool.cibuildwheel.<os>]. The shipped
+        # macOS/Windows wheels stay fully optimized (no CVISTA_LTO=0 override).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cvista-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  bitexact:
+    name: cvista == stock VTK 9.6.2 (bit-exact, py${{ matrix.python }})
+    needs: build
+    # Cheap, short gate (~3 min) — the small Blacksmith tier or github fallback.
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both pythons install the one cp312-abi3 wheel -> abi3-aware parity
+        # (only type __flags__ diverges; numpy zero-copy preserved).
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          # ONLY the Linux build leg (cvista-wheels-linux-*); pip --find-links picks
+          # the cp312-abi3 wheel (tag-compatible on 3.12 and 3.13). The
+          # macOS/Windows artifacts (cvista-wheels-macos-14 / -windows-latest) are a
+          # DISJOINT prefix, so they never reach this Linux gate.
+          pattern: cvista-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Bit-exact suite (cvista vs stock VTK 9.6.2)
+        # The single abi3 wheel is always tested ABI3-AWARE (BITEXACT_ABI3=1):
+        # the heap-type wrappers differ from stock only in type __flags__
+        # (HEAPTYPE/IMMUTABLETYPE); every numeric value stays maxULP=0.
+        env:
+          BITEXACT_ABI3: "1"
+        run: ci/run-bitexact.sh dist python
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitexact-output-py${{ matrix.python }}
+          path: /tmp/bx-out
+          if-no-files-found: ignore
+
+  regression:
+    name: cvista behavior regressions (py${{ matrix.python }})
+    needs: build
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The one cp312-abi3 wheel is tag-compatible on both interpreters.
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Mesa software GL/EGL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          # ONLY the Linux build leg; pip --find-links picks the cp312-abi3
+          # wheel. macOS/Windows artifacts are a disjoint prefix.
+          pattern: cvista-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Behavior regression suite (built cvista wheel)
+        run: ci/run-regression.sh dist python
+
+  renderexact:
+    name: cvista == stock VTK 9.6.2 (pixel-exact render, py${{ matrix.python }})
+    needs: build
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The cp312-abi3 wheel on 3.13. Render output is wheel-format-independent
+        # (the GL command stream is identical), so a single python is sufficient.
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Mesa software GL/EGL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Pixel-exact render suite (cvista vs stock VTK 9.6.2, software EGL)
+        run: ci/run-renderexact.sh dist python
+      - name: Upload render diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderexact-output-py${{ matrix.python }}
+          path: /tmp/rx-out
+          if-no-files-found: ignore
+
+  # Cheap detector so a PR that BUMPS the pin (tests/pyvista/PYVISTA_REF) runs the
+  # PyVista gate without needing the `pyvista-full` label — the pin must never
+  # advance unvalidated. Plain git diff (no third-party action). Only meaningful
+  # on pull_request; merge_group / dispatch satisfy the `pyvista` if on their own.
+  changes:
+    name: detect PyVista-related changes
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    # Trivial git-diff detector; should finish in seconds.
+    timeout-minutes: 10
+    outputs:
+      pyvista_ref: ${{ steps.f.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # need the PR base commit in history for the diff
+      - id: f
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Trigger the gate when a PR touches anything PyVista-gate-related: the
+          # pin, the deselect list (every fix PR un-deselects a test), the
+          # harness, or anything that shapes the Python namespace PyVista imports
+          # through -- the wrapping, the wheel split, the shim. #253 rewrote
+          # Wrapping/Python/cvista/generate_index.py and this gate reported "no
+          # PyVista-related changes", so a wrong VTK_DOUBLE_MAX reached PyPI with
+          # a green PR. Not subject to label timing — fires on opened/synchronize.
+          changed=false
+          if [ "$EVENT" = "pull_request" ] && \
+             git diff --name-only "$BASE" "$HEAD" | grep -qE '^(tests/pyvista/|ci/run-pyvista\.sh$|Wrapping/Python/|cvista-config/wheel-split/|tools/cvista_shim\.py$)'; then
+            changed=true
+          fi
+          echo "PyVista-related files changed on this PR: $changed"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+  pyvista-flat:
+    name: PyVista via the flat namespace (py3.13)
+    needs: [build, changes]
+    # The flat namespace is what `from cvista import X` uses, and it is NOT what
+    # the shim gate exercises: under the shim a class is found in the module it
+    # lives in, so the index is never consulted. 9.6.2.4 shipped VTK_DOUBLE_MAX
+    # as 1e+99 through the flat namespace with the shim gate green.
+    #
+    # Deliberately on the PR fast path, unlike the full `pyvista` job: it runs
+    # core only (no plotting, no image cache), which is where a wrong constant or
+    # a misrouted class shows up, and costs a few minutes rather than 45.
+    if: >-
+      github.event_name == 'merge_group' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.pyvista_ref == 'true')
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      CVISTA_PYVISTA_MODE: flat
+      PYVISTA_FLAT_CORE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Xvfb + Mesa software GL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: PyVista core suite through the flat namespace
+        run: ci/run-pyvista.sh dist python
+
+  pyvista:
+    name: PyVista suite (built cvista wheel, py3.13)
+    needs: [build, changes]
+    # PyVista's OWN full test suite driving cvista (vtkmodules->cvista shim) — the
+    # downstream contract gate, sister to bitexact/renderexact. HEAVY, so it is
+    # kept OFF the PR fast path: it runs in the merge queue (the blocking gate
+    # before a squash lands), on manual dispatch, and on any PR that either carries
+    # the `pyvista-full` label OR bumps the pin (tests/pyvista/PYVISTA_REF — so the
+    # pin can never advance unvalidated). Uses the FAST O2 `build` wheel, NOT
+    # build-lto: optimization level is parity-invariant (proven maxULP=0 by
+    # bitexact + bitexact-lto), so PyVista returns the same pass/fail on either
+    # wheel — and the O2 wheel is already built, so this never waits on the slow
+    # LTO link. Mark this check REQUIRED for the merge queue in branch protection
+    # so a red run blocks the merge.
+    if: >-
+      github.event_name == 'merge_group' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        (contains(github.event.pull_request.labels.*.name, 'pyvista-full') ||
+         needs.changes.outputs.pyvista_ref == 'true'))
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    # Heavy downstream suite; cap below the 360-min default.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Xvfb + Mesa software GL (llvmpipe)
+        # Xvfb gives PyVista a real DISPLAY (its plotting suite warns + segfault-
+        # guards without one, under filterwarnings=error); Mesa llvmpipe does the
+        # software GLX rendering. Mirrors PyVista's own CI render environment.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1-mesa-dri libglx-mesa0 libegl1 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          # The FAST O2 Linux wheel (cvista-wheels-linux-*); pip --find-links picks
+          # the cp312-abi3 wheel (tag-compatible on 3.13). macOS/Windows artifacts
+          # are a disjoint prefix and never reach this Linux gate.
+          pattern: cvista-wheels-linux-*
+          merge-multiple: true
+          path: dist
+      - name: PyVista suite (pinned ref, vtkmodules->cvista shim)
+        run: ci/run-pyvista.sh dist python
+      - name: Upload pytest logs + junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyvista-output
+          path: /tmp/pv-out
+          if-no-files-found: ignore
+
+  # Single stable required check for the PyVista gate. The `pyvista` job above is
+  # SKIPPED on normal PRs (it only runs in the merge queue, on dispatch, or on a
+  # PR that is labeled `pyvista-full` or bumps the pin) — and a required check
+  # whose job is skipped BLOCKS the PR. So require THIS always()-reporting gate,
+  # never `pyvista` directly (same pattern as `sdk-gate`, see #109): it passes
+  # when the suite succeeded OR was skipped, and fails only when the suite ran and
+  # failed. In the merge queue the suite runs for real, so this gates the merge;
+  # on normal PRs it passes instantly without running the heavy suite.
+  pyvista-gate:
+    name: PyVista gate
+    needs: pyvista
+    if: ${{ always() }}
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Require the PyVista suite to pass or be skipped
+        run: |
+          r='${{ needs.pyvista.result }}'
+          echo "pyvista suite result: $r"
+          if [ "$r" = success ] || [ "$r" = skipped ]; then
+            echo "PyVista gate OK ($r)"
+          else
+            echo "::error::PyVista suite $r"
+            exit 1
+          fi
+
+  # === LTO-on-main legs (push-to-main / workflow_dispatch ONLY) ==============
+  # The PR gate above builds the FAST Linux wheel (CVISTA_LTO=0 + -O2) so PRs stay
+  # cheap — but that means the configuration we actually SHIP (the tag-gated
+  # wheels-cibuildwheel.yml build: -flto + -O3) was never run through the
+  # byte-for-byte / pixel-exact gates. These legs close that gap: on merge to
+  # main (and manual dispatch) ONLY — never on PRs, so PR latency is untouched —
+  # rebuild the Linux wheel exactly as shipped (CVISTA_LTO + CVISTA_GATE_O2 both
+  # UNSET => -flto=auto + -O3, per cvista-config/minimal.cmake) and re-run both
+  # gates against it. LTO/-O3 change inlining + codegen, NOT IEEE FP values (no
+  # -ffast-math anywhere), so this is expected to stay maxULP=0 — these legs
+  # PROVE it per-merge instead of only at release time.
+  build-lto:
+    name: build cp312-abi3 LTO (manylinux_2_28, main only)
+    if: github.event_name != 'pull_request'
+    # Heavy compile + LTO link (64GB on the 16-vcpu tier is ample headroom).
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+    # LTO link is the slowest build (~2-3x the fast build); cap with headroom.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # SEPARATE ccache namespace (…-lto-…) from the non-LTO `build` seed: the
+      # -flto/-O3 objects hash differently and must never poison the fast PR seed.
+      # The non-LTO `build` job still runs on push-to-main and keeps refreshing
+      # the seed that PRs restore, so PR build time is unaffected.
+      - name: Make ccache dir world-writable (container build user differs)
+        run: mkdir -p /tmp/cvista-cibw-ccache-lto && chmod 0777 /tmp/cvista-cibw-ccache-lto
+      - name: Restore ccache seed (cross-run, LTO namespace)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache-lto
+          key: cvista-ccache-linux-cp312abi3-lto-${{ github.run_id }}
+          restore-keys: |
+            cvista-ccache-linux-cp312abi3-lto-
+      - name: Build LTO wheel + offscreen smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # Ship config: CVISTA_LTO + CVISTA_GATE_O2 left UNSET => -flto=auto + -O3
+          # (the release default). CVISTA_SOURCE_UNITY=1 stays on (byte-identical
+          # objects). This is byte-for-byte the wheels-cibuildwheel.yml config.
+          CIBW_ENVIRONMENT: CVISTA_SOURCE_UNITY=1
+          CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-lto:/ccache"
+      - uses: actions/upload-artifact@v4
+        with:
+          # DISTINCT prefix (cvista-wheels-lto-*) so the non-LTO gates' download
+          # pattern (cvista-wheels-linux-*) never picks up the LTO wheel and the
+          # LTO gates below never pick up the fast wheel.
+          name: cvista-wheels-lto-linux-cp312abi3
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  bitexact-lto:
+    name: cvista == stock VTK 9.6.2 (bit-exact LTO, py${{ matrix.python }})
+    if: github.event_name != 'pull_request'
+    needs: build-lto
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-wheels-lto-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Bit-exact suite (LTO wheel vs stock VTK 9.6.2)
+        env:
+          BITEXACT_ABI3: "1"
+        run: ci/run-bitexact.sh dist python
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitexact-lto-output-py${{ matrix.python }}
+          path: /tmp/bx-out
+          if-no-files-found: ignore
+
+  renderexact-lto:
+    name: cvista == stock VTK 9.6.2 (pixel-exact render LTO, py${{ matrix.python }})
+    if: github.event_name != 'pull_request'
+    needs: build-lto
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Mesa software GL/EGL (llvmpipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1-mesa-dri libglx-mesa0 libgles2 libosmesa6 libxcb1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-wheels-lto-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Pixel-exact render suite (LTO wheel vs stock VTK 9.6.2, software EGL)
+        run: ci/run-renderexact.sh dist python
+      - name: Upload render diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderexact-lto-output-py${{ matrix.python }}
+          path: /tmp/rx-out
+          if-no-files-found: ignore
+
+  # === Linux aarch64 build validation (main / merge_group only) ==============
+  # aarch64 VALIDATION of the shipped (tiered) config — it compiles the aarch64
+  # wheel and runs cibuildwheel's offscreen smoke so an aarch64-specific break is
+  # caught. It does NOT ship: the aarch64 tier wheels are built + published by
+  # release-tiers.yml (the `linux-arm` job in _tier-wheels.yml). Gated OFF pull
+  # requests (`if` below) so the expensive native compile never burdens PR CI —
+  # it runs on push-to-main / merge_group / dispatch, i.e. main-only, matching the
+  # aarch64-on-main-and-release policy. Same fast tiered flags as the shipped
+  # x86_64 tier wheel (CVISTA_LTO=0 + CVISTA_GATE_O2=1 + tiered init-cache) so it
+  # validates exactly what ships. Native (not QEMU): the full VTK compile under
+  # emulation is prohibitively slow. Runner: the Blacksmith arm64 tier when
+  # CVISTA_RUNNER_LINUX_ARM64 is set, else github-hosted ubuntu-24.04-arm.
+  build-arm:
+    name: build cp312-abi3 (manylinux_2_28 aarch64)
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_ARM64 || 'ubuntu-24.04-arm' }}
+    # Native aarch64 full VTK compile; cap below the 360-min default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Make ccache dir world-writable (container build user differs)
+        run: mkdir -p /tmp/cvista-cibw-ccache-arm && chmod 0777 /tmp/cvista-cibw-ccache-arm
+      - name: Restore ccache seed (cross-run, arm64 namespace)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache-arm
+          key: cvista-ccache-linux-arm64-cp312abi3-${{ github.run_id }}
+          restore-keys: |
+            cvista-ccache-linux-arm64-cp312abi3-
+      - name: Build wheel + offscreen smoke (cibuildwheel)
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          # Build aarch64 (overrides the pyproject [tool.cibuildwheel.linux]
+          # x86_64 archs/image/repair-plat) on the manylinux_2_28 aarch64 image,
+          # in the SHIPPED tiered config (fast bit-exact-gate flags + tiered
+          # init-cache) so this validates exactly what release-tiers.yml ships.
+          CIBW_ARCHS_LINUX: aarch64
+          CIBW_MANYLINUX_AARCH64_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
+          CIBW_ENVIRONMENT: >-
+            CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
+            CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --strip --plat manylinux_2_28_aarch64 -w {dest_dir} {wheel}"
+          CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-arm:/ccache"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cvista-wheels-linux-arm64-cp312abi3
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+

@@ -5,7 +5,6 @@
 
 #include "vtkParticleTracerBase.h"
 
-#include "vtkAbstractParticleWriter.h"
 #include "vtkAppendDataSets.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
@@ -61,7 +60,32 @@ using namespace vtkParticleTracerBaseNamespace;
 using IDStates = vtkTemporalInterpolatedVelocityField::IDStates;
 
 //------------------------------------------------------------------------------
-vtkCxxSetObjectMacro(vtkParticleTracerBase, ParticleWriter, vtkAbstractParticleWriter);
+// vtkAbstractParticleWriter lives in VTK::IOCore. To keep VTK::FiltersFlowPaths
+// free of any IO dependency, the writer is held as an incomplete type and its
+// reference counting is routed through vtkObjectBase (every VTK object derives
+// from vtkObjectBase at offset 0). The base class only stores the user-supplied
+// writer; subclasses that actually emit particles include the concrete header.
+void vtkParticleTracerBase::SetParticleWriter(vtkAbstractParticleWriter* pw)
+{
+  if (this->ParticleWriter == pw)
+  {
+    return;
+  }
+  vtkObjectBase* newWriter = reinterpret_cast<vtkObjectBase*>(pw);
+  vtkObjectBase* oldWriter = reinterpret_cast<vtkObjectBase*>(this->ParticleWriter);
+  if (newWriter)
+  {
+    newWriter->Register(this);
+  }
+  this->ParticleWriter = pw;
+  if (oldWriter)
+  {
+    oldWriter->UnRegister(this);
+  }
+  this->Modified();
+}
+
+//------------------------------------------------------------------------------
 vtkCxxSetObjectMacro(vtkParticleTracerBase, Integrator, vtkInitialValueProblemSolver);
 vtkCxxSetObjectMacro(vtkParticleTracerBase, Controller, vtkMultiProcessController);
 
@@ -1409,7 +1433,18 @@ void vtkParticleTracerBase::SetParticle(vtkParticleTracerBaseNamespace::Particle
       omega = 0.0;
     }
     this->ParticleAngularVel->SetValue(particleId, omega);
-    if (particleId > 0)
+    // Rotation is a per-particle time-integral of angular velocity; its first
+    // sample has no prior interval and must be 0. This was gated on
+    // `particleId > 0`, but particleId is the atomic output-row index
+    // (particleCount++), which is assigned in thread-arrival order once the
+    // integration is threaded -- so under a threaded SMP backend an arbitrary
+    // particle per step got its rotation spuriously reset, making the Rotation
+    // field nondeterministic (thread-count dependent). Gate on the particle's own
+    // TimeStepAge instead (== 1 on its first vorticity sample), which is
+    // thread-invariant and makes the threaded result byte-identical to serial.
+    // This intentionally diverges from stock VTK 9.6.2 to fix that defect (see
+    // upstream report); the stock reset-on-row-0 was itself incorrect per particle.
+    if (info.TimeStepAge > 1)
     {
       rotation =
         info.rotation + (info.angularVel + omega) / 2 * (info.CurrentPosition.x[3] - info.time);

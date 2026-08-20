@@ -19,6 +19,7 @@ DEPENDS
   VTK::nlohmannjson
 PRIVATE_DEPENDS
   VTK::CommonMisc
+  VTK::ParallelCore
   VTK::vtksys
 TEST_OPTIONAL_DEPENDS
   VTK::IOCellGrid

@@ -4,13 +4,19 @@
 
 #include "vtkCell.h"
 #include "vtkCellData.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
 #include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
+#include "vtkPoints.h"
 #include "vtkSmartPointer.h"
 #include "vtkUnstructuredGrid.h"
+
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkShrinkFilter);
@@ -29,6 +35,7 @@ void vtkShrinkFilter::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
   os << indent << "Shrink Factor: " << this->ShrinkFactor << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 
 //------------------------------------------------------------------------------
@@ -69,8 +76,31 @@ int vtkShrinkFilter::RequestData(
   // Allocate approximately the space needed for the output cells.
   output->Allocate(numCells);
 
-  // Allocate space for a new set of points.
+  // Allocate space for a new set of points. By default the output points keep
+  // the precision of the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force
+  // it. For non-vtkPointSet inputs (image/rectilinear: no explicit points) the
+  // default falls back to single precision, matching historical behavior.
   vtkSmartPointer<vtkPoints> newPts = vtkSmartPointer<vtkPoints>::New();
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+    if (inputPointSet && inputPointSet->GetPoints())
+    {
+      newPts->SetDataType(inputPointSet->GetPoints()->GetDataType());
+    }
+    else
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->Reserve(numPts * 8);
 
   // Allocate space for data associated with the new set of points.
@@ -86,6 +116,64 @@ int vtkShrinkFilter::RequestData(
   // Point Id map.
   vtkIdType* pointMap = new vtkIdType[input->GetNumberOfPoints()];
 
+  // Reusable per-cell coordinate buffer. The input point coordinates for a cell
+  // are needed twice (center-of-mass accumulation, then the shrink computation).
+  // Fetching them ONCE via input->GetPoint() and caching them here halves the
+  // number of (virtual, cross-library) GetPoint() calls. GetPoint() returns the
+  // exact stored coordinates, so reading them once vs. twice yields byte-identical
+  // values and the accumulation/shrink arithmetic order is unchanged: bit-exact.
+  std::vector<double> cellPts;
+
+  // Raw point-coordinate access. input->GetPoint(id, x) is a virtual,
+  // cross-library call that, for a vtkPointSet, ultimately reads the AOS point
+  // array and casts each component to double. When the points are stored as a
+  // contiguous float/double AOS array (the universal case for vtkPointSet) we
+  // can read that buffer DIRECTLY, skipping the per-point virtual dispatch and
+  // bounds bookkeeping. The values are byte-identical: GetPoint() does the same
+  // float->double widening this code does (an exact conversion), and for double
+  // storage it is a plain copy. Implicit-point datasets (vtkImageData /
+  // vtkRectilinearGrid: no stored vtkPoints) and any exotic non-float/double
+  // point array fall back to GetPoint(), so behavior is unchanged everywhere.
+  const double* rawPtsD = nullptr;
+  const float* rawPtsF = nullptr;
+  if (vtkPointSet* inPS = vtkPointSet::SafeDownCast(input))
+  {
+    if (vtkDataArray* pa = inPS->GetPoints() ? inPS->GetPoints()->GetData() : nullptr)
+    {
+      if (pa->GetNumberOfComponents() == 3)
+      {
+        if (pa->GetDataType() == VTK_DOUBLE)
+        {
+          rawPtsD = static_cast<vtkDoubleArray*>(pa)->GetPointer(0);
+        }
+        else if (pa->GetDataType() == VTK_FLOAT)
+        {
+          rawPtsF = static_cast<vtkFloatArray*>(pa)->GetPointer(0);
+        }
+      }
+    }
+  }
+  auto fetchPoint = [&](vtkIdType id, double* dst) {
+    if (rawPtsD)
+    {
+      const double* s = rawPtsD + 3 * id;
+      dst[0] = s[0];
+      dst[1] = s[1];
+      dst[2] = s[2];
+    }
+    else if (rawPtsF)
+    {
+      const float* s = rawPtsF + 3 * id;
+      dst[0] = static_cast<double>(s[0]);
+      dst[1] = static_cast<double>(s[1]);
+      dst[2] = static_cast<double>(s[2]);
+    }
+    else
+    {
+      input->GetPoint(id, dst);
+    }
+  };
+
   // Traverse all cells, obtaining node coordinates.  Compute "center"
   // of cell, then create new vertices shrunk towards center.
   for (vtkIdType cellId = 0; cellId < numCells && !abort; ++cellId)
@@ -93,6 +181,9 @@ int vtkShrinkFilter::RequestData(
     // Get the list of points for this cell.
     input->GetCellPoints(cellId, ptIds);
     vtkIdType numIds = ptIds->GetNumberOfIds();
+    // Hoist the cell-type read (used twice below: polyhedron test +
+    // InsertNextCell). Identical value, no FP — output is unchanged.
+    const int cellType = input->GetCellType(cellId);
 
     // Periodically update progress and check for an abort request.
     if (cellId % tenth == 0)
@@ -101,12 +192,19 @@ int vtkShrinkFilter::RequestData(
       abort = this->CheckAbort();
     }
 
+    // Fetch the cell's point coordinates once into the reusable buffer (raw
+    // typed-pointer read when available; GetPoint() fallback otherwise).
+    cellPts.resize(static_cast<size_t>(numIds) * 3);
+    for (vtkIdType i = 0; i < numIds; ++i)
+    {
+      fetchPoint(ptIds->GetId(i), cellPts.data() + 3 * i);
+    }
+
     // Compute the center of mass of the cell points.
     double center[3] = { 0, 0, 0 };
     for (vtkIdType i = 0; i < numIds; ++i)
     {
-      double p[3];
-      input->GetPoint(ptIds->GetId(i), p);
+      const double* p = cellPts.data() + 3 * i;
       for (int j = 0; j < 3; ++j)
       {
         center[j] += p[j];
@@ -121,9 +219,8 @@ int vtkShrinkFilter::RequestData(
     newPtIds->Reset();
     for (vtkIdType i = 0; i < numIds; ++i)
     {
-      // Get the old point location.
-      double p[3];
-      input->GetPoint(ptIds->GetId(i), p);
+      // Get the old point location (already fetched above).
+      const double* p = cellPts.data() + 3 * i;
 
       // Compute the new point location.
       double newPt[3];
@@ -143,7 +240,7 @@ int vtkShrinkFilter::RequestData(
     }
 
     // special handling for polyhedron cells
-    if (vtkUnstructuredGrid::SafeDownCast(input) && input->GetCellType(cellId) == VTK_POLYHEDRON)
+    if (cellType == VTK_POLYHEDRON && vtkUnstructuredGrid::SafeDownCast(input))
     {
       vtkUnstructuredGrid::SafeDownCast(input)->GetFaceStream(cellId, newPtIds);
       vtkUnstructuredGrid::ConvertFaceStreamPointIds(newPtIds, pointMap);
@@ -157,7 +254,7 @@ int vtkShrinkFilter::RequestData(
     }
 
     // Store the new cell in the output.
-    output->InsertNextCell(input->GetCellType(cellId), newPtIds);
+    output->InsertNextCell(cellType, newPtIds);
   }
 
   // Store the new set of points in the output.

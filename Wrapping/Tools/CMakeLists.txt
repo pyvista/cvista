@@ -122,87 +122,9 @@ if (NOT TARGET WrapPython)
     WrapPythonInit)
 endif ()
 
-if (NOT TARGET WrapJava)
-  vtk_module_add_executable(ParseJava
-    DEVELOPMENT
-    BASENAME vtkParseJava
-    vtkParseJava.c)
-  target_link_libraries(ParseJava
-    PRIVATE
-      "${ns}::WrappingTools")
-  add_executable("${ns}::ParseJava" ALIAS
-    ParseJava)
-
-  vtk_module_add_executable(WrapJava
-    DEVELOPMENT
-    BASENAME vtkWrapJava
-    vtkWrapJava.c)
-  target_link_libraries(WrapJava
-    PRIVATE
-      "${ns}::WrappingTools")
-  add_executable("${ns}::WrapJava" ALIAS
-    WrapJava)
-endif ()
-
-if (NOT TARGET WrapSerDes)
-  vtk_module_add_executable(WrapSerDes
-    DEVELOPMENT
-    BASENAME vtkWrapSerDes
-    vtkWrapSerDes.c
-    vtkWrapSerDesClass.c
-    vtkWrapSerDesFunction.c
-    vtkWrapSerDesProperty.c)
-  target_link_libraries(WrapSerDes
-    PRIVATE
-      "${ns}::WrappingTools")
-
-  if (CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    # allows WrapSerDes to access host file system for headers, generated sources, etc.
-    # permit memory growth to generate arbitrary sized vtkClassNameSerDes.cxx files
-    target_compile_options(WrapSerDes
-      PRIVATE
-        "-pthread")
-    target_link_options(WrapSerDes
-      PRIVATE
-        "-pthread"
-        # Remove after https://github.com/WebAssembly/design/issues/1271 is closed
-        "-Wno-pthreads-mem-growth"
-        "-sSINGLE_FILE=1"
-        "-sALLOW_MEMORY_GROWTH=1"
-        "-sNODERAWFS=1")
-    set_target_properties(WrapSerDes
-      PROPERTIES
-        SUFFIX ".cjs")
-  endif ()
-  add_executable("${ns}::WrapSerDes" ALIAS
-    WrapSerDes)
-endif ()
-
-if (NOT TARGET WrapJavaScript)
-  vtk_module_add_executable(WrapJavaScript
-    DEVELOPMENT
-    BASENAME vtkWrapJavaScript
-    vtkWrapJavaScript.c
-    vtkWrapJavaScriptClass.c
-    vtkWrapJavaScriptConstant.c
-    vtkWrapJavaScriptEnum.c
-    vtkWrapJavaScriptNamespace.c
-    vtkWrapJavaScriptMethod.c)
-  if (CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    # allows vtkWrapJavaScript to access host file system for headers, generated sources, etc.
-    # permit memory growth to generate arbitrary sized embind CXX files.
-    target_link_options(WrapJavaScript
-      PRIVATE
-        "-sALLOW_MEMORY_GROWTH=1"
-        "-sSINGLE_FILE=1"
-        "-sNODERAWFS=1")
-    set_target_properties(WrapJavaScript
-      PROPERTIES
-        SUFFIX ".cjs")
-  endif ()
-  target_link_libraries(WrapJavaScript
-    PRIVATE
-      "${ns}::WrappingTools")
-  add_executable("${ns}::WrapJavaScript" ALIAS
-    WrapJavaScript)
-endif ()
+# cvista: the Java / JavaScript / SerDes wrapper-generator tools have been removed.
+# This wheel is Python-only (VTK_WRAP_PYTHON=YES; VTK_WRAP_JAVA, VTK_WRAP_JAVASCRIPT
+# and VTK_WRAP_SERIALIZATION are unsupported), so the ParseJava/WrapJava/WrapSerDes/
+# WrapJavaScript executables and their sources (vtkWrapJava*, vtkParseJava,
+# vtkWrapSerDes*, vtkWrapJavaScript*) are gone. Only the Python wrapper generator
+# and the shared parser (vtkParse*) remain.

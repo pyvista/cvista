@@ -11,6 +11,7 @@
 #include "vtkInformationVector.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -156,6 +157,19 @@ int vtkLinearExtrusionFilter::RequestData(vtkInformation* vtkNotUsed(request),
   outputPD->CopyNormalsOff();
   outputPD->CopyAllocate(pd, 2 * numPts);
   newPts = vtkPoints::New();
+  // Set the desired precision for the points in the output.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    newPts->SetDataType(inPts->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   newPts->SetNumberOfPoints(2 * numPts);
   if ((ncells = inVerts->GetNumberOfCells()) > 0)
   {
@@ -393,5 +407,6 @@ void vtkLinearExtrusionFilter::PrintSelf(ostream& os, vtkIndent indent)
 
   os << indent << "Capping: " << (this->Capping ? "On\n" : "Off\n");
   os << indent << "Scale Factor: " << this->ScaleFactor << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

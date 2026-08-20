@@ -1,0 +1,10 @@
+NAME
+  VTK::IOExtra
+LIBRARY_NAME
+  vtkIOExtra
+DESCRIPTION
+  Heavy / third-party data file readers and writers (Exodus, FLUENT CFF, SEG-Y).
+  Split out of the VTK::IO kit so the core native-format readers (XML, Legacy,
+  PLY, Image) consolidate into libvtkIO on their own, leaving this kit to carry
+  the heavyweight data-IO formats. This lets a packaging tier ship the core IO
+  readers without the heavy ones.

@@ -19,6 +19,8 @@ PRIVATE_DEPENDS
   VTK::CommonMisc
   VTK::CommonSystem
   VTK::IOCore
+  VTK::ParallelDIY
+  VTK::diy2
   VTK::vtksys
 TEST_DEPENDS
   VTK::FiltersAMR

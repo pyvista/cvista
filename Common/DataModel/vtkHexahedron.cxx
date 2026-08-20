@@ -524,8 +524,18 @@ void vtkHexahedron::Contour(double value, vtkDataArray* cellScalars,
   static const int CASE_MASK[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
   int v1, v2;
   vtkIdType pts[3];
-  double x1[3], x2[3], x[3];
+  double x1buf[3], x2buf[3], x[3];
   vtkIdType offset = verts->GetNumberOfCells() + lines->GetNumberOfCells();
+
+  // When the cell's Points are stored as VTK_DOUBLE (the common case), read the
+  // raw double pointer once and index it directly in the hot marching-cubes edge
+  // loop instead of calling the virtual vtkPoints::GetPoint(id, double[3]) twice
+  // per edge. vtkPoints::GetPoint on a double-backed array copies the same stored
+  // doubles via vtkDoubleArray::GetTuple, so the indexed reads are byte-identical.
+  // If the points are not double (e.g. a cell built from a float-valued grid),
+  // fall back to the original GetPoint path which converts identically as before.
+  const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
+  const double* pointsPtr = pointsArray ? pointsArray->GetPointer(0) : nullptr;
 
   // Build the case table
   int index = 0;
@@ -546,26 +556,44 @@ void vtkHexahedron::Contour(double value, vtkDataArray* cellScalars,
       const vtkIdType* vert = Edges[edge[i]];
 
       // calculate a preferred interpolation direction
-      double deltaScalar =
-        (cellScalars->GetComponent(vert[1], 0) - cellScalars->GetComponent(vert[0], 0));
+      // Cache the two edge-endpoint scalars so the value used for 't' below is
+      // the identical double already fetched here (eliminates a redundant
+      // virtual GetComponent() call without altering any FP operation).
+      double s0 = cellScalars->GetComponent(vert[0], 0);
+      double s1 = cellScalars->GetComponent(vert[1], 0);
+      double sv1;
+      double deltaScalar = (s1 - s0);
       if (deltaScalar > 0)
       {
         v1 = vert[0];
         v2 = vert[1];
+        sv1 = s0;
       }
       else
       {
         v1 = vert[1];
         v2 = vert[0];
+        sv1 = s1;
         deltaScalar = -deltaScalar;
       }
 
       // linear interpolation
-      double t =
-        (deltaScalar == 0.0 ? 0.0 : (value - cellScalars->GetComponent(v1, 0)) / deltaScalar);
+      double t = (deltaScalar == 0.0 ? 0.0 : (value - sv1) / deltaScalar);
 
-      this->Points->GetPoint(v1, x1);
-      this->Points->GetPoint(v2, x2);
+      const double* x1;
+      const double* x2;
+      if (pointsPtr)
+      {
+        x1 = pointsPtr + 3 * v1;
+        x2 = pointsPtr + 3 * v2;
+      }
+      else
+      {
+        this->Points->GetPoint(v1, x1buf);
+        this->Points->GetPoint(v2, x2buf);
+        x1 = x1buf;
+        x2 = x2buf;
+      }
 
       for (int j = 0; j < 3; j++)
       {

@@ -142,7 +142,11 @@ struct PickPoints
   {
     for (auto iter = this->LocalData.begin(); iter != this->LocalData.end(); ++iter)
     {
-      if ((*iter).MinT < this->MinT)
+      // On an exact tie in MinT, prefer the lower point id. Serial execution keeps
+      // the first (lowest-id) point at the minimum; without this the winner would
+      // depend on the nondeterministic thread-local iteration order.
+      if ((*iter).MinT < this->MinT ||
+        ((*iter).MinT == this->MinT && (*iter).MinPtId < this->MinPtId))
       {
         this->MinPtId = (*iter).MinPtId;
         this->MinT = (*iter).MinT;

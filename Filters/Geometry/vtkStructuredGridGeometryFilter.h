@@ -61,6 +61,18 @@ public:
    */
   void SetExtent(int extent[6]);
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points.
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkStructuredGridGeometryFilter();
   ~vtkStructuredGridGeometryFilter() override = default;
@@ -70,6 +82,7 @@ protected:
   int FillInputPortInformation(int port, vtkInformation* info) override;
 
   int Extent[6];
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkStructuredGridGeometryFilter(const vtkStructuredGridGeometryFilter&) = delete;

@@ -81,10 +81,13 @@ vtkIdType ReflectNon3DCellInternal(vtkDataSet* input, vtkUnstructuredGrid* outpu
  * @param copyInput @see vtkAxisAlignedReflectionFilter::CopyInput.
  * @param reflectAllInputArrays @see vtkAxisAlignedReflectionFilter::ReflectAllInputArrays.
  * @param algorithm Algorithm object to CheckAbort during points and cells iterations.
+ * @param outputPointsPrecision Desired precision for the output points.
+ * @see vtkAxisAlignedReflectionFilter::OutputPointsPrecision.
  */
 void ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstructuredGrid* output, double constant[3],
   int mirrorDir[3], int mirrorSymmetricTensorDir[6], int mirrorTensorDir[9], bool copyInput,
-  bool reflectAllInputArrays, vtkAlgorithm* algorithm);
+  bool reflectAllInputArrays, vtkAlgorithm* algorithm,
+  int outputPointsPrecision = vtkAlgorithm::DEFAULT_PRECISION);
 }
 
 VTK_ABI_NAMESPACE_END

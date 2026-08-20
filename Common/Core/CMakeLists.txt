@@ -147,6 +147,27 @@ option(VTK_DISPATCH_STRUCTURED_POINT_ARRAYS "Include implicit vtkDataArray subcl
 
 option(VTK_WARN_ON_DISPATCH_FAILURE "If enabled, vtkArrayDispatch will print a warning when a dispatch fails." OFF)
 
+# cvista BUILD-TIME / SIZE lever: drop the two dead implicit-array families
+# vtkStridedArray and vtkStdFunctionArray. PyVista never constructs either (no
+# path in pyvista/_vtk.py, the reader factory, or numpy_to_vtk creates them), and
+# their dispatch options (VTK_DISPATCH_STRIDED_ARRAYS / _STD_FUNCTION_ARRAYS) are
+# OFF by default so they are already absent from the vtkArrayDispatch TypeList.
+# What is still paid for them is the per-numeric-type template-instantiation TUs
+# (vtkStridedArrayInstantiate_*, vtkStdFunctionArrayInstantiate_*,
+# vtkStridedImplicitBackendInstantiate_*) plus the generated fixed-size
+# specialization classes (vtkStridedType*Array / vtkStdFunctionType*Array). This
+# drops exactly those. The template HEADERS (vtkStridedArray.h /
+# vtkStdFunctionArray.h / vtkStridedImplicitBackend.h) are KEPT in place
+# (header-only, zero compile cost when not instantiated) so the cut is purely an
+# instantiation drop and trivially reversible. Unlike SOA/ScaledSOA, these two
+# are NOT referenced as complete types by vtkDataArrayPrivate.txx or any kept
+# CommonCore machinery (verified: no non-self include/reference in the tree), so
+# dropping the instantiations is link-safe, not a compile error. Default ON;
+# CVISTA_DROP_DEAD_ARRAYS=OFF restores the stock instantiations.
+option(CVISTA_DROP_DEAD_ARRAYS
+  "cvista: drop instantiations of the PyVista-unused vtkStridedArray + vtkStdFunctionArray families"
+  ON)
+
 mark_as_advanced(
   VTK_DISPATCH_AOS_ARRAYS
   VTK_DISPATCH_SOA_ARRAYS
@@ -177,24 +198,54 @@ set(instantiation_sources)
 
 include(vtkTypeLists)
 
-foreach (type IN LISTS vtk_numeric_types)
-  string(REPLACE " " "_" _suffix "${type}")
-  list(APPEND instantiation_sources
-    "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx")
+# cvista BUILD-TIME lever: split the per-type "bulk" array instantiation TUs.
+#
+# Stock VTK concatenates ~17 template-instantiation sources (AOS/SOA/implicit
+# backends, etc.) per numeric type into ONE vtkArrayBulkInstantiate_<type>.cxx
+# via #include (14 such bulk TUs). CVISTA_SPLIT_BULK_INSTANTIATE=ON instead compiles
+# the ~312 component .cxx DIRECTLY, turning 14 large TUs into many small ones. It
+# is byte-for-byte identical OBJECT CODE (same explicit instantiations + flags,
+# just emitted into separate .o) -> ABI- and bit-exact-neutral; it only changes
+# build scheduling.
+#
+# DEFAULT OFF — MEASURED net-NEGATIVE at the build-time level that matters.
+# Each split component TU independently re-parses the heavy array template
+# headers (vtkDataArrayPrivate.txx + all the AOS/SOA/implicit backend templates)
+# that the bulk TU parsed ONCE per type, so the front-end/template cost is paid
+# ~17x more. That extra total work is not recovered by better load-balancing.
+# Measured (CommonCore array-instantiation TUs only, manylinux2014 GCC 10.2.1):
+#     -j4 : bulk 248 s  vs  split 340 s   (split +37% SLOWER)
+#     -j16: bulk  67 s  vs  split  90 s   (split +34% SLOWER)
+# Both the 4-core CI target and a 16-core box favor BULK. (An earlier claim of
+# "361->161 s, -55%" did not reproduce.) Kept as an opt-in for the unusual case
+# of a very-high-core machine where the bulk path's 14-TU width is the ceiling;
+# CVISTA_SPLIT_BULK_INSTANTIATE=ON re-enables it (and builds clean on GCC < 11 via
+# the VTK_DEPRECATION_LEVEL=0 fix on the split TUs below).
+option(CVISTA_SPLIT_BULK_INSTANTIATE
+  "cvista: compile per-type array instantiations as many small TUs instead of one bulk TU (measured slower at <=16 cores; default OFF)"
+  OFF)
 
-  if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
-    # This silences the following warning:
-    #     type attributes ignored after type is already defined [-Wattributes]
-    #     template class VTKCOMMONCORE_EXPORT vtkStructuredPointArray<ValueType>;
-    # This warning is caused by the vtkArrayDispatch instantiations,
-    # controlled by the VTK_DISPATCH_*_ARRAYS cmake variables.
-    # When ON, a vtkImplicitArray<vtk*Backend<ValueType>> will be indirectly instantiated
-    # by `vtkIndexedImplicitBackend::Internals` and `vtkCompositeImplicitBackend::Internals`
-    # causing the `__attribute__((visibility("default")))` to be ignored.
-    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
-      PROPERTIES COMPILE_OPTIONS "-Wno-attributes")
-  endif()
-endforeach ()
+if (NOT CVISTA_SPLIT_BULK_INSTANTIATE)
+  foreach (type IN LISTS vtk_numeric_types)
+    string(REPLACE " " "_" _suffix "${type}")
+    list(APPEND instantiation_sources
+      "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx")
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+      # This silences the following warning:
+      #     type attributes ignored after type is already defined [-Wattributes]
+      #     template class VTKCOMMONCORE_EXPORT vtkImplicitArray<vtkStructuredPointBackend<ValueType>>;
+      # This warning is caused by the vtkArrayDispatch instantiations,
+      # controlled by the VTK_DISPATCH_*_ARRAYS cmake variables.
+      # When ON, a vtkImplicitArray<vtk*Backend<ValueType>> will be indirectly instantiated
+      # by `vtkIndexedImplicitBackend::Internals` and `vtkCompositeImplicitBackend::Internals`
+      # causing the `__attribute__((visibility("default")))` to be ignored.
+      set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
+        PROPERTIES COMPILE_OPTIONS "-Wno-attributes")
+    endif()
+  endforeach ()
+endif ()
+
 
 foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
   # We never need to instantiate vtkIdType or because they are instantiated
@@ -211,7 +262,6 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
     vtkCompositeImplicitBackendInstantiate
     vtkConstantImplicitBackendInstantiate
     vtkIndexedImplicitBackendInstantiate
-    vtkStridedImplicitBackendInstantiate
     vtkStructuredPointBackendInstantiate
     vtkAffineArrayInstantiate
     vtkAOSDataArrayTemplateInstantiate
@@ -219,10 +269,25 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
     vtkConstantArrayInstantiate
     vtkIndexedArrayInstantiate
     vtkScaledSOADataArrayTemplateInstantiate
-    vtkStridedArrayInstantiate
     vtkSOADataArrayTemplateInstantiate
-    vtkStdFunctionArrayInstantiate
     vtkStructuredPointArrayInstantiate)
+
+  # The dead vtkStridedArray + vtkStdFunctionArray families: their
+  # instantiation TUs are only added back when the cut is disabled
+  # (CVISTA_DROP_DEAD_ARRAYS=OFF). See the option above.
+  if (NOT CVISTA_DROP_DEAD_ARRAYS)
+    list(APPEND _list
+      vtkStridedImplicitBackendInstantiate
+      vtkStridedArrayInstantiate
+      vtkStdFunctionArrayInstantiate)
+  endif ()
+
+  # NOTE: do NOT try to drop the dispatch-disabled SOA/ScaledSOA (or implicit)
+  # backend instantiations from this list to save size — they are referenced
+  # directly by CommonCore's own array machinery (e.g. vtkDataArrayPrivate.txx
+  # GetValueRange) regardless of the VTK_DISPATCH_*_ARRAYS switches, so removing
+  # them is an incomplete-type COMPILE error, not just a link drop. (Validated
+  # the hard way: removing SOA/ScaledSOA broke vtkDataArrayPrivate.txx.)
 
   # see comments in vtkGenericDataArray.h for explanation
   if (INSTANTIATION_VALUE_TYPE MATCHES "(^| )long( |$)")
@@ -238,8 +303,34 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
       "${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx.inc"
       @ONLY)
 
-    list(APPEND "bulk_instantiation_sources_${_suffix}"
-      "#include \"${_prefix}_${_suffix}.cxx.inc\"")
+    if (CVISTA_SPLIT_BULK_INSTANTIATE)
+      # Compile each component instantiation as its own small TU (build-time
+      # parallelism) instead of #include-ing it into the per-type bulk TU.
+      list(APPEND instantiation_sources
+        "${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx")
+      # VTK_DEPRECATION_LEVEL=0 reproduces EXACTLY what the bulk wrapper TU did:
+      # vtkArrayBulkInstantiate.cxx.in opens with `#define VTK_DEPRECATION_LEVEL 0`
+      # BEFORE any include, which makes VTK_DEPRECATED_IN_9_6_0() expand to empty
+      # (vtkDeprecation.h gates it on the level). The deprecated implicit-array
+      # specialization headers (vtkAffine<T>Array.h etc.) place the deprecation
+      # attribute as `class EXPORT VTK_DEPRECATED_IN_9_6_0(...) Name : public Base`;
+      # GCC < 11 (manylinux2014 ships GCC 10.2.1) CANNOT parse a [[deprecated]]
+      # attribute in that position after the export macro -> hard parse error
+      # ("expected identifier before '[' token"). Splitting these out of the bulk
+      # wrapper loses the wrapper's level-0 #define, so we must reapply it per-TU.
+      # This is byte-identical to the bulk object code (the attribute is suppressed
+      # in BOTH paths and has zero codegen effect regardless). -Wno-attributes is
+      # also kept for the dispatch-instantiation [-Wattributes] warning.
+      if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx"
+          PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
+                     COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
+      endif()
+    else ()
+      list(APPEND "bulk_instantiation_sources_${_suffix}"
+        "#include \"${_prefix}_${_suffix}.cxx.inc\"")
+    endif ()
+
   endforeach ()
 endforeach ()
 
@@ -414,6 +505,7 @@ endif ()
 
 set(sources
   vtkArrayIteratorTemplateInstantiate.cxx
+  vtkCVISTASMPDefaults.cxx
   vtkGenericDataArray.cxx
   vtkStringFormatter.cxx
   vtkValueFromString.cxx
@@ -517,7 +609,6 @@ set(private_headers
 
 set(templates
   vtkArrayIteratorTemplateImplicit.txx
-  vtkThreadedCallbackQueue.txx
   ${vtk_smp_templates})
 
 set(private_templates
@@ -612,6 +703,8 @@ endif ()
 
 set(nowrap_headers
   vtkAffineImplicitBackend.h
+  vtkCVISTAByteCopy.h
+  vtkCVISTASMPDefaults.h
   vtkCollectionRange.h
   vtkConstantImplicitBackend.h
   vtkDataArrayAccessor.h
@@ -656,16 +749,20 @@ endforeach ()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/vtkTypeArrays.cmake")
 
-foreach (type IN LISTS vtk_numeric_types)
-  # Referenced in vtkArrayBulkInstantiate.cxx.in
-  string(REPLACE " " "_" _suffix "${type}")
-  list(JOIN "bulk_instantiation_sources_${_suffix}" "\n" BULK_INSTANTIATION_SOURCES)
-  configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/vtkArrayBulkInstantiate.cxx.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
-    @ONLY)
-  unset(BULK_INSTANTIATION_SOURCES)
-endforeach()
+# Only assemble the per-type bulk wrapper TUs when NOT splitting (split mode
+# compiles the component .cxx directly; see CVISTA_SPLIT_BULK_INSTANTIATE above).
+if (NOT CVISTA_SPLIT_BULK_INSTANTIATE)
+  foreach (type IN LISTS vtk_numeric_types)
+    # Referenced in vtkArrayBulkInstantiate.cxx.in
+    string(REPLACE " " "_" _suffix "${type}")
+    list(JOIN "bulk_instantiation_sources_${_suffix}" "\n" BULK_INSTANTIATION_SOURCES)
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/vtkArrayBulkInstantiate.cxx.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/vtkArrayBulkInstantiate_${_suffix}.cxx"
+      @ONLY)
+    unset(BULK_INSTANTIATION_SOURCES)
+  endforeach()
+endif ()
 
 # Check C++ <cmath> first, where the C++11 standard says these must be.
 check_cxx_expression_compiles("std::isnan(0.0)" "cmath" VTK_HAS_STD_ISNAN)

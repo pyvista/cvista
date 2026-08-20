@@ -29,6 +29,7 @@
 #include "vtkUnstructuredGridCellIterator.h"
 
 #include <algorithm>
+#include <atomic> // cvista: release fence when publishing lazily-built Links
 #include <set>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -39,6 +40,26 @@ namespace
 {
 constexpr unsigned char MASKED_CELL_VALUE = vtkDataSetAttributes::HIDDENCELL |
   vtkDataSetAttributes::DUPLICATECELL | vtkDataSetAttributes::REFINEDCELL;
+
+//==============================================================================
+// Read a cell type from the Types array. The Types array always holds unsigned
+// char values; in the overwhelmingly common case it is a concrete (AOS)
+// vtkUnsignedCharArray, in which case we read its raw buffer directly and skip
+// the cross-library virtual vtkDataArray::GetComponent dispatch (which routes
+// through GetTuple in CommonCore). For any other backing (e.g. an implicit
+// vtkConstantArray<unsigned char> set via SetCells), we fall back to the
+// virtual path. This is byte-for-byte identical to
+// `static_cast<int>(types->GetComponent(cellId, 0))`: for an unsigned char the
+// value is exactly representable, so the char -> int read equals the
+// char -> double -> int read.
+inline int GetCellTypeFromArray(vtkDataArray* types, vtkIdType cellId)
+{
+  if (auto* aos = vtkUnsignedCharArray::FastDownCast(types))
+  {
+    return static_cast<int>(aos->GetPointer(0)[cellId]);
+  }
+  return static_cast<int>(types->GetComponent(cellId, 0));
+}
 
 //==============================================================================
 struct RemoveGhostCellsWorker
@@ -350,7 +371,7 @@ void vtkUnstructuredGrid::Initialize()
 //------------------------------------------------------------------------------
 int vtkUnstructuredGrid::GetCellType(vtkIdType cellId)
 {
-  return static_cast<int>(this->Types->GetComponent(cellId, 0));
+  return GetCellTypeFromArray(this->Types, cellId);
 }
 
 //------------------------------------------------------------------------------
@@ -369,7 +390,7 @@ vtkCell* vtkUnstructuredGrid::GetCell(vtkIdType cellId)
 //------------------------------------------------------------------------------
 void vtkUnstructuredGrid::GetCell(vtkIdType cellId, vtkGenericCell* cell)
 {
-  const int cellType = static_cast<int>(this->Types->GetComponent(cellId, 0));
+  const int cellType = GetCellTypeFromArray(this->Types, cellId);
   cell->SetCellType(cellType);
 
   this->Connectivity->GetCellAtId(cellId, cell->PointIds);
@@ -949,27 +970,48 @@ void vtkUnstructuredGrid::BuildLinks()
   {
     return;
   }
+
+  // cvista: make the lazy build thread-safe, mirroring vtkPolyData::BuildLinks().
+  // The inline link accessors (GetPointCells/GetCellNeighbors/...) do
+  // `if (!this->Links) BuildLinks()`, and under the STDThread default that runs
+  // concurrently from SMP worker threads. The original code published this->Links
+  // BEFORE vtkAbstractCellLinks::BuildLinks() populated it, so a concurrent reader
+  // could observe an empty/half-built links object. Serialize builders with a
+  // mutex; build the FIRST-build path into a local and publish it fully-built as
+  // the last step. The rebuild-in-place branch (Links already set, e.g. after the
+  // points change) keeps its original behavior -- those calls come from the main
+  // thread, not the concurrent lazy-accessor path.
+  std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
+  if (this->Links)
+  {
+    if (this->Points->GetMTime() > this->Links->GetMTime())
+    {
+      this->Links->SetDataSet(this);
+    }
+    this->Links->BuildLinks();
+    return;
+  }
+
   // Create appropriate links. Currently, it's either a vtkCellLinks (when
   // the dataset is editable) or vtkStaticCellLinks (when the dataset is
   // not editable).
-  if (!this->Links)
+  vtkSmartPointer<vtkAbstractCellLinks> links;
+  if (!this->Editable)
   {
-    if (!this->Editable)
-    {
-      this->Links = vtkSmartPointer<vtkStaticCellLinks>::New();
-    }
-    else
-    {
-      this->Links = vtkSmartPointer<vtkCellLinks>::New();
-      static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(this->GetNumberOfPoints());
-    }
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkStaticCellLinks>::New();
   }
-  else if (this->Points->GetMTime() > this->Links->GetMTime())
+  else
   {
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkCellLinks>::New();
+    static_cast<vtkCellLinks*>(links.Get())->Allocate(this->GetNumberOfPoints());
   }
-  this->Links->BuildLinks();
+  links->SetDataSet(this);
+  links->BuildLinks();
+  // Release fence: make the populated links visible before the pointer publish;
+  // the reader's address dependency on this->Links orders its dependent loads on
+  // weak-memory archs (see vtkPolyData::BuildLinks() for the rationale).
+  std::atomic_thread_fence(std::memory_order_release);
+  this->Links = links; // publish fully-built links last
 }
 
 //------------------------------------------------------------------------------

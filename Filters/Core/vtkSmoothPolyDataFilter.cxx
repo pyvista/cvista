@@ -12,12 +12,14 @@
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPolygon.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkTriangleFilter.h"
 
 #include <limits>
 #include <memory>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkSmoothPolyDataFilter);
@@ -448,12 +450,24 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
 
     checkAbortInterval = std::min(polys->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
 
+    // Resolve Mesh's typed cell links once so the per-edge neighbor lookup in
+    // the loop below is inlined here, skipping the cross-.so PLT call into
+    // libvtkCommonDataModel and the per-call link re-fetch. Bit-for-bit
+    // identical to Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+    const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(Mesh);
+
+    std::vector<vtkIdType> cellPtsBuf; // owned snapshot of a cell's point ids
     for (cellId = 0, polys->InitTraversal(); polys->GetNextCell(npts, pts); cellId++)
     {
       if (cellId % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
       }
+      // Snapshot this cell's point ids: under int32 cell storage `pts` aliases the
+      // shared temp-cell scratch, which Mesh->GetCellPoints(nei, ...) in the
+      // FeatureEdgeSmoothing branch below re-enters and clobbers mid-loop.
+      cellPtsBuf.assign(pts, pts + npts);
+      pts = cellPtsBuf.data();
       for (i = 0; i < npts; i++)
       {
         p1 = pts[i];
@@ -470,7 +484,7 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
           Verts[p2].edges->Reserve(16);
         }
 
-        Mesh->GetCellEdgeNeighbors(cellId, p1, p2, neighbors);
+        edgeNeighbors.Get(cellId, p1, p2, neighbors);
         numNei = neighbors->GetNumberOfIds();
 
         edge = VTK_SIMPLE_VERTEX;
@@ -673,9 +687,28 @@ int vtkSmoothPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(request),
   }
   else // smooth normally
   {
-    for (i = 0; i < numPts; i++) // initialize to old coordinates
+    // Initialize to old coordinates. When the input and output point arrays have
+    // the identical concrete AOS type and 3 components, copy the raw memory
+    // directly. This is bit-for-bit identical to the per-point GetPoint/SetPoint
+    // path: that path widens float->double and narrows double->float, which is an
+    // exact round-trip for an existing value (float->double is lossless and the
+    // double->float narrowing returns the original float) and a no-op for
+    // double->double. It only removes the per-point virtual dispatch and the
+    // float<->double conversions; no FP arithmetic is performed in either path.
+    vtkDataArray* inData = inPts->GetData();
+    vtkDataArray* outData = newPts->GetData();
+    if (inData->GetDataType() == outData->GetDataType() &&
+      inData->GetNumberOfComponents() == 3 && outData->GetNumberOfComponents() == 3)
     {
-      newPts->SetPoint(i, inPts->GetPoint(i));
+      memcpy(outData->GetVoidPointer(0), inData->GetVoidPointer(0),
+        static_cast<size_t>(numPts) * 3 * inData->GetDataTypeSize());
+    }
+    else
+    {
+      for (i = 0; i < numPts; i++) // initialize to old coordinates
+      {
+        newPts->SetPoint(i, inPts->GetPoint(i));
+      }
     }
   }
 

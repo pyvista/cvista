@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "vtkPolyhedron.h"
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellArrayIterator.h"
 #include "vtkCellData.h"
@@ -47,6 +48,31 @@ namespace
 void updateFlippedEdges(
   std::map<vtkIdType, int>& unevenCoedges, int face, vtkCellArray* faces, vtkEdgeTable* edgeTable)
 {
+  // Read this face's point ids straight from the cell array's native (int32)
+  // storage instead of through the widening GetCellAtId accessor (see
+  // cvistaCellConnectivity.h). This is a read-only walk; values are identical.
+  cvistaCellConnectivity facesConn(faces);
+  if (facesConn.IsValid())
+  {
+    const vtkIdType numPts = facesConn.CellSize(face);
+    const vtkIdType cbeg = facesConn.CellBegin(face);
+    if (numPts > 0)
+    {
+      vtkIdType pp = facesConn[cbeg + numPts - 1];
+      vtkIdType qq;
+      for (int ii = 0; ii < numPts; ++ii, pp = qq)
+      {
+        qq = facesConn[cbeg + ii];
+        // The direction has been flipped, so \a dir is opposite from elsewhere:
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
+        int dir = (pp < qq ? -1 : (pp == qq ? 0 : +1));
+        auto edgeId = edgeTable->IsEdge(pp, qq);
+        unevenCoedges[edgeId] += dir;
+      }
+    }
+    return;
+  }
+
   vtkNew<vtkIdList> face_tmp;
   const vtkIdType* conn;
   vtkIdType numPts;
@@ -385,20 +411,37 @@ int vtkPolyhedron::GenerateEdges()
 
   vtkNew<vtkIdList> tmpface;
   vtkIdType nfaces = 0;
-  const vtkIdType* face;
+  const vtkIdType* face = nullptr;
   vtkIdType fid, i, edge[2], npts, edgeFaces[2], edgeId;
   edgeFaces[1] = -1;
+
+  // Read face point ids from the cell array's native (int32) storage instead of
+  // through the widening GetCellAtId accessor (see cvistaCellConnectivity.h).
+  // This is a read-only pass; the values (widened) are identical. Falls back to
+  // the classic accessor for exotic (Generic) storage.
+  cvistaCellConnectivity globalConn(this->GlobalFaces);
 
   // Loop over all faces, inserting edges into the table
   this->EdgeTable->InitEdgeInsertion(this->Points->GetNumberOfPoints(), 1);
   nfaces = this->GlobalFaces->GetNumberOfCells();
   for (fid = 0; fid < nfaces; ++fid)
   {
-    this->GlobalFaces->GetCellAtId(fid, npts, face, tmpface);
+    vtkIdType cbeg = 0;
+    if (globalConn.IsValid())
+    {
+      npts = globalConn.CellSize(fid);
+      cbeg = globalConn.CellBegin(fid);
+    }
+    else
+    {
+      this->GlobalFaces->GetCellAtId(fid, npts, face, tmpface);
+    }
+    auto facePt = [&](vtkIdType k) -> vtkIdType
+    { return globalConn.IsValid() ? globalConn[cbeg + k] : face[k]; };
     for (i = 0; i < npts; ++i)
     {
-      edge[0] = this->PointIdMap[face[i]];
-      edge[1] = this->PointIdMap[((i + 1) != npts ? face[i + 1] : face[0])];
+      edge[0] = this->PointIdMap[facePt(i)];
+      edge[1] = this->PointIdMap[((i + 1) != npts ? facePt(i + 1) : facePt(0))];
       edgeFaces[0] = fid;
       if ((edgeId = this->EdgeTable->IsEdge(edge[0], edge[1])) == (-1))
       {
@@ -438,20 +481,37 @@ int vtkPolyhedron::GenerateEdges(std::map<vtkIdType, int>& unevenCoedges)
   unevenCoedges.clear();
   vtkNew<vtkIdList> tmpface;
   vtkIdType nfaces = 0;
-  const vtkIdType* face;
+  const vtkIdType* face = nullptr;
   vtkIdType fid, i, edge[2], npts, edgeFaces[2], edgeId;
   edgeFaces[1] = -1;
+
+  // Read face point ids from the cell array's native (int32) storage instead of
+  // through the widening GetCellAtId accessor (see cvistaCellConnectivity.h).
+  // This is a read-only pass; the values (widened) are identical. Falls back to
+  // the classic accessor for exotic (Generic) storage.
+  cvistaCellConnectivity globalConn(this->GlobalFaces);
 
   // Loop over all faces, inserting edges into the table
   this->EdgeTable->InitEdgeInsertion(this->Points->GetNumberOfPoints(), 1);
   nfaces = this->GlobalFaces->GetNumberOfCells();
   for (fid = 0; fid < nfaces; ++fid)
   {
-    this->GlobalFaces->GetCellAtId(fid, npts, face, tmpface);
+    vtkIdType cbeg = 0;
+    if (globalConn.IsValid())
+    {
+      npts = globalConn.CellSize(fid);
+      cbeg = globalConn.CellBegin(fid);
+    }
+    else
+    {
+      this->GlobalFaces->GetCellAtId(fid, npts, face, tmpface);
+    }
+    auto facePt = [&](vtkIdType k) -> vtkIdType
+    { return globalConn.IsValid() ? globalConn[cbeg + k] : face[k]; };
     for (i = 0; i < npts; ++i)
     {
-      edge[0] = this->PointIdMap[face[i]];
-      edge[1] = this->PointIdMap[((i + 1) != npts ? face[i + 1] : face[0])];
+      edge[0] = this->PointIdMap[facePt(i)];
+      edge[1] = this->PointIdMap[((i + 1) != npts ? facePt(i + 1) : facePt(0))];
       // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
       int dir = (edge[0] < edge[1] ? +1 : (edge[0] == edge[1] ? 0 : -1));
       edgeFaces[0] = fid;
@@ -1202,10 +1262,25 @@ int vtkPolyhedron::CellBoundary(int vtkNotUsed(subId), const double pcoords[3], 
   pts->Reset();
   if (numFacePts > 0)
   {
-    this->Faces->GetCellAtId(minFaceId, numFacePts, facePts, pts_tmp);
-    for (vtkIdType i = 0; i < numFacePts; i++)
+    // Read the winning face's point ids from native (int32) storage instead of
+    // through the widening GetCellAtId accessor (see cvistaCellConnectivity.h).
+    // Read-only; values (widened) are identical. Falls back for Generic storage.
+    cvistaCellConnectivity facesConn(this->Faces);
+    if (facesConn.IsValid())
     {
-      pts->InsertNextId(this->PointIds->GetId(facePts[i]));
+      const vtkIdType cbeg = facesConn.CellBegin(minFaceId);
+      for (vtkIdType i = 0; i < numFacePts; i++)
+      {
+        pts->InsertNextId(this->PointIds->GetId(facesConn[cbeg + i]));
+      }
+    }
+    else
+    {
+      this->Faces->GetCellAtId(minFaceId, numFacePts, facePts, pts_tmp);
+      for (vtkIdType i = 0; i < numFacePts; i++)
+      {
+        pts->InsertNextId(this->PointIds->GetId(facePts[i]));
+      }
     }
   }
 

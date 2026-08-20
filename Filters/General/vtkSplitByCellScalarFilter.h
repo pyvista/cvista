@@ -50,6 +50,20 @@ public:
   vtkBooleanMacro(PassAllPoints, bool);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points. This only applies
+   * when PassAllPoints is off (when on, the input points object is shared and
+   * this setting is ignored).
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkSplitByCellScalarFilter();
   ~vtkSplitByCellScalarFilter() override;
@@ -60,6 +74,7 @@ protected:
   int FillInputPortInformation(int port, vtkInformation* info) override;
 
   bool PassAllPoints;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkSplitByCellScalarFilter(const vtkSplitByCellScalarFilter&) = delete;

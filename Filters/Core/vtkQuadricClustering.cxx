@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkExecutive.h"
@@ -13,6 +14,9 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkDoubleArray.h"
+#include "vtkFloatArray.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkTimerLog.h"
 #include "vtkTriangle.h"
@@ -83,6 +87,8 @@ vtkQuadricClustering::vtkQuadricClustering()
 
   this->InCellCount = this->OutCellCount = 0;
   this->CopyCellData = 0;
+
+  this->OutputPointsPrecision = DEFAULT_PRECISION;
 }
 
 //------------------------------------------------------------------------------
@@ -922,6 +928,29 @@ void vtkQuadricClustering::EndAppend()
 
   // Compute the representative points for each bin
   outputPoints = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION); when the
+  // filter is driven via the Append methods there may be no input, in which
+  // case the default falls back to single precision (historical behavior).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (input && input->GetPoints())
+    {
+      outputPoints->SetDataType(input->GetPoints()->GetDataType());
+    }
+    else
+    {
+      outputPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_DOUBLE);
+  }
   for (vtkIdType i = 0; !abortExecute && i < numBuckets; i++)
   {
     if (cstep > step)
@@ -1217,6 +1246,51 @@ void vtkQuadricClustering::EndAppendUsingPoints(vtkPolyData* input, vtkPolyData*
     return;
   }
 
+  // Raw point-coordinate access. inputPoints->GetPoint(id, x) is a virtual call
+  // that reads the AOS point array and casts each component to double. Every
+  // input point's coordinates are read once here purely to hash + evaluate the
+  // quadric error, where the value is consumed as a plain double -- so reading
+  // the contiguous float/double buffer directly is byte-identical (GetPoint does
+  // the same float->double widening, or a plain double copy) and skips the
+  // per-point virtual dispatch. Non-float/double point arrays fall back to
+  // GetPoint().
+  const double* rawPtsD = nullptr;
+  const float* rawPtsF = nullptr;
+  if (vtkDataArray* pa = inputPoints->GetData())
+  {
+    if (pa->GetNumberOfComponents() == 3)
+    {
+      if (pa->GetDataType() == VTK_DOUBLE)
+      {
+        rawPtsD = static_cast<vtkDoubleArray*>(pa)->GetPointer(0);
+      }
+      else if (pa->GetDataType() == VTK_FLOAT)
+      {
+        rawPtsF = static_cast<vtkFloatArray*>(pa)->GetPointer(0);
+      }
+    }
+  }
+  auto fetchPt = [&](vtkIdType id, double* dst) {
+    if (rawPtsD)
+    {
+      const double* s = rawPtsD + 3 * id;
+      dst[0] = s[0];
+      dst[1] = s[1];
+      dst[2] = s[2];
+    }
+    else if (rawPtsF)
+    {
+      const float* s = rawPtsF + 3 * id;
+      dst[0] = static_cast<double>(s[0]);
+      dst[1] = static_cast<double>(s[1]);
+      dst[2] = static_cast<double>(s[2]);
+    }
+    else
+    {
+      inputPoints->GetPoint(id, dst);
+    }
+  };
+
   // Check for misuse of the Append methods.
   if (this->OutputTriangleArray == nullptr || this->OutputLines == nullptr)
   {
@@ -1232,6 +1306,20 @@ void vtkQuadricClustering::EndAppendUsingPoints(vtkPolyData* input, vtkPolyData*
   }
 
   outputPoints = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION).
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    outputPoints->SetDataType(inputPoints->GetDataType());
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outputPoints->SetDataType(VTK_DOUBLE);
+  }
 
   // Prepare to copy point data to output
   output->GetPointData()->CopyAllocate(input->GetPointData(), this->NumberOfBinsUsed);
@@ -1248,7 +1336,7 @@ void vtkQuadricClustering::EndAppendUsingPoints(vtkPolyData* input, vtkPolyData*
   numPoints = inputPoints->GetNumberOfPoints();
   for (vtkIdType i = 0; i < numPoints; ++i)
   {
-    inputPoints->GetPoint(i, pt);
+    fetchPt(i, pt);
     binId = this->HashPoint(pt);
     outPtId = this->QuadricArray[binId].VertexId;
     // Sanity check.
@@ -1440,6 +1528,11 @@ void vtkQuadricClustering::FindFeaturePoints(
     }
   }
 
+  // Read edge connectivity straight from the native (int32) storage rather
+  // than through the widening GetCellAtId accessor (see cvistaCellConnectivity.h).
+  // Read-only; the edge cells are not modified here. Falls back to the classic
+  // accessor for any non-AOS/fixed-size storage.
+  cvistaCellConnectivity edgesConn(edges);
   for (vtkIdType i = 0; i < numPts; i++)
   {
     if (pointTable[i][1] == 1)
@@ -1454,16 +1547,28 @@ void vtkQuadricClustering::FindFeaturePoints(
     {
       for (int j = 0; j < 2; j++)
       {
-        edges->GetCellAtId(pointTable[i][j + 2], numCellPts, cellPointIds);
-        if (cellPointIds[0] == pointTable[i][0])
+        vtkIdType cp0, cp1;
+        if (edgesConn.IsValid())
         {
-          edgePts->GetPoint(cellPointIds[0], point1);
-          edgePts->GetPoint(cellPointIds[1], point2);
+          const vtkIdType cb = edgesConn.CellBegin(pointTable[i][j + 2]);
+          cp0 = edgesConn[cb + 0];
+          cp1 = edgesConn[cb + 1];
         }
         else
         {
-          edgePts->GetPoint(cellPointIds[1], point1);
-          edgePts->GetPoint(cellPointIds[0], point2);
+          edges->GetCellAtId(pointTable[i][j + 2], numCellPts, cellPointIds);
+          cp0 = cellPointIds[0];
+          cp1 = cellPointIds[1];
+        }
+        if (cp0 == pointTable[i][0])
+        {
+          edgePts->GetPoint(cp0, point1);
+          edgePts->GetPoint(cp1, point2);
+        }
+        else
+        {
+          edgePts->GetPoint(cp1, point1);
+          edgePts->GetPoint(cp0, point2);
         }
         featureEdges[j][0] = point2[0] - point1[0];
         featureEdges[j][1] = point2[1] - point1[1];
@@ -1532,5 +1637,7 @@ void vtkQuadricClustering::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Copy Cell Data : " << this->CopyCellData << endl;
 
   os << indent << "Prevent Duplicate Cells : " << (this->PreventDuplicateCells ? "On\n" : "Off\n");
+
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

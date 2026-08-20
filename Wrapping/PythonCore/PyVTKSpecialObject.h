@@ -59,9 +59,17 @@ VTK_ABI_NAMESPACE_END
 
 extern "C"
 {
+#if defined(Py_LIMITED_API)
+  // abi3: built from a PyType_Spec (heap type) instead of a static PyTypeObject;
+  // see PyVTKSpecialObject.cxx.
+  VTKWRAPPINGPYTHONCORE_EXPORT
+  PyTypeObject* PyVTKSpecialType_Add(PyType_Spec* spec, PyTypeObject* base, PyMethodDef* methods,
+    PyGetSetDef* getsets, PyMethodDef* constructors, vtkcopyfunc copyfunc);
+#else
   VTKWRAPPINGPYTHONCORE_EXPORT
   PyTypeObject* PyVTKSpecialType_Add(PyTypeObject* pytype, PyMethodDef* methods,
     PyGetSetDef* getsets, PyMethodDef* constructors, vtkcopyfunc copyfunc);
+#endif
 
   VTKWRAPPINGPYTHONCORE_EXPORT
   PyObject* PyVTKSpecialObject_New(const char* classname, void* ptr);

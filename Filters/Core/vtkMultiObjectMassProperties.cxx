@@ -45,6 +45,12 @@ private:
 
   vtkSMPThreadLocalObject<vtkPolygon> Polygon;
   vtkSMPThreadLocalObject<vtkIdList> Triangles;
+  // Per-thread scratch for GetCellPoints(). The raw-pointer GetCellPoints()
+  // overload returns a pointer into a *shared* scratch list when the cell-array
+  // storage type differs from vtkIdType (e.g. int32-default storage), which is
+  // not thread-safe. Supplying a thread-local list makes the returned pts valid
+  // for the duration of this cell's processing regardless of other threads.
+  vtkSMPThreadLocalObject<vtkIdList> CellPointIds;
   vtkSMPThreadLocal<std::vector<double>> TLObjectAreas;
   vtkSMPThreadLocal<std::vector<double>> TLObjectVolumes;
   vtkSMPThreadLocal<std::vector<double>> TLObjectCentroids;
@@ -82,6 +88,10 @@ public:
     auto& tris = this->Triangles.Local();
     tris->Reserve(128);
 
+    // allocate the per-thread GetCellPoints() scratch
+    auto& cellPointIds = this->CellPointIds.Local();
+    cellPointIds->Allocate(128);
+
     // initialize thread local object-related results;
     auto& objectAreas = this->TLObjectAreas.Local();
     objectAreas.resize(this->NumberOfObjects);
@@ -114,6 +124,7 @@ public:
     vtkIdType numTris;
     vtkPolygon*& poly = this->Polygon.Local();
     vtkIdList*& tris = this->Triangles.Local();
+    vtkIdList*& cellPointIds = this->CellPointIds.Local();
     int i;
     double x0[3], x1[3], x2[3], tetVol;
     double v210, v120, v201, v021, v102, v012;
@@ -134,7 +145,10 @@ public:
         }
       }
       vtkIdType& objectId = this->ObjectIds[polyId];
-      this->Mesh->GetCellPoints(polyId, npts, pts);
+      // Use the thread-safe GetCellPoints() overload with a per-thread scratch
+      // list; the raw-pointer overload shares one scratch across threads and
+      // corrupts pts/npts under threading (see CellPointIds above).
+      this->Mesh->GetCellPoints(polyId, npts, pts, cellPointIds);
 
       // Compute area of polygon.
       *areas = vtkPolygon::ComputeArea(inPts, npts, pts, n);
@@ -265,6 +279,7 @@ vtkMultiObjectMassProperties::vtkMultiObjectMassProperties()
 
   // Processing waves for performing connected traversal
   this->CellNeighbors = vtkIdList::New();
+  this->CellPts = vtkIdList::New();
   this->Wave = nullptr;
   this->Wave2 = nullptr;
 }
@@ -274,6 +289,7 @@ vtkMultiObjectMassProperties::vtkMultiObjectMassProperties()
 vtkMultiObjectMassProperties::~vtkMultiObjectMassProperties()
 {
   this->CellNeighbors->Delete();
+  this->CellPts->Delete();
 }
 
 //------------------------------------------------------------------------------
@@ -525,6 +541,19 @@ void vtkMultiObjectMassProperties::TraverseAndMark(
     {
       polyId = wave->GetId(i);
       output->GetCellPoints(polyId, npts, pts);
+
+      // Snapshot polyId's connectivity into owned storage. Under int32-default
+      // cell storage, GetCellPoints returns a pointer into vtkCellArray's shared
+      // TempCell scratch; the GetCellPoints(neiId,...) call inside the edge loop
+      // below would clobber it, corrupting pts[] mid-walk. Copying here keeps pts
+      // valid for the whole loop (byte-identical to stock int64 behavior, and the
+      // reused vtkIdList avoids per-cell heap allocation).
+      this->CellPts->SetNumberOfIds(npts);
+      for (k = 0; k < npts; ++k)
+      {
+        this->CellPts->SetId(k, pts[k]);
+      }
+      pts = this->CellPts->GetPointer(0);
 
       for (j = 0; j < npts; ++j)
       {

@@ -5,21 +5,25 @@
 #include "vtkAbstractCellLinks.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
+#include "vtkCartesianGrid.h"
 #include "vtkCell.h"
 #include "vtkCellData.h"
 #include "vtkCellTypeUtilities.h"
 #include "vtkDataArrayRange.h"
 #include "vtkDataSet.h"
+#include "vtkCVISTASMPDefaults.h" // cvista: opt into default multithreading (bit-exact)
 #include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
 #include "vtkSmartPointer.h"
 #include "vtkStaticCellLinks.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
+#include "vtkStructuredData.h"
 #include "vtkStructuredGrid.h"
 #include "vtkUniformGrid.h"
 #include "vtkUnsignedIntArray.h"
@@ -79,13 +83,13 @@ void FastUnstructuredDataACL(
   if (auto staticCellLinks = vtkStaticCellLinks::SafeDownCast(links))
   {
     UnstructuredDataCD2PD<vtkStaticCellLinks> cd2pd(numPts, cfl, pd, staticCellLinks);
-    vtkSMPTools::For(0, numPts, cd2pd);
+    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numPts, cd2pd); });
   }
   else // vtkCellLinks
   {
     auto cellLinks = vtkCellLinks::SafeDownCast(links);
     UnstructuredDataCD2PD<vtkCellLinks> cd2pd(numPts, cfl, pd, cellLinks);
-    vtkSMPTools::For(0, numPts, cd2pd);
+    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numPts, cd2pd); });
   }
 }
 
@@ -106,7 +110,7 @@ void FastUnstructuredDataSCLT(
     TCellLinks cellLinks;
     cellLinks.BuildLinks(input);
     UnstructuredDataCD2PD<TCellLinks> cd2pd(numberOfPoints, cfl, pd, &cellLinks);
-    vtkSMPTools::For(0, numberOfPoints, cd2pd);
+    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
   }
 #ifdef VTK_USE_64BIT_IDS
   else if (linksType == vtkAbstractCellLinks::STATIC_CELL_LINKS_UINT)
@@ -115,7 +119,7 @@ void FastUnstructuredDataSCLT(
     TCellLinks cellLinks;
     cellLinks.BuildLinks(input);
     UnstructuredDataCD2PD<TCellLinks> cd2pd(numberOfPoints, cfl, pd, &cellLinks);
-    vtkSMPTools::For(0, numberOfPoints, cd2pd);
+    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
   }
 #endif
   else
@@ -124,7 +128,7 @@ void FastUnstructuredDataSCLT(
     TCellLinks cellLinks;
     cellLinks.BuildLinks(input);
     UnstructuredDataCD2PD<TCellLinks> cd2pd(numberOfPoints, cfl, pd, &cellLinks);
-    vtkSMPTools::For(0, numberOfPoints, cd2pd);
+    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
   }
 }
 
@@ -241,6 +245,69 @@ struct Spread
     }
   }
 };
+
+//------------------------------------------------------------------------------
+// Bit-exact, devirtualized replacement for the per-point call
+//   input->GetPointCells(ptId, cellIds)
+// when the input is a structured dataset whose GetPointCells routes to
+// vtkStructuredData::GetPointCells (vtkImageData/vtkUniformGrid/
+// vtkRectilinearGrid via vtkCartesianGrid, and vtkStructuredGrid).
+//
+// This mirrors vtkStructuredData::GetPointCells EXACTLY: the same offset
+// table, the same iteration order, and the same cellId formula. It therefore
+// produces an identical cellIds list (identical values in identical order) for
+// every point. The only differences are (a) the structured dimensions are
+// fetched once by the caller instead of per call, (b) the call is direct
+// rather than through the vtkDataSet virtual table, and (c) ids are written
+// into a pre-sized buffer with the bookkeeping hoisted out of the inner loop,
+// avoiding vtkIdList::Reset()/InsertNextId() capacity churn. The resulting
+// cellIds are consumed by the unchanged outPD->InterpolatePoint(), so the
+// floating-point averaging order is byte-for-byte unchanged.
+inline void StructuredGetPointCells(vtkIdType ptId, vtkIdList* cellIds, const int dim[3])
+{
+  // Match vtkStructuredData::GetPointCells offset table and order exactly.
+  static const int offset[8][3] = { { -1, 0, 0 }, { -1, -1, 0 }, { -1, -1, -1 }, { -1, 0, -1 },
+    { 0, 0, 0 }, { 0, -1, 0 }, { 0, -1, -1 }, { 0, 0, -1 } };
+
+  vtkIdType cellDim[3];
+  for (int i = 0; i < 3; i++)
+  {
+    cellDim[i] = dim[i] - 1;
+    if (cellDim[i] == 0)
+    {
+      cellDim[i] = 1;
+    }
+  }
+
+  const int ptLoc[3] = { static_cast<int>(ptId % dim[0]),
+    static_cast<int>((ptId / dim[0]) % dim[1]),
+    static_cast<int>(ptId / (static_cast<vtkIdType>(dim[0]) * dim[1])) };
+
+  // Pre-size to the maximum (8) and write directly; trim at the end. This
+  // avoids the per-id Reset()/InsertNextId() capacity check while preserving
+  // the exact same sequence of appended ids.
+  cellIds->SetNumberOfIds(8);
+  vtkIdType* ids = cellIds->GetPointer(0);
+  vtkIdType count = 0;
+  for (int j = 0; j < 8; j++)
+  {
+    int cellLoc[3];
+    int i;
+    for (i = 0; i < 3; i++)
+    {
+      cellLoc[i] = ptLoc[i] + offset[j][i];
+      if (cellLoc[i] < 0 || cellLoc[i] >= cellDim[i])
+      {
+        break;
+      }
+    }
+    if (i >= 3) // add cell
+    {
+      ids[count++] = cellLoc[0] + cellLoc[1] * cellDim[0] + cellLoc[2] * cellDim[0] * cellDim[1];
+    }
+  }
+  cellIds->SetNumberOfIds(count);
+}
 
 } // end anonymous namespace
 
@@ -721,9 +788,6 @@ int vtkCellDataToPointData::RequestDataForUnstructuredData(
 //------------------------------------------------------------------------------
 int vtkCellDataToPointData::InterpolatePointData(vtkDataSet* input, vtkDataSet* output)
 {
-  vtkNew<vtkIdList> cellIds;
-  cellIds->Reserve(VTK_MAX_CELLS_PER_POINT);
-
   const vtkIdType numberOfPoints = input->GetNumberOfPoints();
 
   vtkCellData* inCD = input->GetCellData();
@@ -752,35 +816,138 @@ int vtkCellDataToPointData::InterpolatePointData(vtkDataSet* input, vtkDataSet* 
 
   outPD->InterpolateAllocate(processedCellData, numberOfPoints);
 
-  double weights[VTK_MAX_CELLS_PER_POINT];
-
-  bool abort = false;
-  vtkIdType progressInterval = numberOfPoints / 20 + 1;
-  for (vtkIdType ptId = 0; ptId < numberOfPoints && !abort; ptId++)
+  // cvista: pre-size EVERY output point-data array to numberOfPoints tuples so the
+  // threaded loop below is a pure index-addressed store. InterpolateAllocate()
+  // only reserves capacity (MaxId == -1); without this presize the first
+  // InterpolateTuple(ptId,...)/InsertTuple(ptId,...) on each array would bump
+  // MaxId / realloc, which is not thread-safe. NullData() likewise InsertTuple()s
+  // into every array in outPD (not just the interpolated ones), so all arrays --
+  // including the ones already passed through from the input point data -- must
+  // be sized to numberOfPoints. The pass-through arrays already hold exactly
+  // numberOfPoints tuples (one per input point), so resizing them is a no-op.
+  // After this, every per-point write targets an existing tuple: no realloc, no
+  // MaxId bump, no shared mutable state across iterations.
+  for (int i = 0; i < outPD->GetNumberOfArrays(); ++i)
   {
-    if (!(ptId % progressInterval))
+    if (vtkAbstractArray* outArray = outPD->GetAbstractArray(i))
     {
-      this->UpdateProgress(static_cast<double>(ptId) / numberOfPoints);
-      abort = this->CheckAbort();
-    }
-
-    input->GetPointCells(ptId, cellIds);
-    vtkIdType numCells = cellIds->GetNumberOfIds();
-
-    if (numCells > 0 && numCells < VTK_MAX_CELLS_PER_POINT)
-    {
-      double weight = 1.0 / numCells;
-      for (vtkIdType cellId = 0; cellId < numCells; cellId++)
-      {
-        weights[cellId] = weight;
-      }
-      outPD->InterpolatePoint(processedCellData, ptId, cellIds, weights);
-    }
-    else
-    {
-      outPD->NullData(ptId);
+      outArray->SetNumberOfTuples(numberOfPoints);
     }
   }
+
+  // Fast, bit-exact incident-cell traversal for structured inputs. Both
+  // vtkCartesianGrid (vtkImageData/vtkUniformGrid/vtkRectilinearGrid) and
+  // vtkStructuredGrid route their GetPointCells() through the same
+  // vtkStructuredData::GetPointCells(ptId, cellIds, dims). When we recognize
+  // such an input we fetch the structured dimensions once here and replicate
+  // that traversal directly (see StructuredGetPointCells), bypassing the
+  // per-point virtual dispatch and vtkIdList capacity churn. The produced
+  // cellIds are identical (same ids, same order), so the downstream averaging
+  // performed by InterpolatePoint is byte-for-byte unchanged.
+  bool useStructuredFastPath = false;
+  int structuredDims[3] = { 0, 0, 0 };
+  if (auto* cartesianGrid = vtkCartesianGrid::SafeDownCast(input))
+  {
+    cartesianGrid->GetDimensions(structuredDims);
+    useStructuredFastPath = true;
+  }
+  else if (auto* structuredGrid = vtkStructuredGrid::SafeDownCast(input))
+  {
+    structuredGrid->GetDimensions(structuredDims);
+    useStructuredFastPath = true;
+  }
+
+  // cvista: thread the per-output-point interpolation loop (byte-exact under any
+  // thread count). The output is index-addressed by ptId, so disjoint sub-ranges
+  // assigned to different threads write to disjoint, pre-sized tuples -- zero
+  // write conflict and the emission order is preserved exactly. The per-point
+  // average sums the same (<= 8) terms in the same index order regardless of how
+  // the range is partitioned, so there is no floating-point reassociation across
+  // iterations. cellIds and the weights buffer are thread-local scratch.
+  struct Interpolator
+  {
+    vtkCellDataToPointData* Filter;
+    vtkDataSet* Input;
+    vtkPointData* OutPD;
+    vtkCellData* ProcessedCellData;
+    vtkIdType NumberOfPoints;
+    bool UseStructuredFastPath;
+    const int* StructuredDims;
+    vtkSMPThreadLocalObject<vtkIdList> TLCellIds;
+
+    void Initialize() { this->TLCellIds.Local()->Allocate(VTK_MAX_CELLS_PER_POINT); }
+
+    void operator()(vtkIdType beginPtId, vtkIdType endPtId)
+    {
+      vtkIdList* cellIds = this->TLCellIds.Local();
+      double weights[VTK_MAX_CELLS_PER_POINT];
+      const bool isFirst = vtkSMPTools::GetSingleThread();
+      const vtkIdType checkInterval =
+        std::min((endPtId - beginPtId) / 20 + 1, static_cast<vtkIdType>(1000));
+      for (vtkIdType ptId = beginPtId; ptId < endPtId; ++ptId)
+      {
+        if (ptId % checkInterval == 0)
+        {
+          if (isFirst)
+          {
+            this->Filter->UpdateProgress(static_cast<double>(ptId) / this->NumberOfPoints);
+            this->Filter->CheckAbort();
+          }
+          if (this->Filter->GetAbortOutput())
+          {
+            break;
+          }
+        }
+
+        if (this->UseStructuredFastPath)
+        {
+          StructuredGetPointCells(ptId, cellIds, this->StructuredDims);
+        }
+        else
+        {
+          this->Input->GetPointCells(ptId, cellIds);
+        }
+        vtkIdType numCells = cellIds->GetNumberOfIds();
+
+        if (numCells > 0 && numCells < VTK_MAX_CELLS_PER_POINT)
+        {
+          double weight = 1.0 / numCells;
+          for (vtkIdType cellId = 0; cellId < numCells; cellId++)
+          {
+            weights[cellId] = weight;
+          }
+          this->OutPD->InterpolatePoint(this->ProcessedCellData, ptId, cellIds, weights);
+        }
+        else
+        {
+          this->OutPD->NullData(ptId);
+        }
+      }
+    }
+
+    void Reduce() {}
+  };
+
+  // For the (rare) non-structured fallback that still routes here, prime any
+  // lazily-built incident-cell structures on the main thread before the parallel
+  // region so the first GetPointCells() call cannot race. Structured inputs take
+  // the pure StructuredGetPointCells() path and need no priming.
+  if (!useStructuredFastPath && numberOfPoints > 0)
+  {
+    vtkNew<vtkIdList> primeIds;
+    input->GetPointCells(0, primeIds);
+  }
+
+  Interpolator interp;
+  interp.Filter = this;
+  interp.Input = input;
+  interp.OutPD = outPD;
+  interp.ProcessedCellData = processedCellData;
+  interp.NumberOfPoints = numberOfPoints;
+  interp.UseStructuredFastPath = useStructuredFastPath;
+  interp.StructuredDims = structuredDims;
+
+  cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, interp); });
 
   return 1;
 }

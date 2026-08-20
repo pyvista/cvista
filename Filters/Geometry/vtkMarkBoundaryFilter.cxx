@@ -3,6 +3,7 @@
 
 #include "vtkMarkBoundaryFilter.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellData.h"
 #include "vtkDataSet.h"
 #include "vtkGenericCell.h"
@@ -210,11 +211,27 @@ struct MarkPolys : MarkCellBoundary
   {
     auto& cellIter = this->CellIter.Local();
     auto& neighbors = this->Neighbors.Local();
+    // Per-thread native connectivity view over the poly cells; read point ids
+    // without widening the whole cell into the shared scratch vtkIdList (see
+    // cvistaCellConnectivity.h). Falls back to the iterator when unavailable.
+    cvistaCellConnectivity conn(this->Polys);
     vtkIdType npts, edgePts[2];
     const vtkIdType* pts;
     bool isFirst = vtkSMPTools::GetSingleThread();
 
-    for (cellId = 0; cellId < endCellId; ++cellId)
+    // cvista: iterate the batch range [cellId, endCellId) as delivered by
+    // vtkSMPTools::For. The stock code reset the loop variable to 0, so under a
+    // threaded SMP backend every worker reprocessed [0, endCellId): the low
+    // cellIds are handled by multiple threads at once. That is (a) a data race --
+    // concurrent non-atomic writes to the shared CellMarks/PtMarks/FaceMarks
+    // arrays -- and (b) roughly O(N*nthreads) redundant work that inverts the
+    // parallelism on the polydata path. Output happens to stay correct because
+    // the marks are monotone-idempotent (`=1` and `|=`), so the gate cannot see
+    // it; it is still UB and a perf cliff. Harmless under stock's Sequential
+    // backend (one [0, numPolys) batch); a real defect under the STDThread
+    // default. The sibling UGrid/structured functors already iterate the
+    // delivered range. Byte-exact vs Sequential.
+    for (; cellId < endCellId; ++cellId)
     {
       if (isFirst)
       {
@@ -231,11 +248,21 @@ struct MarkPolys : MarkCellBoundary
       }
 
       // Mark boundary polygons. A boundary polygon has an edge used by only the boundary polygon.
-      cellIter->GetCellAtId(cellId, npts, pts);
+      vtkIdType cbeg = 0;
+      const bool native = conn.IsValid();
+      if (native)
+      {
+        npts = conn.CellSize(cellId);
+        cbeg = conn.CellBegin(cellId);
+      }
+      else
+      {
+        cellIter->GetCellAtId(cellId, npts, pts);
+      }
       for (auto i = 0; i < npts; ++i)
       {
-        edgePts[0] = pts[i];
-        edgePts[1] = pts[(i + 1) % npts];
+        edgePts[0] = native ? conn[cbeg + i] : pts[i];
+        edgePts[1] = native ? conn[cbeg + (i + 1) % npts] : pts[(i + 1) % npts];
         this->Links->GetCells(2, edgePts, neighbors);
         if (neighbors->GetNumberOfIds() < 2)
         {

@@ -13,9 +13,11 @@
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPolyDataNormals.h"
 #include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
+#include "vtkStaticCellLinks.h"
 
 #include <algorithm>
 #include <cmath>
@@ -84,6 +86,13 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
   vtkIdList* Map;
   const double CosAngle;
   vtkSplitSharpEdgesPolyData* Filter;
+  // Resolved once: an inlinable, devirtualized stand-in for
+  // vtkPolyData::GetCellEdgeNeighbors over the input's cell links. Hoists the
+  // link pointer/type resolution out of the hot region-growing loop and inlines
+  // the edge-neighbor intersection at the call site, avoiding the cross-.so PLT
+  // call into libvtkCommonDataModel. Bit-for-bit identical; see
+  // vtkPolyDataEdgeNeighbors.h.
+  vtkPolyDataEdgeNeighbors::FastEdgeNeighbors EdgeNeighbors;
 
   struct CellPointReplacementInformation
   {
@@ -120,6 +129,7 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
     , Map(map)
     , CosAngle(std::cos(vtkMath::RadiansFromDegrees(filter->GetFeatureAngle())))
     , Filter(filter)
+    , EdgeNeighbors(input)
   {
     // initialize batches
     this->PointBatches.Initialize(this->Input->GetNumberOfPoints());
@@ -228,7 +238,7 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
               nei = neiPt[edgeId];
               while (cellId >= 0) // while we can grow this region
               {
-                this->Input->GetCellEdgeNeighbors(cellId, pointId, nei, cellIds);
+                this->EdgeNeighbors.Get(cellId, pointId, nei, cellIds);
                 if (cellIds->GetNumberOfIds() == 1 && visited[(neiCellId = cellIds->GetId(0))] < 0)
                 {
                   thisNormal = cellNormals + 3 * cellId;

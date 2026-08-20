@@ -55,8 +55,13 @@ int vtkButterflySubdivisionFilter::GenerateSubdivisionPoints(
   for (cellId = 0, inputPolys->InitTraversal(); !abort && inputPolys->GetNextCell(npts, pts);
        cellId++)
   {
-    p1 = pts[2];
-    p2 = pts[0];
+    // Snapshot this triangle's point ids. Under 32-bit cell storage the raw
+    // GetNextCell pointer aliases vtkCellArray's shared temp-cell scratch, and
+    // the boundary/loop stencil helpers below re-enter GetCellPoints on the same
+    // polys, clobbering it before it is re-read as pts[edgeId + 1].
+    const vtkIdType cellPts[3] = { pts[0], pts[1], pts[2] };
+    p1 = cellPts[2];
+    p2 = cellPts[0];
 
     for (edgeId = 0; edgeId < 3; edgeId++)
     {
@@ -137,7 +142,7 @@ int vtkButterflySubdivisionFilter::GenerateSubdivisionPoints(
       p1 = p2;
       if (edgeId < 2)
       {
-        p2 = pts[edgeId + 1];
+        p2 = cellPts[edgeId + 1];
       }
     } // each interior edge
   } // each cell

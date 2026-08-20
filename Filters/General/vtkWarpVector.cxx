@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkWarpVector.h"
 
+#include "vtkAOSDataArrayTemplate.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayDispatchDataSetArrayList.h"
 #include "vtkCellData.h"
@@ -19,9 +20,12 @@
 #include "vtkRectilinearGridToPointSet.h"
 #include "vtkStructuredGrid.h"
 
+#include "vtkCVISTASMPDefaults.h"
 #include "vtkNew.h"
 #include "vtkSMPTools.h"
 #include "vtkSmartPointer.h"
+
+#include <algorithm> // std::min for cvista SIMD batch bounds
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkWarpVector);
@@ -78,6 +82,71 @@ int vtkWarpVector::RequestDataObject(
 namespace
 { // anonymous
 
+// cvista SIMD: the per-point warp kernel xo = xi + sf*v over a contiguous
+// [ptId, endPtId) range, hoisted out of the abort-checked loop into a dedicated
+// free function carrying target_clones("default","avx2"). The per-element
+// CheckAbort/GetAbortOutput branches (virtual calls) blocked vectorization, so
+// the abort check is moved to a coarse outer batch (see operator() below) and
+// this clean inner kernel multi-versions to a baseline (SSE2) clone + an .avx2
+// clone + IFUNC resolver — single portable wheel, no -march bump. BIT-EXACT:
+// xi + sf*v is the canonical a*b+c FMA shape; the TU is compiled with
+// -ffp-contract=off (set_source_files_properties in CMakeLists) so no clone
+// contracts to vfmadd, holding maxULP=0 vs stock VTK. NB: warp is
+// bandwidth-bound (2 read + 1 write per ~2 FLOP) so the SIMD win is real only
+// cache-resident; the FMV stays portable/bit-exact either way.
+// cvista PORTABILITY: target_clones("default","avx2") is GCC x86-only function
+// multiversioning; AppleClang (Apple Silicon) and MSVC reject it. Guard to real
+// GCC-on-x86 and no-op elsewhere (those targets compile the same bit-exact
+// baseline kernel without the AVX2 clone). See vtkLinearTransform.cxx.
+#if defined(__GNUC__) && !defined(__clang__) && (defined(__x86_64__) || defined(__i386__))
+#define CVISTA_AVX2_TARGET_CLONES __attribute__((target_clones("default", "avx2")))
+#else
+#define CVISTA_AVX2_TARGET_CLONES
+#endif
+template <typename IptsRange, typename OptsRange, typename VecsRange>
+CVISTA_AVX2_TARGET_CLONES void cvistaWarpVectorRange(
+  const IptsRange& ipts, OptsRange& opts, const VecsRange& vecs, double sf, vtkIdType begin,
+  vtkIdType end)
+{
+  for (vtkIdType ptId = begin; ptId < end; ++ptId)
+  {
+    const auto xi = ipts[ptId];
+    auto xo = opts[ptId];
+    const auto v = vecs[ptId];
+
+    xo[0] = xi[0] + sf * v[0];
+    xo[1] = xi[1] + sf * v[1];
+    xo[2] = xi[2] + sf * v[2];
+  }
+}
+
+// cvista wave-11/12 typed-pointer kernel: identical xo = xi + sf*v warp, but over
+// raw contiguous AOS buffers resolved ONCE in the worker (FastDownCast +
+// GetPointer(0)) instead of through vtkDataArrayTupleRange. The tuple-range layer
+// (proxy tuple-reference -> component-reference) still bottoms out at the same
+// stored value, but the extra indirection/aliasing it presents can keep the AVX2
+// clone from cleanly vectorizing the contiguous stride-3 stream. Indexing
+// in/out/vec at 3*ptId+c gives the compiler bare InT*/OutT*/VecT* arrays.
+// BIT-EXACT: the operand types are exactly the array storage types (in[i] is InT,
+// vec[i] is VecT, sf is double, assigned to OutT) -- identical to xi[c]/v[c]/xo[c]
+// off the AOS tuple range, whose operator[] returns ValueType& straight off the
+// raw Tuple pointer. So `xi + sf*v` is evaluated in the IDENTICAL operand types,
+// IDENTICAL operation order (mul then add), and narrowed identically on store;
+// byte-for-byte the same as the range kernel above. Same -ffp-contract=off TU, so
+// no clone contracts the a*b+c to an FMA.
+template <typename InT, typename OutT, typename VecT>
+CVISTA_AVX2_TARGET_CLONES void cvistaWarpVectorPtr(
+  const InT* in, OutT* out, const VecT* vec, double sf, vtkIdType begin, vtkIdType end)
+{
+  for (vtkIdType ptId = begin; ptId < end; ++ptId)
+  {
+    const vtkIdType i = 3 * ptId;
+    out[i + 0] = in[i + 0] + sf * vec[i + 0];
+    out[i + 1] = in[i + 1] + sf * vec[i + 1];
+    out[i + 2] = in[i + 2] + sf * vec[i + 2];
+  }
+}
+
 struct WarpWorker
 {
   template <typename InPT, typename OutPT, typename VT>
@@ -89,31 +158,62 @@ struct WarpWorker
     auto opts = vtk::DataArrayTupleRange<3>(outPts);
     const auto vecs = vtk::DataArrayTupleRange<3>(vectors);
 
+    // cvista: try to resolve raw AOS coordinate/vector buffers once. The dispatch
+    // restricts outPts to AOS already; inPts and vectors may be SOA, in which
+    // case the typed pointers stay null and we use the tuple-range kernel. The
+    // raw-pointer kernel is selected only when all three are AOS-contiguous.
+    using InValueT = vtk::GetAPIType<InPT>;
+    using OutValueT = vtk::GetAPIType<OutPT>;
+    using VecValueT = vtk::GetAPIType<VT>;
+    auto* inAOS = vtkAOSDataArrayTemplate<InValueT>::FastDownCast(inPts);
+    auto* outAOS = vtkAOSDataArrayTemplate<OutValueT>::FastDownCast(outPts);
+    auto* vecAOS = vtkAOSDataArrayTemplate<VecValueT>::FastDownCast(vectors);
+    const InValueT* inPtr = inAOS ? inAOS->GetPointer(0) : nullptr;
+    OutValueT* outPtr = outAOS ? outAOS->GetPointer(0) : nullptr;
+    const VecValueT* vecPtr = vecAOS ? vecAOS->GetPointer(0) : nullptr;
+    const bool useRaw = inPtr && outPtr && vecPtr;
+
     // We use THRESHOLD to test if the data size is small enough
     // to execute the functor serially.
-    vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
-      [&](vtkIdType ptId, vtkIdType endPtId)
+    // cvista: this For writes opts[ptId] = f(ipts[ptId]) into pre-sized output
+    // slots, so it is bit-exact under any thread count -> opt into the cvista
+    // default-on multithreading (capped at 4, overridable via VTK SMP APIs).
+    cvista::RunSafeFilterParallel(
+      [&]()
       {
-        bool isFirst = vtkSMPTools::GetSingleThread();
-        for (; ptId < endPtId; ++ptId)
-        {
-          if (isFirst)
+        vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,
+          [&](vtkIdType ptId, vtkIdType endPtId)
           {
-            self->CheckAbort();
-          }
-          if (self->GetAbortOutput())
-          {
-            break;
-          }
-          const auto xi = ipts[ptId];
-          auto xo = opts[ptId];
-          const auto v = vecs[ptId];
-
-          xo[0] = xi[0] + sf * v[0];
-          xo[1] = xi[1] + sf * v[1];
-          xo[2] = xi[2] + sf * v[2];
-        }
-      }); // lambda
+            bool isFirst = vtkSMPTools::GetSingleThread();
+            // cvista: process in batches so the per-point abort branch is lifted
+            // out of the vectorizable kernel (cvistaWarpVectorRange, AVX2/SSE2
+            // multi-versioned). The output is identical to a per-point check:
+            // CheckAbort only sets a flag; GetAbortOutput breaks the chunk loop
+            // at a batch boundary, and on abort the (undefined) tail is
+            // discarded exactly as before.
+            constexpr vtkIdType kBatch = 4096;
+            for (vtkIdType base = ptId; base < endPtId; base += kBatch)
+            {
+              if (isFirst)
+              {
+                self->CheckAbort();
+              }
+              if (self->GetAbortOutput())
+              {
+                break;
+              }
+              const vtkIdType batchEnd = std::min(base + kBatch, endPtId);
+              if (useRaw)
+              {
+                cvistaWarpVectorPtr(inPtr, outPtr, vecPtr, sf, base, batchEnd);
+              }
+              else
+              {
+                cvistaWarpVectorRange(ipts, opts, vecs, sf, base, batchEnd);
+              }
+            }
+          }); // lambda
+      });
   }
 };
 

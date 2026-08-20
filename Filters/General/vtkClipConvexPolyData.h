@@ -42,6 +42,18 @@ public:
    */
   vtkMTimeType GetMTime() override;
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkClipConvexPolyData();
   ~vtkClipConvexPolyData() override;
@@ -78,6 +90,8 @@ protected:
 
   vtkPlaneCollection* Planes;
   vtkClipConvexPolyDataInternals* Internal;
+
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
 private:
   vtkClipConvexPolyData(const vtkClipConvexPolyData&) = delete;

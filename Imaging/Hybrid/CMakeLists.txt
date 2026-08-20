@@ -9,7 +9,6 @@ set(classes
   vtkPointLoad
   vtkSampleFunction
   vtkShepardMethod
-  vtkSliceCubes
   vtkSurfaceReconstructionFilter
   vtkTriangularTexture
   vtkVoxelModeller)

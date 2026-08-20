@@ -4,6 +4,7 @@
 #include "vtkDataArray.h"
 
 #include "vtkArrayDispatch.h"
+#include "vtkCVISTAByteCopy.h"
 #include "vtkDataArrayRange.h"
 
 namespace
@@ -100,7 +101,18 @@ void vtkDataArray::InsertTuples(vtkIdList* dstIds, vtkIdList* srcIds, vtkAbstrac
     this->MaxId = newSize - 1;
   }
 
+  if (cvista::CanByteCopy(srcDA, this))
+  {
+    cvista::ScatterTuples(srcDA, srcIds->GetPointer(0), this, dstIds->GetPointer(0),
+      dstIds->GetNumberOfIds());
+    return;
+  }
+
   SetTuplesIdListWorker worker(srcIds, dstIds);
+  // cvista: the byte path above covers same-type AOS for every value type. What
+  // is left is genuine cross-type conversion, which carries value-type semantics
+  // and cannot be width-erased, so it keeps the dispatcher. Deleting it here cost
+  // 5-7x on cross-type copies against stock, for ~67 KB of binary.
   if (!vtkArrayDispatch::Dispatch2::Execute(srcDA, this, worker))
   {
     worker(srcDA, this);

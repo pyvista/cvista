@@ -20,8 +20,6 @@
 #include "vtkSmartPointer.h"
 #include "vtkStringArray.h"
 #include "vtkUnstructuredGrid.h"
-#include "vtkXMLDataObjectWriter.h"
-#include "vtkXMLGenericDataObjectReader.h"
 
 #if VTK_MODULE_ENABLE_VTK_ParallelMPI
 #include "vtkMPI.h"
@@ -36,6 +34,12 @@
 VTK_ABI_NAMESPACE_BEGIN
 namespace
 {
+// vtkDataSet XML (de)serialization is implemented in VTK::IOXML and installed via
+// vtkDIYUtilities::RegisterDataSetSerializationHandlers() when that module loads.
+// VTK::ParallelDIY keeps no dependency on the IO modules.
+vtkDIYUtilities::SaveDataSetHandler vtkDIYUtilitiesSaveDataSet = nullptr;
+vtkDIYUtilities::LoadDataSetHandler vtkDIYUtilitiesLoadDataSet = nullptr;
+
 //==============================================================================
 struct SaveArrayWorker
 {
@@ -312,21 +316,31 @@ void vtkDIYUtilities::Save(diy::BinaryBuffer& bb, vtkFieldData* fd)
 }
 
 //------------------------------------------------------------------------------
+void vtkDIYUtilities::RegisterDataSetSerializationHandlers(
+  SaveDataSetHandler save, LoadDataSetHandler load)
+{
+  vtkDIYUtilitiesSaveDataSet = save;
+  vtkDIYUtilitiesLoadDataSet = load;
+}
+
+//------------------------------------------------------------------------------
 void vtkDIYUtilities::Save(diy::BinaryBuffer& bb, vtkDataSet* p)
 {
   if (p)
   {
     diy::save(bb, p->GetDataObjectType());
-    auto writer = vtkXMLDataObjectWriter::NewWriter(p->GetDataObjectType());
-    if (writer)
+    std::string data;
+    if (vtkDIYUtilitiesSaveDataSet && vtkDIYUtilitiesSaveDataSet(p, data))
     {
-      writer->WriteToOutputStringOn();
-      writer->SetCompressorTypeToLZ4();
-      writer->SetEncodeAppendedData(false);
-      writer->SetInputDataObject(p);
-      writer->Write();
-      diy::save(bb, writer->GetOutputString());
-      writer->Delete();
+      diy::save(bb, data);
+    }
+    else if (!vtkDIYUtilitiesSaveDataSet)
+    {
+      vtkLogF(ERROR,
+        "Cannot serialize `%s`: no dataset serialization handler is registered. Load VTK::IOXML "
+        "(e.g. `import vtkmodules.vtkIOXML`). Aborting for debugging purposes.",
+        p->GetClassName());
+      abort();
     }
     else
     {
@@ -473,19 +487,22 @@ void vtkDIYUtilities::Load(diy::BinaryBuffer& bb, vtkDataSet*& p)
     std::string data;
     diy::load(bb, data);
 
-    vtkSmartPointer<vtkDataSet> ds;
-    if (auto reader = vtkXMLGenericDataObjectReader::CreateReader(type, /*parallel*/ false))
+    vtkSmartPointer<vtkDataSet> ds =
+      vtkDIYUtilitiesLoadDataSet ? vtkDIYUtilitiesLoadDataSet(type, data) : nullptr;
+    if (!ds)
     {
-      reader->ReadFromInputStringOn();
-      reader->SetInputString(data);
-      reader->Update();
-      ds = vtkDataSet::SafeDownCast(reader->GetOutputDataObject(0));
-    }
-    else
-    {
-      vtkLogF(ERROR, "Currently type '%d' (%s) is not supported.", type,
-        vtkDataObjectTypes::GetClassNameFromTypeId(type));
-      // aborting for debugging purposes.
+      if (!vtkDIYUtilitiesLoadDataSet)
+      {
+        vtkLogF(ERROR,
+          "Cannot deserialize dataset: no handler is registered. Load VTK::IOXML "
+          "(e.g. `import vtkmodules.vtkIOXML`). Aborting for debugging purposes.");
+      }
+      else
+      {
+        vtkLogF(ERROR, "Currently type '%d' (%s) is not supported.", type,
+          vtkDataObjectTypes::GetClassNameFromTypeId(type));
+        // aborting for debugging purposes.
+      }
       abort();
     }
 

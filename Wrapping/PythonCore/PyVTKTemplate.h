@@ -16,7 +16,12 @@
 #include "vtkSystemIncludes.h"
 #include "vtkWrappingPythonCoreModule.h" // For export macro
 
+#if defined(Py_LIMITED_API)
+extern VTKWRAPPINGPYTHONCORE_EXPORT PyTypeObject* PyVTKTemplate_TypePtr;
+#define PyVTKTemplate_Type (*PyVTKTemplate_TypePtr)
+#else
 extern VTKWRAPPINGPYTHONCORE_EXPORT PyTypeObject PyVTKTemplate_Type;
+#endif
 
 #define PyVTKTemplate_Check(obj) (Py_TYPE(obj) == &PyVTKTemplate_Type)
 

@@ -136,6 +136,18 @@ public:
   vtkGetMacro(TextureLength, double);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkRibbonFilter();
   ~vtkRibbonFilter() override;
@@ -149,6 +161,7 @@ protected:
   vtkTypeBool UseDefaultNormal;
   int GenerateTCoords;  // control texture coordinate generation
   double TextureLength; // this length is mapped to [0,1) texture space
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   // Helper methods
   int GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdType* pts, vtkPoints* inPts,

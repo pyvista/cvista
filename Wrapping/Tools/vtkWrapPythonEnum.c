@@ -86,8 +86,17 @@ void vtkWrapPython_AddEnumType(FILE* fp, const char* indent, const char* dictvar
     fprintf(fp, "  /* Deprecated %s */\n", (cls->DeprecatedReason ? cls->DeprecatedReason : ""));
   }
 
-  fprintf(fp, "%sPyType_Ready(&Py%s%s%s_Type);\n", indent, (scope ? scope : ""), (scope ? "_" : ""),
-    cls->Name);
+  /* abi3: build the heap enum type from its spec and stash the pointer (the
+   * deref macro makes &Py..._Type resolve to it); the default build readies the
+   * static type in place. */
+  fprintf(fp,
+    "#if defined(Py_LIMITED_API)\n"
+    "%sPy%s%s%s_TypePtr = (PyTypeObject*)PyType_FromSpec(&Py%s%s%s_Spec);\n"
+    "#else\n"
+    "%sPyType_Ready(&Py%s%s%s_Type);\n"
+    "#endif\n",
+    indent, (scope ? scope : ""), (scope ? "_" : ""), cls->Name, (scope ? scope : ""),
+    (scope ? "_" : ""), cls->Name, indent, (scope ? scope : ""), (scope ? "_" : ""), cls->Name);
 
   if (cls->NumberOfConstants)
   {
@@ -96,7 +105,10 @@ void vtkWrapPython_AddEnumType(FILE* fp, const char* indent, const char* dictvar
       "%s{\n"
       "%s  PyObject *enumval;\n"
       "%s  PyObject *enumdict = PyDict_New();\n"
+      /* default build: enumdict IS the type's dict; abi3 merges it in below */
+      "#if !defined(Py_LIMITED_API)\n"
       "%s  Py%s%s%s_Type.tp_dict = enumdict;\n"
+      "#endif\n"
       "\n",
       indent, (scope ? scope : ""), (scope ? "::" : ""), cls->Name, indent, indent, indent, indent,
       (scope ? scope : ""), (scope ? "_" : ""), cls->Name);
@@ -134,6 +146,15 @@ void vtkWrapPython_AddEnumType(FILE* fp, const char* indent, const char* dictvar
       "%s  }\n",
       indent, cls->NumberOfConstants, indent, indent, (scope ? scope : ""), (scope ? "_" : ""),
       cls->Name, indent, indent, indent, indent, indent, indent);
+
+    /* abi3: copy the assembled members into the heap type's dict, then release
+     * the temporary (the default build handed ownership to tp_dict above). */
+    fprintf(fp,
+      "#if defined(Py_LIMITED_API)\n"
+      "%s  vtkPythonType_MergeIntoTypeDict(&Py%s%s%s_Type, enumdict);\n"
+      "%s  Py_DECREF(enumdict);\n"
+      "#endif\n",
+      indent, (scope ? scope : ""), (scope ? "_" : ""), cls->Name, indent);
 
     fprintf(fp,
       "%s}\n"
@@ -177,6 +198,32 @@ void vtkWrapPython_GenerateEnumType(
   }
 
   /* generate all functions and protocols needed for the type */
+
+  /* abi3: a static PyTypeObject is illegal under the limited API; emit a
+   * PyType_Spec mirroring the static enum type below. The enum is an int
+   * subclass: Py_tp_base = &PyLong_Type (address-of an opaque global is OK),
+   * basicsize 0 inherits PyLong's layout, tp_free = PyObject_Del, and the
+   * DISALLOW_INSTANTIATION flag matches the >=3.10 static form. The heap type is
+   * built at runtime by the abi3 branch of vtkWrapPython_AddEnumType. */
+  fprintf(fp,
+    "#if defined(Py_LIMITED_API)\n"
+    "static PyType_Slot Py%s_Slots[] = {\n"
+    "  { Py_tp_base, (void*)&PyLong_Type },\n"
+    "  { Py_tp_free, (void*)PyObject_Del },\n"
+    "  { 0, nullptr }\n"
+    "};\n\n"
+    "static PyType_Spec Py%s_Spec = {\n"
+    "  PYTHON_PACKAGE_SCOPE \"%s.%s\",\n"
+    "  0, 0,\n"
+    "  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,\n"
+    "  Py%s_Slots\n"
+    "};\n"
+    /* runtime pointer to the heap enum type + a deref macro so every existing
+     * "&Py%s_Type" reference stays byte-identical in form (&(*ptr) == ptr). */
+    "static PyTypeObject* Py%s_TypePtr = nullptr;\n"
+    "#define Py%s_Type (*Py%s_TypePtr)\n"
+    "#else\n",
+    enumname, enumname, module, tpname, enumname, enumname, enumname, enumname, enumname);
 
   /* generate the TypeObject */
   fprintf(fp,
@@ -251,6 +298,7 @@ void vtkWrapPython_GenerateEnumType(
   fprintf(fp,
     "  VTK_WRAP_PYTHON_SUPPRESS_UNINITIALIZED\n"
     "};\n"
+    "#endif // Py_LIMITED_API\n"
     "\n");
 
   /* conversion method: construct from enum value */

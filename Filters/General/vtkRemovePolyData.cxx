@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkRemovePolyData.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkAlgorithmOutput.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
@@ -139,7 +140,6 @@ struct MarkCells
 
   // These are local object for supporting thread-specific operations
   vtkSMPThreadLocal<vtkSmartPointer<vtkIdList>> LinkedCells;
-  vtkSMPThreadLocal<vtkSmartPointer<vtkCellArrayIterator>> CellIterator;
   vtkSMPThreadLocal<vtkSmartPointer<vtkCellArrayIterator>> RCellIterator;
   vtkRemovePolyData* Filter;
 
@@ -160,7 +160,6 @@ struct MarkCells
   void Initialize()
   {
     this->LinkedCells.Local() = vtkSmartPointer<vtkIdList>::New();
-    this->CellIterator.Local().TakeReference(this->Cells->NewIterator());
     this->RCellIterator.Local().TakeReference(this->RemoveCells->NewIterator());
   }
 
@@ -169,7 +168,6 @@ struct MarkCells
   {
     vtkIdType npts, cId;
     const vtkIdType* pts;
-    vtkCellArrayIterator* cellIter = this->CellIterator.Local();
     vtkCellArrayIterator* rCellIter = this->RCellIterator.Local();
     vtkIdList* linkedCells = this->LinkedCells.Local();
     bool isFirst = vtkSMPTools::GetSingleThread();
@@ -196,9 +194,10 @@ struct MarkCells
         }
         else
         {
-          vtkIdType nMatchPts;
-          const vtkIdType* matchPts;
-          cellIter->GetCellAtId(cId, nMatchPts, matchPts);
+          // Exact match only needs the candidate cell's size, never its point
+          // ids, so query the size directly and avoid widening the cell into the
+          // shared scratch list. See cvistaCellConnectivity.h.
+          vtkIdType nMatchPts = this->Cells->GetCellSize(cId);
           if (nMatchPts == npts)
           {
             (*this->CellMap)[cId + this->CellIdOffset] = -1;
@@ -362,7 +361,6 @@ struct CountCells
   vtkSMPThreadLocal<vtkIdType> LocalNumCells;
   vtkSMPThreadLocal<vtkIdType> LocalConnSize;
 
-  vtkSMPThreadLocal<vtkSmartPointer<vtkCellArrayIterator>> CellIterator;
   vtkRemovePolyData* Filter;
 
   CountCells(
@@ -380,17 +378,13 @@ struct CountCells
   {
     this->LocalNumCells.Local() = 0;
     this->LocalConnSize.Local() = 0;
-    this->CellIterator.Local().TakeReference(this->CellArray->NewIterator());
   }
 
   void operator()(vtkIdType cellId, vtkIdType endCellId)
   {
     CellMapType* cellMap = this->CellMap;
-    vtkCellArrayIterator* cellIter = this->CellIterator.Local();
     vtkIdType& numCells = this->LocalNumCells.Local();
     vtkIdType& connSize = this->LocalConnSize.Local();
-    vtkIdType npts;
-    const vtkIdType* pts;
     bool isFirst = vtkSMPTools::GetSingleThread();
 
     for (; cellId < endCellId; ++cellId)
@@ -407,8 +401,10 @@ struct CountCells
       if ((*cellMap)[offsetId] >= 0)
       {
         ++numCells;
-        cellIter->GetCellAtId(cellId, npts, pts);
-        connSize += npts;
+        // Only the cell size contributes to the connectivity total; the point
+        // ids are never read here, so query the size directly instead of
+        // widening the cell into the shared scratch list (cvistaCellConnectivity.h).
+        connSize += this->CellArray->GetCellSize(cellId);
       }
     }
   }
@@ -501,7 +497,6 @@ struct BuildOffsets
   vtkIdType ConnSize;
   vtkIdType* Offsets;
 
-  vtkSMPThreadLocal<vtkSmartPointer<vtkCellArrayIterator>> CellIterator;
   vtkRemovePolyData* Filter;
 
   BuildOffsets(CellMapType* cellMap, vtkIdType inCellOffset, vtkIdType outCellOffset,
@@ -518,13 +513,10 @@ struct BuildOffsets
   {
   }
 
-  void Initialize() { this->CellIterator.Local().TakeReference(this->InArray->NewIterator()); }
+  void Initialize() {}
 
   void operator()(vtkIdType cellId, vtkIdType endCellId)
   {
-    vtkCellArrayIterator* cellIter = this->CellIterator.Local();
-    vtkIdType npts;
-    const vtkIdType* pts;
     bool isFirst = vtkSMPTools::GetSingleThread();
 
     for (; cellId < endCellId; ++cellId)
@@ -541,8 +533,10 @@ struct BuildOffsets
       vtkIdType outCellId = (*this->CellMap)[inCellId] - this->OutCellsIdOffset;
       if (outCellId >= 0)
       {
-        cellIter->GetCellAtId(cellId, npts, pts);
-        *(this->Offsets + outCellId) = npts;
+        // The offset array only needs each retained cell's size, not its point
+        // ids, so query the size directly rather than widening the cell into the
+        // shared scratch list (cvistaCellConnectivity.h).
+        *(this->Offsets + outCellId) = this->InArray->GetCellSize(cellId);
       }
     }
   }
@@ -594,6 +588,13 @@ struct BuildConnectivity
 
   void operator()(vtkIdType cellId, vtkIdType endCellId)
   {
+    // Read the input cell's point ids straight from native (int32) storage
+    // instead of widening each cell into the shared scratch list. The loop cell
+    // id is local to InArray, matching the connectivity view's indexing, and
+    // this pass only reads InArray, so the captured pointers stay valid. Fall
+    // back to the classic iterator for any storage the fast reader cannot handle.
+    // See cvistaCellConnectivity.h.
+    cvistaCellConnectivity conn(this->InArray);
     vtkCellArrayIterator* cellIter = this->CellIterator.Local();
     vtkIdType* connPtr;
     vtkIdType npts;
@@ -614,11 +615,23 @@ struct BuildConnectivity
       vtkIdType outCellId = (*this->CellMap)[inCellId];
       if (outCellId >= 0)
       {
-        cellIter->GetCellAtId(cellId, npts, pts);
         connPtr = this->Conn + *(this->Offsets + (outCellId - this->OutCellsIdOffset));
-        for (auto i = 0; i < npts; ++i)
+        if (conn.IsValid())
         {
-          *connPtr++ = pts[i];
+          const vtkIdType cbeg = conn.CellBegin(cellId);
+          npts = conn.CellSize(cellId);
+          for (auto i = 0; i < npts; ++i)
+          {
+            *connPtr++ = conn[cbeg + i];
+          }
+        }
+        else
+        {
+          cellIter->GetCellAtId(cellId, npts, pts);
+          for (auto i = 0; i < npts; ++i)
+          {
+            *connPtr++ = pts[i];
+          }
         }
         this->Arrays->Copy(inCellId, outCellId);
       }

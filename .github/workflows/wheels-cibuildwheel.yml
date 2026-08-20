@@ -1,0 +1,101 @@
+# DRAFT — proposed replacement for wheels-manylinux217.yml (+ wheels-macos.yml +
+# wheels-windows.yml) using cibuildwheel. Marked .draft; reconcile before merge.
+#
+# One workflow, three OSes, one config (pyproject.toml [tool.cibuildwheel]).
+# cibuildwheel drives, per platform:
+#   linux   : manylinux_2_28 container, AlmaLinux 8 dnf mesa (CIBW_BEFORE_ALL),
+#             GCC 14.2.1 + gold (activates the unity + array-split build-time
+#             levers), ci/cmake/linux.cmake, auditwheel repair -> manylinux_2_28.
+#   macos   : ci/cmake/macos.cmake (Cocoa GL, ThinLTO), delocate.
+#   windows : ci/cmake/windows.cmake (WGL, /GL /LTCG), delvewheel.
+#
+# [tool.cibuildwheel].build is the cp312..cp314 matrix (Python 3.11 dropped), and
+# the backend builds a SINGLE cp312-abi3 wheel per OS: ONE Py_LIMITED_API
+# 0x030c0000 wheel that loads on CPython 3.12+ (cibuildwheel's abi3 dedup reuses it
+# for cp313/cp314, so cp312 builds and 313/314 reuse). 3.12 is the abi3 floor —
+# PyMemberDef entered the stable ABI only in 3.12. Set CVISTA_ABI3=0 to build a
+# legacy per-version static-type wheel instead (escape hatch, reversible).
+#
+# The C++ kit build is shared across the cp matrix on each OS via ccache
+# (linux/macos) / the build tree (windows). Release-gated like the originals.
+name: wheels-cibuildwheel
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+
+concurrency:
+  group: wheels-cibw-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: wheels-${{ matrix.os }}
+    # matrix.runner = the Blacksmith tier when the CVISTA_RUNNER_* variable is set,
+    # else the github-hosted default. matrix.os stays the artifact suffix so the
+    # uploaded names (cvista-wheels-ubuntu-latest / -macos-14 / -windows-latest) are
+    # unchanged. Compile width auto-tracks the runner cores (no pinned jobs).
+    runs-on: ${{ matrix.runner }}
+    # Heavy per-OS optimized (LTO) wheel build; cap below the 360-min default.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            runner: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+          - os: macos-14
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+          - os: windows-latest
+            runner: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # VTK derives version/provenance from full history
+
+      # OPTIONAL cross-RUN ccache persistence. WITHIN a run, cibuildwheel's
+      # in-container /ccache already shares the C++ across the cp matrix (measured
+      # ~63% hit on the 2nd leg). To also persist across runs on Linux, restore a
+      # host dir here and add the matching `container-engine` create-args mount in
+      # pyproject ([tool.cibuildwheel.linux.environment]); see the commented block
+      # there. macOS ccache lives in the host dir directly; Windows uses the
+      # per-tree build cache.
+      - name: Restore ccache (optional cross-run)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache
+          key: cvista-cibw-ccache-${{ matrix.os }}-${{ github.sha }}
+          restore-keys: cvista-cibw-ccache-${{ matrix.os }}-
+      - name: Make ccache dir world-writable (container build user differs)
+        if: runner.os == 'Linux'
+        run: mkdir -p /tmp/cvista-cibw-ccache && chmod 0777 /tmp/cvista-cibw-ccache
+
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for the whole job. The Ninja
+      # generator does NOT auto-run vcvars, so cibuildwheel's MSVC autodetect
+      # leaves the SDK resource toolchain (rc.exe / mt.exe) off PATH — the C
+      # compiler probe then fails its link step ("RC Pass 1: no such file or
+      # directory", CMAKE_MT-NOTFOUND) and cmake declares cl "broken". This
+      # mirrors ci.yml's build-other-os + build-legacy-windows and wheels-test.yml,
+      # which all run this step; this release workflow was the only Windows
+      # builder missing it. ci/cmake/windows.cmake pins CMAKE_CXX_COMPILER=cl, so
+      # cl must be on PATH regardless.
+      - name: Set up MSVC (vcvars) for the Ninja build
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.1.4
+        # All config lives in pyproject.toml [tool.cibuildwheel]; per-OS
+        # init-cache + repair tools are selected there. No env needed here for
+        # linux. macOS/windows env (CVISTA_CMAKE_INIT, MACOSX_DEPLOYMENT_TARGET)
+        # set in the [tool.cibuildwheel.macos|windows] tables.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cvista-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error

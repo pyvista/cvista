@@ -4,6 +4,7 @@
 #include "vtkDataArray.h"
 
 #include "vtkArrayDispatch.h"
+#include "vtkCVISTAByteCopy.h"
 #include "vtkDataArrayRange.h"
 
 namespace
@@ -90,7 +91,17 @@ bool vtkDataArray::CopyComponent(int dstComponent, vtkDataArray* src, int srcCom
     return false;
   }
 
+  if (cvista::SameTypeAOS(src, this))
+  {
+    cvista::CopyComponentBytes(src, srcComponent, this, dstComponent, this->GetNumberOfTuples());
+    return true;
+  }
+
   CopyComponentWorker copyComponentWorker(srcComponent, dstComponent);
+  // cvista: the byte path above covers same-type AOS for every value type. What
+  // is left is genuine cross-type conversion, which carries value-type semantics
+  // and cannot be width-erased, so it keeps the dispatcher. Deleting it here cost
+  // 5-7x on cross-type copies against stock, for ~67 KB of binary.
   if (!vtkArrayDispatch::Dispatch2::Execute(this, src, copyComponentWorker))
   {
     copyComponentWorker(this, src);

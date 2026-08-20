@@ -45,7 +45,8 @@
 #ifndef vtkQuadricDecimation_h
 #define vtkQuadricDecimation_h
 
-#include "vtkFiltersCoreModule.h" // For export macro
+#include "cvistaCellConnectivity.h" // For the width-generic working-Mesh cell reader
+#include "vtkFiltersCoreModule.h"    // For export macro
 #include "vtkPolyDataAlgorithm.h"
 #include "vtkWrappingHints.h" // For VTK_MARSHALAUTO
 
@@ -336,6 +337,28 @@ protected:
   int NumberOfComponents;
   vtkPolyData* Mesh;
 
+  // Width-generic native reader over the working Mesh's Polys connectivity,
+  // resolved once (see InitMeshConn) so the per-cell point-id fetches read ids
+  // straight from the native int32/int64 buffers -- widening each value to
+  // vtkIdType only at the point of use -- instead of calling the out-of-line,
+  // cross-shared-library vtkCellArray::GetCellAtId (which re-runs its StorageType
+  // switch every cell and, when the storage width != vtkIdType, copies the cell
+  // into a shared scratch vtkIdList first). The working Mesh is built from
+  // input->GetPolys() only (no verts/lines/strips), so the global cell id equals
+  // the Polys-local cell id, and the connectivity buffer is only mutated in place
+  // (ReplaceCellPoint) or marked deleted (DeleteCell) during decimation -- never
+  // reallocated -- so the captured pointers stay valid and reflect mutations. The
+  // values read are the exact ids GetCellAtId returns; no FP.
+  cvistaCellConnectivity MeshConn;
+  // Capture MeshConn from the working Mesh after BuildCells/BuildLinks.
+  void InitMeshConn();
+  // Fetch a working-Mesh cell's point ids into the caller's pts[3] buffer, reading
+  // straight from the native connectivity via MeshConn (no shared scratch, no
+  // cross-shared-library call) when available, else via vtkPolyData::GetCellPoints.
+  // Bit-exact with GetCellPoints. Deleted/empty cells set npts=0. Defined in the
+  // .cxx (all call sites are in that TU, so it inlines there).
+  void GetMeshCellPoints(vtkIdType cellId, vtkIdType& npts, vtkIdType pts[3]);
+
   struct ErrorQuadric
   {
     double* Quadric;
@@ -359,6 +382,7 @@ protected:
 
   // Temporary variables for performance
   vtkIdList* CollapseCellIds;
+  vtkIdList* ChangedEdges;
   double* TempX;
   double* TempQuad;
   double* TempB;

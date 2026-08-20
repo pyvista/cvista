@@ -17,6 +17,7 @@
 #include "vtkInformationVector.h"
 #include "vtkMergePoints.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
 #include "vtkPoints.h"
 #include "vtkStreamingTessellator.h"
 #include "vtkTessellatorFilter.h"
@@ -254,6 +255,7 @@ void vtkTessellatorFilter::PrintSelf(ostream& os, vtkIndent indent)
      << ")"
      << "\n"
      << indent << "MergePoints: " << this->MergePoints << "\n"
+     << indent << "OutputPointsPrecision: " << this->OutputPointsPrecision << "\n"
      << indent << "Locator: " << this->Locator << "\n";
 }
 
@@ -358,6 +360,30 @@ void vtkTessellatorFilter::SetupOutput(vtkDataSet* input, vtkUnstructuredGrid* o
   if (!(this->OutputPoints = OutputMesh->GetPoints()))
   {
     this->OutputPoints = vtkPoints::New();
+    // Set the storage precision for the output points before they are filled by
+    // the tessellation callbacks. By default the storage keeps the precision of
+    // the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force it. For inputs
+    // with no explicit points the default falls back to single precision.
+    if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+    {
+      vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+      if (inputPointSet && inputPointSet->GetPoints())
+      {
+        this->OutputPoints->SetDataType(inputPointSet->GetPoints()->GetDataType());
+      }
+      else
+      {
+        this->OutputPoints->SetDataType(VTK_FLOAT);
+      }
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+    {
+      this->OutputPoints->SetDataType(VTK_FLOAT);
+    }
+    else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+    {
+      this->OutputPoints->SetDataType(VTK_DOUBLE);
+    }
     this->OutputMesh->SetPoints(this->OutputPoints);
     this->OutputPoints->Delete();
   }
@@ -432,6 +458,29 @@ void vtkTessellatorFilter::MergeOutputPoints(
   // First, create a new points array that eliminate duplicate points.
   // Also create a mapping from the old point id to the new.
   vtkPoints* newPts = vtkPoints::New();
+  // Match the storage precision used for the unmerged tessellation output: by
+  // default keep the precision of the (already-tessellated) input points;
+  // SINGLE/DOUBLE force it. The merge copies points verbatim, so DEFAULT
+  // preserves the exact stored coordinate values.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (input->GetPoints())
+    {
+      newPts->SetDataType(input->GetPoints()->GetDataType());
+    }
+    else
+    {
+      newPts->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPts->SetDataType(VTK_DOUBLE);
+  }
   vtkIdType num = input->GetNumberOfPoints();
   vtkIdType id;
   vtkIdType newId;

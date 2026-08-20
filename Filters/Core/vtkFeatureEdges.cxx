@@ -14,6 +14,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPolygon.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkTriangleStrip.h"
@@ -322,6 +323,19 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
     }
   }
 
+  // Used with non manifold edges when there are ghost cells in the input.
+  // Hoisted out of the per-polygon loop and Reset() per polygon so the
+  // starting state is identical to a fresh vtkIdList each iteration, avoiding
+  // a vtkIdList New()/Delete() per output polygon (pure allocation reuse; the
+  // contents and the order in which ids are appended are unchanged).
+  vtkNew<vtkIdList> edgesRemapping;
+
+  // Resolve Mesh's typed cell links once so the per-edge neighbor lookup in the
+  // loop below is inlined here, skipping the cross-.so PLT call into
+  // libvtkCommonDataModel and the per-call link re-fetch. Bit-for-bit identical
+  // to Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(Mesh);
+
   for (newCellId = 0, newPolys->InitTraversal(); newPolys->GetNextCell(npts, pts) && !abort;
        newCellId++)
   {
@@ -330,6 +344,7 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
       this->UpdateProgress(static_cast<double>(newCellId) / numCells);
       abort = this->CheckAbort();
     }
+    edgesRemapping->Reset();
 
     if (numPolys == numCells) // Input only has Polys
     {
@@ -350,15 +365,12 @@ int vtkFeatureEdges::RequestData(vtkInformation* vtkNotUsed(request),
       continue;
     }
 
-    // Used with non manifold edges when there are ghost cells in the input
-    vtkNew<vtkIdList> edgesRemapping;
-
     for (i = 0; i < npts; i++)
     {
       p1 = pts[i];
       p2 = pts[(i + 1) % npts];
 
-      Mesh->GetCellEdgeNeighbors(newCellId, p1, p2, neighbors);
+      edgeNeighbors.Get(newCellId, p1, p2, neighbors);
       numNei = neighbors->GetNumberOfIds();
 
       vtkIdType numNeiWithoutGhosts = numNei;

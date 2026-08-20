@@ -10,10 +10,12 @@
 #include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
+#include "vtkCVISTASMPDefaults.h"
 #include "vtkObjectFactory.h"
 #include "vtkSMPTools.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkUnsignedCharArray.h"
+#include "vtkCellArray.h"
 #include "vtkUnstructuredGrid.h"
 
 #include <algorithm>
@@ -109,6 +111,16 @@ struct vtkThreshold::EvaluateCellsFunctor
   bool UsePointScalars;
   vtkIdType NumberOfCells;
 
+  // Devirtualized cell access for the common vtkUnstructuredGrid input: cache
+  // the concrete cell-types array + connectivity so the per-cell hot loop reads
+  // them directly instead of dispatching vtkDataSet::GetCellType/GetCellPoints
+  // virtually every iteration. Null for non-UG inputs (fall back to virtual).
+  // The values read are byte-identical to the virtual path (pure access
+  // devirtualization), and GetCellAtId keeps the per-thread cellIds scratch so
+  // thread-safety of the SMP path is preserved.
+  vtkUnsignedCharArray* UGCellTypes = nullptr;
+  vtkCellArray* UGConnectivity = nullptr;
+
   vtkSMPThreadLocal<vtkSmartPointer<vtkIdList>> TLCellIds;
 
   vtkNew<vtkUnsignedCharArray> InsidenessArray;
@@ -130,6 +142,11 @@ struct vtkThreshold::EvaluateCellsFunctor
     {
       // ensure that internal structures are initialized.
       this->Input->GetCell(0);
+    }
+    if (auto* ug = vtkUnstructuredGrid::SafeDownCast(this->Input))
+    {
+      this->UGCellTypes = ug->GetCellTypesArray();
+      this->UGConnectivity = ug->GetCells();
     }
   }
 
@@ -166,13 +183,21 @@ struct vtkThreshold::EvaluateCellsFunctor
         insideness[cellId] = 0;
         continue;
       }
-      int cellType = this->Input->GetCellType(cellId);
+      int cellType = this->UGCellTypes ? static_cast<int>(this->UGCellTypes->GetValue(cellId))
+                                       : this->Input->GetCellType(cellId);
       if (cellType == VTK_EMPTY_CELL)
       {
         insideness[cellId] = 0;
         continue;
       }
-      this->Input->GetCellPoints(cellId, numCellPts, cellPts, cellIds);
+      if (this->UGConnectivity)
+      {
+        this->UGConnectivity->GetCellAtId(cellId, numCellPts, cellPts, cellIds);
+      }
+      else
+      {
+        this->Input->GetCellPoints(cellId, numCellPts, cellPts, cellIds);
+      }
 
       int keepCell = 0;
       if (this->UsePointScalars)
@@ -237,7 +262,11 @@ struct vtkThreshold::EvaluateCellsWorker
   {
     EvaluateCellsFunctor<TScalarArray> functor(
       self, input, scalarsArray, ghostArray, usePointScalars, keptCellsList);
-    vtkSMPTools::For(0, input->GetNumberOfCells(), functor);
+    // cvista: per-cell boolean predicate writes only its own pre-sized insideness slot,
+    // with a serial deterministic Reduce() — thread-count-invariant, so byte-exact vs
+    // stock. Default-on (bucket 1) under the thread-count-capped LocalScope.
+    cvista::RunSafeFilterParallel(
+      [&]() { vtkSMPTools::For(0, input->GetNumberOfCells(), functor); });
   }
 };
 
@@ -262,6 +291,10 @@ int vtkThreshold::RequestData(
   int fieldAssociation = this->GetInputArrayAssociation(0, inputVector);
   this->NumberOfComponents = inScalars->GetNumberOfComponents();
   bool usePointScalars = fieldAssociation == vtkDataObject::FIELD_ASSOCIATION_POINTS;
+
+  // Resolve the active threshold function once so the per-point hot path can
+  // branch on a cached id and inline the comparison (see EvaluateThreshold).
+  this->ResolveThresholdFunction();
 
   auto keptCellsList = vtkSmartPointer<vtkIdList>::New(); // maps old point ids into new
 
@@ -368,21 +401,21 @@ int vtkThreshold::EvaluateComponents(TScalarsArray& scalars, vtkIdType id)
         c = this->SelectedComponent < this->NumberOfComponents ? this->SelectedComponent : 0;
         value = static_cast<double>(scalars[id][c]);
       }
-      keepCell = (this->*(this->ThresholdFunction))(value);
+      keepCell = this->EvaluateThreshold(value);
     }
     break;
     case VTK_COMPONENT_MODE_USE_ANY:
       keepCell = 0;
       for (c = 0; (!keepCell) && (c < this->NumberOfComponents); c++)
       {
-        keepCell = (this->*(this->ThresholdFunction))(static_cast<double>(scalars[id][c]));
+        keepCell = this->EvaluateThreshold(static_cast<double>(scalars[id][c]));
       }
       break;
     case VTK_COMPONENT_MODE_USE_ALL:
       keepCell = 1;
       for (c = 0; keepCell && (c < this->NumberOfComponents); c++)
       {
-        keepCell = (this->*(this->ThresholdFunction))(static_cast<double>(scalars[id][c]));
+        keepCell = this->EvaluateThreshold(static_cast<double>(scalars[id][c]));
       }
       break;
   }

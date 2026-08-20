@@ -511,13 +511,18 @@ struct PointGradients : public GradientsBase<TData>
           if (GetCellParametricData(ptId, pointcoords, cell, subId, parametricCoord))
           {
             numValidCellNeighbors++;
+            // Cache the cell's point ids once; they are independent of the
+            // component being processed, so there is no need to re-resolve
+            // cell->GetPointId(i) for every component in the loop below. This is
+            // pure bookkeeping: the per-point/per-component values fed to
+            // Derivatives() are identical, so the result is bit-for-bit equal.
+            const vtkIdType* const cellPtIds = cell->GetPointIds()->GetPointer(0);
             for (int comp = 0; comp < this->NumComp; comp++)
             {
               // Get values of array at cell points.
               for (int i = 0; i < nPts; i++)
               {
-                auto a = array[cell->GetPointId(i)];
-                values[i] = a[comp];
+                values[i] = array[cellPtIds[i]][comp];
               }
 
               // Get derivative of cell at point.
@@ -635,12 +640,15 @@ struct CellGradients : public GradientsBase<TData>
       vtkIdType nPts = cell->GetNumberOfPoints();
       values.resize(nPts);
 
+      // Cache the cell's point ids once: they do not depend on the component,
+      // so re-resolving cell->GetPointId(i) per component is redundant. The
+      // values fed to Derivatives() are identical, so output is bit-exact.
+      const vtkIdType* const cellPtIds = cell->GetPointIds()->GetPointer(0);
       for (int comp = 0; comp < this->NumComp; comp++)
       {
         for (vtkIdType i = 0; i < nPts; i++)
         {
-          auto a = array[cell->GetPointId(i)];
-          values[i] = a[comp];
+          values[i] = array[cellPtIds[i]][comp];
         }
 
         cell->Derivatives(subId, cellCenter, values.data(), 1, derivative);
@@ -1013,6 +1021,14 @@ int vtkGradientFilter::ComputeRegularGridGradient(vtkDataArray* array, int* dims
     gradients.TakeReference(vtkDataArray::CreateDataArray(arrayType));
     gradients->SetNumberOfComponents(3 * numberOfInputComponents);
     gradients->SetNumberOfTuples(array->GetNumberOfTuples());
+    // Hidden-ghost points are skipped by the compute loop below; zero-fill so
+    // their tuples are deterministic rather than uninitialized (matches the
+    // unstructured-grid path).
+    switch (arrayType)
+    {
+      vtkFloatingPointTemplateMacro(
+        Fill(gradients, static_cast<VTK_TT>(0), this->ReplacementValueOption));
+    }
     if (this->ResultArrayName)
     {
       gradients->SetName(this->ResultArrayName);
@@ -1027,6 +1043,11 @@ int vtkGradientFilter::ComputeRegularGridGradient(vtkDataArray* array, int* dims
   {
     divergence.TakeReference(vtkDataArray::CreateDataArray(arrayType));
     divergence->SetNumberOfTuples(array->GetNumberOfTuples());
+    switch (arrayType)
+    {
+      vtkFloatingPointTemplateMacro(
+        Fill(divergence, static_cast<VTK_TT>(0), this->ReplacementValueOption));
+    }
     if (this->DivergenceArrayName)
     {
       divergence->SetName(this->DivergenceArrayName);
@@ -1042,6 +1063,11 @@ int vtkGradientFilter::ComputeRegularGridGradient(vtkDataArray* array, int* dims
     vorticity.TakeReference(vtkDataArray::CreateDataArray(arrayType));
     vorticity->SetNumberOfComponents(3);
     vorticity->SetNumberOfTuples(array->GetNumberOfTuples());
+    switch (arrayType)
+    {
+      vtkFloatingPointTemplateMacro(
+        Fill(vorticity, static_cast<VTK_TT>(0), this->ReplacementValueOption));
+    }
     if (this->VorticityArrayName)
     {
       vorticity->SetName(this->VorticityArrayName);
@@ -1056,6 +1082,11 @@ int vtkGradientFilter::ComputeRegularGridGradient(vtkDataArray* array, int* dims
   {
     qCriterion.TakeReference(vtkDataArray::CreateDataArray(arrayType));
     qCriterion->SetNumberOfTuples(array->GetNumberOfTuples());
+    switch (arrayType)
+    {
+      vtkFloatingPointTemplateMacro(
+        Fill(qCriterion, static_cast<VTK_TT>(0), this->ReplacementValueOption));
+    }
     if (this->QCriterionArrayName)
     {
       qCriterion->SetName(this->QCriterionArrayName);

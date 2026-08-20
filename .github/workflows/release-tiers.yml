@@ -1,0 +1,132 @@
+# Publish the 3-wheel tier split — cvista (core) / cvista-rendering / cvista-io —
+# to PyPI via Trusted Publishing (OIDC; no stored API token).
+#
+#   workflow_dispatch  ->  BUILD ONLY: build + partition + pack + stack-validate
+#                          all three tiers (no upload). A safe way to exercise the
+#                          pipeline without cutting a release.
+#   release: published ->  PUBLISH: build the tiers at the release tag's version
+#                          and upload each project to PyPI.
+#
+# ── Trusted-publisher setup (one per project; DISTINCT environment each) ────────
+# PyPI keys a (pending) publisher by owner/repo/workflow/ENVIRONMENT, so the three
+# projects cannot share one environment under the same workflow. Give each its own:
+#
+#   Project            Owner=pyvista  Repo=cvista  Workflow=release-tiers.yml  Env
+#   cvista             ..............................................  pypi-core
+#   cvista-rendering   ..............................................  pypi-rendering
+#   cvista-io          ..............................................  pypi-io
+#
+# All three are new projects -> register each as a PyPI "pending publisher" (the
+# first upload creates the project). Also create the three GitHub Environments
+# (Settings -> Environments): pypi-core, pypi-rendering, pypi-io — names must match
+# the PyPI "Environment name" field exactly. Add release approvers to them if you
+# want a manual gate before a publish.
+name: Release tier wheels (core / rendering / io)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI (otherwise build-only)."
+        type: boolean
+        required: false
+        default: false
+      pretend_version:
+        description: >-
+          Force the wheel version (setuptools-scm pretend). Use to add wheels to
+          an already-tagged release from main without moving the tag — e.g. run
+          from main with publish=true and pretend_version=9.6.2.3 to append the
+          legacy cp310/cp311 tier wheels to the 9.6.2.3 release (skip-existing
+          leaves the already-published abi3 wheels untouched).
+        type: string
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+concurrency:
+  # Never cancel an in-flight publish — a half-uploaded release is worse than a wait.
+  group: release-tiers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-notes-preflight:
+    name: Release notes account for every commit
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Every commit since the previous tag is cited in the notes
+        run: ci/check-release-notes.sh "${{ github.event.release.tag_name }}"
+
+  # Build the 3 tier wheels on linux/macOS/Windows (uploads cvista-tier-wheels-*).
+  # On a release the version comes from the git tag via setuptools-scm.
+  build:
+    uses: ./.github/workflows/_tier-wheels.yml
+    with:
+      scm_pretend_version: ${{ inputs.pretend_version }}
+
+  # One publish job per project, each running in the project's OWN environment so
+  # its OIDC token carries the environment PyPI expects. Each job uploads ONLY its
+  # project's wheels (abi3 cp312 x 4 platforms + legacy cp310/cp311 x 3 = up to 10). Runs
+  # on a release, or on a manual dispatch with publish=true (e.g. to append legacy
+  # wheels to an existing release). skip-existing keeps already-published wheels.
+  publish:
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    needs: build
+    strategy:
+      fail-fast: false          # a failure publishing one tier must not abort the others
+      matrix:
+        include:
+          - project: cvista
+            environment: pypi-core
+            glob: cvista-*.whl            # core: 'cvista-' (hyphen) never matches cvista_rendering/_io
+          - project: cvista-rendering
+            environment: pypi-rendering
+            glob: cvista_rendering-*.whl
+          - project: cvista-io
+            environment: pypi-io
+            glob: cvista_io-*.whl
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    environment:
+      name: ${{ matrix.environment }}
+      url: https://pypi.org/p/${{ matrix.project }}
+    permissions:
+      # id-token: write mints the short-lived OIDC token PyPI exchanges for an
+      # upload token — no stored secret. PyPI matches repo + this workflow file +
+      # the environment above to the project's trusted-publisher config.
+      id-token: write
+    steps:
+      - name: Collect all tier wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cvista-tier-wheels-*
+          path: all
+          merge-multiple: true
+      - name: Isolate ${{ matrix.project }} wheels into dist/
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp all/${{ matrix.glob }} dist/
+          echo "=== ${{ matrix.project }} wheels to publish ==="; ls -l dist
+          n=$(ls dist/*.whl 2>/dev/null | wc -l)
+          # Per project: abi3 (x86_64/macos-arm/win/linux-aarch64 = 4) + legacy
+          # cp310/cp311 (3 OSes x 2 = 6) = up to 10.
+          # At minimum the 3 abi3 wheels must be present.
+          test "$n" -ge 3 || { echo "::error::expected >=3 ${{ matrix.project }} wheels, found $n"; exit 1; }
+      - name: Publish ${{ matrix.project }} to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          # Idempotent: a wheel already on PyPI (e.g. the abi3 wheels when
+          # appending legacy ones to an existing release) is skipped, not an error.
+          skip-existing: true

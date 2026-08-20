@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkDecimatePro.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkDoubleArray.h"
@@ -13,6 +14,7 @@
 #include "vtkPlane.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
+#include "vtkPolyDataEdgeNeighbors.h"
 #include "vtkPriorityQueue.h"
 #include "vtkTriangle.h"
 
@@ -121,7 +123,6 @@ int vtkDecimatePro::RequestData(vtkInformation* vtkNotUsed(request),
   double error, previousError = 0.0, reduction;
   int type;
   vtkIdType npts;
-  const vtkIdType* pts;
   vtkIdType totalEliminated, numRecycles, numPops;
   vtkIdType ncells;
   vtkIdType pt1, pt2, cellId, fedges[2];
@@ -399,16 +400,21 @@ int vtkDecimatePro::RequestData(vtkInformation* vtkNotUsed(request),
   newPolys = vtkCellArray::New();
   newPolys->AllocateEstimate(numTris - totalEliminated, 3);
 
+  // Read the working mesh's triangles straight from their native (int32) storage
+  // rather than through the widening GetCellPoints accessor. See
+  // cvistaCellConnectivity.h. The mesh only edits cells in place, so the
+  // captured pointers stay valid for this loop.
+  cvistaCellConnectivity meshConn(this->Mesh->GetPolys());
   for (cellId = 0; cellId < numTris; cellId++)
   {
     if (this->Mesh->GetCellType(cellId) == VTK_TRIANGLE) // non-null element
     {
-      this->Mesh->GetCellPoints(cellId, npts, pts);
+      const vtkIdType cbeg = meshConn.CellBegin(cellId);
       for (i = 0; i < 3; i++)
       {
-        newCellPts[i] = map[pts[i]];
+        newCellPts[i] = map[meshConn[cbeg + i]];
       }
-      newPolys->InsertNextCell(npts, newCellPts);
+      newPolys->InsertNextCell(3, newCellPts);
     }
   }
 
@@ -493,9 +499,20 @@ int vtkDecimatePro::EvaluateVertex(
   vtkDecimatePro::LocalVertex sn;
   vtkIdType startVertex, nextVertex, numNormals;
   int i, j, vtype;
-  const vtkIdType* verts;
   double *x1, *x2, *normal;
   double v1[3], v2[3], center[3];
+
+  // Resolve the mesh's (editable => vtkCellLinks) cell links once for this
+  // vertex so the per-edge neighbor lookups below are inlined here, skipping the
+  // cross-.so PLT call into libvtkCommonDataModel and the per-call link
+  // re-fetch. The links are read fresh on every Get(), so in-place link
+  // mutations from prior decimation are reflected. Bit-for-bit identical to
+  // this->Mesh->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(this->Mesh);
+  // Read triangle point ids straight from native (int32) storage instead of the
+  // widening GetCellPoints accessor (see cvistaCellConnectivity.h). This is a
+  // read-only pass over the mesh, so the captured pointers stay valid.
+  const cvistaCellConnectivity meshConn(this->Mesh->GetPolys());
   //
   //  The first step is to evaluate topology.
   //
@@ -526,15 +543,15 @@ int vtkDecimatePro::EvaluateVertex(
   //  ordering is consistent
   // (e.g., polygons ordering/normals remains consistent)
   //
-  this->Mesh->GetCellPoints(*tris, numVerts, verts); // get starting point
+  const vtkIdType startBeg = meshConn.CellBegin(*tris); // get starting point
   for (i = 0; i < 3; i++)
   {
-    if (verts[i] == ptId)
+    if (meshConn[startBeg + i] == ptId)
     {
       break;
     }
   }
-  sn.id = startVertex = verts[(i + 1) % 3];
+  sn.id = startVertex = meshConn[startBeg + (i + 1) % 3];
   this->Mesh->GetPoint(sn.id, sn.x); // grab coordinates here to save GetPoint() calls
 
   this->V->InsertNextVertex(sn);
@@ -552,10 +569,11 @@ int vtkDecimatePro::EvaluateVertex(
   {
     t.id = this->Neighbors->GetId(0);
 
-    this->Mesh->GetCellPoints(t.id, numVerts, verts);
+    const vtkIdType fb = meshConn.CellBegin(t.id);
 
     // Ensure the triangle is valid : every vertex must be different
-    if (verts[0] == verts[1] || verts[1] == verts[2] || verts[0] == verts[2])
+    if (meshConn[fb] == meshConn[fb + 1] || meshConn[fb + 1] == meshConn[fb + 2] ||
+      meshConn[fb] == meshConn[fb + 2])
     {
       vtkWarningMacro(<< "Skipping vertex " << ptId << " (Degenerate triangle at cell " << t.id
                       << ")");
@@ -566,9 +584,9 @@ int vtkDecimatePro::EvaluateVertex(
 
     for (j = 0; j < 3; j++)
     {
-      if (verts[j] != sn.id && verts[j] != ptId)
+      if (meshConn[fb + j] != sn.id && meshConn[fb + j] != ptId)
       {
-        nextVertex = verts[j];
+        nextVertex = meshConn[fb + j];
         break;
       }
     }
@@ -576,7 +594,7 @@ int vtkDecimatePro::EvaluateVertex(
     this->Mesh->GetPoint(sn.id, sn.x);
     this->V->InsertNextVertex(sn);
 
-    this->Mesh->GetCellEdgeNeighbors(t.id, ptId, nextVertex, this->Neighbors);
+    edgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
     numNei = this->Neighbors->GetNumberOfIds();
   }
   //
@@ -638,10 +656,11 @@ int vtkDecimatePro::EvaluateVertex(
     {
       t.id = this->Neighbors->GetId(0);
 
-      this->Mesh->GetCellPoints(t.id, numVerts, verts);
+      const vtkIdType rb = meshConn.CellBegin(t.id);
 
       // Ensure the triangle is valid : every vertex must be different
-      if (verts[0] == verts[1] || verts[1] == verts[2] || verts[0] == verts[2])
+      if (meshConn[rb] == meshConn[rb + 1] || meshConn[rb + 1] == meshConn[rb + 2] ||
+        meshConn[rb] == meshConn[rb + 2])
       {
         vtkWarningMacro(<< "Skipping vertex " << ptId << " (Degenerate triangle at cell " << t.id
                         << ")");
@@ -652,9 +671,9 @@ int vtkDecimatePro::EvaluateVertex(
 
       for (j = 0; j < 3; j++)
       {
-        if (verts[j] != sn.id && verts[j] != ptId)
+        if (meshConn[rb + j] != sn.id && meshConn[rb + j] != ptId)
         {
-          nextVertex = verts[j];
+          nextVertex = meshConn[rb + j];
           break;
         }
       }
@@ -663,7 +682,7 @@ int vtkDecimatePro::EvaluateVertex(
       this->Mesh->GetPoint(sn.id, sn.x);
       this->V->InsertNextVertex(sn);
 
-      this->Mesh->GetCellEdgeNeighbors(t.id, ptId, nextVertex, this->Neighbors);
+      edgeNeighbors.Get(t.id, ptId, nextVertex, this->Neighbors);
       numNei = this->Neighbors->GetNumberOfIds();
     }
     //
@@ -864,12 +883,23 @@ void vtkDecimatePro::SplitVertex(
   vtkIdType id, fedge1, fedge2, i, j;
   vtkIdType tri, veryFirst;
   int numSplitTris;
-  const vtkIdType* verts;
-  vtkIdType nverts;
   double error;
   vtkIdType startTri, p[2];
   int maxGroupSize;
   vtkPointData* meshPD = this->Mesh->GetPointData();
+
+  // Resolve the mesh's cell links once for this split. Even though points are
+  // inserted below (which may grow vtkCellLinks in place), the Links object
+  // itself is never replaced, and FastEdgeNeighbors reads GetCells() fresh on
+  // every Get(), so it always reflects the current link state. Bit-for-bit
+  // identical to this->Mesh->GetCellEdgeNeighbors(); see
+  // vtkPolyDataEdgeNeighbors.h.
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(this->Mesh);
+  // Read triangle point ids from native (int32) storage instead of the widening
+  // GetCellPoints accessor (see cvistaCellConnectivity.h). ReplaceCellPoint below
+  // edits the connectivity in place (no reallocation), so these reads reflect the
+  // current topology exactly as GetCellPoints would.
+  const cvistaCellConnectivity meshConn(this->Mesh->GetPolys());
 
   //
   // On an interior edge split along the edge
@@ -1029,33 +1059,34 @@ void vtkDecimatePro::SplitVertex(
       startTri = triangles->GetId(0);
       group->InsertId(0, startTri);
       triangles->DeleteId(startTri);
-      this->Mesh->GetCellPoints(startTri, nverts, verts);
-      p[0] = (verts[0] != ptId ? verts[0] : verts[1]);
-      p[1] = (verts[1] != ptId && verts[1] != p[0] ? verts[1] : verts[2]);
+      const vtkIdType sb = meshConn.CellBegin(startTri);
+      p[0] = (meshConn[sb] != ptId ? meshConn[sb] : meshConn[sb + 1]);
+      p[1] = (meshConn[sb + 1] != ptId && meshConn[sb + 1] != p[0] ? meshConn[sb + 1]
+                                                                    : meshConn[sb + 2]);
 
       // grab manifold group - j index is the forward/backward direction around vertex
       for (j = 0; j < 2; j++)
       {
         for (tri = startTri; p[j] >= 0;)
         {
-          this->Mesh->GetCellEdgeNeighbors(tri, ptId, p[j], cellIds);
+          edgeNeighbors.Get(tri, ptId, p[j], cellIds);
           if (cellIds->GetNumberOfIds() == 1 && triangles->IsId((tri = cellIds->GetId(0))) > -1 &&
             group->GetNumberOfIds() < maxGroupSize)
           {
             group->InsertNextId(tri);
             triangles->DeleteId(tri);
-            this->Mesh->GetCellPoints(tri, nverts, verts);
-            if (verts[0] != ptId && verts[0] != p[j])
+            const vtkIdType tb = meshConn.CellBegin(tri);
+            if (meshConn[tb] != ptId && meshConn[tb] != p[j])
             {
-              p[j] = verts[0];
+              p[j] = meshConn[tb];
             }
-            else if (verts[1] != ptId && verts[1] != p[j])
+            else if (meshConn[tb + 1] != ptId && meshConn[tb + 1] != p[j])
             {
-              p[j] = verts[1];
+              p[j] = meshConn[tb + 1];
             }
             else
             {
-              p[j] = verts[2];
+              p[j] = meshConn[tb + 2];
             }
           }
           else

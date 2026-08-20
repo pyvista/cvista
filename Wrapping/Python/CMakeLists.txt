@@ -69,25 +69,35 @@ if (NOT VTK_WHEEL_BUILD)
   endif ()
 endif ()
 
-# goes in __init__.py for when vtkmodules is BUILD_STATIC
-set(_vtkmodules_static_import "_load_vtkmodules_static()")
+# goes in __init__.py for when cvista is BUILD_STATIC
+set(_cvista_static_import "_load_cvista_static()")
 if (BUILD_SHARED_LIBS)
-    string(PREPEND _vtkmodules_static_import "#")
+    string(PREPEND _cvista_static_import "#")
 endif ()
 
-set(_vtkmodules_all)
+set(_cvista_all)
 set(_vtk_python_imports)
 set(_vtk_python_external_imports)
+# Ordered wrapped-module names + their Python targets, consumed by the flat
+# class-index generation below.  The order of `vtk_python_wrapped_modules` is
+# the dependency order all.py star-imports in, and the index generator must use
+# the SAME order so its collision resolution matches `from cvista.all import *`.
+set(_cvista_index_modules)
+set(_cvista_index_module_targets)
 foreach (_vtk_python_module IN LISTS vtk_python_wrapped_modules)
   get_property(_vtk_python_library_name
     TARGET    "${_vtk_python_module}"
     PROPERTY  "INTERFACE_vtk_module_library_name")
-  string(APPEND _vtkmodules_all
+  string(APPEND _cvista_all
     "    \'${_vtk_python_library_name}\',\n")
   string(APPEND _vtk_python_imports
     "from .${_vtk_python_library_name} import *\n")
   string(APPEND _vtk_python_external_imports
-    "from vtkmodules.${_vtk_python_library_name} import *\n")
+    "from cvista.${_vtk_python_library_name} import *\n")
+  list(APPEND _cvista_index_modules "${_vtk_python_library_name}")
+  if (TARGET "${_vtk_python_library_name}Python")
+    list(APPEND _cvista_index_module_targets "${_vtk_python_library_name}Python")
+  endif ()
 endforeach ()
 
 set(_vtk_python_files)
@@ -100,85 +110,77 @@ foreach (_vtk_module IN LISTS vtk_modules)
 endforeach()
 
 configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/vtkmodules/generate_pyi.py"
-  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/vtkmodules/generate_pyi.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cvista/generate_pyi.py"
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_pyi.py"
   COPYONLY)
 list(APPEND _vtk_python_files
-  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/vtkmodules/generate_pyi.py")
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_pyi.py")
+
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cvista/generate_index.py"
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_index.py"
+  COPYONLY)
+list(APPEND _vtk_python_files
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_index.py")
 
 if (BUILD_SHARED_LIBS)
   install(
-    FILES       "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/vtkmodules/generate_pyi.py"
-    DESTINATION "${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/vtkmodules"
+    FILES       "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_pyi.py"
+                "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/generate_index.py"
+    DESTINATION "${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista"
     COMPONENT   "python")
 endif ()
 
 set(python_files
-  vtk.py.in
-  vtkmodules/__init__.py.in
-  vtkmodules/all.py.in
-  vtkmodules/gtk/GtkGLExtVTKRenderWindow.py
-  vtkmodules/gtk/GtkGLExtVTKRenderWindowInteractor.py
-  vtkmodules/gtk/GtkVTKRenderWindow.py
-  vtkmodules/gtk/GtkVTKRenderWindowInteractor.py
-  vtkmodules/gtk/__init__.py
-  vtkmodules/numpy_interface/__init__.py
-  vtkmodules/numpy_interface/_vtk_array_mixin.py
-  vtkmodules/numpy_interface/array_overrides.py
-  vtkmodules/numpy_interface/vtk_affine_array.py
-  vtkmodules/numpy_interface/vtk_aos_array.py
-  vtkmodules/numpy_interface/vtk_constant_array.py
-  vtkmodules/numpy_interface/vtk_none_array.py
-  vtkmodules/numpy_interface/vtk_partitioned_array.py
-  vtkmodules/numpy_interface/vtk_soa_array.py
-  vtkmodules/numpy_interface/vtk_implicit_array.py
-  vtkmodules/numpy_interface/vtk_strided_array.py
-  vtkmodules/numpy_interface/vtk_indexed_array.py
-  vtkmodules/numpy_interface/vtk_composite_array.py
-  vtkmodules/numpy_interface/vtk_structured_point_array.py
-  vtkmodules/numpy_interface/utils.py
-  vtkmodules/numpy_interface/algorithms.py
-  vtkmodules/numpy_interface/dataset_adapter.py
-  vtkmodules/numpy_interface/internal_algorithms.py
-  vtkmodules/numpy_interface/numpy_algorithms.py
-  vtkmodules/qt/QVTKRenderWindowInteractor.py
-  vtkmodules/qt/__init__.py
-  vtkmodules/test/BlackBox.py
-  vtkmodules/test/ErrorObserver.py
-  vtkmodules/test/Testing.py
-  vtkmodules/test/rtImageTest.py
-  vtkmodules/test/__init__.py
-  vtkmodules/tk/__init__.py
-  vtkmodules/tk/vtkLoadPythonTkWidgets.py.in
-  vtkmodules/tk/vtkTkImageViewerWidget.py
-  vtkmodules/tk/vtkTkPhotoImage.py
-  vtkmodules/tk/vtkTkRenderWidget.py
-  vtkmodules/tk/vtkTkRenderWindowInteractor.py
-  vtkmodules/util/__init__.py
-  vtkmodules/util/colors.py
-  vtkmodules/util/data_array_selection.py
-  vtkmodules/util/data_model.py
-  vtkmodules/util/execution_model.py
-  vtkmodules/util/functions.py
-  vtkmodules/util/keys.py
-  vtkmodules/util/misc.py
-  vtkmodules/util/numpy_support.py
-  vtkmodules/util/xarray_support.py
-  vtkmodules/util/pickle_support.py
-  vtkmodules/util/vtkAlgorithm.py
-  vtkmodules/util/vtkConstants.py
-  vtkmodules/util/vtkImageExportToArray.py
-  vtkmodules/util/vtkImageImportFromArray.py
-  vtkmodules/util/vtkMethodParser.py
-  vtkmodules/util/vtkVariant.py
-  vtkmodules/wx/__init__.py
-  vtkmodules/wx/wxVTKRenderWindow.py
-  vtkmodules/wx/wxVTKRenderWindowInteractor.py)
+  cvista/__init__.py.in
+  cvista/all.py.in
+  cvista/gtk/GtkGLExtVTKRenderWindow.py
+  cvista/gtk/GtkGLExtVTKRenderWindowInteractor.py
+  cvista/gtk/GtkVTKRenderWindow.py
+  cvista/gtk/GtkVTKRenderWindowInteractor.py
+  cvista/gtk/__init__.py
+  cvista/numpy_interface/__init__.py
+  cvista/numpy_interface/algorithms.py
+  cvista/numpy_interface/dataset_adapter.py
+  cvista/numpy_interface/internal_algorithms.py
+  cvista/numpy_interface/numpy_algorithms.py
+  cvista/qt/QVTKRenderWindowInteractor.py
+  cvista/qt/__init__.py
+  cvista/test/BlackBox.py
+  cvista/test/ErrorObserver.py
+  cvista/test/Testing.py
+  cvista/test/rtImageTest.py
+  cvista/test/__init__.py
+  cvista/tk/__init__.py
+  cvista/tk/vtkLoadPythonTkWidgets.py.in
+  cvista/tk/vtkTkImageViewerWidget.py
+  cvista/tk/vtkTkPhotoImage.py
+  cvista/tk/vtkTkRenderWidget.py
+  cvista/tk/vtkTkRenderWindowInteractor.py
+  cvista/util/__init__.py
+  cvista/util/colors.py
+  cvista/util/data_model.py
+  cvista/util/execution_model.py
+  cvista/util/keys.py
+  cvista/util/misc.py
+  cvista/util/numpy_support.py
+  cvista/util/xarray_support.py
+  cvista/util/pickle_support.py
+  cvista/util/vtkAlgorithm.py
+  cvista/util/vtkConstants.py
+  cvista/util/vtkImageExportToArray.py
+  cvista/util/vtkImageImportFromArray.py
+  cvista/util/vtkMethodParser.py
+  cvista/util/vtkVariant.py
+  cvista/wx/__init__.py
+  cvista/wx/wxVTKRenderWindow.py
+  cvista/wx/wxVTKRenderWindowInteractor.py)
+
 
 foreach (python_file IN LISTS python_files)
-  # add submodules that don't begin with "_" to _vtkmodules_all
-  if (python_file MATCHES "^vtkmodules\/([A-Za-z][A-Za-z0-9_]*)(\/__init__)?[.]py")
-    string(APPEND _vtkmodules_all "    \'${CMAKE_MATCH_1}\',\n")
+  # add submodules that don't begin with "_" to _cvista_all
+  if (python_file MATCHES "^cvista\/([A-Za-z][A-Za-z0-9_]*)(\/__init__)?[.]py")
+    string(APPEND _cvista_all "    \'${CMAKE_MATCH_1}\',\n")
   endif ()
 endforeach ()
 
@@ -226,7 +228,7 @@ foreach (python_file IN LISTS python_files)
 endforeach ()
 
 set(vtk_build_paths_module
-  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/vtkmodules/_build_paths.py")
+  "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/_build_paths.py")
 if (WIN32 AND VTK_DLL_PATHS)
   set(vtk_dll_paths_python)
   foreach (vtk_dll_path IN LISTS VTK_DLL_PATHS)
@@ -274,6 +276,51 @@ add_custom_target(vtk_python_copy ALL
   DEPENDS
     ${python_copied_modules}
     ${_vtk_python_zip})
+
+# ---- Flat class index (cvista extension) ------------------------------------
+# Generate `cvista/_class_index.py` (public name -> hosting module) by importing
+# every wrapped module of THIS build -- see cvista/generate_index.py for the
+# semantics and cvista/__init__.py.in for the consuming module __getattr__.
+# Mirrors the .pyi generation in vtkModuleWrapPython.cmake, but lives here
+# (a cvista-owned file) so upstream-sync diffs stay clean.  Skipped for static
+# builds (no shared-module import path) -- the flat namespace degrades
+# gracefully when the index is absent.
+option(CVISTA_CLASS_INDEX "Generate the flat class index (cvista/_class_index.py)" ON)
+mark_as_advanced(CVISTA_CLASS_INDEX)
+
+if (CVISTA_CLASS_INDEX AND BUILD_SHARED_LIBS)
+  if (TARGET VTK::vtkpython)
+    set(_cvista_index_python_exe "$<TARGET_FILE:VTK::vtkpython>")
+  else ()
+    set(_cvista_index_python_exe "${Python3_EXECUTABLE}")
+  endif ()
+
+  set(_cvista_index_file
+    "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista/_class_index.py")
+
+  add_custom_command(
+    OUTPUT    "${_cvista_index_file}"
+    COMMAND   ${_cvista_index_python_exe} # Do not quote; may contain arguments.
+              -m cvista.generate_index
+              -p "cvista"
+              -o "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista"
+              ${_cvista_index_modules}
+    WORKING_DIRECTORY
+              "${CMAKE_BINARY_DIR}/${VTK_PYTHON_SITE_PACKAGES_SUFFIX}"
+    DEPENDS   ${_cvista_index_module_targets}
+              "${CMAKE_CURRENT_SOURCE_DIR}/cvista/generate_index.py"
+              vtk_python_copy
+    COMMENT   "Generating the cvista flat class index"
+    ${_vtk_python_depends_args})
+
+  add_custom_target(cvista_class_index ALL
+    DEPENDS "${_cvista_index_file}")
+
+  install(
+    FILES       "${_cvista_index_file}"
+    DESTINATION "${VTK_PYTHON_SITE_PACKAGES_SUFFIX}/cvista"
+    COMPONENT   "python")
+endif ()
 
 if (VTK_BUILD_TESTING)
   add_subdirectory(Testing)

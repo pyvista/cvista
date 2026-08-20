@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkStripper.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkDataSetAttributes.h"
@@ -226,6 +227,14 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
   int cellType;
   bool abort = false;
   vtkIdType progressInterval = numCells / 20 + 1;
+  // Read triangle/line point ids straight from the mesh's native (int32) cell
+  // storage instead of the widening GetCellPoints accessor (see
+  // cvistaCellConnectivity.h). The mesh holds only lines then polys (no verts,
+  // no strips), so a triangle's global cell id maps to the poly array's local id
+  // by subtracting inNumLines, and a line's local id equals its global id. The
+  // mesh is not mutated below, so the captured pointers stay valid.
+  cvistaCellConnectivity meshPolyConn(mesh->GetPolys());
+  cvistaCellConnectivity meshLineConn(mesh->GetLines());
   for (cellId = 0; cellId < numCells && !abort; cellId++)
   {
     if (ghostCells && ghostCells->GetValue(cellId))
@@ -248,7 +257,21 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
         numStrips++;
         numPts = 3;
 
-        mesh->GetCellPoints(cellId, numTriPts, triPts);
+        vtkIdType triConnBuf[3];
+        if (meshPolyConn.IsValid())
+        {
+          const vtkIdType lc = cellId - inNumLines;
+          numTriPts = meshPolyConn.CellSize(lc);
+          const vtkIdType b = meshPolyConn.CellBegin(lc);
+          triConnBuf[0] = meshPolyConn[b];
+          triConnBuf[1] = meshPolyConn[b + 1];
+          triConnBuf[2] = meshPolyConn[b + 2];
+          triPts = triConnBuf;
+        }
+        else
+        {
+          mesh->GetCellPoints(cellId, numTriPts, triPts);
+        }
 
         for (i = 0; i < 3; i++)
         {
@@ -295,7 +318,20 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
           while (neighbor >= 0)
           {
             visited[neighbor] = 1;
-            mesh->GetCellPoints(neighbor, numTriPts, triPts);
+            if (meshPolyConn.IsValid())
+            {
+              const vtkIdType lc = neighbor - inNumLines;
+              numTriPts = meshPolyConn.CellSize(lc);
+              const vtkIdType b = meshPolyConn.CellBegin(lc);
+              triConnBuf[0] = meshPolyConn[b];
+              triConnBuf[1] = meshPolyConn[b + 1];
+              triConnBuf[2] = meshPolyConn[b + 2];
+              triPts = triConnBuf;
+            }
+            else
+            {
+              mesh->GetCellPoints(neighbor, numTriPts, triPts);
+            }
             if (this->PassCellDataAsFieldData)
             {
               newfdStrips->InsertNextTuple(neighbor, cd);
@@ -385,10 +421,22 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
         {
           //  Have a neighbor.  March along grabbing new points
           //
+          vtkIdType lineConnBuf[2];
           while (neighbor >= 0)
           {
             visited[neighbor] = 1;
-            mesh->GetCellPoints(neighbor, numLinePts, linePts);
+            if (meshLineConn.IsValid())
+            {
+              numLinePts = meshLineConn.CellSize(neighbor);
+              const vtkIdType b = meshLineConn.CellBegin(neighbor);
+              lineConnBuf[0] = meshLineConn[b];
+              lineConnBuf[1] = meshLineConn[b + 1];
+              linePts = lineConnBuf;
+            }
+            else
+            {
+              mesh->GetCellPoints(neighbor, numLinePts, linePts);
+            }
             for (i = 0; i < 2; i++)
             {
               if (linePts[i] != pts[numPts - 1])

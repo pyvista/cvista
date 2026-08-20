@@ -2,8 +2,6 @@ NAME
   VTK::IOParallelXML
 LIBRARY_NAME
   vtkIOParallelXML
-KIT
-  VTK::Parallel
 GROUPS
   StandAlone
   Parallel

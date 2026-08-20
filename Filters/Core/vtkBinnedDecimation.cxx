@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkBinnedDecimation.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayDispatchDataSetArrayList.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
@@ -20,6 +21,7 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 #include "vtkSMPThreadLocal.h"
 #include "vtkSMPTools.h"
@@ -184,6 +186,11 @@ struct GenerateTriangles
     vtkIdType npts;
     const vtkIdType* tri;
     vtkCellArrayIterator* cellIter = this->CellIterator.Local();
+    // Read triangle connectivity from native (int32) storage, widening each id
+    // only at point of use (see cvistaCellConnectivity.h). This is a per-thread
+    // local view (holds pointers only); never shared across threads. Falls back
+    // to the iterator accessor for any non-AOS/fixed-size storage.
+    cvistaCellConnectivity conn(this->Tris);
     const TIds* triMap = this->TriMap;
     vtkIdType *outTris = this->OutTris, *outTri;
     vtkIdType *outTriOffsets = this->OutTriOffsets, *outOffsets;
@@ -205,13 +212,27 @@ struct GenerateTriangles
       }
       if ((triMap[triId + 1] - triMap[triId]) > 0) // spit out triangle
       {
-        cellIter->GetCellAtId(triId, npts, tri);
+        vtkIdType p0, p1, p2;
+        if (conn.IsValid())
+        {
+          const vtkIdType cb = conn.CellBegin(triId);
+          p0 = conn[cb + 0];
+          p1 = conn[cb + 1];
+          p2 = conn[cb + 2];
+        }
+        else
+        {
+          cellIter->GetCellAtId(triId, npts, tri);
+          p0 = tri[0];
+          p1 = tri[1];
+          p2 = tri[2];
+        }
         outOffsets = outTriOffsets + triMap[triId];
         *outOffsets = triMap[triId] * 3;
         outTri = outTris + *outOffsets;
-        outTri[0] = ptMap[binIds[tri[0]]];
-        outTri[1] = ptMap[binIds[tri[1]]];
-        outTri[2] = ptMap[binIds[tri[2]]];
+        outTri[0] = ptMap[binIds[p0]];
+        outTri[1] = ptMap[binIds[p1]];
+        outTri[2] = ptMap[binIds[p2]];
         if (this->Arrays) // copy cell data if requested
         {
           this->Arrays->Copy(triId, triMap[triId]);
@@ -256,6 +277,8 @@ struct SelectOutput
     vtkCellArrayIterator* cellIter = this->CellIterator.Local();
     TIds* triMap = this->TriMap + triId;
     unsigned char* ptUses = this->PointUses;
+    // Per-thread native connectivity view (see cvistaCellConnectivity.h).
+    cvistaCellConnectivity conn(this->Tris);
     bool isFirst = vtkSMPTools::GetSingleThread();
     vtkIdType checkAbortInterval = std::min((endTriId - triId) / 10 + 1, (vtkIdType)1000);
 
@@ -272,16 +295,29 @@ struct SelectOutput
           break;
         }
       }
-      cellIter->GetCellAtId(triId, npts, tri);
+      vtkIdType p0, p1, p2;
+      if (conn.IsValid())
+      {
+        const vtkIdType cb = conn.CellBegin(triId);
+        p0 = conn[cb + 0];
+        p1 = conn[cb + 1];
+        p2 = conn[cb + 2];
+      }
+      else
+      {
+        cellIter->GetCellAtId(triId, npts, tri);
+        p0 = tri[0];
+        p1 = tri[1];
+        p2 = tri[2];
+      }
       // All three points have to be in different bins
-      if (this->BinIds[tri[0]] != this->BinIds[tri[1]] &&
-        this->BinIds[tri[0]] != this->BinIds[tri[2]] &&
-        this->BinIds[tri[1]] != this->BinIds[tri[2]])
+      if (this->BinIds[p0] != this->BinIds[p1] && this->BinIds[p0] != this->BinIds[p2] &&
+        this->BinIds[p1] != this->BinIds[p2])
       {
         *triMap = 1;
-        ptUses[tri[0]] = 1;
-        ptUses[tri[1]] = 1;
-        ptUses[tri[2]] = 1;
+        ptUses[p0] = 1;
+        ptUses[p1] = 1;
+        ptUses[p2] = 1;
       }
       else // mark excluded from output
       {
@@ -503,6 +539,8 @@ struct MapOutput
     TIds* triMap = this->TriMap + triId;
     std::atomic<TIds>* ptMap = this->PointMap;
     TIds binIds[3];
+    // Per-thread native connectivity view (see cvistaCellConnectivity.h).
+    cvistaCellConnectivity conn(this->Tris);
     bool isFirst = vtkSMPTools::GetSingleThread();
     vtkIdType checkAbortInterval = std::min((endTriId - triId) / 10 + 1, (vtkIdType)1000);
 
@@ -519,18 +557,32 @@ struct MapOutput
           break;
         }
       }
-      cellIter->GetCellAtId(triId, npts, tri);
-      binIds[0] = this->BinIds[tri[0]];
-      binIds[1] = this->BinIds[tri[1]];
-      binIds[2] = this->BinIds[tri[2]];
+      vtkIdType p0, p1, p2;
+      if (conn.IsValid())
+      {
+        const vtkIdType cb = conn.CellBegin(triId);
+        p0 = conn[cb + 0];
+        p1 = conn[cb + 1];
+        p2 = conn[cb + 2];
+      }
+      else
+      {
+        cellIter->GetCellAtId(triId, npts, tri);
+        p0 = tri[0];
+        p1 = tri[1];
+        p2 = tri[2];
+      }
+      binIds[0] = this->BinIds[p0];
+      binIds[1] = this->BinIds[p1];
+      binIds[2] = this->BinIds[p2];
 
       // All three points have to be in different bins for triangle insertion
       if (binIds[0] != binIds[1] && binIds[0] != binIds[2] && binIds[1] != binIds[2])
       {
         *triMap = 1;
-        this->WritePtId(ptMap[binIds[0]], tri[0]);
-        this->WritePtId(ptMap[binIds[1]], tri[1]);
-        this->WritePtId(ptMap[binIds[2]], tri[2]);
+        this->WritePtId(ptMap[binIds[0]], p0);
+        this->WritePtId(ptMap[binIds[1]], p1);
+        this->WritePtId(ptMap[binIds[2]], p2);
       }
       else // mark excluded from output
       {
@@ -751,7 +803,12 @@ void BinPointsDecimate(int genMode, vtkIdType numPts, PointsT* pts, vtkPointData
   int numNewPts = sliceOffsets[dims[2]];
 
   vtkNew<vtkPoints> newPts;
-  newPts->SetDataType(VTK_FLOAT); // could be the same type as the input point type
+  // Honor the desired output point precision. NOTE: GenerateBinPoints writes
+  // the new coordinates through a raw float* (see below), so the storage type
+  // must remain VTK_FLOAT here. DEFAULT_PRECISION and SINGLE_PRECISION both map
+  // to VTK_FLOAT (matching historical behavior); DOUBLE_PRECISION cannot be
+  // honored on this raw-pointer write path (deferred) and falls back to float.
+  newPts->SetDataType(VTK_FLOAT);
   newPts->SetNumberOfPoints(numNewPts);
   ArrayList ptArrays;
   if (outPD) // copy point data if requested
@@ -919,6 +976,8 @@ struct MarkBinnedTris
     vtkCellArrayIterator* cellIter = this->CellIterator.Local();
     TIds* triMap = this->TriMap + triId;
     TIds binIds[3];
+    // Per-thread native connectivity view (see cvistaCellConnectivity.h).
+    cvistaCellConnectivity conn(this->Tris);
     bool isFirst = vtkSMPTools::GetSingleThread();
     vtkIdType checkAbortInterval = std::min((endTriId - triId) / 10 + 1, (vtkIdType)1000);
 
@@ -935,10 +994,24 @@ struct MarkBinnedTris
           break;
         }
       }
-      cellIter->GetCellAtId(triId, npts, tri);
-      binIds[0] = this->BinTuples[tri[0]].Bin;
-      binIds[1] = this->BinTuples[tri[1]].Bin;
-      binIds[2] = this->BinTuples[tri[2]].Bin;
+      vtkIdType p0, p1, p2;
+      if (conn.IsValid())
+      {
+        const vtkIdType cb = conn.CellBegin(triId);
+        p0 = conn[cb + 0];
+        p1 = conn[cb + 1];
+        p2 = conn[cb + 2];
+      }
+      else
+      {
+        cellIter->GetCellAtId(triId, npts, tri);
+        p0 = tri[0];
+        p1 = tri[1];
+        p2 = tri[2];
+      }
+      binIds[0] = this->BinTuples[p0].Bin;
+      binIds[1] = this->BinTuples[p1].Bin;
+      binIds[2] = this->BinTuples[p2].Bin;
 
       // All three points have to be in different bins for triangle insertion
       if (binIds[0] != binIds[1] && binIds[0] != binIds[2] && binIds[1] != binIds[2])
@@ -988,6 +1061,8 @@ struct BinAveTriangles
     vtkIdType npts;
     const vtkIdType* tri;
     vtkCellArrayIterator* cellIter = this->CellIterator.Local();
+    // Per-thread native connectivity view (see cvistaCellConnectivity.h).
+    cvistaCellConnectivity conn(this->Tris);
     const TIds* triMap = this->TriMap;
     vtkIdType *outTris = this->OutTris, *outTri;
     vtkIdType *outTriOffsets = this->OutTriOffsets, *outOffsets;
@@ -1009,15 +1084,29 @@ struct BinAveTriangles
       }
       if ((triMap[triId + 1] - triMap[triId]) > 0) // spit out triangle
       {
-        cellIter->GetCellAtId(triId, npts, tri);
+        vtkIdType p0, p1, p2;
+        if (conn.IsValid())
+        {
+          const vtkIdType cb = conn.CellBegin(triId);
+          p0 = conn[cb + 0];
+          p1 = conn[cb + 1];
+          p2 = conn[cb + 2];
+        }
+        else
+        {
+          cellIter->GetCellAtId(triId, npts, tri);
+          p0 = tri[0];
+          p1 = tri[1];
+          p2 = tri[2];
+        }
 
         outOffsets = outTriOffsets + triMap[triId];
         *outOffsets = triMap[triId] * 3;
         outTri = outTris + *outOffsets;
 
-        outTri[0] = binTuples[tri[0]].Bin; // set the bin id
-        outTri[1] = binTuples[tri[1]].Bin;
-        outTri[2] = binTuples[tri[2]].Bin;
+        outTri[0] = binTuples[p0].Bin; // set the bin id
+        outTri[1] = binTuples[p1].Bin;
+        outTri[2] = binTuples[p2].Bin;
         if (this->Arrays) // copy cell data if requested
         {
           this->Arrays->Copy(triId, triMap[triId]);
@@ -1429,7 +1518,11 @@ void AvePointsDecimate(vtkIdType numPts, PointsT* pts, vtkPointData* inPD, vtkPo
   // the contributions of all points in each bin. A new point is generated
   // and its id is placed into the bin tuples array (needed for final
   // generation of the triangles).
-  // Should output point type be the same as the input point type?
+  // Honor the desired output point precision. NOTE: GenerateAveBinPoints writes
+  // the new coordinates through a raw float* (see below), so the storage type
+  // must remain VTK_FLOAT here. DEFAULT_PRECISION and SINGLE_PRECISION both map
+  // to VTK_FLOAT (matching historical behavior); DOUBLE_PRECISION cannot be
+  // honored on this raw-pointer write path (deferred) and falls back to float.
   vtkNew<vtkPoints> newPts;
   newPts->SetDataType(VTK_FLOAT);
   newPts->SetNumberOfPoints(numNewPts);
@@ -1513,6 +1606,7 @@ vtkBinnedDecimation::vtkBinnedDecimation()
   this->ProducePointData = true;
   this->ProduceCellData = false;
   this->LargeIds = false;
+  this->OutputPointsPrecision = DEFAULT_PRECISION;
 }
 
 //----------------------------------------------------------------------------
@@ -1864,5 +1958,6 @@ void vtkBinnedDecimation::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Point Generation Mode :" << this->PointGenerationMode << endl;
   os << indent << "Pass Point Data : " << this->ProducePointData << endl;
   os << indent << "Produce Cell Data : " << this->ProduceCellData << endl;
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

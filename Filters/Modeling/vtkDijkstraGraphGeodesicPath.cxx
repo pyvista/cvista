@@ -13,6 +13,7 @@
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
 #include "vtkPoints.h"
 #include "vtkPolyData.h"
 
@@ -223,6 +224,30 @@ void vtkDijkstraGraphGeodesicPath::TraceShortestPath(
   vtkDataSet* inData, vtkPolyData* outPoly, vtkIdType startv, vtkIdType endv)
 {
   vtkPoints* points = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it. The path points are copied verbatim from the input
+  // via inData->GetPoint(), so matching the input data type preserves them.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    vtkPointSet* inPointSet = vtkPointSet::SafeDownCast(inData);
+    if (inPointSet && inPointSet->GetPoints())
+    {
+      points->SetDataType(inPointSet->GetPoints()->GetDataType());
+    }
+    else
+    {
+      points->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    points->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    points->SetDataType(VTK_DOUBLE);
+  }
   vtkCellArray* lines = vtkCellArray::New();
 
   // n is far to many. Adjusted later
@@ -406,5 +431,6 @@ void vtkDijkstraGraphGeodesicPath::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "RepelVertices: " << this->RepelVertices << endl;
   os << indent << "IdList: " << this->IdList << endl;
   os << indent << "Number of vertices in input data: " << this->NumberOfVertices << endl;
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << endl;
 }
 VTK_ABI_NAMESPACE_END

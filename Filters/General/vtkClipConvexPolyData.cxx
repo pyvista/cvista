@@ -9,6 +9,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkPlane.h"
 #include "vtkPlaneCollection.h"
+#include "vtkPoints.h"
 #include "vtkPolyData.h"
 
 #include <algorithm>
@@ -223,6 +224,28 @@ int vtkClipConvexPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   // Create a new set of points and polygons into which the results will
   // be stored
   vtkPoints* outPoints = vtkPoints::New();
+  // Set the desired precision for the output points. By default the output
+  // points keep the precision of the input points (DEFAULT_PRECISION);
+  // SINGLE/DOUBLE force it.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    if (points)
+    {
+      outPoints->SetDataType(points->GetDataType());
+    }
+    else
+    {
+      outPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    outPoints->SetDataType(VTK_DOUBLE);
+  }
   vtkCellArray* outPolys = vtkCellArray::New();
 
   std::vector<vtkIdType> polyPts(32);
@@ -613,5 +636,6 @@ void vtkClipConvexPolyData::PrintSelf(ostream& os, vtkIndent indent)
   this->Superclass::PrintSelf(os, indent);
 
   os << indent << "Planes: " << this->Planes << endl;
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

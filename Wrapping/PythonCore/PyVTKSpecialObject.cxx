@@ -20,6 +20,7 @@
 #include "PyVTKSpecialObject.h"
 #include "PyVTKMethodDescriptor.h"
 #include "vtkABINamespace.h"
+#include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"
 
 #include <sstream>
@@ -53,35 +54,18 @@ PyObject* PyVTKSpecialObject_Repr(PyObject* self)
   PyTypeObject* type = Py_TYPE(self);
   const char* name = vtkPythonUtil::GetTypeName(type);
 
-#if PY_VERSION_HEX >= 0x030A0000
-  while (PyType_GetSlot(type, Py_tp_base) && !PyType_GetSlot(type, Py_tp_str))
+  while (vtkPythonType_GetBase(type) && !vtkPythonType_GetStr(type))
   {
-    type = (PyTypeObject*)PyType_GetSlot(type, Py_tp_base);
+    type = vtkPythonType_GetBase(type);
   }
-#else
-  while (type->tp_base && !type->tp_str)
-  {
-    type = type->tp_base;
-  }
-#endif
 
   // use str() if available
   PyObject* s = nullptr;
-#if PY_VERSION_HEX >= 0x030A0000
-  reprfunc type_str = (reprfunc)PyType_GetSlot(type, Py_tp_str);
-  reprfunc base_type_str = (reprfunc)PyType_GetSlot(&PyBaseObject_Type, Py_tp_str);
+  reprfunc type_str = vtkPythonType_GetStr(type);
+  reprfunc base_type_str = vtkPythonType_GetStr(&PyBaseObject_Type);
   if (type_str && type_str != base_type_str)
-#else
-  if (type->tp_str && type->tp_str != (&PyBaseObject_Type)->tp_str)
-#endif
   {
-    PyObject* t =
-#if PY_VERSION_HEX >= 0x030A0000
-      type_str(self)
-#else
-      type->tp_str(self)
-#endif
-      ;
+    PyObject* t = type_str(self);
     if (t == nullptr)
     {
       Py_XDECREF(s);
@@ -233,6 +217,63 @@ PyObject* PyVTKSpecialObject_CopyNew(const char* classname, const void* ptr)
 //------------------------------------------------------------------------------
 // Add a special type, add methods and members to its type object.
 // A return value of nullptr signifies that it was already added.
+//
+// Mirrors PyVTKClass_Add: the default build receives a static PyTypeObject and
+// lazily fills its tp_dict; under Py_LIMITED_API the generator passes a
+// PyType_Spec (+ the runtime-resolved base for the rare superclass case) and the
+// heap type is built with PyType_FromSpec, its descriptors routed through the
+// SetDictItem accessor.
+#if defined(Py_LIMITED_API)
+PyTypeObject* PyVTKSpecialType_Add(PyType_Spec* spec, PyTypeObject* base, PyMethodDef* methods,
+  PyGetSetDef* getsets, PyMethodDef* constructors, vtkcopyfunc copyfunc)
+{
+  // Derive the classname (module-stripped spec name) for the idempotency check.
+  const char* classname = vtkPythonUtil::StripModule(spec->name);
+  if (PyVTKSpecialType* existing = vtkPythonUtil::FindSpecialType(classname))
+  {
+    return existing->py_type;
+  }
+
+  PyObject* pyobj;
+  if (base != nullptr)
+  {
+    PyObject* bases = PyTuple_Pack(1, reinterpret_cast<PyObject*>(base));
+    pyobj = PyType_FromSpecWithBases(spec, bases);
+    Py_XDECREF(bases);
+  }
+  else
+  {
+    pyobj = PyType_FromSpec(spec);
+  }
+  if (pyobj == nullptr)
+  {
+    // FromSpec failed (exception set); propagate to the importing interpreter.
+    return nullptr;
+  }
+  PyTypeObject* pytype = reinterpret_cast<PyTypeObject*>(pyobj);
+
+  pytype = vtkPythonUtil::AddSpecialTypeToMap(pytype, methods, constructors, copyfunc);
+
+  // Add all of the methods
+  for (PyMethodDef* meth = methods; meth && meth->ml_name; meth++)
+  {
+    PyObject* func = PyVTKMethodDescriptor_New(pytype, meth);
+    vtkPythonType_SetDictItem(pytype, meth->ml_name, func);
+    Py_DECREF(func);
+  }
+
+  // Add all of the getsets
+  for (PyGetSetDef* getset = getsets; getset && getset->name; getset++)
+  {
+    PyObject* descr = PyDescr_NewGetSet(pytype, getset);
+    vtkPythonType_SetDictItem(pytype, getset->name, descr);
+    vtkPythonUtil::RegisterGetSetDescriptor(pytype, getset->name, getset);
+    Py_DECREF(descr);
+  }
+
+  return pytype;
+}
+#else
 PyTypeObject* PyVTKSpecialType_Add(PyTypeObject* pytype, PyMethodDef* methods, PyGetSetDef* getsets,
   PyMethodDef* constructors, vtkcopyfunc copyfunc)
 {
@@ -267,3 +308,4 @@ PyTypeObject* PyVTKSpecialType_Add(PyTypeObject* pytype, PyMethodDef* methods, P
 
   return pytype;
 }
+#endif

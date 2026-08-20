@@ -205,6 +205,24 @@ public:
   vtkBooleanMacro(ProduceCellData, bool);
 
   ///@}
+
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   *
+   * NOTE: For the BIN_POINTS, BIN_CENTERS and BIN_AVERAGES point generation
+   * modes, the new points are written through a raw float* pointer, so
+   * DOUBLE_PRECISION is not yet honored for those modes (single precision is
+   * produced). The INPUT_POINTS mode always preserves the input point type.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
   /**
    * Return a flag indicating whether large ids were used during
    * execution. The value of this flag is only valid after filter
@@ -239,6 +257,7 @@ protected:
   bool ProducePointData;
   bool ProduceCellData;
   bool LargeIds;
+  int OutputPointsPrecision;
 
   // Helper function
   void ConfigureBinning(vtkPolyData* input, vtkIdType numPts);

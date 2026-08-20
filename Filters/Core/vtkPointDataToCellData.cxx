@@ -4,9 +4,11 @@
 
 #include "vtkArrayDispatch.h"
 #include "vtkArrayListTemplate.h"
+#include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkDataArray.h"
 #include "vtkDataSet.h"
+#include "vtkCVISTASMPDefaults.h" // cvista: opt into default multithreading (bit-exact)
 #include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -15,6 +17,7 @@
 #include "vtkPolyData.h"
 #include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
+#include "vtkUnstructuredGrid.h"
 
 #include <algorithm>
 #include <cassert>
@@ -33,6 +36,7 @@ class PointDataToCellDataFunctor
 {
 private:
   vtkDataSet* Input;
+  vtkCellArray* UGConn; // non-null only for vtkUnstructuredGrid input (devirt fast path)
   ArrayList Arrays;
   vtkSMPThreadLocalObject<vtkIdList> TLCellPts; // scratch array
   vtkPointDataToCellData* Filter;
@@ -41,10 +45,21 @@ public:
   PointDataToCellDataFunctor(
     vtkDataSet* input, vtkPointData* inPD, vtkCellData* outCD, vtkPointDataToCellData* filter)
     : Input(input)
+    , UGConn(nullptr)
     , Filter(filter)
   {
     vtkIdType numCells = input->GetNumberOfCells();
     this->Arrays.AddArrays(numCells, inPD, outCD);
+
+    // For vtkUnstructuredGrid input, cache the connectivity array so the hot
+    // loop can call vtkCellArray::GetCellAtId directly instead of the virtual
+    // vtkDataSet::GetCellPoints. This is byte-identical: vtkUnstructuredGrid::
+    // GetCellPoints(cellId, ptIds) delegates exactly to
+    // Connectivity->GetCellAtId(cellId, ptIds).
+    if (auto* ug = vtkUnstructuredGrid::SafeDownCast(input))
+    {
+      this->UGConn = ug->GetCells();
+    }
 
     // call everything we will call on the data object on the main thread first
     // so that it can build its caching structures
@@ -72,7 +87,14 @@ public:
           break;
         }
       }
-      this->Input->GetCellPoints(cellId, cellPts);
+      if (this->UGConn)
+      {
+        this->UGConn->GetCellAtId(cellId, cellPts);
+      }
+      else
+      {
+        this->Input->GetCellPoints(cellId, cellPts);
+      }
       vtkIdType numPts = cellPts->GetNumberOfIds();
 
       if (numPts == 0)
@@ -216,6 +238,7 @@ class PointDataToCellDataCategoricalFunctor
 {
 private:
   vtkDataSet* Input;
+  vtkCellArray* UGConn; // non-null only for vtkUnstructuredGrid input (devirt fast path)
   ArrayType* Scalars;
   using ScalarsValueT = vtk::GetAPIType<ArrayType>;
 
@@ -229,11 +252,21 @@ public:
   PointDataToCellDataCategoricalFunctor(vtkDataSet* input, vtkPointData* inPD, vtkCellData* outCD,
     ArrayType* scalars, vtkPointDataToCellData* filter)
     : Input(input)
+    , UGConn(nullptr)
     , Scalars(scalars)
     , Filter(filter)
   {
     vtkIdType numCells = input->GetNumberOfCells();
     this->Arrays.AddArrays(numCells, inPD, outCD);
+
+    // For vtkUnstructuredGrid input, cache the connectivity array so the hot
+    // loop can call vtkCellArray::GetCellAtId directly instead of the virtual
+    // vtkDataSet::GetCellPoints (byte-identical delegation; see the
+    // non-categorical functor above).
+    if (auto* ug = vtkUnstructuredGrid::SafeDownCast(input))
+    {
+      this->UGConn = ug->GetCells();
+    }
 
     this->MaxCellSize = input->GetMaxCellSize();
     // call everything we will call on the data object on the main thread first
@@ -268,7 +301,14 @@ public:
           break;
         }
       }
-      this->Input->GetCellPoints(cellId, cellPts);
+      if (this->UGConn)
+      {
+        this->UGConn->GetCellAtId(cellId, cellPts);
+      }
+      else
+      {
+        this->Input->GetCellPoints(cellId, cellPts);
+      }
       vtkIdType numPts = cellPts->GetNumberOfIds();
 
       if (numPts == 0)
@@ -299,7 +339,8 @@ struct PointDataToCellDataCategoricalWorker
     vtkPointDataToCellData* filter)
   {
     PointDataToCellDataCategoricalFunctor<ArrayType> pd2cd(input, inPD, outCD, scalars, filter);
-    vtkSMPTools::For(0, input->GetNumberOfCells(), pd2cd);
+    cvista::RunSafeFilterParallel(
+      [&]() { vtkSMPTools::For(0, input->GetNumberOfCells(), pd2cd); });
   }
 };
 } // End anonymous namespace
@@ -465,7 +506,7 @@ int vtkPointDataToCellData::RequestData(
   {
     // Thread the process
     PointDataToCellDataFunctor pd2cd(input, inPD, outCD, this);
-    vtkSMPTools::For(0, numCells, pd2cd);
+    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numCells, pd2cd); });
   }
   // Create a threaded fast path for categorical data.
   else

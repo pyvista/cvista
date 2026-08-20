@@ -4144,6 +4144,37 @@ function (vtk_module_add_module name)
       "The ${_vtk_build_module} module cannot be both shared and static.")
   endif ()
 
+  # cvista Lever B: drop pyvista-unused classes from the build ENTIRELY (no C++
+  # compile, no wrapper, no hierarchy). Only safe for classes that NO kept class
+  # #includes (computed offline). Driven by CVISTA_NOCOMPILE_CLASSES
+  # (cvista-config/_nocompile_classes.cmake); inert when undefined. Runs before the
+  # Lever A demotion so a NOCOMPILE class never reaches NOWRAP_CLASSES.
+  if (CVISTA_NOCOMPILE_CLASSES)
+    set(_cvista_kept_cc "")
+    foreach (_cvista_class IN LISTS _vtk_add_module_CLASSES)
+      if (NOT _cvista_class IN_LIST CVISTA_NOCOMPILE_CLASSES)
+        list(APPEND _cvista_kept_cc "${_cvista_class}")
+      endif ()
+    endforeach ()
+    set(_vtk_add_module_CLASSES "${_cvista_kept_cc}")
+  endif ()
+
+  # cvista Lever A: demote pyvista-unused classes from wrapped CLASSES to
+  # NOWRAP_CLASSES. The C++ class still compiles; only its Python wrapper is
+  # skipped. Driven by the global CVISTA_NOWRAP_CLASSES list
+  # (cvista-config/_nowrap_classes.cmake); inert when that list is undefined.
+  if (CVISTA_NOWRAP_CLASSES)
+    set(_cvista_kept_classes "")
+    foreach (_cvista_class IN LISTS _vtk_add_module_CLASSES)
+      if (_cvista_class IN_LIST CVISTA_NOWRAP_CLASSES)
+        list(APPEND _vtk_add_module_NOWRAP_CLASSES "${_cvista_class}")
+      else ()
+        list(APPEND _cvista_kept_classes "${_cvista_class}")
+      endif ()
+    endforeach ()
+    set(_vtk_add_module_CLASSES "${_cvista_kept_classes}")
+  endif ()
+
   foreach (_vtk_add_module_class IN LISTS _vtk_add_module_CLASSES)
     list(APPEND _vtk_add_module_SOURCES
       "${_vtk_add_module_class}.cxx")
@@ -4382,6 +4413,113 @@ function (vtk_module_add_module name)
     target_sources("${_vtk_add_module_real_target}"
       PRIVATE
         ${_vtk_add_module_SOURCES})
+
+    # === cvista BUILD-TIME lever: per-module source UNITY_BUILD ==================
+    # The module SOURCE .cxx (2,511 across the closure) each re-parse the same
+    # heavy VTK header stack (vtkSetGet.h / vtkObjectFactory.h / vtkDataObject.h
+    # / the dataset headers + STL). That repeated front-end parse is the dominant
+    # cold-compile cost per TU; CMake's UNITY_BUILD concatenates several .cxx into
+    # one TU so the shared parse is amortized once per batch. Object code is
+    # byte-IDENTICAL (same source, just compiled together) -> bit-exact-safe; the
+    # only risk is COMPILE breakage (anon-namespace / static / macro collisions
+    # between batched TUs), handled by a per-module deny-list below + CMake's own
+    # SKIP_UNITY_BUILD_INCLUSION on individual files.
+    #
+    # Gated by env CVISTA_SOURCE_UNITY (matches the CVISTA_* env-knob idiom; read as
+    # ENV so it works from the -C init-cache pass). Default OFF unless the env is
+    # explicitly "1"/"ON". Batch size via CVISTA_SOURCE_UNITY_BATCH (default 8 — big
+    # enough to amortize the parse, small enough to keep the work splittable across
+    # -j cores and to bound any single-TU memory blowup).
+    #
+    # EXCLUSIONS:
+    #  * CommonCore — owned by the array-instantiation TU SPLIT (PR #27,
+    #    CVISTA_SPLIT_BULK_INSTANTIATE): it deliberately fans the per-type array
+    #    instantiations OUT into many small parallel TUs; unity-batching them back
+    #    together would UNDO that split. Leave CommonCore entirely to the split.
+    #  * Any module named in CVISTA_SOURCE_UNITY_EXCLUDE (cvista-config) that does not
+    #    compile clean under batching.
+    set(_cvista_su_enable OFF)
+    if (NOT _vtk_add_module_HEADER_ONLY AND
+        ("$ENV{CVISTA_SOURCE_UNITY}" STREQUAL "1" OR "$ENV{CVISTA_SOURCE_UNITY}" STREQUAL "ON"))
+      set(_cvista_su_enable ON)
+      # GCC<12 GUARD (same posture as the wrapper-unity lever): the empirical
+      # source-unity skip-list in cvista-config/_source_unity_exclude.cmake was
+      # derived on GCC 14. Older GCC (notably devtoolset-10 GCC 10.2.1 in the
+      # manylinux2014 wheel container) can surface ADDITIONAL batch breakers
+      # (different eager-instantiation / macro-context behavior), which would turn
+      # a CI build RED on a compiler we have not validated the skip-list against.
+      # So disable source-unity on GCC<12 — the lever then only activates on the
+      # modern-GCC builds whose breaker set it was tuned for (local dev/release on
+      # GCC>=12, and CI once the manylinux image is bumped to manylinux_2_28 =
+      # GCC 12+, which also re-activates the GCC<12-gated wrapper-unity lever).
+      if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+          CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12")
+        set(_cvista_su_enable OFF)
+      endif ()
+    endif ()
+    if (_cvista_su_enable)
+      set(_cvista_su_batch "$ENV{CVISTA_SOURCE_UNITY_BATCH}")
+      if (NOT _cvista_su_batch OR _cvista_su_batch LESS 2)
+        set(_cvista_su_batch 8)
+      endif ()
+      set(_cvista_su_skip OFF)
+      # ThirdParty vendored libs (zlib/kissfft/verdict/...) are C/C++ with
+      # per-file static structs, file-local macros and anonymous types that are
+      # classic unity-batch breakers; they are also NOT the cvista compile-time
+      # lever (vendored, rarely rebuilt, often ccache-cold-once) — never batch.
+      if (_vtk_add_module_third_party)
+        set(_cvista_su_skip ON)
+      endif ()
+      if (_vtk_add_module_library_name STREQUAL "vtkCommonCore")
+        set(_cvista_su_skip ON)
+      endif ()
+      # WrappingPythonCore is the hand-written Python<->C++ runtime (PyVTKObject /
+      # vtkPythonUtil / PyVTKSpecialObject ...). Under abi3 it is delicate
+      # Py_LIMITED_API + static PyType_FromSpec machinery whose per-file static
+      # init + macro context must not be reordered/merged; batching it crashes the
+      # module-init path (vtkPythonUtil::AddModule -> PyObject_CallObject SIGSEGV).
+      # Never unity-batch the wrapper runtime.
+      if (_vtk_add_module_library_name STREQUAL "vtkWrappingPythonCore")
+        set(_cvista_su_skip ON)
+      endif ()
+      if (DEFINED CVISTA_SOURCE_UNITY_EXCLUDE AND
+          _vtk_add_module_library_name IN_LIST CVISTA_SOURCE_UNITY_EXCLUDE)
+        set(_cvista_su_skip ON)
+      endif ()
+      if (NOT _cvista_su_skip)
+        set_target_properties("${_vtk_add_module_real_target}" PROPERTIES
+          UNITY_BUILD            ON
+          UNITY_BUILD_MODE       BATCH
+          UNITY_BUILD_BATCH_SIZE "${_cvista_su_batch}")
+        # Per-FILE exclusions: keep the module batched but pull the few unity-
+        # incompatible .cxx out into their own standalone TUs (they still compile,
+        # just don't share a batch). Two classes:
+        #  (1) Generated per-type template-instantiation TUs (*Instantiate*.cxx):
+        #      each `#define`s ValueType/ArrayType to its type and instantiates, so
+        #      concatenating them leaks the macro into the next file's
+        #      vtkGenericDataArray.h ("expected ',' before numeric constant") and
+        #      redefines the .txx members. Same hazard the CommonCore array split
+        #      (PR #27) addresses; mirror it for the other modules' instantiation TUs.
+        #  (2) Hand-written breakers in CVISTA_SOURCE_UNITY_SKIP_FILES (cvista-config):
+        #      file-local anonymous-namespace globals / static consts / typedefs
+        #      that collide by name across batched cell/reader/mapper TUs
+        #      (vtkTriangle's `edges`, vtkWedge's `faces`, VTK_DIVERGED, ...).
+        foreach (_cvista_su_src IN LISTS _vtk_add_module_SOURCES)
+          get_filename_component(_cvista_su_base "${_cvista_su_src}" NAME)
+          if (_cvista_su_base MATCHES "Instantiate" OR
+              (DEFINED CVISTA_SOURCE_UNITY_SKIP_FILES AND
+               _cvista_su_base IN_LIST CVISTA_SOURCE_UNITY_SKIP_FILES))
+            set_source_files_properties("${_cvista_su_src}" PROPERTIES
+              SKIP_UNITY_BUILD_INCLUSION ON)
+          endif ()
+        endforeach ()
+        unset(_cvista_su_src)
+        unset(_cvista_su_base)
+      endif ()
+      unset(_cvista_su_batch)
+      unset(_cvista_su_skip)
+    endif ()
+    unset(_cvista_su_enable)
     _vtk_module_add_file_set("${_vtk_add_module_real_target}"
       NAME  vtk_module_private_templates
       FILES ${_vtk_add_module_PRIVATE_TEMPLATES})

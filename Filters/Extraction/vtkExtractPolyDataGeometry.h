@@ -93,6 +93,20 @@ public:
   vtkBooleanMacro(PassPoints, vtkTypeBool);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the input points.
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   * Note this is only honored when points are culled (PassPoints is off); when
+   * PassPoints is on the input points are passed through unchanged.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
 protected:
   vtkExtractPolyDataGeometry(vtkImplicitFunction* f = nullptr);
   ~vtkExtractPolyDataGeometry() override;
@@ -104,6 +118,7 @@ protected:
   vtkTypeBool ExtractInside;
   vtkTypeBool ExtractBoundaryCells;
   vtkTypeBool PassPoints;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   vtkIdType InsertPointInMap(vtkIdType i, vtkPoints* inPts, vtkPoints* newPts, vtkIdType* pointMap);
 

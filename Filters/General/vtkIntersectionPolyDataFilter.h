@@ -146,6 +146,19 @@ public:
   vtkSetMacro(RelativeSubtriangleArea, double);
   ///@}
 
+  ///@{
+  /**
+   * Set/get the desired precision for the output points of the split
+   * surfaces.
+   * vtkAlgorithm::DEFAULT_PRECISION - Output points have the same precision as
+   *   the corresponding input surface points (the default).
+   * vtkAlgorithm::SINGLE_PRECISION - Output points are single precision.
+   * vtkAlgorithm::DOUBLE_PRECISION - Output points are double precision.
+   */
+  vtkSetMacro(OutputPointsPrecision, int);
+  vtkGetMacro(OutputPointsPrecision, int);
+  ///@}
+
   /**
    * Given two triangles defined by points (p1, q1, r1) and (p2, q2,
    * r2), returns whether the two triangles intersect. If they do,
@@ -193,6 +206,7 @@ private:
   int Status;
   double Tolerance;
   double RelativeSubtriangleArea;
+  int OutputPointsPrecision = DEFAULT_PRECISION;
 
   class Impl; // Implementation class
 };

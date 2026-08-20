@@ -42,6 +42,21 @@ template <typename Integer, bool Monotonic = true>
 class vtkReservoirSampler : public vtkReservoirSamplerBase
 {
 public:
+  vtkReservoirSampler() = default;
+
+  /// Construct a sampler with a fixed seed for reproducible sampling.
+  ///
+  /// By default a sampler draws its seed from std::random_device, so results
+  /// vary run-to-run (and, when the same instance is shared across threads,
+  /// from thread to thread). Passing an explicit seed makes every draw this
+  /// instance performs deterministic, which callers that need reproducible
+  /// output (and byte-stable serial-vs-parallel behavior) should prefer.
+  explicit vtkReservoirSampler(SeedType seed)
+    : Seed(seed)
+    , HasSeed(true)
+  {
+  }
+
   /// Choose kk items from a sequence of (0, nn - 1).
   ///
   /// This will throw an exception if kk <= 0.
@@ -98,7 +113,7 @@ protected:
       return;
     }
 
-    std::mt19937 generator(vtkReservoirSampler::RandomSeed());
+    std::mt19937 generator(this->HasSeed ? this->Seed : vtkReservoirSampler::RandomSeed());
     std::uniform_real_distribution<> unitUniform(0., 1.);
     std::uniform_int_distribution<Integer> randomIndex(0, kk - 1);
     double w = exp(log(unitUniform(generator)) / kk);
@@ -136,6 +151,9 @@ protected:
       std::sort(data.begin(), data.end());
     }
   }
+
+  SeedType Seed = 0;
+  bool HasSeed = false;
 };
 
 VTK_ABI_NAMESPACE_END

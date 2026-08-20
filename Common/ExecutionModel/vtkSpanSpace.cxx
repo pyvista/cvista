@@ -297,6 +297,7 @@ struct MapUGridToSpanSpaceFunctor
   vtkInternalSpanSpace* SpanSpace;
   vtkUnstructuredGrid* Grid;
   TScalars* Scalars;
+  vtkSMPThreadLocalObject<vtkIdList> CellPts; // cvista: per-thread cell-point storage
 
   MapUGridToSpanSpaceFunctor(vtkInternalSpanSpace* ss, vtkUnstructuredGrid* ds, TScalars* s)
     : SpanSpace(ss)
@@ -305,10 +306,22 @@ struct MapUGridToSpanSpaceFunctor
   {
   }
 
+  void Initialize()
+  {
+    vtkIdList*& cellPts = this->CellPts.Local();
+    cellPts->SetNumberOfIds(12);
+    // required for multi thread: warm up the grid's cell machinery serially
+    if (this->Grid->GetNumberOfPoints() > 0)
+    {
+      this->Grid->GetCellPoints(0, cellPts);
+    }
+  }
+
   void operator()(vtkIdType cellId, vtkIdType endCellId)
   {
     vtkUnstructuredGrid* grid = this->Grid;
     auto scalars = vtk::DataArrayValueRange<1>(this->Scalars);
+    vtkIdList*& cellPts = this->CellPts.Local();
     vtkIdType i, npts;
     const vtkIdType* pts;
     double s, sMin, sMax;
@@ -317,8 +330,17 @@ struct MapUGridToSpanSpaceFunctor
     {
       sMin = VTK_DOUBLE_MAX;
       sMax = VTK_DOUBLE_MIN;
-      // A faster version of GetCellPoints()
-      grid->GetCellPoints(cellId, npts, pts);
+      // cvista: use the thread-local vtkIdList overload rather than the raw
+      // 3-arg GetCellPoints(cellId, npts, pts). With cvista's int32-default
+      // cell storage on a 64-bit vtkIdType build the connectivity is not
+      // vtkIdType-shareable, so the raw overload materializes ids into the
+      // grid's single shared vtkAbstractCellArray::TempCell -- a data race
+      // when this functor runs under the STDThread default. The vtkIdList
+      // overload copies into per-thread storage (matches the safe sibling
+      // MapToSpanSpace). Byte-exact: same ids, same span points.
+      grid->GetCellPoints(cellId, cellPts);
+      npts = cellPts->GetNumberOfIds();
+      pts = cellPts->GetPointer(0);
       for (i = 0; i < npts; i++)
       {
         s = static_cast<double>(scalars[pts[i]]);
@@ -329,7 +351,9 @@ struct MapUGridToSpanSpaceFunctor
       this->SpanSpace->SetSpanPoint(cellId, sMin, sMax);
     } // for all cells in this thread
   }
-}; // MapUGridToSpanSpace
+
+  void Reduce() {} // cvista: needed because of Initialize()
+}; // MapUGridToSpanSpaceFunctor
 
 struct MapUGridToSpanSpaceWorker
 {
@@ -337,6 +361,13 @@ struct MapUGridToSpanSpaceWorker
   void operator()(
     TScalars* s, vtkIdType numCells, vtkInternalSpanSpace* ss, vtkUnstructuredGrid* ds)
   {
+    // cvista: warm up the grid's cell machinery serially before threading so the
+    // per-thread GetCellPoints calls don't race building the shared links/offsets.
+    if (ds->GetNumberOfPoints() > 0)
+    {
+      vtkNew<vtkIdList> dummy;
+      ds->GetCellPoints(0, dummy);
+    }
     MapUGridToSpanSpaceFunctor<TScalars> map(ss, ds, s);
     vtkSMPTools::For(0, numCells, map);
   }

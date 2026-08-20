@@ -8,6 +8,7 @@
 #include "vtkCellLinks.h"
 #include "vtkGarbageCollector.h"
 #include "vtkGenericCell.h"
+#include "vtkIdList.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkNew.h"
@@ -21,6 +22,8 @@
 #include "vtkUnsignedCharArray.h"
 
 #include <stdexcept>
+#include <atomic> // cvista: release fence when publishing lazily-built Cells/Links
+#include <vector>
 
 // vtkPolyDataInternals.h methods:
 namespace vtkPolyData_detail
@@ -794,6 +797,22 @@ VTK_ABI_NAMESPACE_BEGIN
 // Create data structure that allows random access of cells.
 void vtkPolyData::BuildCells()
 {
+  // cvista: make the lazy build thread-safe. The inline cell accessors
+  // (GetCellType/GetCell/GetCellPoints/...) do `if (!this->Cells) BuildCells()`,
+  // and with the STDThread default that runs concurrently from SMP worker
+  // threads. Two defects made it crash: several threads could build at once, and
+  // the original code published this->Cells BEFORE populating it (so a reader
+  // could observe a half-built map). Serialize builders with a mutex and build
+  // into a LOCAL, publishing the fully-built map as the very last step. A reader
+  // then sees this->Cells as either null (and builds under the lock) or
+  // complete. (The header still documents the single-thread-first contract; this
+  // hardens the convenience path that cvista's default threading relies on.)
+  std::lock_guard<std::mutex> lock(this->BuildCellsMutex);
+  if (this->Cells)
+  {
+    return; // another thread finished the build while we waited on the lock
+  }
+
   vtkCellArray* verts = this->GetVerts();
   vtkCellArray* lines = this->GetLines();
   vtkCellArray* polys = this->GetPolys();
@@ -808,27 +827,27 @@ void vtkPolyData::BuildCells()
   // pre-allocate the space we need
   const vtkIdType nCells = nVerts + nLines + nPolys + nStrips;
 
-  this->Cells = vtkSmartPointer<CellMap>::New();
-  this->Cells->SetNumberOfCells(nCells);
+  vtkSmartPointer<CellMap> cells = vtkSmartPointer<CellMap>::New();
+  cells->SetNumberOfCells(nCells);
 
   vtkIdType beginCellId = 0;
   if (nVerts > 0)
   {
-    verts->Dispatch(BuildCellsImpl{}, this->Cells, beginCellId,
+    verts->Dispatch(BuildCellsImpl{}, cells, beginCellId,
       [](vtkIdType size) -> VTKCellType { return size == 1 ? VTK_VERTEX : VTK_POLY_VERTEX; });
     beginCellId += nVerts;
   }
 
   if (nLines > 0)
   {
-    lines->Dispatch(BuildCellsImpl{}, this->Cells, beginCellId,
+    lines->Dispatch(BuildCellsImpl{}, cells, beginCellId,
       [](vtkIdType size) -> VTKCellType { return size == 2 ? VTK_LINE : VTK_POLY_LINE; });
     beginCellId += nLines;
   }
 
   if (nPolys > 0)
   {
-    polys->Dispatch(BuildCellsImpl{}, this->Cells, beginCellId,
+    polys->Dispatch(BuildCellsImpl{}, cells, beginCellId,
       [](vtkIdType size) -> VTKCellType
       {
         switch (size)
@@ -846,9 +865,16 @@ void vtkPolyData::BuildCells()
 
   if (nStrips > 0)
   {
-    strips->Dispatch(BuildCellsImpl{}, this->Cells, beginCellId,
+    strips->Dispatch(BuildCellsImpl{}, cells, beginCellId,
       [](vtkIdType vtkNotUsed(size)) -> VTKCellType { return VTK_TRIANGLE_STRIP; });
   }
+
+  // Release fence so all of the map's content writes above are visible before
+  // the pointer publish becomes visible to a lazy reader on another core. The
+  // reader observes the map through this->Cells, so the address dependency
+  // orders its dependent loads (correct on weak-memory archs, e.g. arm64).
+  std::atomic_thread_fence(std::memory_order_release);
+  this->Cells = cells; // publish the fully-built map last
 }
 //------------------------------------------------------------------------------
 void vtkPolyData::DeleteLinks()
@@ -869,32 +895,52 @@ void vtkPolyData::BuildLinks(int initialSize)
   {
     return;
   }
-  if (!this->Links)
+
+  // cvista: same hardening as BuildCells(). The inline link accessors
+  // (GetPointCells/GetCellEdgeNeighbors/...) do `if (!this->Links) BuildLinks()`,
+  // which under the STDThread default runs concurrently from SMP worker threads.
+  // The original code published this->Links before vtkAbstractCellLinks::
+  // BuildLinks() populated it, so a concurrent reader could observe partial
+  // links. Serialize with a mutex; build the FIRST-build path into a local and
+  // publish fully-built last. The rebuild-in-place branches (Links already set,
+  // e.g. after the points change) keep their original behavior -- those calls
+  // come from the main thread, not the concurrent lazy-accessor path.
+  std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
+  if (this->Links)
   {
-    if (!this->Editable)
+    if (initialSize > 0 && this->Links->IsA("vtkCellLinks"))
     {
-      this->Links = vtkSmartPointer<vtkStaticCellLinks>::New();
+      static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(initialSize);
+      this->Links->SetDataSet(this);
     }
-    else
+    else if (this->Points->GetMTime() > this->Links->GetMTime())
     {
-      this->Links = vtkSmartPointer<vtkCellLinks>::New();
-      if (initialSize > 0)
-      {
-        static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(initialSize);
-      }
+      this->Links->SetDataSet(this);
     }
-    this->Links->SetDataSet(this);
+    this->Links->BuildLinks();
+    return;
   }
-  else if (initialSize > 0 && this->Links->IsA("vtkCellLinks"))
+
+  vtkSmartPointer<vtkAbstractCellLinks> links;
+  if (!this->Editable)
   {
-    static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(initialSize);
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkStaticCellLinks>::New();
   }
-  else if (this->Points->GetMTime() > this->Links->GetMTime())
+  else
   {
-    this->Links->SetDataSet(this);
+    links = vtkSmartPointer<vtkCellLinks>::New();
+    if (initialSize > 0)
+    {
+      static_cast<vtkCellLinks*>(links.Get())->Allocate(initialSize);
+    }
   }
-  this->Links->BuildLinks();
+  links->SetDataSet(this);
+  links->BuildLinks();
+  // Release fence: make the populated links visible before the pointer publish
+  // (see BuildCells() for the rationale; the reader's address dependency on
+  // this->Links orders its dependent loads on weak-memory archs).
+  std::atomic_thread_fence(std::memory_order_release);
+  this->Links = links; // publish fully-built links last
 }
 
 //------------------------------------------------------------------------------
@@ -1033,6 +1079,124 @@ vtkIdType vtkPolyData::InsertNextCell(int type, int npts, const vtkIdType ptsIn[
 vtkIdType vtkPolyData::InsertNextCell(int type, vtkIdList* pts)
 {
   return this->InsertNextCell(type, static_cast<int>(pts->GetNumberOfIds()), pts->GetPointer(0));
+}
+
+namespace
+{
+// Functor used by vtkPolyData::InsertNextCellBlock. For one target vtkCellArray
+// (identified by targetIndex), it appends every cell of the block that routes to
+// that array, in increasing block-cell order. The storage-type switch is resolved
+// ONCE (by vtkCellArray::Dispatch) instead of once per cell, and the typed
+// offsets/connectivity accessors are non-virtual.
+//
+// The (offset, connectivity) values written for cell c are exactly what the
+// per-cell InsertNextCell path would write: one offset entry equal to
+// (connectivity-size-so-far + npts) and npts connectivity entries equal to
+// (source point id + pointIdOffset). No per-call heap allocation: the routing and
+// per-cell connectivity start are recomputed inline from the flat layout.
+struct AppendCellBlockToTarget : public vtkCellArray::DispatchUtilities
+{
+  template <class OffsetsT, class ConnectivityT>
+  void operator()(OffsetsT* offsets, ConnectivityT* conn, vtkIdType numCells,
+    std::size_t targetIndex, const unsigned char* types, const vtkIdType* sizes,
+    const vtkIdType* connectivity, vtkIdType pointIdOffset)
+  {
+    using ValueType = GetAPIType<OffsetsT>;
+    vtkDataArrayAccessor<OffsetsT> offsetsAccessor(offsets);
+    vtkDataArrayAccessor<ConnectivityT> connAccessor(conn);
+
+    vtkIdType connBegin = 0;
+    for (vtkIdType c = 0; c < numCells; ++c)
+    {
+      const vtkIdType npts = sizes[c];
+      const vtkPolyData_detail::TaggedCellId tag(
+        vtkIdType(0), static_cast<VTKCellType>(types[c]));
+      if (tag.GetTargetIndex() == targetIndex)
+      {
+        offsetsAccessor.InsertNext(static_cast<ValueType>(conn->GetNumberOfValues() + npts));
+        const vtkIdType* srcIds = connectivity + connBegin;
+        for (vtkIdType i = 0; i < npts; ++i)
+        {
+          connAccessor.InsertNext(static_cast<ValueType>(srcIds[i] + pointIdOffset));
+        }
+      }
+      connBegin += npts;
+    }
+  }
+};
+} // anonymous namespace
+
+//------------------------------------------------------------------------------
+void vtkPolyData::InsertNextCellBlock(vtkIdType numCells, const unsigned char* types,
+  const vtkIdType* sizes, const vtkIdType* connectivity, vtkIdType pointIdOffset)
+{
+  if (numCells <= 0)
+  {
+    return;
+  }
+  if (!this->Cells)
+  {
+    this->BuildCells();
+  }
+
+  // If any cell type is unsupported (or VTK_PIXEL, which the per-cell path
+  // silently rewrites to a reordered VTK_QUAD), fall back to the exact per-cell
+  // InsertNextCell path so behavior is byte-identical. This scan touches only the
+  // small per-source `types` buffer.
+  for (vtkIdType c = 0; c < numCells; ++c)
+  {
+    const VTKCellType ct = static_cast<VTKCellType>(types[c]);
+    if (ct == VTK_PIXEL || !CellMap::ValidateCellType(ct))
+    {
+      vtkIdType connBegin = 0;
+      vtkNew<vtkIdList> shifted;
+      for (vtkIdType cc = 0; cc < numCells; ++cc)
+      {
+        const vtkIdType npts = sizes[cc];
+        shifted->SetNumberOfIds(npts);
+        vtkIdType* dst = shifted->GetPointer(0);
+        const vtkIdType* srcIds = connectivity + connBegin;
+        for (vtkIdType i = 0; i < npts; ++i)
+        {
+          dst[i] = srcIds[i] + pointIdOffset;
+        }
+        this->InsertNextCell(static_cast<int>(types[cc]), shifted);
+        connBegin += npts;
+      }
+      return;
+    }
+  }
+
+  // Append each target array's cells with a single storage-type dispatch. Targets
+  // are (Verts=0, Lines=1, Polys=2, Strips=3), the same order/index as
+  // GetCellArrayInternal()'s target table (tag.GetTargetIndex()). Capture each
+  // target's pre-block cell count first: it is the internal cell id the per-cell
+  // path would assign to that target's first cell in this block.
+  vtkCellArray* const targets[4] = { this->Verts, this->Lines, this->Polys, this->Strips };
+  vtkIdType perTargetNext[4];
+  for (int t = 0; t < 4; ++t)
+  {
+    perTargetNext[t] = targets[t]->GetNumberOfCells();
+  }
+  for (std::size_t t = 0; t < 4; ++t)
+  {
+    targets[t]->Dispatch(AppendCellBlockToTarget{}, numCells, t, types, sizes, connectivity,
+      pointIdOffset);
+  }
+
+  // Stamp the cell-map tags in global (block) cell order, matching the per-cell
+  // InsertNextCell path: each cell becomes a TaggedCellId(internalCellId, type)
+  // emplaced at the end of the map. The internal (target-local) cell id assigned
+  // to a cell equals that target's pre-block count plus the number of same-target
+  // block cells already stamped (perTargetNext walks up exactly as InsertNextCell
+  // would have).
+  for (vtkIdType c = 0; c < numCells; ++c)
+  {
+    const TaggedCellId probe(vtkIdType(0), static_cast<VTKCellType>(types[c]));
+    const std::size_t ti = probe.GetTargetIndex();
+    this->Cells->InsertNextCell(perTargetNext[ti], static_cast<VTKCellType>(types[c]));
+    perTargetNext[ti]++;
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -1234,9 +1398,15 @@ inline void GetCellEdgeNeighborsImpl(
         if (cells1[i] == cells2[j])
         {
           // For degenerate cells, the same cells are linked several times to the degenerate
-          // point. So InsertUniqueId is used to prevent duplicates. This is not impacting
+          // point. So a uniqueness check is used to prevent duplicates. This is not impacting
           // performances compared to InsertNextId, because most of the time, cellIds is empty.
-          cellIds->InsertUniqueId(cells1[i]);
+          // Inlined equivalent of cellIds->InsertUniqueId(cells1[i]): IsId() and InsertNextId()
+          // are inline in vtkIdList.h, so this avoids the out-of-line InsertUniqueId call in the
+          // hot loop while preserving identical iteration/insertion order and de-duplication.
+          if (cellIds->IsId(cells1[i]) < 0)
+          {
+            cellIds->InsertNextId(cells1[i]);
+          }
           break;
         }
       }

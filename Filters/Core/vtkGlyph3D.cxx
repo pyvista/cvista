@@ -22,6 +22,7 @@
 #include "vtkUnsignedCharArray.h"
 
 #include <algorithm>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkGlyph3D);
@@ -140,7 +141,6 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   double x[3], v[3], vNew[3], s = 0.0, vMag = 0.0, value, tc[3];
   vtkTransform* trans = vtkTransform::New();
   vtkNew<vtkIdList> pointIdList;
-  vtkIdList* cellPts;
   int npts;
   vtkIdList* pts;
   vtkIdType ptIncr, cellIncr, cellId;
@@ -155,6 +155,22 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   vtkNew<vtkIdList> dstPointIdList;
   vtkNew<vtkIdList> srcCellIdList;
   vtkNew<vtkIdList> dstCellIdList;
+
+  // The topology of the current source glyph is identical for every input
+  // point; only the point-id offset (ptIncr) changes. Cache the source-local
+  // cell types and connectivity once per source so the per-input-point loop
+  // does not redundantly re-traverse the source via virtual GetCellPoints()/
+  // GetCellType() calls. This only changes how the (integer) connectivity is
+  // obtained; the values inserted, the cell types, and the insertion order are
+  // identical, so the output is bit-for-bit unchanged.
+  vtkPolyData* cachedSource = nullptr;
+  std::vector<int> cachedCellTypes;
+  std::vector<unsigned char> cachedCellTypesU8; // VTK cell type per cell, as bytes
+  std::vector<vtkIdType> cachedCellSizes;       // point count per cell
+  std::vector<vtkIdType> cachedCellOffsets;     // size = numCachedCells + 1
+  std::vector<vtkIdType> cachedCellConn;        // flattened source-local point ids
+  std::vector<vtkIdType> cellConnScratch;       // reusable per-cell buffer (ids + ptIncr)
+  bool cachedBlockOk = false;                   // true => InsertNextCellBlock fast path usable
 
   vtkDebugMacro(<< "Generating glyphs");
 
@@ -381,6 +397,32 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     newTCoords->SetName("TCoords");
   }
 
+  // The per-tuple output arrays below are filled at explicit, monotonically
+  // increasing tuple indices (ptIncr + i). Each input point that is glyphed
+  // contributes exactly numSourcePts tuples, so the running index never exceeds
+  // numPts * numSourcePts (the upper bound; it equals the exact count when no
+  // point is skipped and IndexMode is off). Pre-sizing the arrays to that upper
+  // bound here lets the per-point fill use SetTuple/SetTypedTuple at a known-valid
+  // index instead of InsertTuple, which re-checks and grows MaxId via
+  // EnsureAccessToTuple on every one of the ~26M calls. After the loop the arrays
+  // are trimmed to the exact written count (ptIncr) with SetNumberOfTuples, which
+  // only lowers MaxId and never reallocates or touches the kept tuples -- so the
+  // values, their indices, and the final tuple count are all bit-for-bit identical
+  // to the InsertTuple path.
+  const vtkIdType maxOutputTuples = numPts * numSourcePts;
+  if (newScalars)
+  {
+    newScalars->SetNumberOfTuples(maxOutputTuples);
+  }
+  if (newVectors)
+  {
+    newVectors->SetNumberOfTuples(maxOutputTuples);
+  }
+  if (newTCoords)
+  {
+    newTCoords->SetNumberOfTuples(maxOutputTuples);
+  }
+
   // Setting up for calls to PolyData::InsertNextCell()
   output->AllocateEstimate(numPts * numSourceCells, 3);
 
@@ -524,17 +566,79 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     // Now begin copying/transforming glyph
     trans->Identity();
 
-    // Copy all topology (transformation independent)
-    for (cellId = 0; cellId < numSourceCells; cellId++)
+    // Copy all topology (transformation independent).
+    //
+    // Build/refresh the source-local topology cache when the source changes
+    // (it only changes between input points when IndexMode is enabled). The
+    // cache stores exactly the same cell types and source-local point ids that
+    // GetCellType()/GetCellPoints() would return, flattened for cheap reuse.
+    if (source != cachedSource)
     {
-      source->GetCellPoints(cellId, pointIdList);
-      cellPts = pointIdList;
-      npts = cellPts->GetNumberOfIds();
-      for (pts->Reset(), i = 0; i < npts; i++)
+      cachedSource = source;
+      vtkIdType numCells = source->GetNumberOfCells();
+      cachedCellTypes.resize(numCells);
+      cachedCellTypesU8.resize(numCells);
+      cachedCellSizes.resize(numCells);
+      cachedCellOffsets.resize(numCells + 1);
+      cachedCellConn.clear();
+      cachedBlockOk = true;
+      vtkIdType maxNpts = 0;
+      vtkIdType off = 0;
+      for (vtkIdType c = 0; c < numCells; ++c)
       {
-        pts->InsertId(i, cellPts->GetId(i) + ptIncr);
+        source->GetCellPoints(c, pointIdList);
+        vtkIdType cnpts = pointIdList->GetNumberOfIds();
+        int ct = source->GetCellType(c);
+        cachedCellTypes[c] = ct;
+        cachedCellTypesU8[c] = static_cast<unsigned char>(ct);
+        cachedCellSizes[c] = cnpts;
+        cachedCellOffsets[c] = off;
+        for (vtkIdType k = 0; k < cnpts; ++k)
+        {
+          cachedCellConn.push_back(pointIdList->GetId(k));
+        }
+        off += cnpts;
+        if (cnpts > maxNpts)
+        {
+          maxNpts = cnpts;
+        }
+        // VTK_PIXEL needs the InsertNextCell QUAD-reorder path; if any source
+        // cell is a pixel, fall back to the per-cell append so behavior is
+        // byte-identical.
+        if (ct == VTK_PIXEL)
+        {
+          cachedBlockOk = false;
+        }
       }
-      output->InsertNextCell(source->GetCellType(cellId), pts);
+      cachedCellOffsets[numCells] = off;
+      cellConnScratch.resize(maxNpts);
+    }
+
+    // Append this glyph instance's cells. The cached source topology is constant
+    // across input points; only the point-id base (ptIncr) changes. The block
+    // append hoists the per-cell vtkCellArray storage-type dispatch out of the
+    // loop, building the output offsets/connectivity through one typed pass per
+    // target cell array while producing byte-identical cells, types, and cell
+    // ordering to the per-cell InsertNextCell loop below.
+    if (cachedBlockOk)
+    {
+      output->InsertNextCellBlock(numSourceCells, cachedCellTypesU8.data(),
+        cachedCellSizes.data(), cachedCellConn.data(), ptIncr);
+    }
+    else
+    {
+      for (cellId = 0; cellId < numSourceCells; cellId++)
+      {
+        vtkIdType cellBegin = cachedCellOffsets[cellId];
+        npts = static_cast<int>(cachedCellOffsets[cellId + 1] - cellBegin);
+        const vtkIdType* srcIds = cachedCellConn.data() + cellBegin;
+        vtkIdType* dstIds = cellConnScratch.data();
+        for (i = 0; i < npts; i++)
+        {
+          dstIds[i] = srcIds[i] + ptIncr;
+        }
+        output->InsertNextCell(cachedCellTypes[cellId], npts, dstIds);
+      }
     }
 
     // translate Source to Input point
@@ -546,7 +650,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
       // Copy Input vector
       for (i = 0; i < numSourcePts; i++)
       {
-        newVectors->InsertTuple(i + ptIncr, v);
+        newVectors->SetTuple(i + ptIncr, v);
       }
       if (this->Orient)
       {
@@ -595,7 +699,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
       for (i = 0; i < numSourcePts; i++)
       {
         sourceTCoords->GetTuple(i, tc);
-        newTCoords->InsertTuple(i + ptIncr, tc);
+        newTCoords->SetTuple(i + ptIncr, tc);
       }
     }
 
@@ -605,7 +709,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     {
       for (i = 0; i < numSourcePts; i++)
       {
-        newScalars->InsertTuple(i + ptIncr, &scalex); // = scaley = scalez
+        newScalars->SetTuple(i + ptIncr, &scalex); // = scaley = scalez
       }
     }
     else if (inCScalars && (this->ColorMode == VTK_COLOR_BY_SCALAR))
@@ -619,7 +723,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     {
       for (i = 0; i < numSourcePts; i++)
       {
-        newScalars->InsertTuple(i + ptIncr, &vMag);
+        newScalars->SetTuple(i + ptIncr, &vMag);
       }
     }
 
@@ -700,6 +804,26 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
 
     ptIncr += numSourcePts;
     cellIncr += numSourceCells;
+  }
+
+  // Trim the pre-sized per-tuple arrays from the numPts * numSourcePts upper bound
+  // down to the exact number of tuples actually written (ptIncr). For the common
+  // no-skip / IndexMode-off case this is a no-op; when points were skipped (ghosts,
+  // blanking, invisibility, abort) or sources have differing sizes it lowers MaxId
+  // to match what the InsertTuple path would have produced. Shrinking via
+  // SetNumberOfTuples never reallocates and never modifies the kept tuples, so the
+  // result is bit-for-bit identical.
+  if (newScalars)
+  {
+    newScalars->SetNumberOfTuples(ptIncr);
+  }
+  if (newVectors)
+  {
+    newVectors->SetNumberOfTuples(ptIncr);
+  }
+  if (newTCoords)
+  {
+    newTCoords->SetNumberOfTuples(ptIncr);
   }
 
   // Update ourselves and release memory

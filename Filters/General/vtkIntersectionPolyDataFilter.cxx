@@ -79,7 +79,8 @@ public:
     vtkOBBNode* node0, vtkOBBNode* node1, vtkMatrix4x4* transform, void* arg);
 
   // Runs the split mesh for the designated input surface
-  int SplitMesh(int inputIndex, vtkPolyData* output, vtkPolyData* intersectionLines);
+  int SplitMesh(int inputIndex, vtkPolyData* output, vtkPolyData* intersectionLines,
+    int outputPointsPrecision);
 
 protected:
   // Split cells into polygons created by intersection lines
@@ -454,7 +455,7 @@ int vtkIntersectionPolyDataFilter::Impl ::FindTriangleIntersections(
 
 //------------------------------------------------------------------------------
 int vtkIntersectionPolyDataFilter::Impl ::SplitMesh(
-  int inputIndex, vtkPolyData* output, vtkPolyData* intersectionLines)
+  int inputIndex, vtkPolyData* output, vtkPolyData* intersectionLines, int outputPointsPrecision)
 {
   vtkPolyData* input = this->Mesh[inputIndex];
   IntersectionMapType* intersectionMap = this->IntersectionMap[inputIndex];
@@ -468,6 +469,22 @@ int vtkIntersectionPolyDataFilter::Impl ::SplitMesh(
   //
   vtkIdType inputNumPoints = input->GetPoints()->GetNumberOfPoints();
   vtkNew<vtkPoints> points;
+  // By default the split-surface output keeps the precision of the input
+  // surface points (DEFAULT_PRECISION); SINGLE/DOUBLE force it. The split
+  // output copies the input surface points verbatim, so DEFAULT preserves the
+  // exact stored coordinate values.
+  if (outputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    points->SetDataType(input->GetPoints()->GetDataType());
+  }
+  else if (outputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    points->SetDataType(VTK_FLOAT);
+  }
+  else if (outputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    points->SetDataType(VTK_DOUBLE);
+  }
   points->Reserve(100);
   output->SetPoints(points);
 
@@ -1920,6 +1937,7 @@ void vtkIntersectionPolyDataFilter::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "ComputeIntersectionPointArray: " << this->ComputeIntersectionPointArray << "\n";
   os << indent << "Tolerance: " << this->Tolerance << "\n";
   os << indent << "RelativeSubtriangleArea: " << this->RelativeSubtriangleArea << "\n";
+  os << indent << "OutputPointsPrecision: " << this->OutputPointsPrecision << "\n";
 }
 
 //------------------------------------------------------------------------------
@@ -2430,7 +2448,7 @@ int vtkIntersectionPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(reques
   if (this->SplitFirstOutput)
   {
     mesh0->BuildLinks();
-    if (impl->SplitMesh(0, outputPolyData0, outputIntersection) != 1)
+    if (impl->SplitMesh(0, outputPolyData0, outputIntersection, this->OutputPointsPrecision) != 1)
     {
       this->Status = 0;
       this->NumberOfIntersectionPoints = 0;
@@ -2476,7 +2494,7 @@ int vtkIntersectionPolyDataFilter::RequestData(vtkInformation* vtkNotUsed(reques
   if (this->SplitSecondOutput)
   {
     mesh1->BuildLinks();
-    if (impl->SplitMesh(1, outputPolyData1, outputIntersection) != 1)
+    if (impl->SplitMesh(1, outputPolyData1, outputIntersection, this->OutputPointsPrecision) != 1)
     {
       this->Status = 0;
       this->NumberOfIntersectionPoints = 0;

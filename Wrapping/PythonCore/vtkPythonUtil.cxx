@@ -4,12 +4,14 @@
 #include "vtkPythonUtil.h"
 #include "vtkABINamespace.h"
 #include "vtkPythonOverload.h"
+#include "vtkPythonTypeAccess.h"
 
 #include "PyVTKMethodDescriptor.h"
 
 #include "vtkCallbackCommand.h"
 #include "vtkObject.h"
 #include "vtkPythonCommand.h"
+#include "vtkSMPTools.h" // cvista: register GIL release/acquire hook for threaded SMP
 #ifdef PY_LIMITED_API
 #include "vtkSmartPyObject.h"
 #endif
@@ -21,11 +23,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // for uintptr_t
@@ -36,7 +41,23 @@
 #endif
 
 // Py_HashPointer added in 3.13 and _Py_HashPointer deprecated in 3.14.
-#if PY_VERSION_HEX >= 0x030D0000
+#if defined(Py_LIMITED_API)
+// Neither Py_HashPointer nor _Py_HashPointer is in the stable ABI (the former is
+// a regular-API 3.13 addition). Reproduce CPython's pointer-hash exactly so the
+// observable hash() of a Python vtkVariant wrapping a vtkObject stays bit-exact
+// with the default build: _Py_HashPointerRaw rotates the address right by 4
+// bits, then Py_HashPointer maps the sentinel -1 to -2.
+VTK_ABI_NAMESPACE_BEGIN
+static inline Py_hash_t vtkPythonHashPointer(const void* ptr)
+{
+  uintptr_t x = reinterpret_cast<uintptr_t>(ptr);
+  x = (x >> 4) | (x << (8 * sizeof(uintptr_t) - 4));
+  Py_hash_t h = static_cast<Py_hash_t>(x);
+  return (h == -1) ? -2 : h;
+}
+VTK_ABI_NAMESPACE_END
+#define PY_HASHPOINTER vtkPythonHashPointer
+#elif PY_VERSION_HEX >= 0x030D0000
 #define PY_HASHPOINTER Py_HashPointer
 #else
 #define PY_HASHPOINTER _Py_HashPointer
@@ -44,7 +65,40 @@
 
 VTK_ABI_NAMESPACE_BEGIN
 //------------------------------------------------------------------------------
+// Bit-mixing hash for the pointer-keyed maps (ObjectMap, GhostMap).
+//
+// The default std::hash<vtkObjectBase*> is the identity on the raw address.
+// Heap-allocated VTK objects share similar high bits and have alignment zeros
+// in the low bits, so identity hashing clusters keys into a few buckets. That
+// clustering lengthens the collision chains that find()/erase() walk, which is
+// exactly the cost seen in vtkPythonUtil::RemoveObjectFromMap under
+// object-churny workloads. Running the address through the SplitMix64 finalizer
+// (a well-known integer avalanche) spreads keys uniformly across buckets.
+//
+// This changes only internal bucket placement of an unordered_map; it is not
+// observable from Python (it is not the hash() of any wrapped object) and does
+// not affect any rendered pixel or computed array byte, so it is bit-exact.
+struct vtkPythonPointerHash
+{
+  std::size_t operator()(const vtkObjectBase* ptr) const noexcept
+  {
+    std::uint64_t x = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(ptr));
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return static_cast<std::size_t>(x);
+  }
+};
+
+//------------------------------------------------------------------------------
 // A ghost object, can be used to recreate a deleted PyVTKObject
+// The PyObject pointers are intentionally raw: the references they
+// represent are managed by the GhostMap code, and this class must stay
+// trivially destructible with respect to them (FindObject copies a ghost
+// out of the map and erases the node before releasing the references, so
+// an ownership-releasing destructor here would cause a double release).
 class PyVTKObjectGhost
 {
 public:
@@ -69,7 +123,8 @@ public:
 // of the vtk/python garbage collection system, because it contains
 // exactly one pointer reference for each VTK object known to python)
 class vtkPythonObjectMap
-  : public std::map<vtkObjectBase*, std::pair<PyObject*, std::atomic<int32_t>>>
+  : public std::unordered_map<vtkObjectBase*, std::pair<PyObject*, std::atomic<int32_t>>,
+      vtkPythonPointerHash>
 {
 public:
   ~vtkPythonObjectMap();
@@ -134,12 +189,13 @@ void vtkPythonObjectMap::remove(vtkObjectBase* key)
 // VTK objects come back, their 'dict' can be restored to them.
 // Periodically the weak pointers are checked and the dicts of
 // VTK objects that have been deleted are tossed away.
-class vtkPythonGhostMap : public std::map<vtkObjectBase*, PyVTKObjectGhost>
+class vtkPythonGhostMap
+  : public std::unordered_map<vtkObjectBase*, PyVTKObjectGhost, vtkPythonPointerHash>
 {
 };
 
 // Keep track of all the VTK classes that python knows about.
-class vtkPythonClassMap : public std::map<std::string, PyVTKClass>
+class vtkPythonClassMap : public std::unordered_map<std::string, PyVTKClass>
 {
 };
 
@@ -147,12 +203,12 @@ class vtkPythonClassMap : public std::map<std::string, PyVTKClass>
 // These differ only for templated classes derived from vtkObjectBase,
 // where GetClassName() returns typeid(T).name() which in general is
 // not a valid Python name.
-class vtkPythonClassNameMap : public std::map<std::string, std::string>
+class vtkPythonClassNameMap : public std::unordered_map<std::string, std::string>
 {
 };
 
 // Like the ClassMap, for types not derived from vtkObjectBase.
-class vtkPythonSpecialTypeMap : public std::map<std::string, PyVTKSpecialType>
+class vtkPythonSpecialTypeMap : public std::unordered_map<std::string, PyVTKSpecialType>
 {
 };
 
@@ -244,12 +300,74 @@ vtkPythonUtil::~vtkPythonUtil()
 }
 
 //------------------------------------------------------------------------------
+#if defined(Py_LIMITED_API)
+// PyGILState_Check() is a long-standing exported CPython symbol (since 3.4),
+// present in every interpreter this abi3 wheel can load, but the limited-API
+// headers do not declare it. Declare it ourselves so the threaded-SMP GIL hook
+// can ask "does this thread currently hold the GIL?" -- the one question that
+// makes the release safe for nested For() and non-Python worker threads.
+extern "C" int PyGILState_Check(void);
+#endif
+
+namespace
+{
+// cvista GIL-release hook for threaded SMP backends. Registered with
+// vtkSMPTools::SetGilCallbacks so that, when a parallel vtkSMPTools::For runs,
+// the calling (master) thread drops the GIL while it blocks on the worker join.
+// This lets a worker thread acquire the GIL (via vtkPythonScopeGilEnsurer) to
+// run a Python observer callback -- progress/error/warning events -- instead of
+// deadlocking against the GIL the parked master would otherwise hold.
+void* vtkPythonSMPGilRelease()
+{
+  // Only release if THIS thread currently holds the GIL (PyGILState_Check). For
+  // nested For() or non-Python worker threads it returns null -> caller no-op.
+  if (Py_IsInitialized() != 0 && PyGILState_Check() != 0)
+  {
+    return PyEval_SaveThread(); // releases the GIL, returns the saved thread state
+  }
+  return nullptr;
+}
+
+void vtkPythonSMPGilAcquire(void* state)
+{
+  if (state != nullptr)
+  {
+    PyEval_RestoreThread(static_cast<PyThreadState*>(state)); // re-acquires the GIL
+  }
+}
+
+// Register the hook the moment this Python wrapping translation unit is loaded
+// (i.e. as soon as any wrapped cvista module is imported), independent of whether
+// vtkPythonUtil::Initialize() is invoked. SetGilCallbacks only stores two
+// function pointers -- no Python C-API call, no singleton -- so running it
+// during dynamic static-init is safe; the callbacks themselves touch Python
+// only later, at For() time, fully guarded by Py_IsInitialized/PyGILState_Check.
+struct vtkPythonSMPGilRegistrar
+{
+  vtkPythonSMPGilRegistrar()
+  {
+    vtkSMPTools::SetGilCallbacks(&vtkPythonSMPGilRelease, &vtkPythonSMPGilAcquire);
+  }
+};
+static vtkPythonSMPGilRegistrar vtkPythonSMPGilRegistrarInstance;
+}
+
+//------------------------------------------------------------------------------
 void vtkPythonUtil::Initialize()
 {
   // create the singleton
   vtkPythonUtilCreateIfNeeded();
+
+  // cvista: install the GIL release/acquire hook so a threaded SMP backend
+  // (STDThread/TBB/OpenMP) does not deadlock when a worker thread invokes a
+  // Python observer callback. Idempotent; harmless for the Sequential backend.
+  vtkSMPTools::SetGilCallbacks(&vtkPythonSMPGilRelease, &vtkPythonSMPGilAcquire);
   // finalize our custom MethodDescriptor type
+#if defined(Py_LIMITED_API)
+  PyVTKMethodDescriptor_BuildType();
+#else
   PyType_Ready(&PyVTKMethodDescriptor_Type);
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -370,7 +488,8 @@ void vtkPythonUtil::RemoveObjectFromMap(PyObject* obj)
     vtkWeakPointerBase wptr;
 
     // check for customized class or dict
-    if (pobj->vtk_class->py_type != Py_TYPE(pobj) || PyDict_Size(pobj->vtk_dict))
+    if (pobj->vtk_class->py_type != Py_TYPE(reinterpret_cast<PyObject*>(pobj)) ||
+      PyDict_Size(pobj->vtk_dict))
     {
       wptr = pobj->vtk_ptr;
     }
@@ -402,9 +521,9 @@ void vtkPythonUtil::RemoveObjectFromMap(PyObject* obj)
       // Add this new ghost to the map
       PyVTKObjectGhost& g = (*vtkPythonMap->GhostMap)[pobj->vtk_ptr];
       g.vtk_ptr = wptr;
-      g.vtk_class = Py_TYPE(pobj);
+      g.vtk_class = Py_TYPE(reinterpret_cast<PyObject*>(pobj));
       g.vtk_dict = pobj->vtk_dict;
-      Py_INCREF(g.vtk_class);
+      Py_INCREF(reinterpret_cast<PyObject*>(g.vtk_class));
       Py_INCREF(g.vtk_dict);
 
       // AddObserver only exists on vtkObject, so for non-vtkObject vtkObjectBase
@@ -454,23 +573,34 @@ PyObject* vtkPythonUtil::FindObject(vtkObjectBase* ptr)
   vtkPythonGhostMap::iterator j = vtkPythonMap->GhostMap->find(ptr);
   if (j != vtkPythonMap->GhostMap->end())
   {
-    if (j->second.vtk_ptr.GetPointer())
+    // Resurrecting the object and releasing the ghost's references can run
+    // arbitrary Python code (resurrection allocates, which can trigger
+    // garbage collection, and the ghost may hold the last reference to its
+    // dict), which can re-enter RemoveObjectFromMap.  That method both adds
+    // ghosts to this map and sweeps expired ghosts out of it, so it can
+    // erase this very node and invalidate the iterator.  Copy the ghost and
+    // erase the node before any of that can happen; the plain copy moves
+    // the class and dict references without touching their refcounts.
+    PyVTKObjectGhost ghost = j->second;
+    vtkPythonMap->GhostMap->erase(j);
+    if (ghost.vtk_ptr.GetPointer())
     {
       // Detach the delete observer before we consume the ghost, otherwise it
       // would fire later on this same C++ object's eventual destruction and
-      // try to evict an entry that's already gone.
-      if (j->second.observer_tag)
+      // try to evict an entry that's already gone. (cvista: the node was already
+      // erased above, so operate on the copied ghost, not the invalidated iterator.)
+      if (ghost.observer_tag)
       {
         if (vtkObject* vobj = vtkObject::SafeDownCast(ptr))
         {
-          vobj->RemoveObserver(j->second.observer_tag);
+          vobj->RemoveObserver(ghost.observer_tag);
         }
       }
-      obj = PyVTKObject_FromPointer(j->second.vtk_class, j->second.vtk_dict, ptr);
+      obj = PyVTKObject_FromPointer(ghost.vtk_class, ghost.vtk_dict, ptr);
     }
-    Py_DECREF(j->second.vtk_class);
-    Py_DECREF(j->second.vtk_dict);
-    vtkPythonMap->GhostMap->erase(j);
+    // Release the references that the ghost held.  Must be done at the end.
+    Py_DECREF(ghost.vtk_class);
+    Py_DECREF(ghost.vtk_dict);
   }
 
   return obj;
@@ -582,9 +712,52 @@ const char* vtkPythonUtil::StripModuleFromObject(PyObject* ob)
 //------------------------------------------------------------------------------
 const char* vtkPythonUtil::GetTypeName(PyTypeObject* pytype)
 {
-#ifdef PY_LIMITED_API
-  vtkSmartPyObject tname = PyType_GetName(pytype);
-  return PyUnicode_AsUTF8AndSize(tname, nullptr);
+#if defined(Py_LIMITED_API)
+  // Under the limited API tp_name is unreadable; PyType_GetName returns a *new*
+  // str reference whose UTF-8 buffer dies with it. Many callers keep the
+  // returned const char* across subsequent calls (and the default build's
+  // tp_name is a stable, interpreter-lifetime pointer), so cache the decoded
+  // name per-type in a process-lifetime table and hand back its c_str(). A
+  // type's __qualname__/tp_name does not change after creation, so the first
+  // observation is authoritative and the pointer stays valid like tp_name.
+  static std::unordered_map<PyTypeObject*, std::string>* nameCache =
+    new std::unordered_map<PyTypeObject*, std::string>();
+  auto it = nameCache->find(pytype);
+  if (it != nameCache->end())
+  {
+    return it->second.c_str();
+  }
+  // The default build's tp_name is the FULL dotted name ("cvista.vtkObject"),
+  // which PyVTKObject_Repr and error messages embed verbatim. For a heap type
+  // PyType_GetName returns only the leaf ("vtkObject") and the module lives in
+  // __module__, so reconstruct "<module>.<qualname>" to stay byte-identical with
+  // the static tp_name. Builtin bases (e.g. PyLong) have no cvista module; if
+  // __module__ is "builtins" or absent, fall back to the bare qualname.
+  std::string s;
+  PyObject* qname = PyType_GetQualName(pytype);
+  PyObject* mod = PyObject_GetAttrString(reinterpret_cast<PyObject*>(pytype), "__module__");
+  if (!mod)
+  {
+    PyErr_Clear();
+  }
+  const char* qn = qname ? PyUnicode_AsUTF8AndSize(qname, nullptr) : nullptr;
+  const char* md = (mod && PyUnicode_Check(mod)) ? PyUnicode_AsUTF8AndSize(mod, nullptr) : nullptr;
+  if (md && md[0] != '\0' && strcmp(md, "builtins") != 0)
+  {
+    s = md;
+    s += '.';
+    if (qn)
+    {
+      s += qn;
+    }
+  }
+  else if (qn)
+  {
+    s = qn;
+  }
+  Py_XDECREF(qname);
+  Py_XDECREF(mod);
+  return (*nameCache)[pytype] = std::move(s), (*nameCache)[pytype].c_str();
 #else
   return pytype->tp_name;
 #endif
@@ -653,24 +826,22 @@ PyVTKClass* vtkPythonUtil::FindNearestBaseClass(vtkObjectBase* ptr)
 
     if (ptr->IsA(pyclass->vtk_name))
     {
-      PyTypeObject* base =
-#if PY_VERSION_HEX >= 0x030A0000
-        (PyTypeObject*)PyType_GetSlot(pyclass->py_type, Py_tp_base)
-#else
-        pyclass->py_type->tp_base
-#endif
-        ;
+      PyTypeObject* base = vtkPythonType_GetBase(pyclass->py_type);
       // count the hierarchy depth for this class
       for (depth = 0; base != nullptr; depth++)
       {
-#if PY_VERSION_HEX >= 0x030A0000
-        base = (PyTypeObject*)PyType_GetSlot(base, Py_tp_base);
-#else
-        base = base->tp_base;
-#endif
+        base = vtkPythonType_GetBase(base);
       }
-      // we want the class that is furthest from vtkObjectBase
-      if (depth > maxdepth)
+      // we want the class that is furthest from vtkObjectBase.
+      // The ClassMap is an unordered_map, so iteration order is not
+      // deterministic; on a depth tie, break it deterministically by
+      // preferring the lexicographically smaller class name. This
+      // reproduces the result the previous std::map (ordered by class
+      // name) would have selected, keeping the chosen Python type stable
+      // regardless of container iteration order.
+      if (depth > maxdepth ||
+        (depth == maxdepth && nearestbase != nullptr &&
+          strcmp(pyclass->vtk_name, nearestbase->vtk_name) < 0))
       {
         maxdepth = depth;
         nearestbase = pyclass;
@@ -1017,13 +1188,7 @@ PyTypeObject* vtkPythonUtil::FindBaseTypeObject(const char* name)
     // in case of override, drill down to get the original (non-override) type,
     // that's what we need to use for the base class of other wrapped classes
     for (PyTypeObject* pytype = info->py_type; pytype != nullptr;
-         pytype =
-#if PY_VERSION_HEX >= 0x030A0000
-           (PyTypeObject*)PyType_GetSlot(pytype, Py_tp_base)
-#else
-           pytype->tp_base
-#endif
-    )
+         pytype = vtkPythonType_GetBase(pytype))
     {
       if (strcmp(vtkPythonUtil::StripModuleFromType(pytype), name) == 0)
       {
@@ -1118,7 +1283,7 @@ void vtkPythonUtil::AddModule(const char* name)
   vtkPythonMap->ModuleList->push_back(name);
 
   // Register module name into pending list for deferred side module loading
-  PyObject* pModule = PyImport_ImportModule("vtkmodules");
+  PyObject* pModule = PyImport_ImportModule("cvista");
   PyObject* pFunc = PyObject_GetAttrString(pModule, "on_vtk_module_init");
   PyObject* pArgs = PyTuple_New(1);
   PyTuple_SetItem(pArgs, 0, PyUnicode_FromString(name));
@@ -1290,14 +1455,55 @@ void vtkPythonVoidFuncArgDelete(void* arg)
   }
 }
 
+#if defined(Py_LIMITED_API)
+//------------------------------------------------------------------------------
+// abi3 getset registry. The default build recovers the backing PyGetSetDef* of a
+// getset descriptor by casting the descriptor object and reading its private
+// d_getset/d_type fields (PyGetSetDescrObject is not in the stable ABI). Under
+// the limited API we instead record every PyGetSetDef* cvista installs on a type,
+// keyed by (type, attribute name), at the moment the descriptor is created, and
+// look it up here. This reproduces FindGetSetDescriptor's exact result (the same
+// PyGetSetDef pointer) without touching any opaque CPython struct.
+static std::map<std::pair<PyTypeObject*, std::string>, PyGetSetDef*>& vtkPythonGetSetRegistry()
+{
+  static std::map<std::pair<PyTypeObject*, std::string>, PyGetSetDef*>* reg =
+    new std::map<std::pair<PyTypeObject*, std::string>, PyGetSetDef*>();
+  return *reg;
+}
+
+void vtkPythonUtil::RegisterGetSetDescriptor(PyTypeObject* pytype, const char* name, PyGetSetDef* gs)
+{
+  vtkPythonGetSetRegistry()[std::make_pair(pytype, std::string(name))] = gs;
+}
+#endif
+
 //------------------------------------------------------------------------------
 PyGetSetDef* vtkPythonUtil::FindGetSetDescriptor(PyTypeObject* pytype, PyObject* key)
 {
+#if defined(Py_LIMITED_API)
+  // Resolve the key to a UTF-8 name and consult the abi3 registry, walking the
+  // base chain exactly as the default-build dict walk does.
+  const char* name = PyUnicode_AsUTF8AndSize(key, nullptr);
+  if (name != nullptr)
+  {
+    auto& reg = vtkPythonGetSetRegistry();
+    for (PyTypeObject* t = pytype; t != nullptr; t = vtkPythonType_GetBase(t))
+    {
+      auto it = reg.find(std::make_pair(t, std::string(name)));
+      if (it != reg.end() && it->second != nullptr)
+      {
+        return it->second;
+      }
+    }
+  }
+  return nullptr;
+#else
   // Check if tp_dict is present
-  if (pytype->tp_dict != nullptr && PyDict_Check(pytype->tp_dict))
+  PyObject* tpdict = vtkPythonType_GetDict(pytype);
+  if (tpdict != nullptr && PyDict_Check(tpdict))
   {
     // Check if the attribute is in the dictionary
-    PyObject* attr = PyDict_GetItem(pytype->tp_dict, key);
+    PyObject* attr = PyDict_GetItem(tpdict, key);
     if (attr != nullptr)
     {
       PyDescrObject* descr = (PyDescrObject*)attr;
@@ -1312,11 +1518,13 @@ PyGetSetDef* vtkPythonUtil::FindGetSetDescriptor(PyTypeObject* pytype, PyObject*
     }
   }
   // Recursively check in base types
-  if (pytype->tp_base != nullptr)
+  PyTypeObject* base = vtkPythonType_GetBase(pytype);
+  if (base != nullptr)
   {
-    return vtkPythonUtil::FindGetSetDescriptor(pytype->tp_base, key);
+    return vtkPythonUtil::FindGetSetDescriptor(base, key);
   }
   // No matching getset descriptor found
   return nullptr;
+#endif
 }
 VTK_ABI_NAMESPACE_END

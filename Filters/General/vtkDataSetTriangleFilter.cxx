@@ -12,6 +12,8 @@
 #include "vtkObjectFactory.h"
 #include "vtkOrderedTriangulator.h"
 #include "vtkPointData.h"
+#include "vtkPointSet.h"
+#include "vtkPoints.h"
 #include "vtkRectilinearGrid.h"
 #include "vtkStructuredGrid.h"
 #include "vtkStructuredPoints.h"
@@ -72,6 +74,31 @@ void vtkDataSetTriangleFilter::StructuredExecute(vtkDataSet* input, vtkUnstructu
   vtkIdList* cellPtIds = vtkIdList::New();
   int numSimplices, numPts, dim, type;
   vtkIdType pts[4], num;
+
+  // Set the desired precision for the output points. By default match the
+  // precision of the input points (DEFAULT_PRECISION); SINGLE/DOUBLE force it.
+  // Image data and rectilinear grids have no explicit points, so the default
+  // falls back to single precision for them.
+  if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
+  {
+    vtkPointSet* inputPointSet = vtkPointSet::SafeDownCast(input);
+    if (inputPointSet && inputPointSet->GetPoints())
+    {
+      newPoints->SetDataType(inputPointSet->GetPoints()->GetDataType());
+    }
+    else
+    {
+      newPoints->SetDataType(VTK_FLOAT);
+    }
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::SINGLE_PRECISION)
+  {
+    newPoints->SetDataType(VTK_FLOAT);
+  }
+  else if (this->OutputPointsPrecision == vtkAlgorithm::DOUBLE_PRECISION)
+  {
+    newPoints->SetDataType(VTK_DOUBLE);
+  }
 
   // Create an array of points. This does an explicit creation
   // of each point.
@@ -389,5 +416,6 @@ void vtkDataSetTriangleFilter::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
   os << indent << "TetrahedraOnly: " << (this->TetrahedraOnly ? "On" : "Off") << "\n";
+  os << indent << "Output Points Precision: " << this->OutputPointsPrecision << "\n";
 }
 VTK_ABI_NAMESPACE_END

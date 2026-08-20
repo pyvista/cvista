@@ -28,6 +28,32 @@ void vtkSMPTools::Initialize(int numThreads)
 }
 
 //------------------------------------------------------------------------------
+void vtkSMPTools::SetGilCallbacks(void* (*release)(), void (*acquire)(void*))
+{
+  // Static members on the API; no singleton required, so this is safe at any
+  // point during/after Python interpreter init.
+  vtk::detail::smp::vtkSMPToolsAPI::SetGilCallbacks(release, acquire);
+}
+
+//------------------------------------------------------------------------------
+// cvista: per-thread flag marking SMP pool worker threads. Pool threads set this
+// once at startup (and never the launcher thread), so reading it answers "am I
+// a worker?" with zero synchronization.
+static thread_local bool vtkSMPToolsThreadIsWorker = false;
+
+//------------------------------------------------------------------------------
+bool vtkSMPTools::IsSMPWorkerThread()
+{
+  return vtkSMPToolsThreadIsWorker;
+}
+
+//------------------------------------------------------------------------------
+void vtkSMPTools::SetCurrentThreadIsSMPWorker(bool isWorker)
+{
+  vtkSMPToolsThreadIsWorker = isWorker;
+}
+
+//------------------------------------------------------------------------------
 int vtkSMPTools::GetEstimatedNumberOfThreads()
 {
   auto& SMPToolsAPI = vtk::detail::smp::vtkSMPToolsAPI::GetInstance();

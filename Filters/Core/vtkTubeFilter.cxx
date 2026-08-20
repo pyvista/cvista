@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkTubeFilter.h"
 
+#include "vtkAOSDataArrayTemplate.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
+#include "vtkDoubleArray.h"
 #include "vtkFloatArray.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -53,23 +55,218 @@ vtkTubeFilter::vtkTubeFilter()
 namespace
 {
 
+// Devirtualized, byte-identical reader for INPUT point coordinates. The virtual
+// path vtkPoints::GetPoint(id, x[3]) forwards to this->Data->GetTuple(id, x),
+// which for an AOS vtkFloatArray/vtkDoubleArray is
+//   for (i=0;i<3;i++) x[i] = static_cast<double>(buffer[3*id + i]);
+// We FastDownCast the concrete AOS buffer once and read it inline with exactly
+// that per-component static_cast<double>, producing identical double[3] values.
+// Any non-AOS (or unexpected-type) storage falls back to the virtual GetPoint,
+// so the read is correct for every input. Name is file-unique to avoid
+// anon-namespace collisions under CVISTA_SOURCE_UNITY.
+struct TubeInPointReader
+{
+  explicit TubeInPointReader(vtkPoints* points)
+    : Points(points)
+    , FloatPtr(nullptr)
+    , DoublePtr(nullptr)
+  {
+    vtkDataArray* data = points->GetData();
+    if (auto* f = vtkFloatArray::FastDownCast(data))
+    {
+      this->FloatPtr = f->GetPointer(0);
+    }
+    else if (auto* d = vtkDoubleArray::FastDownCast(data))
+    {
+      this->DoublePtr = d->GetPointer(0);
+    }
+  }
+
+  inline void Get(vtkIdType id, double x[3]) const
+  {
+    if (this->FloatPtr)
+    {
+      const float* t = this->FloatPtr + 3 * id;
+      x[0] = static_cast<double>(t[0]);
+      x[1] = static_cast<double>(t[1]);
+      x[2] = static_cast<double>(t[2]);
+    }
+    else if (this->DoublePtr)
+    {
+      const double* t = this->DoublePtr + 3 * id;
+      x[0] = t[0];
+      x[1] = t[1];
+      x[2] = t[2];
+    }
+    else
+    {
+      this->Points->GetPoint(id, x);
+    }
+  }
+
+  vtkPoints* Points;
+  const float* FloatPtr;
+  const double* DoublePtr;
+};
+
+// Devirtualized, byte-identical reader for an INPUT per-point attribute array
+// (normals / vectors / radius scalar). vtkDataArray::GetTuple(id, tuple) for an
+// AOS array does, for ncomp components,
+//   for (i=0;i<n;i++) tuple[i] = static_cast<double>(buffer[n*id + i]);
+// and GetComponent(id, c) returns static_cast<double>(buffer[n*id + c]). We
+// hoist the typed AOS pointer (and component count) once and reproduce exactly
+// those expressions inline; non-AOS storage falls back to the virtual array.
+struct TubeInTupleReader
+{
+  explicit TubeInTupleReader(vtkDataArray* array)
+    : Array(array)
+    , FloatPtr(nullptr)
+    , DoublePtr(nullptr)
+    , NumComps(array ? array->GetNumberOfComponents() : 0)
+  {
+    if (auto* f = vtkFloatArray::FastDownCast(array))
+    {
+      this->FloatPtr = f->GetPointer(0);
+    }
+    else if (auto* d = vtkDoubleArray::FastDownCast(array))
+    {
+      this->DoublePtr = d->GetPointer(0);
+    }
+  }
+
+  // Byte-identical to vtkDataArray::GetTuple(id, tuple).
+  inline void GetTuple(vtkIdType id, double* tuple) const
+  {
+    const vtkIdType n = this->NumComps;
+    if (this->FloatPtr)
+    {
+      const float* t = this->FloatPtr + n * id;
+      for (vtkIdType i = 0; i < n; ++i)
+      {
+        tuple[i] = static_cast<double>(t[i]);
+      }
+    }
+    else if (this->DoublePtr)
+    {
+      const double* t = this->DoublePtr + n * id;
+      for (vtkIdType i = 0; i < n; ++i)
+      {
+        tuple[i] = t[i];
+      }
+    }
+    else
+    {
+      this->Array->GetTuple(id, tuple);
+    }
+  }
+
+  // Read exactly the first 3 components into v[3], byte-identical to reading
+  // vtkDataArray::GetTuple(id)[0..2] (which is what vtkMath::Norm consumes).
+  // Avoids assuming the destination buffer width equals NumComps.
+  inline void GetVector3(vtkIdType id, double v[3]) const
+  {
+    const vtkIdType n = this->NumComps;
+    if (this->FloatPtr)
+    {
+      const float* t = this->FloatPtr + n * id;
+      v[0] = static_cast<double>(t[0]);
+      v[1] = static_cast<double>(t[1]);
+      v[2] = static_cast<double>(t[2]);
+    }
+    else if (this->DoublePtr)
+    {
+      const double* t = this->DoublePtr + n * id;
+      v[0] = t[0];
+      v[1] = t[1];
+      v[2] = t[2];
+    }
+    else
+    {
+      const double* t = this->Array->GetTuple(id);
+      v[0] = t[0];
+      v[1] = t[1];
+      v[2] = t[2];
+    }
+  }
+
+  // Byte-identical to vtkDataArray::GetComponent(id, comp).
+  inline double GetComponent(vtkIdType id, int comp) const
+  {
+    if (this->FloatPtr)
+    {
+      return static_cast<double>(this->FloatPtr[this->NumComps * id + comp]);
+    }
+    else if (this->DoublePtr)
+    {
+      return this->DoublePtr[this->NumComps * id + comp];
+    }
+    return this->Array->GetComponent(id, comp);
+  }
+
+  vtkDataArray* Array;
+  const float* FloatPtr;
+  const double* DoublePtr;
+  vtkIdType NumComps;
+};
+
 struct IdPointsEqual
 {
   IdPointsEqual(vtkPoints* points)
-    : Points(points)
+    : Reader(points)
   {
   }
 
   bool operator()(vtkIdType id1, vtkIdType id2) const
   {
     double p1[3], p2[3];
-    this->Points->GetPoint(id1, p1);
-    this->Points->GetPoint(id2, p2);
+    this->Reader.Get(id1, p1);
+    this->Reader.Get(id2, p2);
     return (p1[0] == p2[0] && p1[1] == p2[1] && p1[2] == p2[2]);
   }
 
-  vtkPoints* Points;
+  TubeInPointReader Reader;
 };
+
+// Devirtualized, byte-identical replacements for vtkPoints::InsertPoint and
+// vtkFloatArray::InsertTuple. These call the concrete
+// vtkAOSDataArrayTemplate<T> implementation directly (qualified call, no vtable
+// lookup), but perform exactly the same EnsureAccessToTuple + per-component
+// static_cast write + MaxId update as the virtual path, so output, output
+// order, and final array sizes (including all early-return paths) are
+// unchanged.
+inline void InsertNormal(vtkFloatArray* arr, vtkIdType id, const double* n)
+{
+  arr->vtkAOSDataArrayTemplate<float>::InsertTuple(id, n);
+}
+
+// Devirtualized equivalent of vtkDataArray::InsertTuple2 for a 2-component
+// vtkFloatArray: builds the same double[2] and performs the identical
+// EnsureAccessToTuple + static_cast<float> write as the virtual path.
+inline void InsertTCoord(vtkFloatArray* arr, vtkIdType id, double v0, double v1)
+{
+  const double tuple[2] = { v0, v1 };
+  arr->vtkAOSDataArrayTemplate<float>::InsertTuple(id, tuple);
+}
+
+// Insert a point given as double[3] into newPts, devirtualizing on the
+// concrete buffer type. Falls back to the virtual path for any unexpected type.
+inline void InsertTubePoint(vtkPoints* pts, int dataType, vtkIdType id, const double* p)
+{
+  switch (dataType)
+  {
+    case VTK_FLOAT:
+      static_cast<vtkFloatArray*>(pts->GetData())
+        ->vtkAOSDataArrayTemplate<float>::InsertTuple(id, p);
+      break;
+    case VTK_DOUBLE:
+      static_cast<vtkDoubleArray*>(pts->GetData())
+        ->vtkAOSDataArrayTemplate<double>::InsertTuple(id, p);
+      break;
+    default:
+      pts->InsertPoint(id, p);
+      break;
+  }
+}
 
 }
 
@@ -229,6 +426,11 @@ int vtkTubeFilter::RequestData(vtkInformation* vtkNotUsed(request),
   inCellId = input->GetNumberOfVerts();
   int checkAbortInterval = std::min(numLines / 10 + 1, (vtkIdType)1000);
   int progressCounter = 0;
+  // Reused scratch copy of each polyline's point indices (see assign() below).
+  // Hoisted out of the per-polyline loop so its buffer is reused across
+  // polylines instead of reallocating every iteration; assign() reproduces the
+  // exact same contents as the previous per-iteration vector construction.
+  std::vector<vtkIdType> ptsCopy;
   for (inLines->InitTraversal(); inLines->GetNextCell(npts, ptsOrig) && !abort; inCellId++)
   {
     this->UpdateProgress((double)inCellId / numLines);
@@ -245,7 +447,7 @@ int vtkTubeFilter::RequestData(vtkInformation* vtkNotUsed(request),
     {
       continue; // skip tubing this polyline
     }
-    std::vector<vtkIdType> ptsCopy(ptsOrig, ptsOrig + npts);
+    ptsCopy.assign(ptsOrig, ptsOrig + npts);
     vtkIdType* pts = ptsCopy.data();
 
     // remove degenerate lines to avoid warnings
@@ -346,6 +548,15 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
   double sFactor = 1.0;
   double normal[3];
   vtkIdType ptId = offset;
+  const int newPtsType = newPts->GetDataType();
+
+  // Devirtualized INPUT readers (typed AOS pointer hoisted once, generic
+  // fallback). These reproduce the virtual GetPoint/GetTuple/GetComponent reads
+  // bit-for-bit; all geometry math below is untouched.
+  const TubeInPointReader inPtsReader(inPts);
+  const TubeInTupleReader inNormalsReader(inNormals);
+  const TubeInTupleReader inScalarsReader(inScalars);
+  const TubeInTupleReader inVectorsReader(inVectors);
 
   // Use "averaged" segment to create beveled effect.
   // Watch out for first and last points.
@@ -354,8 +565,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
   {
     if (j == 0) // first point
     {
-      inPts->GetPoint(pts[0], p);
-      inPts->GetPoint(pts[1], pNext);
+      inPtsReader.Get(pts[0], p);
+      inPtsReader.Get(pts[1], pNext);
       for (i = 0; i < 3; i++)
       {
         sNext[i] = pNext[i] - p[i];
@@ -380,7 +591,7 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
       {
         p[i] = pNext[i];
       }
-      inPts->GetPoint(pts[j + 1], pNext);
+      inPtsReader.Get(pts[j + 1], pNext);
       for (i = 0; i < 3; i++)
       {
         sPrev[i] = sNext[i];
@@ -388,7 +599,7 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
       }
     }
 
-    inNormals->GetTuple(pts[j], n);
+    inNormalsReader.GetTuple(pts[j], n);
 
     if (vtkMath::Normalize(sNext) == 0.0)
     {
@@ -442,22 +653,25 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
     if (inScalars && this->VaryRadius == VTK_VARY_RADIUS_BY_SCALAR)
     {
       sFactor = 1.0 +
-        ((this->RadiusFactor - 1.0) * (inScalars->GetComponent(pts[j], 0) - range[0]) /
+        ((this->RadiusFactor - 1.0) * (inScalarsReader.GetComponent(pts[j], 0) - range[0]) /
           (range[1] - range[0]));
     }
     else if (inVectors && this->VaryRadius == VTK_VARY_RADIUS_BY_VECTOR)
     {
-      sFactor = sqrt(maxSpeed / vtkMath::Norm(inVectors->GetTuple(pts[j])));
+      double v[3];
+      inVectorsReader.GetVector3(pts[j], v);
+      sFactor = sqrt(maxSpeed / vtkMath::Norm(v));
       sFactor = std::min(sFactor, this->RadiusFactor);
     }
     else if (inVectors && this->VaryRadius == VTK_VARY_RADIUS_BY_VECTOR_NORM)
     {
-      sFactor =
-        1.0 + (this->RadiusFactor - 1.0) * vtkMath::Norm(inVectors->GetTuple(pts[j])) / maxSpeed;
+      double v[3];
+      inVectorsReader.GetVector3(pts[j], v);
+      sFactor = 1.0 + (this->RadiusFactor - 1.0) * vtkMath::Norm(v) / maxSpeed;
     }
     else if (inScalars && this->VaryRadius == VTK_VARY_RADIUS_BY_ABSOLUTE_SCALAR)
     {
-      sFactor = inScalars->GetComponent(pts[j], 0);
+      sFactor = inScalarsReader.GetComponent(pts[j], 0);
       if (sFactor < 0.0)
       {
         vtkWarningMacro(<< "Scalar value less than zero, skipping line");
@@ -475,8 +689,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
           normal[i] = w[i] * cos((double)k * this->Theta) + nP[i] * sin((double)k * this->Theta);
           s[i] = p[i] + this->Radius * sFactor * normal[i];
         }
-        newPts->InsertPoint(ptId, s);
-        newNormals->InsertTuple(ptId, normal);
+        InsertTubePoint(newPts, newPtsType, ptId, s);
+        InsertNormal(newNormals, ptId, normal);
         outPD->CopyData(pd, pts[j], ptId);
         ptId++;
       } // for each side
@@ -502,11 +716,11 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
             nP[i] * sin((double)(k + 0.5) * this->Theta);
           s[i] = p[i] + this->Radius * sFactor * normal[i];
         }
-        newPts->InsertPoint(ptId, s);
-        newNormals->InsertTuple(ptId, n_right);
+        InsertTubePoint(newPts, newPtsType, ptId, s);
+        InsertNormal(newNormals, ptId, n_right);
         outPD->CopyData(pd, pts[j], ptId);
-        newPts->InsertPoint(ptId + 1, s);
-        newNormals->InsertTuple(ptId + 1, n_left);
+        InsertTubePoint(newPts, newPtsType, ptId + 1, s);
+        InsertNormal(newNormals, ptId + 1, n_left);
         outPD->CopyData(pd, pts[j], ptId + 1);
         ptId += 2;
       } // for each side
@@ -528,8 +742,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
     for (k = 0; k < numCapSides; k += capIncr)
     {
       newPts->GetPoint(offset + k, s);
-      newPts->InsertPoint(ptId, s);
-      newNormals->InsertTuple(ptId, startCapNorm);
+      InsertTubePoint(newPts, newPtsType, ptId, s);
+      InsertNormal(newNormals, ptId, startCapNorm);
       outPD->CopyData(pd, pts[0], ptId);
       ptId++;
     }
@@ -542,8 +756,8 @@ int vtkTubeFilter::GeneratePoints(vtkIdType offset, vtkIdType npts, const vtkIdT
     for (k = 0; k < numCapSides; k += capIncr)
     {
       newPts->GetPoint(endOffset + k, s);
-      newPts->InsertPoint(ptId, s);
-      newNormals->InsertTuple(ptId, endCapNorm);
+      InsertTubePoint(newPts, newPtsType, ptId, s);
+      InsertNormal(newNormals, ptId, endCapNorm);
       outPD->CopyData(pd, pts[npts - 1], ptId);
       ptId++;
     }
@@ -663,34 +877,39 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
     numSides = 2 * this->NumberOfSides;
   }
 
+  // Devirtualized INPUT readers (typed AOS pointer hoisted once, generic
+  // fallback); reproduce the virtual GetTuple1/GetPoint reads bit-for-bit.
+  const TubeInPointReader inPtsReader(inPts);
+  const TubeInTupleReader inScalarsReader(inScalars);
+
   double s0, s;
   if (this->GenerateTCoords == VTK_TCOORDS_FROM_SCALARS)
   {
-    s0 = inScalars->GetTuple1(pts[0]);
+    s0 = inScalarsReader.GetComponent(pts[0], 0);
     for (i = 0; i < npts; i++)
     {
-      s = inScalars->GetTuple1(pts[i]);
+      s = inScalarsReader.GetComponent(pts[i], 0);
       tc = (s - s0) / this->TextureLength;
       for (k = 0; k < numSides; k++)
       {
         double tcy = static_cast<double>(k) / (numSides - 1);
-        newTCoords->InsertTuple2(offset + i * numSides + k, tc, tcy);
+        InsertTCoord(newTCoords, offset + i * numSides + k, tc, tcy);
       }
     }
   }
   else if (this->GenerateTCoords == VTK_TCOORDS_FROM_LENGTH)
   {
     double xPrev[3], x[3], len = 0.0;
-    inPts->GetPoint(pts[0], xPrev);
+    inPtsReader.Get(pts[0], xPrev);
     for (i = 0; i < npts; i++)
     {
-      inPts->GetPoint(pts[i], x);
+      inPtsReader.Get(pts[i], x);
       len += sqrt(vtkMath::Distance2BetweenPoints(x, xPrev));
       tc = len / this->TextureLength;
       for (k = 0; k < numSides; k++)
       {
         double tcy = static_cast<double>(k) / (numSides - 1);
-        newTCoords->InsertTuple2(offset + i * numSides + k, tc, tcy);
+        InsertTCoord(newTCoords, offset + i * numSides + k, tc, tcy);
       }
 
       xPrev[0] = x[0];
@@ -701,26 +920,26 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
   else if (this->GenerateTCoords == VTK_TCOORDS_FROM_NORMALIZED_LENGTH)
   {
     double xPrev[3], x[3], length = 0.0, len = 0.0;
-    inPts->GetPoint(pts[0], xPrev);
+    inPtsReader.Get(pts[0], xPrev);
     for (i = 0; i < npts; i++)
     {
-      inPts->GetPoint(pts[i], x);
+      inPtsReader.Get(pts[i], x);
       length += sqrt(vtkMath::Distance2BetweenPoints(x, xPrev));
       xPrev[0] = x[0];
       xPrev[1] = x[1];
       xPrev[2] = x[2];
     }
 
-    inPts->GetPoint(pts[0], xPrev);
+    inPtsReader.Get(pts[0], xPrev);
     for (i = 0; i < npts; i++)
     {
-      inPts->GetPoint(pts[i], x);
+      inPtsReader.Get(pts[i], x);
       len += sqrt(vtkMath::Distance2BetweenPoints(x, xPrev));
       tc = len / length;
       for (k = 0; k < numSides; k++)
       {
         double tcy = static_cast<double>(k) / (numSides - 1);
-        newTCoords->InsertTuple2(offset + i * numSides + k, tc, tcy);
+        InsertTCoord(newTCoords, offset + i * numSides + k, tc, tcy);
       }
       xPrev[0] = x[0];
       xPrev[1] = x[1];
@@ -737,13 +956,13 @@ void vtkTubeFilter::GenerateTextureCoords(vtkIdType offset, vtkIdType npts, cons
     // start cap
     for (ik = 0; ik < this->NumberOfSides; ik++)
     {
-      newTCoords->InsertTuple2(startIdx + ik, 0.0, 0.0);
+      InsertTCoord(newTCoords, startIdx + ik, 0.0, 0.0);
     }
 
     // end cap
     for (ik = 0; ik < this->NumberOfSides; ik++)
     {
-      newTCoords->InsertTuple2(startIdx + this->NumberOfSides + ik, tc, 0.0);
+      InsertTCoord(newTCoords, startIdx + this->NumberOfSides + ik, tc, 0.0);
     }
   }
 }

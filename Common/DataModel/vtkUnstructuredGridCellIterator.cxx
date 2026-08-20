@@ -14,6 +14,26 @@
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkUnstructuredGridCellIterator);
 
+namespace
+{
+// Read a cell type from the Types array, devirtualizing the common case where
+// it is a concrete (AOS) vtkUnsignedCharArray: read the raw buffer directly
+// instead of paying the cross-library virtual vtkDataArray::GetComponent
+// dispatch once per iterated cell. Falls back to the virtual path for any other
+// backing (e.g. an implicit vtkConstantArray<unsigned char>). Byte-for-byte
+// identical to `static_cast<int>(types->GetComponent(cellId, 0))`: an unsigned
+// char value is exactly representable, so char -> int equals char -> double ->
+// int. Mirrors the same hoist in vtkUnstructuredGrid::GetCell/GetCellType.
+inline int GetCellTypeFromArray(vtkDataArray* types, vtkIdType cellId)
+{
+  if (auto* aos = vtkUnsignedCharArray::FastDownCast(types))
+  {
+    return static_cast<int>(aos->GetPointer(0)[cellId]);
+  }
+  return static_cast<int>(types->GetComponent(cellId, 0));
+}
+} // anonymous namespace
+
 //------------------------------------------------------------------------------
 void vtkUnstructuredGridCellIterator::PrintSelf(ostream& os, vtkIndent indent)
 {
@@ -132,7 +152,7 @@ void vtkUnstructuredGridCellIterator::ResetToFirstCell()
 void vtkUnstructuredGridCellIterator::FetchCellType()
 {
   const vtkIdType cellId = this->Cells->GetCurrentCellId();
-  this->CellType = static_cast<int>(this->Types->GetComponent(cellId, 0));
+  this->CellType = GetCellTypeFromArray(this->Types, cellId);
 }
 
 //------------------------------------------------------------------------------

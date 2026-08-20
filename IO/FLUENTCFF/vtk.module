@@ -5,7 +5,7 @@ LIBRARY_NAME
 DESCRIPTION
   Reader for the FluentCFF file format
 KIT
-  VTK::IO
+  VTK::IOExtra
 GROUPS
   StandAlone
 SPDX_LICENSE_IDENTIFIER
