@@ -4226,6 +4226,26 @@ function (vtk_module_add_module name)
   get_property(_vtk_add_module_third_party GLOBAL
     PROPERTY  "_vtk_module_${_vtk_build_module}_third_party")
 
+  # cvista: Lever B (NOCOMPILE) can empty a module whose every class pyvista does
+  # not use. On VTK 9.6.2 such a module simply wasn't pulled into pyvista's
+  # closure; on 9.7 new inter-module DEPENDS (e.g. FiltersExtraction/IOHDF ->
+  # FiltersTemporal) drag it in as a link dependency, and 9.7 errors at generate
+  # time ("cannot determine linker language") on the empty objects target. Inject
+  # a tiny dummy translation unit so the library links; dependents only declare
+  # the dep (no kept class references its symbols, which is why it was safe to
+  # NOCOMPILE), so an otherwise-empty library satisfies them.
+  if (NOT _vtk_add_module_SOURCES AND NOT _vtk_add_module_HEADER_ONLY AND
+      NOT _vtk_add_module_third_party)
+    set(_cvista_empty_tu
+      "${CMAKE_CURRENT_BINARY_DIR}/${_vtk_build_module}_cvistaEmpty.cxx")
+    if (NOT EXISTS "${_cvista_empty_tu}")
+      file(WRITE "${_cvista_empty_tu}"
+        "// cvista: dummy TU for a module emptied by CVISTA_NOCOMPILE_CLASSES.\n"
+        "// Keeps the object library's linker language defined on VTK 9.7.\n")
+    endif ()
+    list(APPEND _vtk_add_module_SOURCES "${_cvista_empty_tu}")
+  endif ()
+
   get_property(_vtk_add_module_library_name GLOBAL
     PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
   set(_vtk_add_module_module_header_name
