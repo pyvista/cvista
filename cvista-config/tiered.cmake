@@ -1,9 +1,8 @@
 # tiered.cmake — SINGLE-BUILD source for the 3-wheel split (core/rendering/io).
 #
-# Builds the union of the three tiers, minus the few genuinely cross-cutting niche
-# modules that would make a kit lib mix tiers, so partition_wheels.py can cut the
-# built cvista/ tree into cvista (core) / cvista-rendering / cvista-io cleanly
-# (proven by the script's DT_NEEDED self-containment audit).
+# Builds the union of the three tiers so partition_wheels.py can cut the built
+# cvista/ tree into cvista (core) / cvista-rendering / cvista-io cleanly (proven by
+# the script's DT_NEEDED self-containment audit).
 #
 # NOTE: the earlier CVISTA_CORE_CLEAN flag is GONE. It used to conditionally compile
 # the rendering-coupled classes out of FiltersHybrid / IOGeometry. Those classes were
@@ -11,19 +10,17 @@
 # and vtkIOImport (#168, the glTF reader/texture) — so FiltersHybrid and IOGeometry
 # are now UNCONDITIONALLY rendering-free and land in the core tier with no flag.
 #
-# What remains: disable the kit-mixing / rendering-pulling niche IO readers so the
-# core VTK::Parallel kit stays core-pure and the io tier stays rendering-free. These
-# ship only in the monolithic full cvista wheel (built from minimal.cmake), not in
-# the tier-split distribution:
-#   - IOParallel / IOParallelXML : mix ParallelCore (core) with io-parallel readers in
-#                                  the single VTK::Parallel kit lib.
-#   - IOCGNSReader               : DEPENDS IOGeometry chain + rides the Parallel kit.
-#   - IOInfovis                  : DEPENDS InfovisCore -> RenderingFreeType (pulls
-#                                  rendering into what would be an io-tier module).
-# This file is a COMPOSABLE module-disable layer, NOT a standalone init-cache. A
-# per-OS tiered init-cache (ci/cmake/{linux,macos,windows}-tiered.cmake) includes
-# THIS first (cache-first-wins over the WANT in _modules_minimal.cmake), then the
-# normal per-OS init-cache (which carries the Cocoa/MSVC/arch settings + minimal.cmake).
-foreach(_m IOParallel IOParallelXML IOCGNSReader IOInfovis)
-  set(VTK_MODULE_ENABLE_VTK_${_m} NO CACHE STRING "")
-endforeach()
+# The parallel/CGNS/Infovis IO readers (IOParallel, IOParallelXML, IOCGNSReader,
+# IOInfovis) used to be disabled here because they either mixed the core VTK::Parallel
+# kit with io readers or were thought to pull rendering into the io tier. Those reasons
+# are gone: #173 un-kitted IOParallel/IOParallelXML/IOCGNSReader (each is now a
+# standalone lib, no VTK::Parallel kit membership -> no VTK::IO<->VTK::Parallel cycle),
+# #168 made IOGeometry rendering-free, and IOInfovis only ever depended on InfovisCore
+# under TEST_DEPENDS (its runtime DEPENDS are IOLegacy/IOXML). Their runtime deps now
+# resolve entirely within {core, io} (ParallelCore is core; io -> core is legal), so
+# they build with the WANT from _modules_minimal.cmake and partition_wheels.py routes
+# them to the io tier. Nothing left to disable here.
+#
+# This file is a COMPOSABLE module-config layer, NOT a standalone init-cache: a per-OS
+# tiered init-cache (ci/cmake/{linux,macos,windows}-tiered.cmake) includes THIS first,
+# then the normal per-OS init-cache (Cocoa/MSVC/arch settings + minimal.cmake).
