@@ -26,80 +26,81 @@ Caveats:
 Created by Prabhu Ramachandran in Feb. 2008.
 """
 
-from . import vtkConstants
-from cvista.vtkCommonCore import vtkDataArray, vtkIdTypeArray, vtkLongArray
+from cvista.vtkCommonCore import (
+    vtkDataArray,
+    VTK_BIT,
+    VTK_CHAR,
+    VTK_SIGNED_CHAR,
+    VTK_UNSIGNED_CHAR,
+    VTK_SHORT,
+    VTK_UNSIGNED_SHORT,
+    VTK_INT,
+    VTK_UNSIGNED_INT,
+    VTK_LONG,
+    VTK_UNSIGNED_LONG,
+    VTK_LONG_LONG,
+    VTK_UNSIGNED_LONG_LONG,
+    VTK_ID_TYPE,
+    VTK_ID_TYPE_IMPL,
+    VTK_FLOAT,
+    VTK_DOUBLE,
+)
 import numpy
 
-# Useful constants for VTK arrays.
-VTK_ID_TYPE_SIZE = vtkIdTypeArray().GetDataTypeSize()
-if VTK_ID_TYPE_SIZE == 4:
-    ID_TYPE_CODE = numpy.int32
-elif VTK_ID_TYPE_SIZE == 8:
-    ID_TYPE_CODE = numpy.int64
+# This is a mapping from numpy array types to VTK array types.
+_np_vtk = {
+    'B' : VTK_UNSIGNED_CHAR,
+    'b' : VTK_SIGNED_CHAR,
+    'H' : VTK_UNSIGNED_SHORT,
+    'h' : VTK_SHORT,
+    'I' : VTK_UNSIGNED_INT,
+    'i' : VTK_INT,
+    'L' : VTK_UNSIGNED_LONG,
+    'l' : VTK_LONG,
+    'Q' : VTK_UNSIGNED_LONG_LONG,
+    'q' : VTK_LONG_LONG,
+    'F' : VTK_FLOAT, # complex64
+    'f' : VTK_FLOAT,
+    'D' : VTK_DOUBLE, # complex128
+    'd' : VTK_DOUBLE,
+}
 
-VTK_LONG_TYPE_SIZE = vtkLongArray().GetDataTypeSize()
-if VTK_LONG_TYPE_SIZE == 4:
-    LONG_TYPE_CODE = numpy.int32
-    ULONG_TYPE_CODE = numpy.uint32
-elif VTK_LONG_TYPE_SIZE == 8:
-    LONG_TYPE_CODE = numpy.int64
-    ULONG_TYPE_CODE = numpy.uint64
-
+# This is a mapping from VTK array types to numpy types
+_vtk_np = { v : numpy.dtype(c).type for c,v in _np_vtk.items() }
+_vtk_np[VTK_CHAR] = _vtk_np[VTK_SIGNED_CHAR]
+_vtk_np[VTK_BIT] = _vtk_np[VTK_UNSIGNED_CHAR]
+_vtk_np[VTK_ID_TYPE] = _vtk_np[VTK_ID_TYPE_IMPL]
 
 def get_vtk_array_type(numpy_array_type):
     """Returns a VTK typecode given a numpy array."""
-    # This is a Mapping from numpy array types to VTK array types.
-    _np_vtk = {numpy.uint8:vtkConstants.VTK_UNSIGNED_CHAR,
-                numpy.uint16:vtkConstants.VTK_UNSIGNED_SHORT,
-                numpy.uint32:vtkConstants.VTK_UNSIGNED_INT,
-                numpy.uint64:vtkConstants.VTK_UNSIGNED_LONG_LONG,
-                numpy.int8:vtkConstants.VTK_SIGNED_CHAR,
-                numpy.int16:vtkConstants.VTK_SHORT,
-                numpy.int32:vtkConstants.VTK_INT,
-                numpy.int64:vtkConstants.VTK_LONG_LONG,
-                numpy.float32:vtkConstants.VTK_FLOAT,
-                numpy.float64:vtkConstants.VTK_DOUBLE,
-                numpy.complex64:vtkConstants.VTK_FLOAT,
-                numpy.complex128:vtkConstants.VTK_DOUBLE}
-    for key, vtk_type in _np_vtk.items():
-        if numpy_array_type == key or \
-           numpy.issubdtype(numpy_array_type, key) or \
-           numpy_array_type == numpy.dtype(key):
-            return vtk_type
+    if not isinstance(numpy_array_type, numpy.dtype):
+        numpy_array_type = numpy.dtype(numpy_array_type)
+    try:
+        return _np_vtk[numpy_array_type.char]
+    except KeyError:
+        for key, vtk_type in _np_vtk.items():
+            if numpy.issubdtype(numpy_array_type, key):
+                return vtk_type
     raise TypeError(
         'Could not find a suitable VTK type for %s' % (str(numpy_array_type)))
 
 def get_vtk_to_numpy_typemap():
-    """Returns the VTK array type to numpy array type mapping."""
-    _vtk_np = {vtkConstants.VTK_BIT:numpy.uint8,
-                vtkConstants.VTK_CHAR:numpy.int8,
-                vtkConstants.VTK_SIGNED_CHAR:numpy.int8,
-                vtkConstants.VTK_UNSIGNED_CHAR:numpy.uint8,
-                vtkConstants.VTK_SHORT:numpy.int16,
-                vtkConstants.VTK_UNSIGNED_SHORT:numpy.uint16,
-                vtkConstants.VTK_INT:numpy.int32,
-                vtkConstants.VTK_UNSIGNED_INT:numpy.uint32,
-                vtkConstants.VTK_LONG:LONG_TYPE_CODE,
-                vtkConstants.VTK_LONG_LONG:numpy.int64,
-                vtkConstants.VTK_UNSIGNED_LONG:ULONG_TYPE_CODE,
-                vtkConstants.VTK_UNSIGNED_LONG_LONG:numpy.uint64,
-                vtkConstants.VTK_ID_TYPE:ID_TYPE_CODE,
-                vtkConstants.VTK_FLOAT:numpy.float32,
-                vtkConstants.VTK_DOUBLE:numpy.float64}
-    return _vtk_np
+    """Returns the VTK array type to numpy array type mapping.
 
+    The result is a copy, so mutating it does not affect the mapping used
+    by this module.
+    """
+    return dict(_vtk_np)
 
 def get_numpy_array_type(vtk_array_type):
     """Returns a numpy array typecode given a VTK array type."""
-    return get_vtk_to_numpy_typemap()[vtk_array_type]
-
+    return _vtk_np[vtk_array_type]
 
 def create_vtk_array(vtk_arr_type):
     """Internal function used to create a VTK data array from another
     VTK array given the VTK array type.
     """
     return vtkDataArray.CreateDataArray(vtk_arr_type)
-
 
 def numpy_to_vtk(num_array, deep=0, array_type=None):
     """Converts a real numpy Array to a VTK array object.
@@ -184,22 +185,22 @@ def numpy_to_vtk(num_array, deep=0, array_type=None):
         copy.DeepCopy(result_array)
         result_array = copy
     else:
-        result_array._numpy_reference = z
+        # Store the numpy reference on the buffer rather than the array.
+        # This ensures the numpy array stays alive as long as the buffer exists,
+        # which is important when the buffer is shared via buffer protocol or
+        # when the array reallocates (copy-on-reallocate creates a new buffer).
+        result_array.GetBuffer()._numpy_reference = z
     return result_array
 
 def numpy_to_vtkIdTypeArray(num_array, deep=0):
-    isize = vtkIdTypeArray().GetDataTypeSize()
-    dtype = num_array.dtype
-    if isize == 4:
-        if dtype != numpy.int32:
-            raise ValueError(
-             'Expecting a numpy.int32 array, got %s instead.' % (str(dtype)))
-    else:
-        if dtype != numpy.int64:
-            raise ValueError(
-             'Expecting a numpy.int64 array, got %s instead.' % (str(dtype)))
+    """Converts a numpy array into a vtkIdTypeArray.
 
-    return numpy_to_vtk(num_array, deep, vtkConstants.VTK_ID_TYPE)
+    ValueError is raised if the numpy array type is incompatible with vtkIdType.
+    """
+    expected_dtype = numpy.dtype(_vtk_np[VTK_ID_TYPE])
+    if num_array.dtype == expected_dtype:
+        return numpy_to_vtk(num_array, deep, VTK_ID_TYPE)
+    raise ValueError(f"Expecting a {expected_dtype} array, got {num_array.dtype} instead.")
 
 def vtk_to_numpy(vtk_array):
     """Converts a VTK data array to a numpy array.
@@ -223,8 +224,21 @@ def vtk_to_numpy(vtk_array):
 
     # Get the data via the buffer interface
     dtype = get_numpy_array_type(typ)
+
+    # Implicit VTK arrays (vtkImplicitArray<BackendT>) compute values on
+    # the fly and don't expose the C-level buffer protocol (tp_as_buffer).
+    # Python 3.12+ added a __buffer__ dunder (PEP 688) that our mixin
+    # implements, but on Python < 3.12 numpy.frombuffer cannot reach it.
+    # Use __array__ when available — it works on all Python versions and
+    # handles both implicit and explicit arrays correctly.
+    if hasattr(vtk_array, '__array__'):
+        result = numpy.asarray(vtk_array)
+        if shape[1] == 1:
+            shape = (shape[0], )
+        return result.reshape(shape)
+
     try:
-        if typ != vtkConstants.VTK_BIT:
+        if typ != VTK_BIT:
             result = numpy.frombuffer(vtk_array, dtype=dtype)
         else:
             result = numpy.unpackbits(vtk_array, count=shape[0])
@@ -235,18 +249,110 @@ def vtk_to_numpy(vtk_array):
         # handles that issue.
         if shape[0] == 0:
             # create an empty array with the given shape.
-            result = numpy.empty(shape, dtype=dtype)
-        else:
+            return numpy.empty(shape, dtype=dtype)
+        # Implicit arrays (vtkImplicitArray<BackendT>) compute their values
+        # on the fly and do not expose the buffer protocol. Materialize to
+        # an AOS copy and try again.
+        aos = vtk_array.ToAOSDataArray()
+        if aos is None or aos is vtk_array:
             raise
+        if typ != vtkConstants.VTK_BIT:
+            result = numpy.frombuffer(aos, dtype=dtype)
+        else:
+            result = numpy.unpackbits(aos, count=shape[0])
     if shape[1] == 1:
         shape = (shape[0], )
-    try:
-        result.shape = shape
-    except ValueError:
-        if shape[0] == 0:
-           # Refer to https://github.com/numpy/numpy/issues/2536 .
-           # For empty array, reshape fails. Create the empty array explicitly
-           # if that happens.
-           result = numpy.empty(shape, dtype=dtype)
-        else: raise
-    return result
+    return result.reshape(shape)
+
+def vtk_soa_to_numpy(vtk_array):
+    """Convert a vtkSOADataArrayTemplate in SOA mode to per-component numpy arrays.
+
+    Returns a list of 1-D numpy arrays (one per component), each
+    zero-copy sharing memory with the underlying VTK buffer.
+
+    Parameters
+    ----------
+    vtk_array : vtkSOADataArrayTemplate or vtkScaledSOADataArrayTemplate
+
+    Returns
+    -------
+    list of numpy.ndarray
+        One 1-D array per component, each of length GetNumberOfTuples().
+
+    Raises
+    ------
+    TypeError
+        If the array does not support per-component buffer access.
+    """
+    if not hasattr(vtk_array, 'GetComponentBuffer'):
+        raise TypeError(
+            "vtk_soa_to_numpy requires a vtkSOADataArrayTemplate or "
+            "vtkScaledSOADataArrayTemplate, "
+            f"got {type(vtk_array).__name__}")
+
+    n_comps = vtk_array.GetNumberOfComponents()
+    # GetComponentBuffer returns a vtkAbstractBuffer which supports the Python
+    # buffer protocol, so we can use numpy.asarray directly for zero-copy.
+    return [numpy.asarray(vtk_array.GetComponentBuffer(c))
+            for c in range(n_comps)]
+
+def numpy_to_vtk_soa(arrays, name=""):
+    """Create a vtkSOADataArrayTemplate from a list of per-component numpy arrays.
+
+    Each element of *arrays* must be a contiguous 1-D numpy array of the same
+    dtype and length.  The VTK array will share memory with the numpy arrays
+    (zero-copy), so the caller must keep the numpy arrays alive.
+
+    Parameters
+    ----------
+    arrays : list of numpy.ndarray
+        One 1-D array per component.
+    name : str, optional
+        Name to assign to the resulting VTK array.
+
+    Returns
+    -------
+    vtkSOADataArrayTemplate
+        A VTK SOA array backed by the provided numpy buffers.
+    """
+    from cvista.vtkCommonCore import vtkSOADataArrayTemplate
+
+    if not arrays:
+        raise ValueError("arrays must be a non-empty list of numpy arrays")
+
+    n_tuples = len(arrays[0])
+    dtype = arrays[0].dtype
+    for i, a in enumerate(arrays):
+        if len(a) != n_tuples:
+            raise ValueError(
+                f"All component arrays must have the same length; "
+                f"component 0 has {n_tuples}, component {i} has {len(a)}")
+        if a.dtype != dtype:
+            raise ValueError(
+                f"All component arrays must have the same dtype; "
+                f"component 0 is {dtype}, component {i} is {a.dtype}")
+
+    vtk_array = vtkSOADataArrayTemplate[dtype.type]()
+    vtk_array.SetNumberOfComponents(len(arrays))
+    vtk_array.SetNumberOfTuples(n_tuples)
+
+    # Ensure contiguity and keep references to the actual buffers passed to VTK
+    contiguous_arrays = [numpy.ascontiguousarray(arr) for arr in arrays]
+    for comp, arr in enumerate(contiguous_arrays):
+        vtk_array.SetArray(comp, arr, n_tuples, True, True)
+
+    if name:
+        vtk_array.SetName(name)
+
+    # Store references on individual component buffers for memory safety.
+    # This ensures numpy arrays stay alive even if the VTK array reallocates
+    # (copy-on-reallocate pattern creates new buffers but old ones stay valid).
+    for comp, arr in enumerate(contiguous_arrays):
+        buf = vtk_array.GetComponentBuffer(comp)
+        if buf is not None:
+            buf._numpy_reference = arr
+
+    # Keep array-level reference for backward compatibility
+    vtk_array._numpy_refs = contiguous_arrays
+
+    return vtk_array

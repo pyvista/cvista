@@ -140,10 +140,24 @@ set(python_files
   cvista/gtk/GtkVTKRenderWindowInteractor.py
   cvista/gtk/__init__.py
   cvista/numpy_interface/__init__.py
+  cvista/numpy_interface/_vtk_array_mixin.py
   cvista/numpy_interface/algorithms.py
+  cvista/numpy_interface/array_overrides.py
   cvista/numpy_interface/dataset_adapter.py
   cvista/numpy_interface/internal_algorithms.py
   cvista/numpy_interface/numpy_algorithms.py
+  cvista/numpy_interface/utils.py
+  cvista/numpy_interface/vtk_affine_array.py
+  cvista/numpy_interface/vtk_aos_array.py
+  cvista/numpy_interface/vtk_composite_array.py
+  cvista/numpy_interface/vtk_constant_array.py
+  cvista/numpy_interface/vtk_implicit_array.py
+  cvista/numpy_interface/vtk_indexed_array.py
+  cvista/numpy_interface/vtk_none_array.py
+  cvista/numpy_interface/vtk_partitioned_array.py
+  cvista/numpy_interface/vtk_soa_array.py
+  cvista/numpy_interface/vtk_strided_array.py
+  cvista/numpy_interface/vtk_structured_point_array.py
   cvista/qt/QVTKRenderWindowInteractor.py
   cvista/qt/__init__.py
   cvista/test/BlackBox.py
@@ -159,8 +173,10 @@ set(python_files
   cvista/tk/vtkTkRenderWindowInteractor.py
   cvista/util/__init__.py
   cvista/util/colors.py
+  cvista/util/data_array_selection.py
   cvista/util/data_model.py
   cvista/util/execution_model.py
+  cvista/util/functions.py
   cvista/util/keys.py
   cvista/util/misc.py
   cvista/util/numpy_support.py
