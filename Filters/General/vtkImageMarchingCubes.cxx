@@ -147,6 +147,9 @@ int vtkImageMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   this->Points = vtkPoints::New();
   this->Points->Allocate(estimatedSize, estimatedSize / 2);
   this->Triangles = vtkCellArray::New();
+  // Output is uniformly triangles; declare fixed-size storage up front so the
+  // redundant offsets array is never materialized.
+  this->Triangles->UseFixedSizeDefaultStorage(3);
   this->Triangles->AllocateEstimate(estimatedSize, 1);
   if (this->ComputeScalars)
   {

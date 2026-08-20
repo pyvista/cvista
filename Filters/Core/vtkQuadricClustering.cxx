@@ -273,6 +273,10 @@ void vtkQuadricClustering::StartAppend(double* bounds)
 
   this->OutputTriangleArray = vtkCellArray::New();
   this->OutputLines = vtkCellArray::New();
+  // Outputs are uniformly triangles / lines; declare fixed-size storage up front
+  // so the redundant offsets arrays are never materialized.
+  this->OutputTriangleArray->UseFixedSizeDefaultStorage(3);
+  this->OutputLines->UseFixedSizeDefaultStorage(2);
 
   this->XBinSize = (this->Bounds[1] - this->Bounds[0]) / this->NumberOfDivisions[0];
   this->YBinSize = (this->Bounds[3] - this->Bounds[2]) / this->NumberOfDivisions[1];
