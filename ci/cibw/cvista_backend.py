@@ -70,7 +70,7 @@ ABI3_FLOOR_VERSION = (3, 12)  # mirrors 0x030c0000
 
 # Base version VTK's setup.py.in composes as `{base}.{VTK_VERSION_SUFFIX}`
 # (CMake/setup.py.in lines 88-91). Mirrors CMake/vtkVersion.cmake MAJOR.MINOR.BUILD.
-VTK_BASE_VERSION = "9.6.2"
+VTK_BASE_VERSION = "9.7.0"
 
 
 def _version_suffix() -> str:

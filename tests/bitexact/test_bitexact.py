@@ -34,8 +34,8 @@ def test_provenance_inputs_identical(results):
         f"bit-identical: stock={prov['inputs_digest_f64_stock'][:16]} "
         f"cvista={prov['inputs_digest_f64_cvista'][:16]}"
     )
-    assert prov["vtk_stock"] == "9.6.2", prov["vtk_stock"]
-    assert prov["vtk_cvista"] == "9.6.2", prov["vtk_cvista"]
+    assert prov["vtk_stock"] == "9.7.0", prov["vtk_stock"]
+    assert prov["vtk_cvista"] == "9.7.0", prov["vtk_cvista"]
 
 
 def _assert_case(results, case_key):

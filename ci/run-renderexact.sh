@@ -36,7 +36,7 @@ export VTK_EGL_DEVICE_INDEX="${VTK_EGL_DEVICE_INDEX:-0}"
 # stock VTK 9.6.2
 "$BASE_PY" -m venv /tmp/rx-stock
 /tmp/rx-stock/bin/pip -q install --upgrade pip
-/tmp/rx-stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
+/tmp/rx-stock/bin/pip -q install "numpy==2.4.6" "vtk==9.7.0"
 
 # Install the freshly built wheel FIRST with --no-index: WHEELDIR holds a
 # pre-release (.devN) wheel, and a bare `cvista` requirement lets pip prefer a

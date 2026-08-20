@@ -16,7 +16,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # stock VTK 9.6.2
 "$BASE_PY" -m venv /tmp/stock
 /tmp/stock/bin/pip -q install --upgrade pip
-/tmp/stock/bin/pip -q install "numpy==2.4.6" "vtk==9.6.2"
+/tmp/stock/bin/pip -q install "numpy==2.4.6" "vtk==9.7.0"
 
 # cvista wheel + vtkmodules->cvista redirect shim. WHEELDIR holds the single cp312-abi3
 # wheel (Python 3.11 dropped); let pip pick the tag-compatible wheel via the local
