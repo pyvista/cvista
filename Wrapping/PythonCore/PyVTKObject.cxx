@@ -579,9 +579,10 @@ PyObject* PyVTKObject_New(PyTypeObject* tp, PyObject* args, PyObject* /*kwds*/)
   // Python override classes to define rich constructors.
   if ((PyType_GetFlags(tp) & Py_TPFLAGS_HEAPTYPE) == 0)
   {
-    if (PyTuple_GET_SIZE(args) == 1)
+    if (PyTuple_Size(args) == 1)
     {
-      PyObject* o = PyTuple_GET_ITEM(args, 0);
+      // PyTuple_GetItem (not the GET_ITEM macro) is limited-API-safe; borrowed ref.
+      PyObject* o = PyTuple_GetItem(args, 0);
       if (PyUnicode_Check(o))
       {
         return vtkPythonUtil::GetObjectFromObject(o, vtkPythonUtil::StripModuleFromType(tp));
@@ -737,11 +738,14 @@ int PyVTKObject_SetPropertySequence(PyObject* op, PyObject* value, void* methods
     return -1;
   }
 
-  Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+  Py_ssize_t n = PySequence_Size(seq);
   for (Py_ssize_t i = 0; i < n; i++)
   {
-    PyObject* item = PySequence_Fast_GET_ITEM(seq, i);
+    // PySequence_GetItem is limited-API-safe (unlike PySequence_Fast_GET_ITEM)
+    // and returns a NEW reference; PyTuple_Pack takes its own, so drop ours.
+    PyObject* item = PySequence_GetItem(seq, i);
     PyObject* args = PyTuple_Pack(1, item);
+    Py_XDECREF(item);
     result = getset->add(op, args);
     Py_DECREF(args);
     if (result == nullptr)
@@ -1037,8 +1041,12 @@ PyBufferProcs PyVTKObject_AsBuffer = {
 #endif
 
 //------------------------------------------------------------------------------
-// Sequence protocol for vtkCollection (inherited by all subclasses)
+// Sequence protocol for vtkCollection (inherited by all subclasses).
+// PySequenceMethods and the static PyTypeObject that references this table are
+// unavailable under Py_LIMITED_API, so the whole block is default-build only;
+// the abi3 PyType_Spec path does not wire a vtkCollection sequence protocol.
 //------------------------------------------------------------------------------
+#if !defined(Py_LIMITED_API)
 
 static Py_ssize_t PyVTKObject_AsSequence_Length(PyObject* self)
 {
@@ -1112,6 +1120,7 @@ PySequenceMethods PyVTKObject_AsSequence = {
   nullptr,                         // sq_inplace_concat
   nullptr,                         // sq_inplace_repeat
 };
+#endif
 
 //------------------------------------------------------------------------------
 PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtkObjectBase* ptr)

@@ -91,9 +91,13 @@ extern "C"
   void PyVTKObject_AsBuffer_ReleaseBuffer(PyObject* obj, Py_buffer* view);
 }
 #endif
-// PySequenceMethods (unlike PyBufferProcs) is part of the limited API, so the
-// vtkCollection sequence protocol table is declared for both builds.
+// PySequenceMethods lives in cpython/object.h, which is excluded under
+// Py_LIMITED_API, so the vtkCollection sequence protocol table is declared only
+// for the default (non-abi3) build. Under abi3 every type is a heap type built
+// via PyType_Spec and this vtkCollection sequence protocol is not wired.
+#if !defined(Py_LIMITED_API)
 extern VTKWRAPPINGPYTHONCORE_EXPORT PySequenceMethods PyVTKObject_AsSequence;
+#endif
 
 extern "C"
 {
