@@ -95,9 +95,16 @@ foreach (_vtk_python_module IN LISTS vtk_python_wrapped_modules)
   string(APPEND _vtk_python_external_imports
     "from cvista.${_vtk_python_library_name} import *\n")
   list(APPEND _cvista_index_modules "${_vtk_python_library_name}")
-  if (TARGET "${_vtk_python_library_name}Python")
-    list(APPEND _cvista_index_module_targets "${_vtk_python_library_name}Python")
-  endif ()
+  # DEPEND on each wrapper's built .so. 9.7 renamed the wrapper target from
+  # ${name}Python to Py${name}Python (see vtkModuleWrapPython.cmake); the old name
+  # here made the former `if (TARGET "${name}Python")` never match, so DEPENDS was
+  # empty and generate_index (which imports every module) RACED the final .so links
+  # (observed: "No module named 'cvista.vtkCommonCore'" while vtkCommonCore.abi3.so
+  # was still linking). These targets are created by module wrapping that runs AFTER
+  # this directory, so a $<TARGET_FILE:...> genex — evaluated at generate time, when
+  # every wrapped module's Py${name}Python target exists — is the correct hook.
+  list(APPEND _cvista_index_module_targets
+    "$<TARGET_FILE:Py${_vtk_python_library_name}Python>")
 endforeach ()
 
 set(_vtk_python_files)
