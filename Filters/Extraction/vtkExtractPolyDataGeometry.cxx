@@ -131,7 +131,7 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
     {
       newPts->SetDataType(VTK_DOUBLE);
     }
-    newPts->Reserve(numPts / 4, numPts);
+    newPts->Reserve(numPts / 4);
     pointMap = new vtkIdType[numPts]; // maps old point ids into new
     for (ptId = 0; ptId < numPts; ptId++)
     {
