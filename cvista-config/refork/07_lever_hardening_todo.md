@@ -13,3 +13,10 @@
 3. CVISTA_SOURCE_UNITY: 9.7 linear-cells anon-namespace symbols collide under 8-file unity
    (ParametricCoords in vtkVoxel/vtkPixel/..., OrderPoints in vtkOctreePointLocator/...).
    Fix: add the colliding .cxx to cvista-config/_source_unity_exclude.cmake.
+
+4. CVISTA_DROP_DEAD_ARRAYS: 9.7's implicit-array machinery references vtkStridedArray/
+   vtkStdFunctionArray/vtkStridedImplicitBackend -> undefined typeinfo. Validation build uses
+   -DCVISTA_DROP_DEAD_ARRAYS=OFF. For release, either keep OFF or re-scope the "dead" cut.
+5. NOCOMPILE: 5 classes 9.7 references were restored (committed). Symbol-scan method to find
+   them: nm -D on the built kit .so's, (undefined - defined) intersect _ZTI/_ZTV/New, map to
+   the nocompile list. Re-run after any nocompile-list change on a new VTK base.
