@@ -4236,8 +4236,12 @@ function (vtk_module_add_module name)
   # NOCOMPILE), so an otherwise-empty library satisfies them.
   if (NOT _vtk_add_module_SOURCES AND NOT _vtk_add_module_HEADER_ONLY AND
       NOT _vtk_add_module_third_party)
+    # Sanitise the module name for the filename: _vtk_build_module is namespaced
+    # (e.g. VTK::FiltersTemporal) and ':' is illegal in a Windows path, so the raw
+    # name fails `file(WRITE ...)` on Windows. Replace '::' with '_'.
+    string(REPLACE "::" "_" _cvista_empty_name "${_vtk_build_module}")
     set(_cvista_empty_tu
-      "${CMAKE_CURRENT_BINARY_DIR}/${_vtk_build_module}_cvistaEmpty.cxx")
+      "${CMAKE_CURRENT_BINARY_DIR}/${_cvista_empty_name}_cvistaEmpty.cxx")
     if (NOT EXISTS "${_cvista_empty_tu}")
       file(WRITE "${_cvista_empty_tu}"
         "// cvista: dummy TU for a module emptied by CVISTA_NOCOMPILE_CLASSES.\n"

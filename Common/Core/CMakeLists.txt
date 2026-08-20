@@ -166,7 +166,10 @@ option(VTK_WARN_ON_DISPATCH_FAILURE "If enabled, vtkArrayDispatch will print a w
 # CVISTA_DROP_DEAD_ARRAYS=OFF restores the stock instantiations.
 option(CVISTA_DROP_DEAD_ARRAYS
   "cvista: drop instantiations of the PyVista-unused vtkStridedArray + vtkStdFunctionArray families"
-  ON)
+  OFF)  # default OFF on the 9.7 base: 9.7's implicit-array machinery references
+        # vtkStridedArray/vtkStdFunctionArray/vtkStridedImplicitBackend, so the trim
+        # yields undefined typeinfo/symbols (macOS link fails). Re-scope + re-enable
+        # in the 9.7 lever-hardening pass (cvista-config/refork/07).
 
 mark_as_advanced(
   VTK_DISPATCH_AOS_ARRAYS

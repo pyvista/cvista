@@ -133,11 +133,12 @@ jobs:
           #                   identical at -O2 and -O3). Release builds
           #                   (wheels-cibuildwheel.yml) leave both unset -> -O3 +
           #                   LTO, so shipped wheels stay fully optimized.
-          #   CVISTA_SOURCE_UNITY=1  per-module source UNITY_BUILD (byte-identical
-          #                   objects; GCC>=12-gated, active on this 2_28 image),
-          #                   together with the GCC<12-gated wrapper-unity
-          #                   (CVISTA_WRAP_UNITY, default ON) and the array-TU split.
-          CIBW_ENVIRONMENT: CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
+          #   CVISTA_SOURCE_UNITY=0  per-module source UNITY_BUILD is OFF on the 9.7
+          #                   base: 9.7's linear-cells anon-namespace symbols
+          #                   (OrderPoints/ParametricCoords) collide under batching.
+          #                   Re-enable with excludes in the 9.7 lever-hardening pass
+          #                   (cvista-config/refork/07). Byte-identical either way.
+          CIBW_ENVIRONMENT: CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=0
           # Mount the restored host ccache dir into the build container so ccache
           # actually reads/writes the persisted seed (CCACHE_DIR=/ccache is set in
           # pyproject [tool.cibuildwheel.linux.environment]). Without this mount
@@ -538,9 +539,9 @@ jobs:
         env:
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
           # Ship config: CVISTA_LTO + CVISTA_GATE_O2 left UNSET => -flto=auto + -O3
-          # (the release default). CVISTA_SOURCE_UNITY=1 stays on (byte-identical
+          # On the 9.7 base CVISTA_SOURCE_UNITY is OFF (linear-cells anon-symbol collision;
           # objects). This is byte-for-byte the wheels-cibuildwheel.yml config.
-          CIBW_ENVIRONMENT: CVISTA_SOURCE_UNITY=1
+          CIBW_ENVIRONMENT: CVISTA_SOURCE_UNITY=0
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-lto:/ccache"
       - uses: actions/upload-artifact@v4
         with:
@@ -664,7 +665,7 @@ jobs:
           CIBW_ARCHS_LINUX: aarch64
           CIBW_MANYLINUX_AARCH64_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
           CIBW_ENVIRONMENT: >-
-            CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=1
+            CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=0
             CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --strip --plat manylinux_2_28_aarch64 -w {dest_dir} {wheel}"
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-arm:/ccache"

@@ -155,10 +155,12 @@ macro(vtkArrayDispatch_default_array_setup)
   # virtual vtkDataArray path (same mechanism the SOA-off lever relies on); only
   # the fast path is dropped, never a result. Gated by env CVISTA_DISPATCH_MINIMAL.
   # vtkTypeList::Unique folds vtkIdType into long long where they coincide.
-  # Default ON (validated parity-green); set CVISTA_DISPATCH_MINIMAL=0 to restore
-  # the full ~14-type dispatch list.
+  # Default OFF on the 9.7 base: 9.7's vtkDataWriter DispatchByValueType<char> needs
+  # the full list (the trimmed [double;float;vtkIdType;uchar] breaks it). Set
+  # CVISTA_DISPATCH_MINIMAL=1 to opt back in; re-enable by default in the 9.7
+  # lever-hardening pass (cvista-config/refork/07) once the char sites are guarded.
   set(_cvista_disp_types "${vtk_numeric_types}")
-  if (NOT "$ENV{CVISTA_DISPATCH_MINIMAL}" STREQUAL "0")
+  if ("$ENV{CVISTA_DISPATCH_MINIMAL}" STREQUAL "1" OR "$ENV{CVISTA_DISPATCH_MINIMAL}" STREQUAL "ON")
     # ~4 types PyVista hits on the fast path: double + float (the bulk of
     # numpy_to_vtk geometry/scalars), vtkIdType (connectivity / id arrays), and
     # unsigned char (RGBA color arrays). vtkIdType is 64-bit signed, so int64
