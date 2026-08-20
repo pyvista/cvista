@@ -30,7 +30,12 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # so the published release is never pulled.
 "$BASE_PY" -m venv /tmp/cvista
 /tmp/cvista/bin/pip -q install --upgrade pip "numpy==2.4.6"
-/tmp/cvista/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" cvista
+# --force-reinstall: the wheel version (9.7.0.devN) is constant across rebuilds, so
+# without it pip skips reinstalling over a stale same-version cvista left in a reused
+# /tmp/cvista venv (e.g. a prior ABI3=OFF build) — the numeric gate still passes since
+# values are identical, but the abi3 heaptype engagement probe then reads the stale
+# static wheel. Force the local wheel to win.
+/tmp/cvista/bin/pip -q install --no-index --no-deps --force-reinstall --find-links "$WHEELDIR" cvista
 /tmp/cvista/bin/pip -q install --find-links "$WHEELDIR" cvista
 SP=$(/tmp/cvista/bin/python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 cp "$SRC/tools/cvista_shim.py" "$SP/_cvista_shim.py"
