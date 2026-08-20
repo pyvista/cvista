@@ -36,4 +36,9 @@ These are Bucket-1 (byte-identical) perf micro-opts. Taking 9.7's version is par
 #     9.7 did NOT re-fix; bitexact is blind to it -- corpus exercises SurfaceNets2D only).
 #     RE-APPLIED to 9.7's rewritten structure (ConfigureOutput newScalars + BoundaryLabels).
 #   - vtkGenericDataArrayValueRangeInstantiate.cxx.in: 9.7 deleted; verify obsolete.
-# TODO: layer 4 symbol scan (nm -D on built kits, cvista added classes present 9.6.2 vs 9.7).
+# Layer 4 (symbol scan, DONE): nm -D on the 67 built kit .so's from the abi3 release wheel.
+#   - 0 unresolved VTK/cvista vtable/typeinfo/New symbols across the kit set (no dropped class
+#     referenced-but-undefined; corroborated by the wheel importing + 13024 pyvista tests).
+#   - cvista runtime API exported: cvista::FastModeEnabled, cvista::GetSafeFilterThreadingConfig.
+#   - cvistaCellConnectivity/cvistaInformationFlatMap and the inline cvista::Fast* templates are
+#     header-only (no linkage symbols) -> correctly invisible to nm; covered by layers 2-3.
