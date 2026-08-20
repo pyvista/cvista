@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkExtractCellsByType.h"
 
+#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkIdList.h"
@@ -194,8 +195,27 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
   if (this->ExtractCellType(VTK_VERTEX) || this->ExtractCellType(VTK_POLY_VERTEX))
   {
     vtkCellArray* verts = vtkCellArray::New();
-    for (inVerts->InitTraversal(); inVerts->GetNextCell(npts, pts); ++currentCellId)
+    // Read point ids straight from native (int32) storage instead of widening
+    // each cell into the shared scratch list; the array-local index (lc) matches
+    // the view's indexing while currentCellId stays the global cell id. Fall back
+    // to classic traversal for any storage the reader cannot handle
+    // (cvistaCellConnectivity.h).
+    cvistaCellConnectivity conn(inVerts);
+    const vtkIdType numArrayCells = inVerts->GetNumberOfCells();
+    vtkIdType cbeg = 0;
+    inVerts->InitTraversal();
+    for (vtkIdType lc = 0; lc < numArrayCells; ++lc, ++currentCellId)
     {
+      if (conn.IsValid())
+      {
+        cbeg = conn.CellBegin(lc);
+        npts = conn.CellSize(lc);
+      }
+      else
+      {
+        inVerts->GetNextCell(npts, pts);
+      }
+      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
@@ -206,11 +226,11 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
         ptIds->Reset();
         for (i = 0; i < npts; ++i)
         {
-          if (ptMap[pts[i]] < 0)
+          if (ptMap[PID(i)] < 0)
           {
-            ptMap[pts[i]] = numNewPts++;
+            ptMap[PID(i)] = numNewPts++;
           }
-          ptIds->InsertId(i, ptMap[pts[i]]);
+          ptIds->InsertId(i, ptMap[PID(i)]);
         }
         cellId = verts->InsertNextCell(ptIds);
         outCD->CopyData(inCD, currentCellId, cellId);
@@ -231,8 +251,22 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
     vtkCellArray* lines = vtkCellArray::New();
     progressCounter = 0;
     checkAbortInterval = std::min(inLines->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
-    for (inLines->InitTraversal(); inLines->GetNextCell(npts, pts); ++currentCellId)
+    cvistaCellConnectivity conn(inLines);
+    const vtkIdType numArrayCells = inLines->GetNumberOfCells();
+    vtkIdType cbeg = 0;
+    inLines->InitTraversal();
+    for (vtkIdType lc = 0; lc < numArrayCells; ++lc, ++currentCellId)
     {
+      if (conn.IsValid())
+      {
+        cbeg = conn.CellBegin(lc);
+        npts = conn.CellSize(lc);
+      }
+      else
+      {
+        inLines->GetNextCell(npts, pts);
+      }
+      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
@@ -243,11 +277,11 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
         ptIds->Reset();
         for (i = 0; i < npts; ++i)
         {
-          if (ptMap[pts[i]] < 0)
+          if (ptMap[PID(i)] < 0)
           {
-            ptMap[pts[i]] = numNewPts++;
+            ptMap[PID(i)] = numNewPts++;
           }
-          ptIds->InsertId(i, ptMap[pts[i]]);
+          ptIds->InsertId(i, ptMap[PID(i)]);
         }
         cellId = lines->InsertNextCell(ptIds);
         outCD->CopyData(inCD, currentCellId, cellId);
@@ -269,8 +303,22 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
     vtkCellArray* polys = vtkCellArray::New();
     progressCounter = 0;
     checkAbortInterval = std::min(inPolys->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
-    for (inPolys->InitTraversal(); inPolys->GetNextCell(npts, pts); ++currentCellId)
+    cvistaCellConnectivity conn(inPolys);
+    const vtkIdType numArrayCells = inPolys->GetNumberOfCells();
+    vtkIdType cbeg = 0;
+    inPolys->InitTraversal();
+    for (vtkIdType lc = 0; lc < numArrayCells; ++lc, ++currentCellId)
     {
+      if (conn.IsValid())
+      {
+        cbeg = conn.CellBegin(lc);
+        npts = conn.CellSize(lc);
+      }
+      else
+      {
+        inPolys->GetNextCell(npts, pts);
+      }
+      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
@@ -281,11 +329,11 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
         ptIds->Reset();
         for (i = 0; i < npts; ++i)
         {
-          if (ptMap[pts[i]] < 0)
+          if (ptMap[PID(i)] < 0)
           {
-            ptMap[pts[i]] = numNewPts++;
+            ptMap[PID(i)] = numNewPts++;
           }
-          ptIds->InsertId(i, ptMap[pts[i]]);
+          ptIds->InsertId(i, ptMap[PID(i)]);
         }
         cellId = polys->InsertNextCell(ptIds);
         outCD->CopyData(inCD, currentCellId, cellId);
@@ -307,8 +355,22 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
     checkAbortInterval = std::min(inStrips->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
     progressCounter++;
     // All cells are of type VTK_TRIANGLE_STRIP
-    for (inStrips->InitTraversal(); inStrips->GetNextCell(npts, pts); ++currentCellId)
+    cvistaCellConnectivity conn(inStrips);
+    const vtkIdType numArrayCells = inStrips->GetNumberOfCells();
+    vtkIdType cbeg = 0;
+    inStrips->InitTraversal();
+    for (vtkIdType lc = 0; lc < numArrayCells; ++lc, ++currentCellId)
     {
+      if (conn.IsValid())
+      {
+        cbeg = conn.CellBegin(lc);
+        npts = conn.CellSize(lc);
+      }
+      else
+      {
+        inStrips->GetNextCell(npts, pts);
+      }
+      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
@@ -317,11 +379,11 @@ void vtkExtractCellsByType::ExtractPolyDataCells(
       ptIds->Reset();
       for (i = 0; i < npts; ++i)
       {
-        if (ptMap[pts[i]] < 0)
+        if (ptMap[PID(i)] < 0)
         {
-          ptMap[pts[i]] = numNewPts++;
+          ptMap[PID(i)] = numNewPts++;
         }
-        ptIds->InsertId(i, ptMap[pts[i]]);
+        ptIds->InsertId(i, ptMap[PID(i)]);
       }
       cellId = strips->InsertNextCell(ptIds);
       outCD->CopyData(inCD, currentCellId, cellId);
