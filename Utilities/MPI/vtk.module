@@ -1,7 +1,0 @@
-NAME
-  VTK::mpi
-LIBRARY_NAME
-  vtkmpi
-TEST_DEPENDS
-  VTK::TestingCore
-THIRD_PARTY

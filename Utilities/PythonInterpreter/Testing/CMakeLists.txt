@@ -1,6 +1,0 @@
-if (VTK_WRAP_PYTHON)
-  add_subdirectory(Python)
-  if (NOT vtk_testing_cxx_disabled)
-    add_subdirectory(Cxx)
-  endif ()
-endif()

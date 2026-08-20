@@ -77,6 +77,7 @@ set(VTK_MODULE_ENABLE_VTK_IOParallel WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_IOParallelXML WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_IOPLY WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_IOSegY WANT CACHE STRING "")
+set(VTK_MODULE_ENABLE_VTK_IOXdmf2 WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_IOXML WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_PythonContext2D WANT CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_RenderingAnnotation WANT CACHE STRING "")
@@ -105,9 +106,9 @@ set(VTK_MODULE_ENABLE_VTK_WebGLExporter YES CACHE STRING "")
 
 # Explicit NO for heavy/dead modules. With deny-by-default most of these would
 # never be scanned, but an explicit NO overrides any stale cached WANT and
-# documents intent. xdmf2/IOXdmf2 must be NO: vendored ThirdParty/xdmf2 fails to
-# compile on modern libc++ (<strstream> removed) and only backs the rarely-used
-# XdmfReader.
+# documents intent. IOXdmf2 is now enabled (above): the vendored ThirdParty/xdmf2
+# <strstream> break on modern libc++ is fixed by vtkXdmfStrstreamCompat.h, so the
+# XdmfReader PyVista exposes builds into the io tier.
 
 # NO speculative "transitive drag" force-NO cuts here. Lesson learned the hard
 # way: with BUILD_ALL_MODULES OFF + deny-by-default, a module only builds if an

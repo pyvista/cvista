@@ -175,7 +175,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkEnSightGoldCombinedReader
   vtkEnSightMasterServerReader
   vtkEnSightSOSGoldReader
-  vtkEnSightWriter
   vtkEqualizerContextItem
   vtkEqualizerFilter
   vtkEquirectangularToCubeMapTexture

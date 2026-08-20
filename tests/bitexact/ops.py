@@ -99,7 +99,7 @@ try:
         vtkStatisticalOutlierRemoval,
         vtkVoronoiKernel,
     )
-    from vtkmodules.vtkFiltersExtraction import vtkExtractGrid
+    from vtkmodules.vtkFiltersExtraction import vtkExtractGrid, vtkExtractPolyDataGeometry, vtkExtractCellsByType
     from vtkmodules.vtkFiltersCore import (
         vtkCellCenters,
         vtkCellDataToPointData,
@@ -6047,6 +6047,219 @@ def op_delaunay3d(dtype, size):
 # as a canonicalized mesh (same content, negotiable order). Inputs are the shared
 # deterministic builders (make_hex_ugrid / make_sphere), so both backends start
 # from byte-identical inputs.
+def make_mixed_polydata_geom(size, dtype):
+    """A vtkPolyData carrying all four cell arrays (verts, lines, polys, strips)
+    over a size x size integer-coordinate grid, plus a per-point scalar and a
+    per-cell scalar. Drives vtkExtractPolyDataGeometry, whose four cell-array
+    traversals cvista reads from native int32 storage; the per-cell scalar makes
+    the CopyData(cellId) coordination observable, and integer coordinates keep
+    the implicit-function test byte-identical across backends."""
+    n = size
+    npts = n * n
+    idx = np.arange(npts, dtype=np.int64)
+    coords = np.empty((npts, 3), dtype=dtype)
+    coords[:, 0] = (idx % n).astype(dtype)
+    coords[:, 1] = (idx // n).astype(dtype)
+    coords[:, 2] = ((idx % 3) - 1).astype(dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd.SetPoints(vp)
+
+    verts = vtkCellArray()
+    # a poly-vertex over the first row, then a few single verts
+    pv = vtkIdList()
+    for p in range(n):
+        pv.InsertNextId(p)
+    verts.InsertNextCell(pv)
+    for p in range(n, n + 3):
+        sv = vtkIdList()
+        sv.InsertNextId(p)
+        verts.InsertNextCell(sv)
+    pd.SetVerts(verts)
+
+    lines = vtkCellArray()
+    for r in range(1, min(n, 4)):  # a polyline per selected row
+        li = vtkIdList()
+        for c in range(n):
+            li.InsertNextId(r * n + c)
+        lines.InsertNextCell(li)
+    pd.SetLines(lines)
+
+    polys = vtkCellArray()
+    for r in range(n - 1):  # quad per grid cell
+        for c in range(n - 1):
+            q = vtkIdList()
+            q.InsertNextId(r * n + c)
+            q.InsertNextId(r * n + c + 1)
+            q.InsertNextId((r + 1) * n + c + 1)
+            q.InsertNextId((r + 1) * n + c)
+            polys.InsertNextCell(q)
+    pd.SetPolys(polys)
+
+    strips = vtkCellArray()
+    st = vtkIdList()  # one triangle strip zig-zagging along the last two rows
+    for c in range(n):
+        st.InsertNextId((n - 2) * n + c)
+        st.InsertNextId((n - 1) * n + c)
+    strips.InsertNextCell(st)
+    pd.SetStrips(strips)
+
+    scal = numpy_to_vtk(np.ascontiguousarray((1.0 + (idx % 7)).astype(dtype)), deep=1)
+    scal.SetName("s")
+    pd.GetPointData().SetScalars(scal)
+
+    ncells = pd.GetNumberOfCells()
+    cid = numpy_to_vtk(
+        np.ascontiguousarray((np.arange(ncells, dtype=np.int64) % 11).astype(dtype)), deep=1)
+    cid.SetName("cid")
+    pd.GetCellData().SetScalars(cid)
+    return pd
+
+
+def make_mixed_celltypes_polydata(size, dtype):
+    """A vtkPolyData with all four cell arrays, and polys of MIXED type (triangles
+    and quads), plus a per-cell scalar. Drives vtkExtractCellsByType, whose four
+    cell-array traversals cvista reads from native int32 storage; the mixed poly
+    types exercise the per-cell GetCellType(globalCellId) discrimination against
+    the array-local native index, and the per-cell scalar makes the
+    CopyData(globalCellId) coordination observable."""
+    from vtkmodules.vtkCommonCore import vtkIdList as _IdList
+
+    n = size
+    npts = n * n
+    idx = np.arange(npts, dtype=np.int64)
+    coords = np.empty((npts, 3), dtype=dtype)
+    coords[:, 0] = (idx % n).astype(dtype)
+    coords[:, 1] = (idx // n).astype(dtype)
+    coords[:, 2] = ((idx % 3) - 1).astype(dtype)
+    pd = vtkPolyData()
+    vp = vtkPoints()
+    vp.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    pd.SetPoints(vp)
+
+    verts = vtkCellArray()
+    pv = _IdList()
+    for p in range(n):
+        pv.InsertNextId(p)
+    verts.InsertNextCell(pv)  # VTK_POLY_VERTEX
+    for p in range(n, n + 2):
+        sv = _IdList()
+        sv.InsertNextId(p)
+        verts.InsertNextCell(sv)  # VTK_VERTEX
+    pd.SetVerts(verts)
+
+    lines = vtkCellArray()
+    for r in range(1, min(n, 3)):
+        li = _IdList()
+        for c in range(n):
+            li.InsertNextId(r * n + c)
+        lines.InsertNextCell(li)  # VTK_POLY_LINE
+    pd.SetLines(lines)
+
+    polys = vtkCellArray()
+    for r in range(n - 1):
+        for c in range(n - 1):
+            if (r + c) % 2 == 0:  # a quad
+                q = _IdList()
+                for pid in (r * n + c, r * n + c + 1, (r + 1) * n + c + 1, (r + 1) * n + c):
+                    q.InsertNextId(pid)
+                polys.InsertNextCell(q)
+            else:  # two triangles
+                for tri in (
+                    (r * n + c, r * n + c + 1, (r + 1) * n + c),
+                    (r * n + c + 1, (r + 1) * n + c + 1, (r + 1) * n + c),
+                ):
+                    t = _IdList()
+                    for pid in tri:
+                        t.InsertNextId(pid)
+                    polys.InsertNextCell(t)
+    pd.SetPolys(polys)
+
+    strips = vtkCellArray()
+    st = _IdList()
+    for c in range(n):
+        st.InsertNextId((n - 2) * n + c)
+        st.InsertNextId((n - 1) * n + c)
+    strips.InsertNextCell(st)  # VTK_TRIANGLE_STRIP
+    pd.SetStrips(strips)
+
+    ncells = pd.GetNumberOfCells()
+    cid = numpy_to_vtk(
+        np.ascontiguousarray((np.arange(ncells, dtype=np.int64) % 11).astype(dtype)), deep=1)
+    cid.SetName("cid")
+    pd.GetCellData().SetScalars(cid)
+    return pd
+
+
+def op_extractpolygeom(dtype, size):
+    # vtkExtractPolyDataGeometry over a mixed verts/lines/polys/strips polydata,
+    # clipped by a plane. cvista reads each cell array from native int32 storage
+    # (cvistaCellConnectivity) instead of widening every cell into the shared
+    # scratch list. Output cell order is the deterministic input order and points
+    # are inserted in first-touch order, so byte-exact (not order-relaxed).
+    plane = vtkPlane()
+    plane.SetOrigin(size / 2.0, 0.0, 0.0)
+    plane.SetNormal(1.0, 0.0, 0.0)
+    f = vtkExtractPolyDataGeometry()
+    f.SetInputData(make_mixed_polydata_geom(size, dtype))
+    f.SetImplicitFunction(plane)
+    f.SetExtractBoundaryCells(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_extractpolygeom_passpoints(dtype, size):
+    # Same filter with PassPoints on (cells keep original point ids, all input
+    # points pass through) -- exercises the InsertNextCell-per-point fast path
+    # branch distinct from the point-remapping branch above.
+    plane = vtkPlane()
+    plane.SetOrigin(size / 2.0, 0.0, 0.0)
+    plane.SetNormal(1.0, 0.0, 0.0)
+    f = vtkExtractPolyDataGeometry()
+    f.SetInputData(make_mixed_polydata_geom(size, dtype))
+    f.SetImplicitFunction(plane)
+    f.SetExtractBoundaryCells(1)
+    f.SetPassPoints(1)
+    f.Update()
+    return f.GetOutput()
+
+
+def op_extractcellsbytype_tris(dtype, size):
+    # vtkExtractCellsByType selecting only triangles from a mixed tri/quad poly
+    # array (plus verts/lines/strips that are skipped). cvista reads each cell
+    # array from native int32 storage (cvistaCellConnectivity); the per-cell
+    # GetCellType uses the global cell id while the reader indexes locally, so
+    # this exercises that coordination. Deterministic order -> byte-exact.
+    from vtkmodules.vtkCommonDataModel import VTK_TRIANGLE
+
+    f = vtkExtractCellsByType()
+    f.AddCellType(VTK_TRIANGLE)
+    f.SetInputData(make_mixed_celltypes_polydata(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
+def op_extractcellsbytype_allarrays(dtype, size):
+    # Select one type per cell array so all four native-read traversals run
+    # (verts, lines, polys, strips).
+    from vtkmodules.vtkCommonDataModel import (
+        VTK_POLY_VERTEX,
+        VTK_POLY_LINE,
+        VTK_POLYGON,
+        VTK_QUAD,
+        VTK_TRIANGLE,
+        VTK_TRIANGLE_STRIP,
+    )
+
+    f = vtkExtractCellsByType()
+    for t in (VTK_POLY_VERTEX, VTK_POLY_LINE, VTK_TRIANGLE, VTK_QUAD, VTK_POLYGON, VTK_TRIANGLE_STRIP):
+        f.AddCellType(t)
+    f.SetInputData(make_mixed_celltypes_polydata(size, dtype))
+    f.Update()
+    return f.GetOutput()
+
+
 def op_extractedges(dtype, size):
     # vtkExtractEdges over a hex UG -> the unique-edge line polydata. The edge set is
     # discovered under vtkSMPTools (threaded static edge locator), so line cells may be
@@ -6674,6 +6887,10 @@ OPS = {
     # vtkUnstructuredGridToExplicitStructuredGrid (also just modified) is deliberately
     # NOT added here -- it is already covered by "ug_to_esg" (Wave 13).
     "extractedges": dict(fn=op_extractedges, group="filter", dtypes=["float32", "float64"], sizes=[8, 12], order_relaxed=True),
+    "extractpolygeom": dict(fn=op_extractpolygeom, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "extractpolygeom_passpoints": dict(fn=op_extractpolygeom_passpoints, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "extractcellsbytype_tris": dict(fn=op_extractcellsbytype_tris, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
+    "extractcellsbytype_allarrays": dict(fn=op_extractcellsbytype_allarrays, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "binneddecimation": dict(fn=op_binneddecimation, group="filter", dtypes=["float64"], sizes=[24, 40], order_relaxed=True, points_relaxed=True),
     "quadricclustering": dict(fn=op_quadricclustering, group="filter", dtypes=["float64"], sizes=[24, 40], order_relaxed=True, points_relaxed=True),
     "markboundary": dict(fn=op_markboundary, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
