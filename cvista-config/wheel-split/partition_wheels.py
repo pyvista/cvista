@@ -69,6 +69,8 @@ THIRDPARTY_TIER = {
     # heavy data formats -> io tier only
     "vtkhdf5": "io", "vtkhdf5_hl": "io", "vtknetcdf": "io", "vtknetcdfcpp": "io",
     "vtkcgns": "io", "vtkexodusii": "io", "vtkioss": "io",
+    # xdmf2 + its libxml2 dep are pulled in only by the io-tier IOXdmf2 reader.
+    "vtkxdmf2": "io", "vtklibxml2": "io",
     # GL loader / vector export / font stack -> rendering tier only
     "vtkglad": "rendering", "vtkgl2ps": "rendering", "vtkopengl": "rendering",
     "vtkfreetype": "rendering",
@@ -98,7 +100,8 @@ def module_tier(mod):
              "vtkIOGeometry","vtkIOPLY","vtkIOCellGrid",
              "vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIOInfovis","vtkIONetCDF",
              "vtkIOVeraOut","vtkIOSegY","vtkIOFLUENTCFF","vtkIOCGNSReader",
-             "vtkIOParallel","vtkIOParallelXML","vtkIOParallelExodus","vtkIOCONVERGECFD"):
+             "vtkIOParallel","vtkIOParallelXML","vtkIOParallelExodus","vtkIOCONVERGECFD",
+             "vtkIOXdmf2"):
         return "io"
     return "core"
 
