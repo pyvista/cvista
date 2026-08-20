@@ -110,6 +110,19 @@ def _version_suffix() -> str:
         return ""  # tagged exactly 9.6.2 -> official release, no suffix
     prefix = VTK_BASE_VERSION + "."
     if not version.startswith(prefix):
+        # During a VTK base bump (re-fork), the git tags legitimately lag the new
+        # base: a PR head parented on the old main still git-describes to an old-base
+        # tag (e.g. 9.6.2.7.dev14 while VTK_BASE is 9.7.0). For a DEV build that is
+        # benign — version it as {base}.0.dev0. But a CLEAN (non-.dev) version that
+        # mismatches the base is a genuine mistagged release: keep failing loudly.
+        if ".dev" in version:
+            print(
+                f"cvista_backend: scm version {version} predates VTK base "
+                f"{VTK_BASE_VERSION} (base bump in progress); "
+                f"using VTK_VERSION_SUFFIX=0.dev0",
+                flush=True,
+            )
+            return "0.dev0"
         raise RuntimeError(
             f"cvista_backend: scm version {version!r} does not start with the VTK "
             f"base {VTK_BASE_VERSION!r}; tag releases as {VTK_BASE_VERSION}.N "
