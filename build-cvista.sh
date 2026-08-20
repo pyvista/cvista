@@ -131,6 +131,17 @@ fi
 
 find "$BUILD" -path '*/cvista/*.pyi' -delete 2>/dev/null || true
 
+# Remove stale Python wrappers left by an ABI reconfigure. If this build produced
+# abi3 (.abi3.so) wrappers, any co-located .cpython-*.so are stale non-abi3 outputs
+# from a previous configuration of this build dir (ninja does not delete the outputs
+# of retired targets). bdist_wheel globs BOTH, shipping a mixed wheel in which Python
+# loads the stale STATIC-type module by suffix priority (cpython > abi3) -- silently
+# defeating abi3. Keep only the current ABI's wrappers.
+if find "$BUILD" -path '*/cvista/*.abi3.so' -print -quit 2>/dev/null | grep -q .; then
+  _stale=$(find "$BUILD" -path '*/cvista/*.cpython-*.so' -print -delete 2>/dev/null | wc -l)
+  echo "abi3 build: removed $_stale stale .cpython-*.so wrapper(s) before packaging"
+fi
+
 # Strip symbol tables from every shared object before bundling. A Release build
 # still emits the full .symtab (local + non-dynamic symbols) into each .so —
 # auditwheel/manylinux normally strips this, but we don't run auditwheel, so the
