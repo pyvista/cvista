@@ -28,6 +28,7 @@
 #include "vtkTriangle.h"
 #include "vtkTypeInt8Array.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -1701,7 +1702,15 @@ void SurfaceNets<TArray, TEdgeRowIndex>::ConfigureOutput(vtkPoints* newPts,
 
     // Scalars, which are of type T and 2-components
     newScalars->SetNumberOfTuples(outputEMD.NumQuads);
-    this->NewScalars = vtk::DataArrayValueRange<2>(newScalars).begin();
+    // cvista (#176, ported to 9.7's rewrite): NumQuads is a padded upper bound --
+    // an isolated boundary quad can reserve a scalar tuple that GenerateQuads never
+    // writes, and SetNumberOfTuples leaves that storage uninitialized (garbage:
+    // run-to-run nondeterministic under threading, serially unstable on a dirtied
+    // heap). Zero-init so any never-written padding slot is deterministic; every
+    // genuinely-emitted quad overwrites its own tuple below.
+    auto scalarRange = vtk::DataArrayValueRange<2>(newScalars);
+    std::fill(scalarRange.begin(), scalarRange.end(), 0);
+    this->NewScalars = scalarRange.begin();
 
     // Smoothing stencils, which are represented by a vtkCellArray
 #ifdef VTK_USE_64BIT_IDS
@@ -2431,6 +2440,16 @@ void TransformMeshType(
   triScalars->SetNumberOfComponents(2);
   triScalars->SetName("BoundaryLabels");
   triScalars->SetNumberOfTuples(2 * numQuads);
+  // cvista (#176, ported to 9.7's rewrite): triScalars (the "BoundaryLabels" output
+  // cell scalars) is populated SOLELY by the worker below; 2*numQuads is an upper
+  // bound and SetNumberOfTuples leaves the reserved storage uninitialized. Any tuple
+  // the worker does not overwrite reads back as garbage -- run-to-run
+  // nondeterministic under threading. Zero-init for determinism; genuinely-copied
+  // tuples overwrite their own slot.
+  {
+    auto triRange = vtk::DataArrayValueRange<2>(triScalars.Get());
+    std::fill(triRange.begin(), triRange.end(), 0);
+  }
 
   using Dispatcher = vtkArrayDispatch::Dispatch3ByArray<vtkArrayDispatch::ConnectivityArrays,
     vtkArrayDispatch::AOSArrays, vtkArrayDispatch::ConnectivityArrays>;
