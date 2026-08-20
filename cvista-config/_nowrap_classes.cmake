@@ -339,7 +339,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkEnSightMasterServerReader
   vtkEnSightReader
   vtkEnSightSOSGoldReader
-  vtkEnSightWriter
   vtkEqualizerContextItem
   vtkEqualizerFilter
   vtkEquirectangularToCubeMapTexture
