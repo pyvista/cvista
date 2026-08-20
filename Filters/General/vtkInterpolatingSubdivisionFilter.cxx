@@ -73,6 +73,9 @@ int vtkInterpolatingSubdivisionFilter::RequestData(
 
     // Create triangles
     outputPolys = vtkCellArray::New();
+    // Output is uniformly triangles; declare fixed-size storage up front so the
+    // redundant offsets array is never materialized.
+    outputPolys->UseFixedSizeDefaultStorage(3);
     outputPolys->AllocateEstimate(4 * numCells, 3);
 
     // Create an array to hold new location indices

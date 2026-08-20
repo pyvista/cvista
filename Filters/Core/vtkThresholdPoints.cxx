@@ -235,6 +235,9 @@ int vtkThresholdPoints::RequestData(vtkInformation* vtkNotUsed(request),
   outPD = output->GetPointData();
   outPD->CopyAllocate(pd);
   verts = vtkCellArray::New();
+  // Output is uniformly single-point verts; declare fixed-size storage up front
+  // so the redundant offsets array is never materialized.
+  verts->UseFixedSizeDefaultStorage(1);
   verts->AllocateEstimate(numPts, 1);
 
   // Check that the scalars of each point satisfy the threshold criterion

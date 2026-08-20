@@ -82,6 +82,9 @@ int vtkVertexGlyphFilter::RequestData(vtkInformation* vtkNotUsed(request),
   }
 
   VTK_CREATE(vtkCellArray, cells);
+  // Output is uniformly single-point verts; declare fixed-size storage up front
+  // so the redundant offsets array is never materialized.
+  cells->UseFixedSizeDefaultStorage(1);
   cells->AllocateEstimate(numPoints, 1);
 
   for (vtkIdType i = 0; i < numPoints; i++)
