@@ -80,7 +80,9 @@ echo ">>> PyVista @ $(git -C "$PVDIR" rev-parse --short HEAD) (pinned $REF)"
 # --no-index forces the local wheel (pip still tag-matches it); the second install
 # resolves cvista's own deps (matplotlib/numpy/...) from PyPI without pulling the
 # published release (cvista is already satisfied).
-/tmp/pv/bin/pip -q install --no-index --no-deps --find-links "$WHEELDIR" cvista
+# --force-reinstall: the wheel version (9.7.0.devN) is constant across rebuilds, so a reused
+# /tmp/pv venv would keep a stale same-version cvista; force the freshly built local wheel to win.
+/tmp/pv/bin/pip -q install --no-index --no-deps --force-reinstall --find-links "$WHEELDIR" cvista
 /tmp/pv/bin/pip -q install --find-links "$WHEELDIR" cvista
 # Two ways to drive cvista, selected by CVISTA_PYVISTA_MODE:
 #
