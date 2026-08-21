@@ -294,7 +294,7 @@ jobs:
       - name: Core import smoke (native)
         shell: pwsh
         run: |
-          $core = Get-ChildItem tier-wheels/cvista-9.6.2*.whl | Select-Object -First 1
+          $core = Get-ChildItem tier-wheels/cvista-*.whl | Select-Object -First 1
           if (-not $core) { Write-Error 'core tier wheel not found in tier-wheels/'; exit 1 }
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
