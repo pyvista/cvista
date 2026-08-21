@@ -73,7 +73,7 @@ int vtkSubdivideTetra::RequestData(vtkInformation* vtkNotUsed(request),
   {
     newPts->SetDataType(VTK_DOUBLE);
   }
-  newPts->Allocate(5 * numPts, numPts);
+  newPts->Reserve(5 * numPts);
   outputPD->InterpolateAllocate(pd, 5 * numPts, numPts);
 
   output->Allocate(numCells);

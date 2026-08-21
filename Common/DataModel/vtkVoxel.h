@@ -96,6 +96,9 @@ public:
   void Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
     vtkCellArray* verts, vtkCellArray* lines, vtkCellArray* polys, vtkPointData* inPd,
     vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd) override;
+  void Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
+    vtkCellArray* connectivity, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd,
+    vtkIdType cellId, vtkCellData* outCd, int insideOut) override;
   int EvaluatePosition(const double x[3], double closestPoint[3], int& subId, double pcoords[3],
     double& dist2, double weights[]) override;
   void EvaluateLocation(int& subId, const double pcoords[3], double x[3], double* weights) override;
@@ -146,6 +149,7 @@ public:
    * output triangle which may be repeated to generate multiple triangles. The
    * list of cases terminates with a -1 entry.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use vtkMarchingCellsContourCases::GetVoxelCase instead.")
   static int* GetTriangleCases(int caseId);
 
   ///@{
@@ -193,14 +197,14 @@ public:
 
 protected:
   vtkVoxel();
-  ~vtkVoxel() override;
+  ~vtkVoxel() override = default;
 
 private:
   vtkVoxel(const vtkVoxel&) = delete;
   void operator=(const vtkVoxel&) = delete;
 
-  vtkLine* Line;
-  vtkPixel* Pixel;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkPixel> Pixel;
 };
 
 VTK_ABI_NAMESPACE_END

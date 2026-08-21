@@ -26,7 +26,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # CMAKE_PREFIX_PATH. Re-exec inside it (once) so the rendering deps resolve.
 # Set CVISTA_IN_NIX_SHELL=1 to skip (already provisioned).
 if [ "${CVISTA_IN_NIX_SHELL:-0}" != "1" ]; then
-  exec nix-shell "$REPO/shell.nix" --run "CVISTA_IN_NIX_SHELL=1 PROFILE=${PROFILE:-minimal} FAST=${FAST:-1} USE_CCACHE=${USE_CCACHE:-1} CVISTA_ICF=${CVISTA_ICF:-1} CVISTA_STRIP=${CVISTA_STRIP:-0} CVISTA_WRAP_OPTSIZE=${CVISTA_WRAP_OPTSIZE:-1} CVISTA_DISPATCH_MINIMAL=${CVISTA_DISPATCH_MINIMAL:-1} CVISTA_LTO=${CVISTA_LTO:-1} CVISTA_SEMINTERP=${CVISTA_SEMINTERP:-1} CVISTA_PGO=${CVISTA_PGO:-} CVISTA_SOURCE_UNITY=${CVISTA_SOURCE_UNITY:-1} CVISTA_SOURCE_UNITY_BATCH=${CVISTA_SOURCE_UNITY_BATCH:-8} bash '${BASH_SOURCE[0]}'"
+  exec nix-shell "$REPO/shell.nix" --run "CVISTA_IN_NIX_SHELL=1 PROFILE=${PROFILE:-minimal} FAST=${FAST:-1} USE_CCACHE=${USE_CCACHE:-1} CVISTA_ICF=${CVISTA_ICF:-1} CVISTA_STRIP=${CVISTA_STRIP:-0} CVISTA_WRAP_OPTSIZE=${CVISTA_WRAP_OPTSIZE:-1} CVISTA_DISPATCH_MINIMAL=${CVISTA_DISPATCH_MINIMAL:-0} CVISTA_LTO=${CVISTA_LTO:-1} CVISTA_SEMINTERP=${CVISTA_SEMINTERP:-1} CVISTA_PGO=${CVISTA_PGO:-} CVISTA_SOURCE_UNITY=${CVISTA_SOURCE_UNITY:-0} CVISTA_SOURCE_UNITY_BATCH=${CVISTA_SOURCE_UNITY_BATCH:-8} bash '${BASH_SOURCE[0]}'"
 fi
 
 BUILD="${BUILD:-$REPO/build-cvista}"
@@ -130,6 +130,17 @@ fi
 "$WHEEL_VENV/bin/python3" -m pip install --upgrade pip setuptools wheel >/dev/null
 
 find "$BUILD" -path '*/cvista/*.pyi' -delete 2>/dev/null || true
+
+# Remove stale Python wrappers left by an ABI reconfigure. If this build produced
+# abi3 (.abi3.so) wrappers, any co-located .cpython-*.so are stale non-abi3 outputs
+# from a previous configuration of this build dir (ninja does not delete the outputs
+# of retired targets). bdist_wheel globs BOTH, shipping a mixed wheel in which Python
+# loads the stale STATIC-type module by suffix priority (cpython > abi3) -- silently
+# defeating abi3. Keep only the current ABI's wrappers.
+if find "$BUILD" -path '*/cvista/*.abi3.so' -print -quit 2>/dev/null | grep -q .; then
+  _stale=$(find "$BUILD" -path '*/cvista/*.cpython-*.so' -print -delete 2>/dev/null | wc -l)
+  echo "abi3 build: removed $_stale stale .cpython-*.so wrapper(s) before packaging"
+fi
 
 # Strip symbol tables from every shared object before bundling. A Release build
 # still emits the full .symtab (local + non-dynamic symbols) into each .so —

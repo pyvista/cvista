@@ -5,15 +5,14 @@
 #define vtkSOADataArrayTemplate_txx
 
 #ifdef VTK_SOA_DATA_ARRAY_TEMPLATE_INSTANTIATING
-#define VTK_GDA_VALUERANGE_INSTANTIATING
 #include "vtkDataArrayPrivate.txx"
-#undef VTK_GDA_VALUERANGE_INSTANTIATING
 #endif
 
 #include "vtkSOADataArrayTemplate.h"
 
 #include "vtkArrayIteratorTemplate.h"
 #include "vtkBuffer.h"
+#include "vtkCommand.h"
 
 #include <array>
 #include <cassert>
@@ -29,22 +28,20 @@ vtkSOADataArrayTemplate<ValueType>* vtkSOADataArrayTemplate<ValueType>::New()
 //-----------------------------------------------------------------------------
 template <class ValueType>
 vtkSOADataArrayTemplate<ValueType>::vtkSOADataArrayTemplate()
-  : AoSData(nullptr)
-  , StorageType(StorageTypeEnum::AOS)
 {
-  this->AoSData = vtkBuffer<ValueType>::New();
+  this->SetNumberOfComponents(1); // create at least one component buffer
 }
 
 //-----------------------------------------------------------------------------
 template <class ValueType>
 vtkSOADataArrayTemplate<ValueType>::~vtkSOADataArrayTemplate()
 {
-  this->ClearSOAData();
-  if (this->AoSData)
+  for (size_t cc = 0; cc < this->Data.size(); ++cc)
   {
-    this->AoSData->Delete();
-    this->AoSData = nullptr;
+    // vtkBuffer knows the free function and whether or not to actually deallocate the memory
+    this->Data[cc]->Delete();
   }
+  this->Data.clear();
 }
 
 //-----------------------------------------------------------------------------
@@ -54,17 +51,14 @@ void vtkSOADataArrayTemplate<ValueType>::SetNumberOfComponents(int val)
   this->GenericDataArrayType::SetNumberOfComponents(val);
   size_t numComps = static_cast<size_t>(this->GetNumberOfComponents());
   assert(numComps >= 1);
-  if (this->StorageType == StorageTypeEnum::SOA)
+  while (this->Data.size() > numComps)
   {
-    while (this->Data.size() > numComps)
-    {
-      this->Data.back()->Delete();
-      this->Data.pop_back();
-    }
-    while (this->Data.size() < numComps)
-    {
-      this->Data.push_back(vtkBuffer<ValueType>::New());
-    }
+    this->Data.back()->Delete();
+    this->Data.pop_back();
+  }
+  while (this->Data.size() < numComps)
+  {
+    this->Data.push_back(vtkBuffer<ValueType>::New());
   }
 }
 
@@ -84,36 +78,19 @@ void vtkSOADataArrayTemplate<ValueType>::ShallowCopy(vtkDataArray* other)
   SelfType* o = SelfType::FastDownCast(other);
   if (o)
   {
-    this->Size = o->Size;
+    this->Capacity = o->Capacity;
     this->MaxId = o->MaxId;
     this->SetName(o->Name);
     this->SetNumberOfComponents(o->NumberOfComponents);
     this->CopyComponentNames(o);
-    this->StorageType = o->StorageType;
-    if (o->StorageType == StorageTypeEnum::SOA)
+    assert(this->Data.size() == o->Data.size());
+    for (int cc = 0; cc < static_cast<int>(this->Data.size()); ++cc)
     {
-      assert(this->Data.size() == o->Data.size());
-      for (size_t cc = 0; cc < this->Data.size(); ++cc)
-      {
-        vtkBuffer<ValueType>* thisBuffer = this->Data[cc];
-        vtkBuffer<ValueType>* otherBuffer = o->Data[cc];
-        if (thisBuffer != otherBuffer)
-        {
-          thisBuffer->Delete();
-          this->Data[cc] = otherBuffer;
-          otherBuffer->Register(nullptr);
-        }
-      }
-    }
-    else
-    {
-      vtkBuffer<ValueType>* thisBuffer = this->AoSData;
-      vtkBuffer<ValueType>* otherBuffer = o->AoSData;
+      vtkBuffer<ValueType>* thisBuffer = this->Data[cc];
+      vtkBuffer<ValueType>* otherBuffer = o->Data[cc];
       if (thisBuffer != otherBuffer)
       {
-        thisBuffer->Delete();
-        this->AoSData = otherBuffer;
-        otherBuffer->Register(nullptr);
+        this->SetBuffer(cc, otherBuffer);
       }
     }
     this->DataChanged();
@@ -165,36 +142,28 @@ void vtkSOADataArrayTemplate<ValueType>::InsertTuples(
   }
 
   vtkIdType newSize = (maxDstTupleId + 1) * this->NumberOfComponents;
-  if (this->Size < newSize)
+  if (this->Capacity < newSize)
   {
-    if (!this->Resize(maxDstTupleId + 1))
+    if (!this->ReserveTuples(maxDstTupleId + 1))
     {
-      vtkErrorMacro("Resize failed.");
+      vtkErrorMacro("ReserveTuples failed.");
       return;
     }
   }
 
-  this->MaxId = std::max(this->MaxId, newSize - 1);
-
-  if (this->StorageType == StorageTypeEnum::SOA)
+  // Update the MaxId only if actually larger.
+  // NB: for thread safety, don't use std::max here because it would write unconditionally.
+  if (newSize - 1 > this->MaxId) // NOLINT(readability-use-std-min-max)
   {
-    for (int c = 0; c < numComps; ++c)
-    {
-      ValueType* srcBegin = other->GetComponentArrayPointer(c) + srcStart;
-      ValueType* srcEnd = srcBegin + n;
-      ValueType* dstBegin = this->GetComponentArrayPointer(c) + dstStart;
-      std::copy(srcBegin, srcEnd, dstBegin);
-    }
+    this->MaxId = newSize - 1;
   }
-  else
+
+  for (int c = 0; c < numComps; ++c)
   {
-    ValueType* target = this->AoSData->GetBuffer();
-    for (vtkIdType i = srcStart; i < srcStart + n; i++)
-    {
-      std::vector<ValueType> values(numComps);
-      other->GetTypedTuple(i, values.data());
-      std::copy(values.begin(), values.end(), target + i * numComps);
-    }
+    ValueType* srcBegin = other->GetComponentArrayPointer(c) + srcStart;
+    ValueType* srcEnd = srcBegin + n;
+    ValueType* dstBegin = this->GetComponentArrayPointer(c) + dstStart;
+    std::copy(srcBegin, srcEnd, dstBegin);
   }
 }
 
@@ -202,20 +171,8 @@ void vtkSOADataArrayTemplate<ValueType>::InsertTuples(
 template <class ValueType>
 void vtkSOADataArrayTemplate<ValueType>::FillTypedComponent(int compIdx, ValueType value)
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
-  {
-    ValueType* buffer = this->Data[compIdx]->GetBuffer();
-    std::fill(buffer, buffer + this->GetNumberOfTuples(), value);
-  }
-  else
-  {
-    ValueType* buffer = this->AoSData->GetBuffer();
-    int numComps = this->GetNumberOfComponents();
-    for (vtkIdType i = 0; i < this->GetNumberOfTuples(); i++)
-    {
-      buffer[i * numComps + compIdx] = value;
-    }
-  }
+  ValueType* buffer = this->Data[compIdx]->GetBuffer();
+  std::fill(buffer, buffer + this->GetNumberOfTuples(), value);
 }
 
 //-----------------------------------------------------------------------------
@@ -231,12 +188,6 @@ void vtkSOADataArrayTemplate<ValueType>::SetArray(
       << "' specified. "
          "Use `SetNumberOfComponents` first to set the number of components.");
     return;
-  }
-
-  if (this->StorageType == StorageTypeEnum::AOS && this->AoSData)
-  {
-    this->AoSData->Delete();
-    this->AoSData = nullptr;
   }
 
   while (this->Data.size() < static_cast<size_t>(numComps))
@@ -265,12 +216,77 @@ void vtkSOADataArrayTemplate<ValueType>::SetArray(
 
   if (updateMaxId)
   {
-    this->Size = numComps * size;
-    this->MaxId = this->Size - 1;
+    this->Capacity = numComps * size;
+    this->MaxId = this->Capacity - 1;
   }
-  this->StorageType = StorageTypeEnum::SOA;
 
   this->DataChanged();
+  this->InvokeEvent(vtkCommand::BufferChangedEvent);
+}
+
+//-----------------------------------------------------------------------------
+template <class ValueType>
+void vtkSOADataArrayTemplate<ValueType>::SetBuffer(
+  int comp, vtkAbstractBuffer* buffer, bool updateMaxId)
+{
+  if (buffer == nullptr)
+  {
+    vtkErrorMacro("Cannot set a null buffer.");
+    return;
+  }
+
+  vtkBuffer<ValueType>* typedBuffer = vtkBuffer<ValueType>::SafeDownCast(buffer);
+  if (typedBuffer == nullptr)
+  {
+    vtkErrorMacro("Buffer type does not match array type. Expected vtkBuffer<"
+      << this->GetDataTypeAsString() << ">.");
+    return;
+  }
+
+  this->SetBuffer(comp, typedBuffer, updateMaxId);
+}
+
+//-----------------------------------------------------------------------------
+template <class ValueType>
+void vtkSOADataArrayTemplate<ValueType>::SetBuffer(
+  int comp, vtkBuffer<ValueType>* buffer, bool updateMaxId)
+{
+  const int numComps = this->GetNumberOfComponents();
+  if (comp >= numComps || comp < 0)
+  {
+    vtkErrorMacro("Invalid component number '"
+      << comp
+      << "' specified. "
+         "Use `SetNumberOfComponents` first to set the number of components.");
+    return;
+  }
+
+  if (buffer == nullptr)
+  {
+    vtkErrorMacro("Cannot set a null buffer.");
+    return;
+  }
+
+  while (this->Data.size() < static_cast<size_t>(numComps))
+  {
+    this->Data.push_back(vtkBuffer<ValueType>::New());
+  }
+
+  // Replace the old buffer with the new one
+  if (this->Data[comp] != buffer)
+  {
+    this->Data[comp]->Delete();
+    this->Data[comp] = buffer;
+    buffer->Register(nullptr);
+  }
+
+  if (updateMaxId)
+  {
+    this->Size = numComps * buffer->GetSize();
+    this->MaxId = this->Size - 1;
+  }
+  this->DataChanged();
+  this->InvokeEvent(vtkCommand::BufferChangedEvent);
 }
 
 //-----------------------------------------------------------------------------
@@ -305,11 +321,6 @@ template <class ValueType>
 typename vtkSOADataArrayTemplate<ValueType>::ValueType*
 vtkSOADataArrayTemplate<ValueType>::GetComponentArrayPointer(int comp)
 {
-  if (this->StorageType == StorageTypeEnum::AOS)
-  {
-    vtkErrorMacro("Data is currently stored in AOS mode.");
-    return nullptr;
-  }
   const int numComps = this->GetNumberOfComponents();
   if (comp >= numComps || comp < 0)
   {
@@ -322,21 +333,25 @@ vtkSOADataArrayTemplate<ValueType>::GetComponentArrayPointer(int comp)
 
 //-----------------------------------------------------------------------------
 template <class ValueType>
+vtkBuffer<ValueType>* vtkSOADataArrayTemplate<ValueType>::GetComponentBuffer(int comp)
+{
+  const int numComps = this->GetNumberOfComponents();
+  if (comp >= numComps || comp < 0)
+  {
+    vtkErrorMacro("Invalid component number '" << comp << "' specified.");
+    return nullptr;
+  }
+
+  return this->Data[comp];
+}
+
+//-----------------------------------------------------------------------------
+template <class ValueType>
 bool vtkSOADataArrayTemplate<ValueType>::AllocateTuples(vtkIdType numTuples)
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
+  for (size_t cc = 0, max = this->Data.size(); cc < max; ++cc)
   {
-    for (size_t cc = 0, max = this->Data.size(); cc < max; ++cc)
-    {
-      if (!this->Data[cc]->Allocate(numTuples))
-      {
-        return false;
-      }
-    }
-  }
-  else
-  {
-    if (!this->AoSData->Allocate(numTuples * this->GetNumberOfComponents()))
+    if (!this->Data[cc]->Allocate(numTuples))
     {
       return false;
     }
@@ -348,22 +363,24 @@ bool vtkSOADataArrayTemplate<ValueType>::AllocateTuples(vtkIdType numTuples)
 template <class ValueType>
 bool vtkSOADataArrayTemplate<ValueType>::ReallocateTuples(vtkIdType numTuples)
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
+  bool bufferChanged = false;
+  for (size_t cc = 0, max = this->Data.size(); cc < max; ++cc)
   {
-    for (size_t cc = 0, max = this->Data.size(); cc < max; ++cc)
+    vtkIdType oldSize = this->Data[cc]->GetSize();
+    if (numTuples != oldSize)
     {
       if (!this->Data[cc]->Reallocate(numTuples))
       {
         return false;
       }
+      bufferChanged = true;
     }
   }
-  else
+
+  // Notify observers that the buffer may have changed
+  if (bufferChanged)
   {
-    if (!this->AoSData->Reallocate(numTuples * this->GetNumberOfComponents()))
-    {
-      return false;
-    }
+    this->InvokeEvent(vtkCommand::BufferChangedEvent);
   }
   return true;
 }
@@ -372,48 +389,13 @@ bool vtkSOADataArrayTemplate<ValueType>::ReallocateTuples(vtkIdType numTuples)
 template <class ValueType>
 void* vtkSOADataArrayTemplate<ValueType>::GetVoidPointer(vtkIdType valueIdx)
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
+  if (this->GetNumberOfComponents() == 1)
   {
-    if (this->GetNumberOfComponents() == 1)
-    {
-      // if there's only a single component the data will be stored in
-      // contiguous memory so we can return the pointer to that array
-      return static_cast<void*>(this->Data[0]->GetBuffer() + valueIdx);
-    }
-
-    // Allow warnings to be silenced:
-    const char* silence = getenv("VTK_SILENCE_GET_VOID_POINTER_WARNINGS");
-    if (!silence)
-    {
-      vtkWarningMacro(<< "GetVoidPointer called. This is very expensive for "
-                         "non-array-of-structs subclasses, as the scalar array "
-                         "must be generated for each call. Using the "
-                         "vtkGenericDataArray API with vtkArrayDispatch are "
-                         "preferred. Define the environment variable "
-                         "VTK_SILENCE_GET_VOID_POINTER_WARNINGS to silence "
-                         "this warning.");
-    }
-
-    size_t numValues = this->GetNumberOfValues();
-
-    if (!this->AoSData)
-    {
-      this->AoSData = vtkBuffer<ValueType>::New();
-    }
-
-    if (!this->AoSData->Allocate(static_cast<vtkIdType>(numValues)))
-    {
-      vtkErrorMacro(<< "Error allocating a buffer of " << numValues << " '"
-                    << this->GetDataTypeAsString() << "' elements.");
-      return nullptr;
-    }
-
-    this->ExportToVoidPointer(static_cast<void*>(this->AoSData->GetBuffer()));
-    this->ClearSOAData();
-    this->StorageType = StorageTypeEnum::AOS;
+    // if there's only a single component the data will be stored in
+    // contiguous memory so we can return the pointer to that array
+    return static_cast<void*>(this->Data[0]->GetBuffer() + valueIdx);
   }
-
-  return static_cast<void*>(this->AoSData->GetBuffer() + valueIdx);
+  return this->Superclass::GetVoidPointer(valueIdx); // NOLINT(bugprone-unsafe-functions)
 }
 
 //-----------------------------------------------------------------------------
@@ -433,39 +415,14 @@ void vtkSOADataArrayTemplate<ValueType>::ExportToVoidPointer(void* voidPtr)
     return;
   }
 
-  if (this->StorageType == StorageTypeEnum::SOA)
+  ValueType* ptr = static_cast<ValueType*>(voidPtr);
+  for (vtkIdType t = 0; t < numTuples; ++t)
   {
-    ValueType* ptr = static_cast<ValueType*>(voidPtr);
-    for (vtkIdType t = 0; t < numTuples; ++t)
+    for (int c = 0; c < this->NumberOfComponents; ++c)
     {
-      for (int c = 0; c < this->NumberOfComponents; ++c)
-      {
-        *ptr++ = this->Data[c]->GetBuffer()[t];
-      }
+      *ptr++ = this->Data[c]->GetBuffer()[t];
     }
   }
-  else
-  {
-    ValueType* buffer = this->AoSData->GetBuffer();
-    std::copy(
-      buffer, buffer + numTuples * this->GetNumberOfComponents(), static_cast<ValueType*>(voidPtr));
-  }
-}
-
-//-----------------------------------------------------------------------------
-template <class ValueType>
-void vtkSOADataArrayTemplate<ValueType>::ClearSOAData()
-{
-  if (this->StorageType == StorageTypeEnum::AOS)
-  {
-    return;
-  }
-  for (size_t cc = 0; cc < this->Data.size(); ++cc)
-  {
-    // vtkBuffer knows the free function and whether or not to actually deallocate the memory
-    this->Data[cc]->Delete();
-  }
-  this->Data.clear();
 }
 
 //-----------------------------------------------------------------------------
@@ -476,17 +433,13 @@ void vtkSOADataArrayTemplate<ValueType>::CopyData(vtkSOADataArrayTemplate<ValueT
   vtkIdType numberOfTuples = this->GetNumberOfTuples();
   if (numberOfComponents == 1)
   { // first optimization is if we have contiguous memory for both src and this
-    ValueType* srcBegin = src->StorageType == StorageTypeEnum::SOA
-      ? src->GetComponentArrayPointer(0)
-      : src->AoSData->GetBuffer();
+    ValueType* srcBegin = src->GetComponentArrayPointer(0);
     ValueType* srcEnd = srcBegin + numberOfTuples;
-    ValueType* dstBegin = this->StorageType == StorageTypeEnum::SOA
-      ? this->GetComponentArrayPointer(0)
-      : this->AoSData->GetBuffer();
+    ValueType* dstBegin = this->GetComponentArrayPointer(0);
 
     std::copy(srcBegin, srcEnd, dstBegin);
   }
-  else if (this->StorageType == StorageTypeEnum::SOA && src->StorageType == StorageTypeEnum::SOA)
+  else
   {
     for (int comp = 0; comp < src->GetNumberOfComponents(); ++comp)
     {
@@ -497,41 +450,15 @@ void vtkSOADataArrayTemplate<ValueType>::CopyData(vtkSOADataArrayTemplate<ValueT
       std::copy(srcBegin, srcEnd, dstBegin);
     }
   }
-  else if (this->StorageType == StorageTypeEnum::AOS && src->StorageType == StorageTypeEnum::AOS)
-  {
-    ValueType* srcBegin = src->AoSData->GetBuffer();
-    ValueType* srcEnd = srcBegin + numberOfTuples * numberOfComponents;
-    ValueType* dstBegin = this->AoSData->GetBuffer();
-
-    std::copy(srcBegin, srcEnd, dstBegin);
-  }
-  else
-  { // mismatching storage types so we'll copy data through the API
-    std::vector<ValueType> tuple(numberOfComponents);
-    for (vtkIdType i = 0; i < numberOfTuples; i++)
-    {
-      src->GetTypedTuple(i, tuple.data());
-      this->SetTypedTuple(i, tuple.data());
-    }
-  }
 }
 
 //-----------------------------------------------------------------------------
 template <class ValueType>
 void vtkSOADataArrayTemplate<ValueType>::GetTypedTuple(vtkIdType tupleIdx, ValueType* tuple) const
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
+  for (size_t cc = 0; cc < this->Data.size(); cc++)
   {
-    for (size_t cc = 0; cc < this->Data.size(); cc++)
-    {
-      tuple[cc] = this->Data[cc]->GetBuffer()[tupleIdx];
-    }
-  }
-  else
-  {
-    ValueType* buffer = this->AoSData->GetBuffer();
-    std::copy(buffer + tupleIdx * this->GetNumberOfComponents(),
-      buffer + (tupleIdx + 1) * this->GetNumberOfComponents(), tuple);
+    tuple[cc] = this->Data[cc]->GetBuffer()[tupleIdx];
   }
 }
 
@@ -540,11 +467,7 @@ template <class ValueType>
 typename vtkSOADataArrayTemplate<ValueType>::ValueType
 vtkSOADataArrayTemplate<ValueType>::GetTypedComponent(vtkIdType tupleIdx, int comp) const
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
-  {
-    return this->Data[comp]->GetBuffer()[tupleIdx];
-  }
-  return this->AoSData->GetBuffer()[tupleIdx * this->GetNumberOfComponents() + comp];
+  return this->Data[comp]->GetBuffer()[tupleIdx];
 }
 
 //-----------------------------------------------------------------------------
@@ -552,14 +475,7 @@ template <class ValueType>
 void vtkSOADataArrayTemplate<ValueType>::SetTypedComponent(
   vtkIdType tupleIdx, int comp, ValueType value)
 {
-  if (this->StorageType == StorageTypeEnum::SOA)
-  {
-    this->Data[comp]->GetBuffer()[tupleIdx] = value;
-  }
-  else
-  {
-    this->AoSData->GetBuffer()[tupleIdx * this->GetNumberOfComponents() + comp] = value;
-  }
+  this->Data[comp]->GetBuffer()[tupleIdx] = value;
 }
 
 VTK_ABI_NAMESPACE_END

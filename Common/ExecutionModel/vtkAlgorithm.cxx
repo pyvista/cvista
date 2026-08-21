@@ -5,7 +5,6 @@
 #include "vtkAlgorithmOutput.h"
 #include "vtkCellData.h"
 #include "vtkCollection.h"
-#include "vtkCollectionIterator.h"
 #include "vtkCommand.h"
 #include "vtkCompositeDataPipeline.h"
 #include "vtkDataArray.h"
@@ -940,13 +939,10 @@ void vtkAlgorithm::SetExecutive(vtkExecutive* newExecutive)
 vtkTypeBool vtkAlgorithm::ProcessRequest(
   vtkInformation* request, vtkCollection* inInfo, vtkInformationVector* outInfo)
 {
-  vtkSmartPointer<vtkCollectionIterator> iter;
-  iter.TakeReference(inInfo->NewIterator());
-
   std::vector<vtkInformationVector*> ivectors;
-  for (iter->GoToFirstItem(); !iter->IsDoneWithTraversal(); iter->GoToNextItem())
+  for (vtkObject* obj : *inInfo)
   {
-    vtkInformationVector* iv = vtkInformationVector::SafeDownCast(iter->GetCurrentObject());
+    vtkInformationVector* iv = vtkInformationVector::SafeDownCast(obj);
     if (!iv)
     {
       return 0;
@@ -1648,20 +1644,20 @@ vtkAlgorithmOutput* vtkAlgorithm::GetInputConnection(int port, int index)
 }
 
 //------------------------------------------------------------------------------
-void vtkAlgorithm::Update()
+bool vtkAlgorithm::Update()
 {
   int port = -1;
   if (this->GetNumberOfOutputPorts())
   {
     port = 0;
   }
-  this->Update(port);
+  return this->Update(port);
 }
 
 //------------------------------------------------------------------------------
-void vtkAlgorithm::Update(int port)
+bool vtkAlgorithm::Update(int port)
 {
-  this->GetExecutive()->Update(port);
+  return this->GetExecutive()->Update(port);
 }
 
 //------------------------------------------------------------------------------
@@ -1748,37 +1744,39 @@ void vtkAlgorithm::PropagateUpdateExtent()
 }
 
 //------------------------------------------------------------------------------
-void vtkAlgorithm::UpdateInformation()
+bool vtkAlgorithm::UpdateInformation()
 {
   vtkDemandDrivenPipeline* ddp = vtkDemandDrivenPipeline::SafeDownCast(this->GetExecutive());
   if (ddp)
   {
-    ddp->UpdateInformation();
+    return static_cast<bool>(ddp->UpdateInformation());
   }
+  return false;
 }
 
 //------------------------------------------------------------------------------
-void vtkAlgorithm::UpdateDataObject()
+bool vtkAlgorithm::UpdateDataObject()
 {
   vtkDemandDrivenPipeline* ddp = vtkDemandDrivenPipeline::SafeDownCast(this->GetExecutive());
   if (ddp)
   {
-    ddp->UpdateDataObject();
+    return static_cast<bool>(ddp->UpdateDataObject());
   }
+  return false;
 }
 
 //------------------------------------------------------------------------------
-void vtkAlgorithm::UpdateWholeExtent()
+bool vtkAlgorithm::UpdateWholeExtent()
 {
   vtkStreamingDemandDrivenPipeline* sddp =
     vtkStreamingDemandDrivenPipeline::SafeDownCast(this->GetExecutive());
   if (sddp)
   {
-    sddp->UpdateWholeExtent();
+    return static_cast<bool>(sddp->UpdateWholeExtent());
   }
   else
   {
-    this->Update();
+    return this->Update();
   }
 }
 

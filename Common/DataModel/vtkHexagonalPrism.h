@@ -178,11 +178,11 @@ public:
 
 protected:
   vtkHexagonalPrism();
-  ~vtkHexagonalPrism() override;
+  ~vtkHexagonalPrism() override = default;
 
-  vtkLine* Line;
-  vtkQuad* Quad;
-  vtkPolygon* Polygon;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkQuad> Quad;
+  vtkSmartPointer<vtkPolygon> Polygon;
 
 private:
   vtkHexagonalPrism(const vtkHexagonalPrism&) = delete;

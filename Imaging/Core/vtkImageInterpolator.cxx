@@ -146,20 +146,21 @@ namespace
 template <class F, class T>
 struct vtkImageNLCInterpolate
 {
-  static void Nearest(vtkInterpolationInfo* info, const F point[3], F* outPtr);
+  static void Nearest(VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr);
 
-  static void Trilinear(vtkInterpolationInfo* info, const F point[3], F* outPtr);
+  static void Trilinear(VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr);
 
-  static void Tricubic(vtkInterpolationInfo* info, const F point[3], F* outPtr);
+  static void Tricubic(VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr);
 };
 
 //------------------------------------------------------------------------------
 template <class F, class T>
-void vtkImageNLCInterpolate<F, T>::Nearest(vtkInterpolationInfo* info, const F point[3], F* outPtr)
+void vtkImageNLCInterpolate<F, T>::Nearest(
+  VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr)
 {
   const T* inPtr = static_cast<const T*>(info->Pointer);
-  int* inExt = info->Extent;
-  vtkIdType* inInc = info->Increments;
+  const int* inExt = info->Extent;
+  const vtkIdType* inInc = info->Increments;
   int numscalars = info->NumberOfComponents;
 
   int inIdX0 = vtkInterpolationMath::Round(point[0]);
@@ -197,11 +198,11 @@ void vtkImageNLCInterpolate<F, T>::Nearest(vtkInterpolationInfo* info, const F p
 //------------------------------------------------------------------------------
 template <class F, class T>
 void vtkImageNLCInterpolate<F, T>::Trilinear(
-  vtkInterpolationInfo* info, const F point[3], F* outPtr)
+  VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr)
 {
   const T* inPtr = static_cast<const T*>(info->Pointer);
-  int* inExt = info->Extent;
-  vtkIdType* inInc = info->Increments;
+  const int* inExt = info->Extent;
+  const vtkIdType* inInc = info->Increments;
   int numscalars = info->NumberOfComponents;
 
   F fx, fy, fz;
@@ -302,11 +303,12 @@ inline void vtkTricubicInterpWeights(T F[4], T f)
 //------------------------------------------------------------------------------
 // tricubic interpolation
 template <class F, class T>
-void vtkImageNLCInterpolate<F, T>::Tricubic(vtkInterpolationInfo* info, const F point[3], F* outPtr)
+void vtkImageNLCInterpolate<F, T>::Tricubic(
+  VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr)
 {
   const T* inPtr = static_cast<const T*>(info->Pointer);
-  int* inExt = info->Extent;
-  vtkIdType* inInc = info->Increments;
+  const int* inExt = info->Extent;
+  const vtkIdType* inInc = info->Increments;
   int numscalars = info->NumberOfComponents;
 
   F fx, fy, fz;
@@ -445,7 +447,8 @@ void vtkImageNLCInterpolate<F, T>::Tricubic(vtkInterpolationInfo* info, const F 
 // Get the interpolation function for the specified data types
 template <class F>
 void vtkImageInterpolatorGetInterpolationFunc(
-  void (**interpolate)(vtkInterpolationInfo*, const F[3], F*), int dataType, int interpolationMode)
+  void (**interpolate)(VTK_FUTURE_CONST vtkInterpolationInfo*, const F[3], F*), int dataType,
+  int interpolationMode)
 {
   switch (interpolationMode)
   {
@@ -997,7 +1000,7 @@ void vtkImageInterpolatorPrecomputeWeights(const F newmat[16], const int outExt[
 
 //------------------------------------------------------------------------------
 void vtkImageInterpolator::GetInterpolationFunc(
-  void (**func)(vtkInterpolationInfo*, const double[3], double*))
+  void (**func)(VTK_FUTURE_CONST vtkInterpolationInfo*, const double[3], double*))
 {
   vtkImageInterpolatorGetInterpolationFunc(
     func, this->InterpolationInfo->ScalarType, this->InterpolationMode);
@@ -1005,7 +1008,7 @@ void vtkImageInterpolator::GetInterpolationFunc(
 
 //------------------------------------------------------------------------------
 void vtkImageInterpolator::GetInterpolationFunc(
-  void (**func)(vtkInterpolationInfo*, const float[3], float*))
+  void (**func)(VTK_FUTURE_CONST vtkInterpolationInfo*, const float[3], float*))
 {
   vtkImageInterpolatorGetInterpolationFunc(
     func, this->InterpolationInfo->ScalarType, this->InterpolationMode);

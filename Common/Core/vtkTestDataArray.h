@@ -64,17 +64,13 @@ public:
     this->Array->SetTypedComponent(tupleIdx, compIdx, value);
   }
 
-  void* GetVoidPointer(vtkIdType valueIdx) override
-  {
-    return this->Array->GetVoidPointer(valueIdx);
-  }
+  void* GetVoidPointer(vtkIdType valueIdx) override { return this->Array->GetPointer(valueIdx); }
 
 protected:
   vtkTestDataArray() { this->Array = ArrayType::New(); }
   ~vtkTestDataArray() override { this->Array->Delete(); }
 
-  bool AllocateTuples(vtkIdType numTuples) { return this->Array->Allocate(numTuples) != 0; }
-  bool ReallocateTuples(vtkIdType numTuples) { return this->Array->Allocate(numTuples) != 0; }
+  bool ReallocateTuples(vtkIdType numTuples) { return this->Array->ReserveTuples(numTuples) != 0; }
 
 private:
   ArrayType* Array;

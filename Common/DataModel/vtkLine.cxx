@@ -8,6 +8,8 @@
 #include "vtkDataArrayRange.h"
 #include "vtkDoubleArray.h"
 #include "vtkIncrementalPointLocator.h"
+#include "vtkMarchingCellsClipCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkMath.h"
 #include "vtkMathUtilities.h"
 #include "vtkObjectFactory.h"
@@ -15,6 +17,19 @@
 #include "vtkPoints.h"
 
 #include <algorithm>
+
+namespace
+{
+//------------------------------------------------------------------------------
+[[maybe_unused]] constexpr const char* Topology = R"(
+   Line topology:
+
+      0-----------1
+)";
+
+//------------------------------------------------------------------------------
+double ParametricCoords[6] = { 0.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
+}
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkLine);
@@ -36,8 +51,6 @@ vtkLine::vtkLine()
 int vtkLine::EvaluatePosition(const double x[3], double closestPoint[3], int& subId,
   double pcoords[3], double& dist2, double weights[])
 {
-  const double *a1, *a2;
-
   subId = 0;
   pcoords[0] = pcoords[1] = pcoords[2] = 0.0;
 
@@ -50,8 +63,8 @@ int vtkLine::EvaluatePosition(const double x[3], double closestPoint[3], int& su
   }
   const double* pts = pointsArray->GetPointer(0);
 
-  a1 = pts;
-  a2 = pts + 3;
+  const double* a1 = pts;
+  const double* a2 = pts + 3;
 
   // DistanceToLine sets pcoords[0] to a value t
   dist2 = vtkLine::DistanceToLine(x, a1, a2, pcoords[0], closestPoint);
@@ -60,19 +73,18 @@ int vtkLine::EvaluatePosition(const double x[3], double closestPoint[3], int& su
   weights[0] = 1.0 - pcoords[0];
   weights[1] = pcoords[0];
 
-  return (pcoords[0] >= 0.0 && pcoords[0] <= 1.0);
+  return pcoords[0] >= 0.0 && pcoords[0] <= 1.0;
 }
 
 //------------------------------------------------------------------------------
 void vtkLine::EvaluateLocation(
   int& vtkNotUsed(subId), const double pcoords[3], double x[3], double* weights)
 {
-  int i;
   double a1[3], a2[3];
   this->Points->GetPoint(0, a1);
   this->Points->GetPoint(1, a2);
 
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     x[i] = a1[i] + pcoords[0] * (a2[i] - a1[i]);
   }
@@ -114,10 +126,10 @@ int vtkLine::Intersection(const double a1[3], const double a2[3], const double b
   c[0] = vtkMath::Dot(a21, b1a1);
   c[1] = -vtkMath::Dot(b21, b1a1);
 
-  //  Solve the system of equations. Check for colinearity.
+  //  Solve the system of equations. Check for collinearity.
   if (vtkMath::SolveLinearSystem(A, c, 2) == 0)
   {
-    // The lines are colinear. Therefore, one of the four endpoints is the
+    // The lines are collinear. Therefore, one of the four endpoints is the
     // point of closest approach
     double minDist = VTK_DOUBLE_MAX;
     const double* p[4] = { a1, a2, b1, b2 };
@@ -137,9 +149,9 @@ int vtkLine::Intersection(const double a1[3], const double a2[3], const double b
       }
     }
     return OnLine;
-  } // if colinear
+  } // if collinear
 
-  // The lines are not colinear, check for intersection.
+  // The lines are not collinear, check for intersection.
   // However if they are nearly parallel then the solution
   // found by vtkMath::SolveLinearSystem may be very inaccurate.
   // We hence need to check the solution against a tolerance criterion.
@@ -202,10 +214,16 @@ int vtkLine::Intersection(const double a1[3], const double a2[3], const double b
 
 int vtkLine::Inflate(double dist)
 {
-  auto pointRange = vtk::DataArrayTupleRange<3>(this->Points->GetData());
-  using TupleRef = decltype(pointRange)::TupleReferenceType;
-  using Scalar = typename TupleRef::value_type;
-  TupleRef p0 = pointRange[0], p1 = pointRange[1];
+  const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
+  if (!pointsArray)
+  {
+    vtkErrorMacro(<< "Points should be double type");
+    return 0;
+  }
+  auto pointRange = vtk::DataArrayTupleRange<3>(pointsArray);
+  using Scalar = vtkDoubleArray::ValueType;
+
+  auto p0 = pointRange[0], p1 = pointRange[1];
   if (vtkMathUtilities::NearlyEqual<Scalar>(p0[0], p1[0]) &&
     vtkMathUtilities::NearlyEqual<Scalar>(p0[1], p1[1]) &&
     vtkMathUtilities::NearlyEqual<Scalar>(p0[2], p1[2]))
@@ -242,49 +260,25 @@ int vtkLine::CellBoundary(int vtkNotUsed(subId), const double pcoords[3], vtkIdL
 }
 
 //------------------------------------------------------------------------------
-//
-// marching lines case table
-//
-typedef int VERT_LIST;
-
-struct VERT_CASES_t
-{
-  VERT_LIST verts[2];
-};
-using VERT_CASES = struct VERT_CASES_t;
-
-static VERT_CASES vertCases[4] = {
-  { { -1, -1 } },
-  { { 1, 0 } },
-  { { 0, 1 } },
-  { { -1, -1 } },
-};
-
-//------------------------------------------------------------------------------
 void vtkLine::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
   vtkCellArray* verts, vtkCellArray* vtkNotUsed(lines), vtkCellArray* vtkNotUsed(polys),
   vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd)
 {
-  static const int CASE_MASK[2] = { 1, 2 };
-  int index, i, newCellId;
-  VERT_CASES* vertCase;
-  VERT_LIST* vert;
+  static constexpr int CASE_MASK[2] = { 1, 2 };
   double t, x[3], x1[3], x2[3];
   vtkIdType pts[1];
 
-  //
   // Build the case table
-  //
-  for (i = 0, index = 0; i < 2; i++)
+  int caseIndex = 0;
+  for (int i = 0; i < 2; i++)
   {
     if (cellScalars->GetComponent(i, 0) >= value)
     {
-      index |= CASE_MASK[i];
+      caseIndex |= CASE_MASK[i];
     }
   }
 
-  vertCase = vertCases + index;
-  vert = vertCase->verts;
+  const auto& vert = vtkMarchingCellsContourCases::GetLineCase(caseIndex);
 
   if (vert[0] > -1)
   {
@@ -292,7 +286,7 @@ void vtkLine::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPoi
       (cellScalars->GetComponent(vert[1], 0) - cellScalars->GetComponent(vert[0], 0));
     this->Points->GetPoint(vert[0], x1);
     this->Points->GetPoint(vert[1], x2);
-    for (i = 0; i < 3; i++)
+    for (int i = 0; i < 3; i++)
     {
       x[i] = x1[i] + t * (x2[i] - x1[i]);
     }
@@ -306,7 +300,7 @@ void vtkLine::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPoi
         outPd->InterpolateEdge(inPd, pts[0], p1, p2, t);
       }
     }
-    newCellId = verts->InsertNextCell(1, pts);
+    const vtkIdType newCellId = verts->InsertNextCell(1, pts);
     if (outCd)
     {
       outCd->CopyData(inCd, cellId, newCellId);
@@ -379,7 +373,7 @@ double vtkLine::DistanceBetweenLineSegments(double l0[3], double l1[3], // line 
 
   if (D < 1e-6)
   {
-    // The lines are colinear. Therefore, one of the four endpoints is the
+    // The lines are collinear. Therefore, one of the four endpoints is the
     // point of closest approach
     double minDist = VTK_DOUBLE_MAX;
     double* p[4] = { l0, l1, m0, m1 };
@@ -471,8 +465,8 @@ double vtkLine::DistanceBetweenLineSegments(double l0[3], double l1[3], // line 
   }
 
   // finally do the division to get sc and tc
-  t1 = (fabs(sN) < 1e-6 ? 0.0 : sN / sD);
-  t2 = (fabs(tN) < 1e-6 ? 0.0 : tN / tD);
+  t1 = (std::abs(sN) < 1e-6 ? 0.0 : sN / sD);
+  t2 = (std::abs(tN) < 1e-6 ? 0.0 : tN / tD);
 
   // Closest Point on segment1 = S1(t1) = l0 + t1*u
   // Closest Point on segment2 = S1(t2) = m0 + t2*v
@@ -514,7 +508,7 @@ double vtkLine::DistanceToLine(
   {
     double denom = vtkMath::Dot(p21, p21);
 
-    // trying to avoid an expensive fabs
+    // trying to avoid an expensive std::abs
     double tolerance = VTK_TOL * num;
     if (tolerance < 0.0)
     {
@@ -571,10 +565,9 @@ double vtkLine::DistanceToLine(
 //
 double vtkLine::DistanceToLine(const double x[3], const double p1[3], const double p2[3])
 {
-  int i;
   double np1[3], p1p2[3], proj, den;
 
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     np1[i] = x[i] - p1[i];
     p1p2[i] = p1[i] - p2[i];
@@ -582,7 +575,7 @@ double vtkLine::DistanceToLine(const double x[3], const double p1[3], const doub
 
   if ((den = vtkMath::Norm(p1p2)) != 0.0)
   {
-    for (i = 0; i < 3; i++)
+    for (int i = 0; i < 3; i++)
     {
       p1p2[i] /= den;
     }
@@ -598,13 +591,13 @@ double vtkLine::DistanceToLine(const double x[3], const double p1[3], const doub
 }
 
 //------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
 // Line-line intersection. Intersection has to occur within [0,1] parametric
 // coordinates and with specified tolerance.
 int vtkLine::IntersectWithLine(const double p1[3], const double p2[3], double tol, double& t,
   double x[3], double pcoords[3], int& subId)
 {
   double a1[3], a2[3];
-  int i;
 
   subId = 0;
   pcoords[1] = pcoords[2] = 0.0;
@@ -619,7 +612,7 @@ int vtkLine::IntersectWithLine(const double p1[3], const double p2[3], double to
   {
     double projXYZ[3];
     // make sure we are within tolerance
-    for (i = 0; i < 3; i++)
+    for (int i = 0; i < 3; i++)
     {
       x[i] = a1[i] + pcoords[0] * (a2[i] - a1[i]);
       projXYZ[i] = p1[i] + t * (p2[i] - p1[i]);
@@ -668,18 +661,17 @@ void vtkLine::Derivatives(int vtkNotUsed(subId), const double vtkNotUsed(pcoords
   const double* values, int dim, double* derivs)
 {
   double x0[3], x1[3], deltaX[3];
-  int i, j;
 
   this->Points->GetPoint(0, x0);
   this->Points->GetPoint(1, x1);
 
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     deltaX[i] = x1[i] - x0[i];
   }
-  for (i = 0; i < dim; i++)
+  for (int i = 0; i < dim; i++)
   {
-    for (j = 0; j < 3; j++)
+    for (int j = 0; j < 3; j++)
     {
       if (deltaX[j] != 0)
       {
@@ -694,112 +686,90 @@ void vtkLine::Derivatives(int vtkNotUsed(subId), const double vtkNotUsed(pcoords
 }
 
 //------------------------------------------------------------------------------
-// support line clipping
-namespace
-{ // required so we don't violate ODR
-typedef int LINE_LIST;
-struct LINE_CASES_t
-{
-  LINE_LIST lines[2];
-};
-using LINE_CASES = struct LINE_CASES_t;
-
-LINE_CASES lineCases[] = {
-  { { -1, -1 } },   // 0
-  { { 100, 1 } },   // 1
-  { { 0, 101 } },   // 2
-  { { 100, 101 } }, // 3
-};
-}
-
 // Clip this line using scalar value provided. Like contouring, except
 // that it cuts the line to produce other lines.
 void vtkLine::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
   vtkCellArray* lines, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId,
   vtkCellData* outCd, int insideOut)
 {
-  static const int CASE_MASK[3] = { 1, 2 };
-  LINE_CASES* lineCase;
-  int i, j, index, *vert, newCellId;
-  vtkIdType pts[3];
-  int vertexId;
-  double t, x1[3], x2[3], x[3];
+  vtkIdType pts[2];
+  double grdDiffs[2];
+  double x[3], x1[3], x2[3];
 
   // Build the case table
-  if (insideOut)
+  uint8_t caseIndex = 0;
+  for (int pointId = 0; pointId < 2; ++pointId)
   {
-    for (i = 0, index = 0; i < 2; i++)
-    {
-      if (cellScalars->GetComponent(i, 0) <= value)
-      {
-        index |= CASE_MASK[i];
-      }
-    }
+    grdDiffs[pointId] = cellScalars->GetComponent(pointId, 0) - value;
+    caseIndex |= (grdDiffs[pointId] >= 0.0) << pointId;
   }
-  else
+  const uint8_t* thisCase = insideOut
+    ? vtkMarchingCellsClipCases<true>::GetCellCase(VTK_LINE, caseIndex)
+    : vtkMarchingCellsClipCases<false>::GetCellCase(VTK_LINE, caseIndex);
+  using MCCases = vtkMarchingCellsClipCasesBase;
+  const MCCases::EDGEIDXS* edgeVertices = MCCases::GetCellEdges(VTK_LINE);
+  const uint8_t numberOfOutputCells = *thisCase++;
+  assert(numberOfOutputCells <= 1);
+  if (numberOfOutputCells == 0)
   {
-    for (i = 0, index = 0; i < 2; i++)
-    {
-      if (cellScalars->GetComponent(i, 0) > value)
-      {
-        index |= CASE_MASK[i];
-      }
-    }
+    return;
   }
-
-  // Select the case based on the index and get the list of lines for this case
-  lineCase = lineCases + index;
-  vert = lineCase->lines;
-
   // generate clipped line
-  if (vert[0] > -1)
+  /*shape = */ thisCase++;        // Always VTK_LINE
+  /*numPoints =*/thisCase++;      // Always 2
+  for (uint8_t i = 0; i < 2; i++) // insert line
   {
-    for (i = 0; i < 2; i++) // insert line
+    const uint8_t pointIndex = *thisCase++;
+    if (pointIndex <= MCCases::P7) // Input Point
     {
-      // vertex exists, and need not be interpolated
-      if (vert[i] >= 100)
+      this->Points->GetPoint(pointIndex, x);
+      if (locator->InsertUniquePoint(x, pts[i]))
       {
-        vertexId = vert[i] - 100;
-        this->Points->GetPoint(vertexId, x);
-        if (locator->InsertUniquePoint(x, pts[i]))
+        if (outPd)
         {
-          if (outPd)
-          {
-            outPd->CopyData(inPd, this->PointIds->GetId(vertexId), pts[i]);
-          }
-        }
-      }
-
-      else // new vertex, interpolate
-      {
-        t = (value - cellScalars->GetComponent(0, 0)) /
-          (cellScalars->GetComponent(1, 0) - cellScalars->GetComponent(0, 0));
-
-        this->Points->GetPoint(0, x1);
-        this->Points->GetPoint(1, x2);
-        for (j = 0; j < 3; j++)
-        {
-          x[j] = x1[j] + t * (x2[j] - x1[j]);
-        }
-
-        if (locator->InsertUniquePoint(x, pts[i]))
-        {
-          if (outPd)
-          {
-            outPd->InterpolateEdge(
-              inPd, pts[i], this->PointIds->GetId(0), this->PointIds->GetId(1), t);
-          }
+          outPd->CopyData(inPd, this->PointIds->GetId(pointIndex), pts[i]);
         }
       }
     }
-    // check for degenerate lines
-    if (pts[0] != pts[1])
+    else // Mid-Edge Point
     {
-      newCellId = lines->InsertNextCell(2, pts);
-      if (outCd)
+      const auto& edgePoints = edgeVertices[pointIndex - MCCases::EA];
+      uint8_t point1Index = edgePoints[0];
+      uint8_t point2Index = edgePoints[1];
+      double point1ToPoint2 = grdDiffs[point2Index] - grdDiffs[point1Index];
+      if (point1ToPoint2 < 0)
       {
-        outCd->CopyData(inCd, cellId, newCellId);
+        std::swap(point1Index, point2Index);
+        point1ToPoint2 = -point1ToPoint2;
       }
+      const double point1ToIso = 0.0 - grdDiffs[point1Index];
+      const double t = point1ToPoint2 != 0 ? point1ToIso / point1ToPoint2 : 0;
+      this->Points->GetPoint(point1Index, x1);
+      this->Points->GetPoint(point2Index, x2);
+
+      for (int j = 0; j < 3; j++)
+      {
+        x[j] = x1[j] + t * (x2[j] - x1[j]);
+      }
+
+      if (locator->InsertUniquePoint(x, pts[i]))
+      {
+        if (outPd)
+        {
+          vtkIdType pointIndex1 = this->PointIds->GetId(point1Index);
+          vtkIdType pointIndex2 = this->PointIds->GetId(point2Index);
+          outPd->InterpolateEdge(inPd, pts[i], pointIndex1, pointIndex2, t);
+        }
+      }
+    }
+  }
+  // check for degenerate lines
+  if (pts[0] != pts[1])
+  {
+    const vtkIdType newCellId = lines->InsertNextCell(2, pts);
+    if (outCd)
+    {
+      outCd->CopyData(inCd, cellId, newCellId);
     }
   }
 }
@@ -822,10 +792,9 @@ void vtkLine::InterpolationDerivs(const double vtkNotUsed(pcoords)[3], double de
 }
 
 //------------------------------------------------------------------------------
-static double vtkLineCellPCoords[6] = { 0.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
 double* vtkLine::GetParametricCoords()
 {
-  return vtkLineCellPCoords;
+  return ParametricCoords;
 }
 
 //------------------------------------------------------------------------------

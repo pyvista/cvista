@@ -12,13 +12,14 @@
 #ifndef vtkShaderProgram_h
 #define vtkShaderProgram_h
 
+#include "vtkDeprecation.h" // VTK_DEPRECATED_IN_9_6_0()
 #include "vtkObject.h"
 #include "vtkRenderingOpenGL2Module.h" // for export macro
 
-#include <cstddef>       // For std::size_t
-#include <map>           // For member variables.
-#include <string>        // For member variables.
-#include <unordered_map> // For member variables.
+#include <cstddef> // For std::size_t.
+#include <map>     // For member variables.
+#include <string>  // For member variables.
+#include <vector>  // For member variables.
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkMatrix3x3;
@@ -110,9 +111,17 @@ public:
   ///@}
 
   /**
-   * Set/Get the md5 hash of this program
+   * Set/Get the hash of this program
    */
+  std::string GetHash() const { return this->MD5Hash; }
+  void SetHash(const std::string& hash) { this->MD5Hash = hash; }
+
+  /**
+   * Set/Get the hash of this program
+   */
+  VTK_DEPRECATED_IN_9_6_0("Use GetHash instead.")
   std::string GetMD5Hash() const { return this->MD5Hash; }
+  VTK_DEPRECATED_IN_9_6_0("Use SetHash instead.")
   void SetMD5Hash(const std::string& hash) { this->MD5Hash = hash; }
 
   /** Options for attribute normalization. */
@@ -224,6 +233,40 @@ public:
   bool SetUniform4fv(const char* name, int count, const float* f);
   bool SetUniform4fv(const char* name, int count, const float (*f)[4]);
   bool SetUniformMatrix4x4v(const char* name, int count, float* v);
+
+  ///@{
+  /**
+   * Location-based uniform setters.
+   *
+   * These take a uniform location previously obtained from FindUniform()
+   * instead of a name, so the per-call std::map<const char*> lookup is skipped.
+   * Hot render paths that re-set the same handful of uniforms every draw should
+   * resolve the locations once per program link (see GetLinkCount()) and reuse
+   * them. Like the name-based setters, these also gate on the last value
+   * uploaded to this program and skip the glUniform call when it is unchanged.
+   * A location of -1 is a silent no-op (returns false).
+   */
+  bool SetUniformi(int location, int v);
+  bool SetUniformf(int location, float v);
+  bool SetUniform3f(int location, const float v[3]);
+  bool SetUniform3f(int location, const double v[3]);
+  bool SetUniform4f(int location, const float v[4]);
+  bool SetUniform1fv(int location, int count, const float* f);
+  bool SetUniform4fv(int location, int count, const float* f);
+  bool SetUniformMatrix(int location, vtkMatrix3x3* v);
+  bool SetUniformMatrix(int location, vtkMatrix4x4* v);
+  bool SetUniformMatrix3x3(int location, float* v);
+  bool SetUniformMatrix4x4(int location, float* v);
+  bool SetUniformMatrix4x4v(int location, int count, float* v);
+  ///@}
+
+  /**
+   * Number of times this program has been (re)linked. Bumped on every Link().
+   * Cached uniform locations become invalid across a relink; callers that cache
+   * locations key their cache on this counter (plus the program object) to know
+   * when to re-resolve.
+   */
+  unsigned int GetLinkCount() const { return this->LinkCount; }
 
   // How many outputs does this program produce
   // only valid for OpenGL 3.2 or later
@@ -415,31 +458,6 @@ protected:
 
   std::map<int, vtkMTimeType> UniformGroupMTimes;
 
-  // Redundant-uniform-upload elimination. GL uniform state lives in the program
-  // object and persists across binds; it is only reset when the program is
-  // (re)linked. We cache, per uniform location, the exact bytes last uploaded so
-  // a subsequent SetUniform* with a byte-identical payload can skip the glUniform*
-  // call. Skipping a redundant upload leaves the GL pipeline -- and therefore the
-  // framebuffer -- bit-for-bit unchanged. The cache is cleared in ClearMaps(),
-  // which Link() invokes before every (re)link, so stale locations/values can
-  // never survive a relink. Every uniform write in the codebase flows through the
-  // SetUniform* methods below (there are no direct glUniform* callers elsewhere),
-  // so the cache is the single source of truth and stays coherent.
-  // Payloads larger than this are never cached (always uploaded).
-  static constexpr std::size_t MaxCachedUniformBytes = 64; // fits a mat4 of floats
-  struct CachedUniform
-  {
-    std::size_t Size = 0;
-    unsigned char Bytes[MaxCachedUniformBytes];
-  };
-  std::unordered_map<int, CachedUniform> UniformValueCache;
-  bool CacheUniforms = true;
-
-  // Returns true if a glUniform* upload of `nbytes` from `data` to `location` can
-  // be skipped because the identical bytes were already uploaded; otherwise records
-  // the new bytes and returns false (caller must perform the upload).
-  bool UniformValueUnchanged(int location, const void* data, std::size_t nbytes);
-
   friend class VertexArrayObject;
 
 private:
@@ -449,7 +467,24 @@ private:
   // print shader code and report error
   void ReportShaderError(vtkShader* shader);
 
+  /**
+   * Returns true (and stores @p data) when the @p nbytes value at @p data
+   * differs from the value last uploaded to uniform @p location on this program;
+   * returns false when it matches, letting the caller skip the glUniform* call.
+   * GL keeps uniform values per-program across binds, so this stays valid until
+   * the program is relinked (the cache is cleared in ClearMaps()).
+   *
+   * @param location location of the opengl uniform.
+   * @param data data that you want to pass to the opengl uniform.
+   * @param nbytes size of @p data
+   * @return True if @p data differs from the last uploaded @p data. False otherwise.
+   */
+  bool UniformValueChanged(int location, const void* data, std::size_t nbytes);
+
   char* FileNamePrefixForDebugging;
+  std::vector<std::vector<unsigned char>> UniformValueCache;
+  // Bumped on every successful Link(); see GetLinkCount().
+  unsigned int LinkCount = 0;
 };
 
 VTK_ABI_NAMESPACE_END

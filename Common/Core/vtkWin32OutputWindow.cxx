@@ -2,23 +2,30 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkWin32OutputWindow.h"
 
-#include "vtkLogger.h"
 #include "vtkObjectFactory.h"
 #include "vtkStringFormatter.h"
 #include "vtkWindows.h"
 
 #include "vtksys/Encoding.hxx"
 
+#include <condition_variable>
 #include <mutex>
+#include <thread>
 
 #include <iostream>
 
 VTK_ABI_NAMESPACE_BEGIN
+#define WM_VTK_APPEND_TEXT (WM_USER + 1)
+
 vtkStandardNewMacro(vtkWin32OutputWindow);
 
 static std::mutex vtkWin32OutputWindowMutex;
 
 static HWND vtkWin32OutputWindowOutputWindow = nullptr;
+static std::thread vtkWin32OutputWindowUIThread;
+static bool vtkWin32OutputWindowUIThreadReady = false;
+static std::mutex vtkWin32OutputWindowUIThreadMutex;
+static std::condition_variable vtkWin32OutputWindowUIThreadCV;
 
 //------------------------------------------------------------------------------
 LRESULT APIENTRY vtkWin32OutputWindowWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -30,15 +37,33 @@ LRESULT APIENTRY vtkWin32OutputWindowWndProc(HWND hWnd, UINT message, WPARAM wPa
       int w = LOWORD(lParam); // width of client area
       int h = HIWORD(lParam); // height of client area
 
-      MoveWindow(vtkWin32OutputWindowOutputWindow, 0, 0, w, h, true);
+      if (!MoveWindow(vtkWin32OutputWindowOutputWindow, 0, 0, w, h, true))
+      {
+        auto errorCode = GetLastError();
+        std::string errorMsg = std::system_category().message(errorCode);
+        std::cerr << "MoveWindow failed in vtkWin32OutputWindowWndProc(), error(" << errorCode
+                  << "): " << errorMsg << "\n";
+      }
     }
     break;
     case WM_DESTROY:
       vtkWin32OutputWindowOutputWindow = nullptr;
       vtkObject::GlobalWarningDisplayOff();
+      PostQuitMessage(0);
       break;
     case WM_CREATE:
       break;
+    case WM_VTK_APPEND_TEXT:
+    {
+      wchar_t* text = (wchar_t*)lParam;
+      if (vtkWin32OutputWindowOutputWindow)
+      {
+        SendMessageW(vtkWin32OutputWindowOutputWindow, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+        SendMessageW(vtkWin32OutputWindowOutputWindow, EM_REPLACESEL, 0, (LPARAM)text);
+      }
+      free(text);
+      return 0;
+    }
   }
   return DefWindowProc(hWnd, message, wParam, lParam);
 }
@@ -145,27 +170,27 @@ void vtkWin32OutputWindow::AddText(const char* someText)
     return;
   }
 
-  // move to the end of the text area
-  PostMessageA(vtkWin32OutputWindowOutputWindow, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
-  // Append the text to the control
+  // Heap-allocate the text and post to the UI thread for processing.
+  // PostMessage is async and avoids cross-thread SendMessage deadlocks.
   std::wstring wmsg = vtksys::Encoding::ToWide(someText);
-  PostMessageW(vtkWin32OutputWindowOutputWindow, EM_REPLACESEL, 0, (LPARAM)wmsg.c_str());
+  wchar_t* heapText = _wcsdup(wmsg.c_str());
+  if (!PostMessageW(
+        GetParent(vtkWin32OutputWindowOutputWindow), WM_VTK_APPEND_TEXT, 0, (LPARAM)heapText))
+  {
+    free(heapText);
+    auto errorCode = GetLastError();
+    std::string errorMsg = std::system_category().message(errorCode);
+    std::cerr << "PostMessageW failed in vtkWin32OutputWindow::AddText(), error(" << errorCode
+              << "): " << errorMsg << "\n";
+  }
 }
 
 //------------------------------------------------------------------------------
-// initialize the output window with an EDIT control and
-// a container window.
+// UI thread entry point: creates the window and runs the message loop.
 //
-int vtkWin32OutputWindow::Initialize()
+static void vtkWin32OutputWindowUIThreadFunc(std::string title, bool show)
 {
-  // check to see if it is already initialized
-  if (vtkWin32OutputWindowOutputWindow)
-  {
-    return 1;
-  }
-
-  // Initialize the output window
-  // has the class been registered ?
+  // Register the window class (on this thread)
   WNDCLASSA wndClass;
   if (!GetClassInfoA(GetModuleHandle(nullptr), "vtkOutputWindow", &wndClass))
   {
@@ -183,16 +208,43 @@ int vtkWin32OutputWindow::Initialize()
     // one run time pointer: 4 bytes on 32-bit builds, 8 bytes
     // on 64-bit builds
     wndClass.cbWndExtra = sizeof(vtkLONG);
-    RegisterClassA(&wndClass);
+    if (!RegisterClassA(&wndClass))
+    {
+      auto errorCode = GetLastError();
+      std::string errorMsg = std::system_category().message(errorCode);
+      std::cerr << "RegisterClassA failed in vtkWin32OutputWindowUIThreadFunc(), error("
+                << errorCode << "): " << errorMsg << "\n";
+      // Signal the calling thread so it doesn't wait forever
+      {
+        std::lock_guard<std::mutex> lock(vtkWin32OutputWindowUIThreadMutex);
+        vtkWin32OutputWindowUIThreadReady = true;
+      }
+      vtkWin32OutputWindowUIThreadCV.notify_one();
+      return;
+    }
   }
 
   // create parent container window
   int width = 900;
   int height = 700;
-  std::wstring wtitle = vtksys::Encoding::ToWide(this->GetWindowTitle());
+  std::wstring wtitle = vtksys::Encoding::ToWide(title);
   HWND win =
     CreateWindowW(L"vtkOutputWindow", wtitle.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0,
       width, height, nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+  if (!win)
+  {
+    auto errorCode = GetLastError();
+    std::string errorMsg = std::system_category().message(errorCode);
+    std::cerr << "CreateWindowW failed in vtkWin32OutputWindowUIThreadFunc(), error(" << errorCode
+              << "): " << errorMsg << "\n";
+    // Signal the calling thread so it doesn't wait forever
+    {
+      std::lock_guard<std::mutex> lock(vtkWin32OutputWindowUIThreadMutex);
+      vtkWin32OutputWindowUIThreadReady = true;
+    }
+    vtkWin32OutputWindowUIThreadCV.notify_one();
+    return;
+  }
 
   // Now create child window with text display box
   CREATESTRUCTA lpParam;
@@ -223,13 +275,76 @@ int vtkWin32OutputWindow::Initialize()
       lpParam.hInstance,             // handle to application instance
       &lpParam                       // pointer to window-creation data
     );
+  if (!vtkWin32OutputWindowOutputWindow)
+  {
+    auto errorCode = GetLastError();
+    std::string errorMsg = std::system_category().message(errorCode);
+    std::cerr << "CreateWindowA failed in vtkWin32OutputWindowUIThreadFunc(), error(" << errorCode
+              << "): " << errorMsg << "\n";
+    DestroyWindow(win);
+    // Signal the calling thread so it doesn't wait forever
+    {
+      std::lock_guard<std::mutex> lock(vtkWin32OutputWindowUIThreadMutex);
+      vtkWin32OutputWindowUIThreadReady = true;
+    }
+    vtkWin32OutputWindowUIThreadCV.notify_one();
+    return;
+  }
 
   const int maxsize = 5242880;
-  PostMessageA(vtkWin32OutputWindowOutputWindow, EM_LIMITTEXT, maxsize, 0L);
+  SendMessageA(vtkWin32OutputWindowOutputWindow, EM_LIMITTEXT, maxsize, 0L);
 
-  // show the top level container window
-  ShowWindow(win, SW_SHOW);
-  return 1;
+  ShowWindow(win, show ? SW_SHOW : SW_HIDE);
+
+  // Signal the calling thread that we're ready
+  {
+    std::lock_guard<std::mutex> lock(vtkWin32OutputWindowUIThreadMutex);
+    vtkWin32OutputWindowUIThreadReady = true;
+  }
+  vtkWin32OutputWindowUIThreadCV.notify_one();
+
+  // Run the message loop
+  MSG msg;
+  BOOL bRet;
+  while ((bRet = GetMessage(&msg, nullptr, 0, 0)) != 0)
+  {
+    if (bRet == -1)
+    {
+      auto errorCode = GetLastError();
+      std::string errorMsg = std::system_category().message(errorCode);
+      std::cerr << "GetMessage failed in vtkWin32OutputWindowUIThreadFunc(), error(" << errorCode
+                << "): " << errorMsg << "\n";
+      break;
+    }
+    TranslateMessage(&msg);
+    DispatchMessage(&msg);
+  }
+}
+
+//------------------------------------------------------------------------------
+// initialize the output window by spawning a UI thread.
+//
+int vtkWin32OutputWindow::Initialize()
+{
+  // check to see if it is already initialized
+  if (vtkWin32OutputWindowOutputWindow)
+  {
+    return 1;
+  }
+
+  // Spawn a dedicated UI thread that creates the window and runs a message loop.
+  vtkWin32OutputWindowUIThreadReady = false;
+  vtkWin32OutputWindowUIThread =
+    std::thread(vtkWin32OutputWindowUIThreadFunc, this->GetWindowTitle(), this->ShowWindow);
+  vtkWin32OutputWindowUIThread.detach();
+
+  // Wait for the UI thread to finish creating the window
+  {
+    std::unique_lock<std::mutex> lock(vtkWin32OutputWindowUIThreadMutex);
+    vtkWin32OutputWindowUIThreadCV.wait(lock, [] { return vtkWin32OutputWindowUIThreadReady; });
+  }
+
+  return vtkWin32OutputWindowOutputWindow != nullptr ? 1 : 0;
 }
 
 //------------------------------------------------------------------------------

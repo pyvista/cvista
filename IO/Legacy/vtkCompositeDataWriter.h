@@ -21,7 +21,6 @@
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkCompositeDataSet;
-class vtkHierarchicalBoxDataSet;
 class vtkMultiBlockDataSet;
 class vtkMultiPieceDataSet;
 class vtkNonOverlappingAMR;
@@ -52,14 +51,12 @@ protected:
   /**
    * Performs the actual writing.
    */
-  void WriteData() override;
+  bool WriteDataAndReturn() override;
   int FillInputPortInformation(int port, vtkInformation* info) override;
   ///@}
 
   bool WriteCompositeData(ostream*, vtkMultiBlockDataSet*);
   bool WriteCompositeData(ostream*, vtkMultiPieceDataSet*);
-  VTK_DEPRECATED_IN_9_5_0("Please use `vtkOverlappingAMR` version instead.")
-  bool WriteCompositeData(ostream*, vtkHierarchicalBoxDataSet*);
   bool WriteCompositeData(ostream*, vtkOverlappingAMR*);
   bool WriteCompositeData(ostream*, vtkNonOverlappingAMR*);
   bool WriteCompositeData(ostream*, vtkPartitionedDataSet*);

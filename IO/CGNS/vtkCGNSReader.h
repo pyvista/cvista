@@ -221,6 +221,18 @@ public:
 
   ///@{
   /**
+   * Polyhedron face normals are oriented outward if faceId is positive.
+   * If a file is not CGNS compliant, set this option to true in order to flip
+   * polyhedron face orientation.
+   * Default is false (CGNS standard by default)
+   */
+  vtkSetMacro(FlipFaceNormals, bool);
+  vtkGetMacro(FlipFaceNormals, bool);
+  vtkBooleanMacro(FlipFaceNormals, bool);
+  ///@}
+
+  ///@{
+  /**
    * This option is provided for debugging and should not be used for production
    * runs as the output data produced may not be correct. When set to true, the
    * reader will simply read each solution (`FlowSolution_t`) node encountered in
@@ -378,6 +390,7 @@ private:
   bool CacheMesh = false;
   bool CacheConnectivity = false;
   bool Use3DVector = true;
+  bool FlipFaceNormals = false;
   int UnsteadySolutionStartTimestep = 0;
 
   // For internal cgio calls (low level IO)

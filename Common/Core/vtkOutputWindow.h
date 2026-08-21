@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /**
  * @class   vtkOutputWindow
- * @brief   base class for writing debug output to a console
+ * @brief   Base class for writing debug output to a console
  *
- * This class is used to encapsulate all text output, so that it will work
- * with operating systems that have a stdout and stderr, and ones that
- * do not.  (i.e windows does not).  Sub-classes can be provided which can
- * redirect the output to a window.
+ * Encapsulates all text output to work with operating systems that have
+ * stdout/stderr and those that do not (e.g., Windows). Subclasses can
+ * redirect output to a window.
+ *
+ * @note On Windows with console applications, call
+ * `vtkOutputWindow::GetInstance()->ShowWindowOff()` to prevent the output
+ * window from appearing, and set `SetDisplayModeToAlways()` to display
+ * messages in the console.
  */
 
 #ifndef vtkOutputWindow_h
@@ -73,6 +77,16 @@ public:
    */
   vtkBooleanMacro(PromptUser, bool);
   vtkSetMacro(PromptUser, bool);
+  ///@}
+
+  ///@{
+  /**
+   * Set/Get ShowWindow flag. Default is true.
+   * If set to true, the platform will show a window with text corresponding to output messages as
+   * they arrive. When false, no window will be shown at all.
+   */
+  vtkBooleanMacro(ShowWindow, bool);
+  vtkSetMacro(ShowWindow, bool);
   ///@}
 
   ///@{
@@ -148,6 +162,7 @@ protected:
   virtual StreamType GetDisplayStream(MessageTypes msgType) const;
 
   bool PromptUser;
+  bool ShowWindow = true;
 
 private:
   std::atomic<MessageTypes> CurrentMessageType;

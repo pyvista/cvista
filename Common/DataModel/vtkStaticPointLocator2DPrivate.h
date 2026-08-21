@@ -20,6 +20,7 @@
 #include "vtkDataSet.h"
 #include "vtkDoubleArray.h"
 #include "vtkMath.h"
+#include "vtkMathUtilities.h" // for SafeCastFromDouble
 #include "vtkPoints.h"
 #include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
@@ -166,9 +167,12 @@ struct vtkBucketList2D
   // BuildLocator() is invoked, otherwise the output is indeterminate.
   void GetBucketIndices(const double* x, int ij[2]) const
   {
-    // Compute point index. Make sure it lies within range of locator.
-    vtkIdType tmp0 = static_cast<vtkIdType>(((x[0] - bX) * fX));
-    vtkIdType tmp1 = static_cast<vtkIdType>(((x[1] - bY) * fY));
+    // Compute point index. SafeCastFromDouble clamps to the integer type limits
+    // (mapping NaN to 0) so casting a coordinate far outside the locator bounds
+    // (e.g. VTK_DOUBLE_MAX) is not undefined behavior. Make sure it then lies
+    // within the range of the locator.
+    vtkIdType tmp0 = vtkMathUtilities::SafeCastFromDouble<vtkIdType>((x[0] - bX) * fX);
+    vtkIdType tmp1 = vtkMathUtilities::SafeCastFromDouble<vtkIdType>((x[1] - bY) * fY);
 
     ij[0] = std::min(std::max<vtkIdType>(tmp0, 0), xD - 1);
     ij[1] = std::min(std::max<vtkIdType>(tmp1, 0), yD - 1);
@@ -202,6 +206,21 @@ struct vtkBucketList2D
     max[0] = min[0] + this->hX;
     max[1] = min[1] + this->hY;
     max[2] = 0.0;
+  }
+
+  //-----------------------------------------------------------------------------
+  // Determine whether a bin/bucket specified by i,j is completely contained
+  // inside the circle (center,r2). Return true if contained; false otherwise.
+  bool BucketInsideCircle(int i, int j, const double center[3], double r2)
+  {
+    double xMin = this->bX + i * this->hX;
+    double xMax = xMin + this->hX;
+    double yMin = this->bY + j * this->hY;
+    double yMax = yMin + this->hY;
+    double dx0 = center[0] - xMin, dx1 = center[0] - xMax;
+    double dy0 = center[1] - yMin, dy1 = center[1] - yMax;
+    double dmax2 = std::max(dx0 * dx0, dx1 * dx1) + std::max(dy0 * dy0, dy1 * dy1);
+    return dmax2 <= r2;
   }
 }; // vtkBucketList2D
 
@@ -238,6 +257,10 @@ struct BucketList2D : public vtkBucketList2D
   // difference between the offsets into the sorted points array.
   vtkIdType GetNumberOfIds(vtkIdType bucketNum)
   {
+    if (bucketNum < 0 || bucketNum >= this->NumBuckets)
+    {
+      return 0;
+    }
     return (this->Offsets[bucketNum + 1] - this->Offsets[bucketNum]);
   }
 
@@ -403,7 +426,7 @@ struct BucketList2D : public vtkBucketList2D
           offsets + prevPt->Bucket + 1, curPt->Bucket - prevPt->Bucket, curPt - this->BList->Map);
         prevPt = curPt;
       } // for all batches in this range
-    }   // operator()
+    } // operator()
   };
 
   // Merge points that are pecisely coincident. Operates in parallel on
@@ -488,7 +511,7 @@ struct BucketList2D : public vtkBucketList2D
     void Initialize()
     {
       vtkIdList*& pIds = this->PIds.Local();
-      pIds->Allocate(128); // allocate some memory
+      pIds->Reserve(128); // allocate some memory
     }
 
     void operator()(vtkIdType ptId, vtkIdType endPtId)
@@ -519,7 +542,7 @@ struct BucketList2D : public vtkBucketList2D
             }
           }
         } // if point not yet processed
-      }   // for all points in this batch
+      } // for all points in this batch
     }
 
     void Reduce() {}
@@ -535,6 +558,12 @@ struct BucketList2D : public vtkBucketList2D
           points, worker, this))
     {
       worker(points, this);
+    }
+
+    // Provide accelerated access to points. Needed for Voronoi bin iterators.
+    if (vtkDoubleArray::SafeDownCast(points))
+    {
+      this->FastPoints = static_cast<double*>(vtkDoubleArray::SafeDownCast(points)->GetPointer(0));
     }
 
     // Now gather the points into contiguous runs in buckets

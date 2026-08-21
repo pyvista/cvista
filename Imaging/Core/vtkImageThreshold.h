@@ -12,11 +12,15 @@
 #ifndef vtkImageThreshold_h
 #define vtkImageThreshold_h
 
+#include "vtkDeprecation.h"
 #include "vtkImagingCoreModule.h" // For export macro
 #include "vtkThreadedImageAlgorithm.h"
 
 VTK_ABI_NAMESPACE_BEGIN
-class VTKIMAGINGCORE_EXPORT vtkImageThreshold : public vtkThreadedImageAlgorithm
+
+class VTKIMAGINGCORE_EXPORT VTK_DEPRECATED_IN_9_7_0(
+  "vtkImageThreshold is deprecated, please use vtkImageBinaryThreshold instead.") vtkImageThreshold
+  : public vtkThreadedImageAlgorithm
 {
 public:
   static vtkImageThreshold* New();
@@ -116,7 +120,7 @@ protected:
 
   void ThreadedRequestData(vtkInformation* request, vtkInformationVector** inputVector,
     vtkInformationVector* outputVector, vtkImageData*** inData, vtkImageData** outData,
-    int outExt[6], int id) override;
+    VTK_FUTURE_CONST int outExt[6], int id) override;
 
 private:
   vtkImageThreshold(const vtkImageThreshold&) = delete;

@@ -13,7 +13,6 @@
 #include "vtkPythonOverload.h"
 #include "PyVTKReference.h"
 #include "vtkABINamespace.h"
-#include "vtkAOSDataArrayTemplate.h"
 #include "vtkObject.h"
 #include "vtkPythonTypeAccess.h"
 #include "vtkPythonUtil.h"

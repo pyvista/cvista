@@ -292,11 +292,8 @@ void ReplaceWithIndexedArray(const std::string& contourArrayName, vtkContourValu
     return;
   }
 
-  using Dispatcher = vtkArrayDispatch::DispatchByValueType<vtkArrayDispatch::AllTypes>;
   ::ConvertToIndexedArrayWorker worker;
-
-  // Dispatch
-  if (!Dispatcher::Execute(contourArray, worker, contourValues, outputAttributes))
+  if (!vtkArrayDispatch::Dispatch::Execute(contourArray, worker, contourValues, outputAttributes))
   {
     vtkErrorWithObjectMacro(nullptr, "Unable to dispatch the contour array " << contourArrayName);
   }
@@ -570,7 +567,7 @@ int vtkHyperTreeGridContour::ProcessTrees(vtkHyperTreeGrid* input, vtkDataObject
 
   // Create storage for output points
   vtkPoints* newPts = vtkPoints::New();
-  newPts->Allocate(estimatedSize, estimatedSize);
+  newPts->Reserve(estimatedSize);
 
   // Create storage for output vertices
   vtkNew<vtkCellArray> newVerts;
@@ -587,7 +584,7 @@ int vtkHyperTreeGridContour::ProcessTrees(vtkHyperTreeGrid* input, vtkDataObject
   // Create storage for output scalar values
   this->CellScalars = this->InScalars->NewInstance();
   this->CellScalars->SetNumberOfComponents(this->InScalars->GetNumberOfComponents());
-  this->CellScalars->Allocate(this->CellScalars->GetNumberOfComponents() * 8);
+  this->CellScalars->ReserveTuples(8);
 
   // Initialize point locator
   if (!this->Locator)
@@ -604,7 +601,7 @@ int vtkHyperTreeGridContour::ProcessTrees(vtkHyperTreeGrid* input, vtkDataObject
 
   // Instantiate a contour helper for convenience, with triangle generation on
   this->Helper = new vtkContourHelper(this->Locator, newVerts, newLines, newPolys, dualPointData,
-    nullptr, output->GetPointData(), nullptr, estimatedSize, true);
+    nullptr, output->GetPointData(), nullptr, true);
 
   // Create storage to keep track of selected cells
   this->SelectedCells = vtkBitArray::New();
@@ -753,8 +750,8 @@ bool vtkHyperTreeGridContour::RecursivelyPreProcessTree(vtkHyperTreeGridNonOrien
               selected = true;
             }
           } // else
-        }   // c
-      }     // if( ! selected )
+        } // c
+      } // if( ! selected )
 
       cursor->ToParent();
     } // child
@@ -833,7 +830,7 @@ void vtkHyperTreeGridContour::RecursivelyProcessTree(
           selected = false;
         }
       } // neighbor
-    }   // c
+    } // c
     if (selected && !supercursor->IsMasked())
     {
       // Node has at least one neighbor containing one contour, recurse to all children
@@ -956,17 +953,12 @@ void vtkHyperTreeGridContour::RecursivelyProcessTree(
             return;
           }
 
-          /* Estimated size: estimated number of generated triangles (before merging them).
-           * Only used in that case. Unused here because we choose to output triangles.
-           */
-          constexpr int estimatedSize = 0;
-
           /* Instantiate a new contour helper
            * Needed because we have to change the input point data (now indexed on resultUG point
            * ids)
            */
           vtkContourHelper helper(this->Locator, newVerts, newLines, newPolys,
-            resultUG->GetPointData(), nullptr, outPointData, nullptr, estimatedSize, true);
+            resultUG->GetPointData(), nullptr, outPointData, nullptr, true);
 
           // Retrieve the contouring array in the resultUG
           auto contourScalars = resultUG->GetPointData()->GetArray(this->InScalars->GetName());
@@ -1012,7 +1004,7 @@ void vtkHyperTreeGridContour::RecursivelyProcessTree(
         // Increment output cell counter
         ++this->CurrentId;
       } // if ( owner )
-    }   // cornerIdx
-  }     // else if ( ! this->InMask || this->InMask->GetTuple1( id ) )
+    } // cornerIdx
+  } // else if ( ! this->InMask || this->InMask->GetTuple1( id ) )
 }
 VTK_ABI_NAMESPACE_END

@@ -175,7 +175,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   vtkDebugMacro(<< "Generating glyphs");
 
   pts = vtkIdList::New();
-  pts->Allocate(VTK_CELL_SIZE);
+  pts->Reserve(VTK_CELL_SIZE);
 
   pd = input->GetPointData();
   inNormals = this->GetInputArrayToProcess(2, input);
@@ -256,7 +256,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     vtkNew<vtkPolyData> defaultSource;
     defaultSource->AllocateExact(0, 0, 1, 2, 0, 0, 0, 0);
     vtkNew<vtkPoints> defaultPoints;
-    defaultPoints->Allocate(6);
+    defaultPoints->Reserve(6);
     defaultPoints->InsertNextPoint(0, 0, 0);
     defaultPoints->InsertNextPoint(1, 0, 0);
     vtkIdType defaultPointIds[2];
@@ -342,12 +342,12 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     newPts->SetDataType(VTK_DOUBLE);
   }
 
-  newPts->Allocate(numPts * numSourcePts);
+  newPts->Reserve(numPts * numSourcePts);
   if (this->GeneratePointIds)
   {
     pointIds = vtkIdTypeArray::New();
     pointIds->SetName(this->PointIdsName);
-    pointIds->Allocate(numPts * numSourcePts);
+    pointIds->ReserveValues(numPts * numSourcePts);
     outputPD->AddArray(pointIds);
     pointIds->Delete();
   }
@@ -355,13 +355,13 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   {
     newScalars = inCScalars->NewInstance();
     newScalars->SetNumberOfComponents(inCScalars->GetNumberOfComponents());
-    newScalars->Allocate(inCScalars->GetNumberOfComponents() * numPts * numSourcePts);
+    newScalars->ReserveTuples(numPts * numSourcePts);
     newScalars->SetName(inCScalars->GetName());
   }
   else if ((this->ColorMode == VTK_COLOR_BY_SCALE) && inSScalars)
   {
     newScalars = vtkFloatArray::New();
-    newScalars->Allocate(numPts * numSourcePts);
+    newScalars->ReserveValues(numPts * numSourcePts);
     newScalars->SetName("GlyphScale");
     if (this->ScaleMode == VTK_SCALE_BY_SCALAR)
     {
@@ -371,21 +371,21 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   else if ((this->ColorMode == VTK_COLOR_BY_VECTOR) && haveVectors)
   {
     newScalars = vtkFloatArray::New();
-    newScalars->Allocate(numPts * numSourcePts);
+    newScalars->ReserveValues(numPts * numSourcePts);
     newScalars->SetName("VectorMagnitude");
   }
   if (haveVectors)
   {
     newVectors = vtkFloatArray::New();
     newVectors->SetNumberOfComponents(3);
-    newVectors->Allocate(3 * numPts * numSourcePts);
+    newVectors->ReserveTuples(numPts * numSourcePts);
     newVectors->SetName("GlyphVector");
   }
   if (haveNormals)
   {
     newNormals = vtkFloatArray::New();
     newNormals->SetNumberOfComponents(3);
-    newNormals->Allocate(3 * numPts * numSourcePts);
+    newNormals->ReserveTuples(numPts * numSourcePts);
     newNormals->SetName("Normals");
   }
   if (haveTCoords)
@@ -393,7 +393,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
     newTCoords = vtkFloatArray::New();
     int numComps = sourceTCoords->GetNumberOfComponents();
     newTCoords->SetNumberOfComponents(numComps);
-    newTCoords->Allocate(numComps * numPts * numSourcePts);
+    newTCoords->ReserveTuples(numPts * numSourcePts);
     newTCoords->SetName("TCoords");
   }
 
@@ -427,7 +427,7 @@ bool vtkGlyph3D::Execute(vtkDataSet* input, vtkInformationVector* sourceVector, 
   output->AllocateEstimate(numPts * numSourceCells, 3);
 
   transformedSourcePts->SetDataTypeToDouble();
-  transformedSourcePts->Allocate(numSourcePts);
+  transformedSourcePts->Reserve(numSourcePts);
 
   // Traverse all Input points, transforming Source points and copying
   // point attributes.

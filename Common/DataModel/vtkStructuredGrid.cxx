@@ -209,7 +209,8 @@ void vtkStructuredGrid::GetCellNeighbors(vtkIdType cellId, vtkIdList* ptIds, vtk
     vtkIdType* pCellIds = cellIds->GetPointer(0);
     vtkIdType* end =
       std::remove_if(pCellIds, pCellIds + cellIds->GetNumberOfIds(), CellVisibility(this));
-    cellIds->Resize(std::distance(pCellIds, end));
+    cellIds->SetNumberOfIds(std::distance(pCellIds, end));
+    cellIds->Squeeze();
   }
 }
 
@@ -242,7 +243,8 @@ void vtkStructuredGrid::GetCellNeighbors(
     vtkIdType* pCellIds = cellIds->GetPointer(0);
     vtkIdType* end =
       std::remove_if(pCellIds, pCellIds + cellIds->GetNumberOfIds(), CellVisibility(this));
-    cellIds->Resize(std::distance(pCellIds, end));
+    cellIds->SetNumberOfIds(std::distance(pCellIds, end));
+    cellIds->Squeeze();
   }
 }
 
@@ -508,7 +510,7 @@ void vtkStructuredGrid::ComputeScalarRange()
 }
 
 //------------------------------------------------------------------------------
-void vtkStructuredGrid::Crop(const int* updateExtent)
+void vtkStructuredGrid::Crop(const int updateExtent[6])
 {
   // Do nothing for empty datasets:
   for (int dim = 0; dim < 3; ++dim)

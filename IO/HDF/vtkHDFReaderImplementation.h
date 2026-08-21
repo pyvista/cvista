@@ -9,8 +9,11 @@
 #ifndef vtkHDFReaderImplementation_h
 #define vtkHDFReaderImplementation_h
 
+#include "vtkAMRBox.h"
+#include "vtkDataSetAttributes.h"
 #include "vtkHDFReader.h"
 #include "vtk_hdf5.h"
+
 #include <array>
 #include <map>
 #include <string>
@@ -38,12 +41,12 @@ public:
   /**
    * Opens this VTK HDF file and checks if it is valid.
    */
-  bool Open(VTK_FILEPATH const char* fileName);
+  bool Open(VTK_FILEPATH const char* fileName, bool quiet = false);
 
   /**
    * Opens this VTK HDF stream and checks if it is valid.
    */
-  bool Open(vtkResourceStream* stream);
+  bool Open(vtkResourceStream* stream, bool quiet = false);
 
   /**
    * Closes the VTK HDF file and releases any allocated resources.
@@ -115,6 +118,14 @@ public:
     const char* name, vtkIdType offset = -1, vtkIdType size = -1, vtkIdType dimMaxSize = -1);
   ///@}
 
+  /**
+   * Given a named data array and an attribute type,
+   * read from the file the special array attribute (scalars, global ids, etc.) if any,
+   * and set in in the provided vtkDataSetAttributes object.
+   */
+  void AttachDatasetAttributeToArray(
+    int attributeType, vtkDataArray* array, vtkDataSetAttributes* attributes);
+
   ///@{
   /**
    * Reads a 1D metadata array in a DataArray or a vector of vtkIdType.
@@ -122,6 +133,7 @@ public:
    * specified with (offset, size). For an error we return nullptr or an
    * empty vector.
    */
+  vtkDataArray* NewMetadataArray(const char* name, const std::vector<hsize_t>& fileExtent);
   vtkDataArray* NewMetadataArray(const char* name, hsize_t offset, hsize_t size);
   std::vector<vtkIdType> GetMetadata(const char* name, hsize_t size, hsize_t offset = 0);
   ///@}
@@ -163,6 +175,12 @@ public:
   vtkIdType GetArrayOffset(vtkIdType step, int attributeType, std::string name);
 
   /**
+   * Get temporal offset value for the given time step of the data.
+   * Returns -1 if the offset dataset could not be found.
+   */
+  vtkIdType GetTemporalOffset(vtkIdType step, const std::string& name);
+
+  /**
    * Return the field array size (components, tuples) for the current step.
    * By default it returns {-1,1} which means to have as many components as necessary
    * and one tuple per step.
@@ -177,7 +195,7 @@ public:
   /**
    * Initialize meta information of the implementation based on root name specified.
    */
-  bool RetrieveHDFInformation(const std::string& rootName);
+  bool RetrieveHDFInformation(const std::string& rootName, const std::string& groupPrefix = "");
 
   /**
    * Retrieve ImageData attributes and store them.
@@ -185,32 +203,46 @@ public:
    */
   bool GetImageAttributes(int WholeExtent[6], double Origin[3], double Spacing[3]);
 
+  /**
+   * Retrieve the dimensions attribute and store it (used by StructuredGrid and RectilinearGrid).
+   * Return false on failure.
+   */
+  bool GetDimensionsAttribute(int Dimensions[3]);
+
   ///@{
   /**
    * Specific public API for AMR support.
+   * Return the number of level in an AMR file
    */
+  unsigned int GetAMRNumberOfLevels();
+
   /**
    * Retrieve for each required level AMRBlocks size and position.
+   * Set maxLevel to the number of level in the file
+   * Return true in case of success, false otherwise.
    */
-  bool ComputeAMRBlocksPerLevels(unsigned int maxLevel);
+  bool ComputeAMRBlocksPerLevels(unsigned int nLevels);
 
   /**
    * Retrieve offset for AMRBox, point/cell/field arrays for each level.
+   * Set maxLevel to the number of level in the file
+   * Return true in case of success, false otherwise.
    */
-  bool ComputeAMROffsetsPerLevels(
-    vtkDataArraySelection* dataArraySelection[3], vtkIdType step, unsigned int maxLevel);
+  bool ComputeAMROffsetsPerLevels(const std::map<int, vtkDataArraySelection*>& dataArraySelection,
+    vtkIdType step, unsigned int nLevels);
 
   /**
    * Read the AMR topology based on offset data on AMRBlocks.
    */
-  bool ReadAMRTopology(vtkOverlappingAMR* data, unsigned int level, unsigned int maxLevel,
-    double origin[3], bool isTemporalData);
+  bool ReadAMRTopology(
+    vtkOverlappingAMR* data, unsigned int maxLevel, double origin[3], bool isTemporalData);
 
   /**
-   * Read the AMR data based on offset on point/cell/field datas.
+   * Get the temporal offset for a specific attribute
+   * Return true if the offset arg was set, false is it was not for any reason
    */
-  bool ReadAMRData(vtkOverlappingAMR* data, unsigned int level, unsigned int maxLevel,
-    vtkDataArraySelection* dataArraySelection[3], bool isTemporalData);
+  bool GetAMRTemporalOffsetForAttributeType(
+    unsigned int level, int attributeType, const std::string& name, hsize_t& offset);
   ///@}
 
   /**
@@ -227,7 +259,8 @@ public:
   bool ReadHyperTreeGridData(vtkHyperTreeGrid* htg, const vtkDataArraySelection* arraySelection,
     vtkIdType cellOffset, vtkIdType treeIdsOffset, vtkIdType depthOffset,
     vtkIdType descriptorOffset, vtkIdType maskOffset, vtkIdType partOffset,
-    vtkIdType verticesPerDepthOffset, vtkIdType depthLimit, vtkIdType step);
+    vtkIdType verticesPerDepthOffset, vtkIdType XCoordsOffset, vtkIdType YCoordsOffset,
+    vtkIdType ZCoordsOffset, vtkIdType depthLimit, vtkIdType step);
 
   /**
    * Read HTG meta-information stored in attributes
@@ -237,7 +270,8 @@ public:
   /**
    * Read HTG dimensions and coordinates
    */
-  bool ReadHyperTreeGridDimensions(vtkHyperTreeGrid* htg);
+  bool ReadHyperTreeGridDimensions(vtkHyperTreeGrid* htg, vtkIdType XCoordsOffset,
+    vtkIdType YCoordsOffset, vtkIdType ZCoordsOffset);
 
   /**
    * Initialize selected Cell arrays for HyperTreeGrid
@@ -265,7 +299,7 @@ private:
   hid_t File;
   hid_t VTKGroup;
   // in the same order as vtkDataObject::AttributeTypes: POINT, CELL, FIELD
-  std::array<hid_t, 3> AttributeDataGroup;
+  std::map<int, hid_t> AttributeDataGroup;
   int DataSetType;
   int NumberOfPieces;
   std::array<int, 2> Version;
@@ -281,8 +315,6 @@ private:
     std::vector<vtkIdType> BlockOffsetsPerLevel;
     std::map<std::string, std::vector<vtkIdType>> CellOffsetsPerLevel;
     std::map<std::string, std::vector<vtkIdType>> PointOffsetsPerLevel;
-    std::map<std::string, std::vector<vtkIdType>> FieldOffsetsPerLevel;
-    std::map<std::string, std::vector<vtkIdType>> FieldSizesPerLevel;
 
     void Clear()
     {
@@ -290,8 +322,6 @@ private:
       this->BlockOffsetsPerLevel.clear();
       this->PointOffsetsPerLevel.clear();
       this->CellOffsetsPerLevel.clear();
-      this->FieldOffsetsPerLevel.clear();
-      this->FieldSizesPerLevel.clear();
     }
   };
 
@@ -302,8 +332,6 @@ private:
     hid_t levelGroupID, std::vector<int>& amrBoxRawData, int level, bool isTemporalData);
   bool ReadLevelTopology(unsigned int level, const std::string& levelGroupName,
     vtkOverlappingAMR* data, double origin[3], bool isTemporalData);
-  bool ReadLevelData(unsigned int level, const std::string& levelGroupName, vtkOverlappingAMR* data,
-    vtkDataArraySelection* dataArraySelection[3], bool isTemporalData);
   ///@}
 };
 

@@ -280,7 +280,7 @@ void vtkVolumeTexture::AdjustExtentForCell(Size6& extent)
 }
 
 //------------------------------------------------------------------------------
-vtkVolumeTexture::Size3 vtkVolumeTexture::ComputeBlockSize(int* extent)
+vtkVolumeTexture::Size3 vtkVolumeTexture::ComputeBlockSize(VTK_FUTURE_CONST int extent[6])
 {
   int i = 0;
   Size3 texSize;
@@ -336,7 +336,8 @@ bool vtkVolumeTexture::LoadTexture(int interpolation, VolumeBlock* volBlock)
     // Account for component offset
     // index = ( z0 * Dx * Dy + y0 * Dx + x0 ) * numComp
     vtkIdType const dataIdx = tupleIdx * noOfComponents;
-    void* dataPtr = this->Scalars->GetVoidPointer(dataIdx);
+    auto scalarsAOS = this->Scalars->ToAOSDataArray();
+    void* dataPtr = scalarsAOS->GetVoidPointer(dataIdx); // NOLINT(bugprone-unsafe-functions)
 
     if (this->StreamBlocks)
     {
@@ -565,7 +566,7 @@ bool vtkVolumeTexture::LoadTexture(int interpolation, VolumeBlock* volBlock)
     // Since this is a pseudo-bit array i.e. values either 0 or 255, skip scale and bias
     // computation
     this->BlankingTex->Create3DFromRaw(blockSize[0], blockSize[1], blockSize[2], numComps,
-      VTK_UNSIGNED_CHAR, &blankingArrayRange[0][0]);
+      VTK_UNSIGNED_CHAR, blankingArray->GetPointer(0));
     this->BlankingTex->SetWrapR(vtkTextureObject::ClampToEdge);
     this->BlankingTex->SetWrapS(vtkTextureObject::ClampToEdge);
     this->BlankingTex->SetWrapT(vtkTextureObject::ClampToEdge);
@@ -1019,7 +1020,7 @@ void vtkVolumeTexture::ComputeBounds(VolumeBlock* block)
 
   // push corners through matrix to get bounding box
   int iMin, iMax, jMin, jMax, kMin, kMax;
-  int* extent = block->Extents;
+  VTK_FUTURE_CONST int* extent = block->Extents;
   iMin = extent[0];
   iMax = extent[1] + this->IsCellData;
   jMin = extent[2];

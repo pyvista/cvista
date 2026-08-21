@@ -7,15 +7,11 @@ include(vtkTypeLists)
 
 # Configure `.in` class files depending on the requested backend
 # and the concrete c++ type.
-macro(_generate_array_specialization array_prefix vtk_type concrete_type deprecated)
+macro(_generate_array_specialization array_prefix vtk_type concrete_type deprecation)
   # used inside .in files
   set(VTK_TYPE_NAME "${vtk_type}")
   set(CONCRETE_TYPE "${concrete_type}")
-  if ("${deprecated}")
-    set(VTK_DEPRECATION "VTK_DEPRECATED_IN_9_6_0(\"Use vtk${array_prefix}Type*Array instead\")")
-  else ()
-    set(VTK_DEPRECATION "")
-  endif ()
+  set(VTK_DEPRECATION "${deprecation}")
 
   set(_className "vtk${array_prefix}${VTK_TYPE_NAME}Array")
 
@@ -25,8 +21,8 @@ macro(_generate_array_specialization array_prefix vtk_type concrete_type depreca
     @ONLY)
 
   configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/vtk${array_prefix}TypedArray.cxx.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vtk${array_prefix}TypedArray.cxx.inc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx.inc"
     @ONLY)
 
   # append generated header to current module headers
@@ -46,28 +42,18 @@ macro(_generate_array_specialization array_prefix vtk_type concrete_type depreca
     # vtkType*Array.cxx that define vtkTypeFloat32Array::New() etc.) as its own TU
     # directly, rather than #include-ing it into the per-type bulk TU. Without this
     # these New() definitions would be generated but never compiled -> undefined
-    # references at link time. Append straight to `sources` (the list consumed by
-    # vtk_module_add_module at the end of CommonCore/CMakeLists.txt): this file is
-    # include()d AFTER `set(sources ...)` snapshots `instantiation_sources`, so the
-    # bulk path's early-reserved filenames trick is unavailable here; `sources` is
-    # still in scope (macros run in the caller scope) and is read later.
+    # references at link time. (9.7 renamed the include fragment to .cxx.inc; the
+    # split path compiles the standalone .cxx TU, the bulk path #includes .cxx.inc.)
     list(APPEND sources
       "${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx")
     if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
-      # VTK_DEPRECATION_LEVEL=0: these implicit-array specialization classes are
-      # generated WITH a deprecation attribute (deprecated=1 -> @VTK_DEPRECATION@ =
-      # VTK_DEPRECATED_IN_9_6_0(...)) emitted as `class EXPORT <attr> Name : Base`,
-      # which GCC < 11 (manylinux2014's GCC 10.2.1) cannot parse. The bulk wrapper
-      # suppressed it with a leading `#define VTK_DEPRECATION_LEVEL 0`; the split
-      # path compiles these .cxx directly, so it reapplies that define. Byte-
-      # identical to the bulk object code (attribute suppressed in both paths).
       set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${_className}.cxx"
         PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
                    COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
     endif ()
   else ()
     list(APPEND "bulk_instantiation_sources_${_suffix}"
-      "#include \"${_className}.cxx\"")
+      "#include \"${_className}.cxx.inc\"")
   endif ()
 
   unset(VTK_DEPRECATION)
@@ -80,23 +66,32 @@ endmacro()
 foreach (array_prefix IN ITEMS Affine Composite Constant Indexed)
   foreach (type IN LISTS vtk_numeric_types)
     vtk_type_to_camel_case("${type}" cased_type)
-    _generate_array_specialization("${array_prefix}" "${cased_type}" "${type}" 1)
+    set(deprecation "VTK_DEPRECATED_IN_9_6_0(\"Use vtk${array_prefix}Type${cased_type}Array instead\")")
+    _generate_array_specialization("${array_prefix}" "${cased_type}" "${type}" "${deprecation}")
   endforeach ()
 endforeach ()
 
-# cvista: StdFunction + Strided are the two dead families (CVISTA_DROP_DEAD_ARRAYS,
-# default ON) — omit their fixed-size specialization classes from the generated
-# set. The keep set always includes the load-bearing AOS/SOA/ScaledSOA + the
-# implicit Affine/Composite/Constant/Indexed families (used by PyVista's
-# ImageData/structured grids and the dispatcher).
-set(_cvista_specialization_prefixes Affine Composite Constant Indexed ScaledSOA SOA)
+# VTK_DEPRECATED_IN_9_7_0 to be removed later
+foreach (array_prefix IN ITEMS ScaledSOA StdFunction)
+  foreach (type IN LISTS vtk_fixed_size_numeric_types)
+    vtk_fixed_size_type_to_without_prefix("${type}" "vtk" without_vtk_prefix)
+    set(deprecation "VTK_DEPRECATED_IN_9_7_0(\"Use vtk${array_prefix}Type${without_vtk_prefix}Array instead\")")
+    _generate_array_specialization("${array_prefix}" "${without_vtk_prefix}" "${type}" "${deprecation}")
+  endforeach ()
+endforeach ()
+
+# cvista: dead-family trim (CVISTA_DROP_DEAD_ARRAYS, default ON). The keep set is
+# 9.7's implicit/AOS/SOA specialization families used by PyVista (ImageData/
+# structured grids + the dispatcher); Strided is the dead family omitted by default.
+# (9.7 dropped ScaledSOA/StdFunction from this list and added StructuredPoint.)
+set(_cvista_specialization_prefixes Affine Composite Constant Indexed SOA StructuredPoint)
 if (NOT CVISTA_DROP_DEAD_ARRAYS)
-  list(APPEND _cvista_specialization_prefixes StdFunction Strided)
+  list(APPEND _cvista_specialization_prefixes Strided)
 endif ()
 foreach (array_prefix IN LISTS _cvista_specialization_prefixes)
   foreach (type IN LISTS vtk_fixed_size_numeric_types)
     vtk_fixed_size_type_to_without_prefix("${type}" "vtk" without_vtk_prefix)
-    _generate_array_specialization("${array_prefix}" "${without_vtk_prefix}" "${type}" 0)
+    _generate_array_specialization("${array_prefix}" "${without_vtk_prefix}" "${type}" "")
   endforeach ()
 endforeach ()
 
@@ -148,8 +143,8 @@ foreach (type IN LISTS vtk_fixed_size_numeric_types)
       "${CMAKE_CURRENT_BINARY_DIR}/${type}Array.h"
       @ONLY)
     configure_file(
-      "${CMAKE_CURRENT_SOURCE_DIR}/vtkAOSTypedArray.cxx.in"
-      "${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx"
+      "${CMAKE_CURRENT_SOURCE_DIR}/vtkAOSTypedArray.cxx.inc.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx.inc"
       @ONLY)
     # append generated header to current module headers
     list(APPEND headers
@@ -160,22 +155,17 @@ foreach (type IN LISTS vtk_fixed_size_numeric_types)
     if (CVISTA_SPLIT_BULK_INSTANTIATE)
       # cvista split mode: compile the plain vtkType*Array.cxx (vtkTypeFloat64Array
       # etc., which define their New()/ctor) as its own TU instead of #include-ing
-      # it into the per-type bulk TU. See the matching branch in the macro above;
-      # append to `sources` (read by vtk_module_add_module later) since this runs
-      # after `set(sources ...)` snapshotted `instantiation_sources`.
+      # it into the per-type bulk TU (9.7 renamed the include fragment to .cxx.inc).
       list(APPEND sources
         "${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx")
       if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|AppleClang|Clang)$")
-        # VTK_DEPRECATION_LEVEL=0 to match the bulk wrapper's leading #define (see
-        # the macro above + vtkArrayBulkInstantiate.cxx.in). Keeps split TUs
-        # byte-identical to bulk and parseable on GCC < 11.
         set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/${type}Array.cxx"
           PROPERTIES COMPILE_OPTIONS "-Wno-attributes"
                      COMPILE_DEFINITIONS "VTK_DEPRECATION_LEVEL=0")
       endif ()
     else ()
       list(APPEND "bulk_instantiation_sources_${_suffix}"
-        "#include \"${type}Array.cxx\"")
+        "#include \"${type}Array.cxx.inc\"")
     endif ()
   endif ()
 endforeach ()

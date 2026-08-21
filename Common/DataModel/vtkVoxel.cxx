@@ -10,6 +10,8 @@
 #include "vtkDoubleArray.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkLine.h"
+#include "vtkMarchingCellsClipCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPixel.h"
@@ -18,7 +20,128 @@
 
 #include <algorithm> //std::copy
 #include <cassert>
-#include <vector>
+
+namespace
+{
+//------------------------------------------------------------------------------
+[[maybe_unused]] constexpr const char* VoxelTopology = R"(
+   Voxel topology:
+
+            6-----------7
+           /|          /|
+          / |         / |
+         4-----------5  |
+         |  |        |  |
+         |  2--------|--3
+         | /         | /
+         |/          |/
+         0-----------1
+
+   Note: unlike Hexahedron, vertex ordering is not sequential around
+   each face — x varies fastest, then y, then z.
+)";
+
+//------------------------------------------------------------------------------
+double ParametricCoords[24] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  1.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  0.0, 1.0, 1.0, //
+  1.0, 1.0, 1.0  //
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType Edges[vtkVoxel::NumberOfEdges][2] = {
+  { 0, 1 }, // 0
+  { 1, 3 }, // 1
+  { 2, 3 }, // 2
+  { 0, 2 }, // 3
+  { 4, 5 }, // 4
+  { 5, 7 }, // 5
+  { 6, 7 }, // 6
+  { 4, 6 }, // 7
+  { 0, 4 }, // 8
+  { 1, 5 }, // 9
+  { 2, 6 }, // 10
+  { 3, 7 }, // 11
+};
+
+//------------------------------------------------------------------------------
+// define in terms vtkPixel understands
+constexpr vtkIdType Faces[vtkVoxel::NumberOfFaces][vtkVoxel::MaximumFaceSize + 1] = {
+  { 2, 0, 6, 4, -1 }, // 0
+  { 1, 3, 5, 7, -1 }, // 1
+  { 0, 1, 4, 5, -1 }, // 2
+  { 3, 2, 7, 6, -1 }, // 3
+  { 1, 0, 3, 2, -1 }, // 4
+  { 4, 5, 6, 7, -1 }, // 5
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType EdgeToAdjacentFaces[vtkVoxel::NumberOfEdges][2] = {
+  { 2, 4 }, // 0
+  { 1, 4 }, // 1
+  { 3, 4 }, // 2
+  { 0, 4 }, // 3
+  { 2, 5 }, // 4
+  { 1, 5 }, // 5
+  { 3, 5 }, // 6
+  { 0, 5 }, // 7
+  { 0, 2 }, // 8
+  { 1, 2 }, // 9
+  { 0, 3 }, // 10
+  { 1, 3 }, // 11
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType FaceToAdjacentFaces[vtkVoxel::NumberOfFaces][vtkVoxel::MaximumFaceSize] = {
+  { 5, 3, 4, 2 }, // 0
+  { 4, 3, 5, 2 }, // 1
+  { 4, 1, 5, 0 }, // 2
+  { 4, 0, 5, 1 }, // 3
+  { 2, 0, 3, 1 }, // 4
+  { 2, 1, 3, 0 }, // 5
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType PointToIncidentEdges[vtkVoxel::NumberOfPoints][vtkVoxel::MaximumValence] = {
+  { 0, 8, 3 },  // 0
+  { 0, 1, 9 },  // 1
+  { 2, 3, 10 }, // 2
+  { 1, 2, 11 }, // 3
+  { 4, 7, 8 },  // 4
+  { 4, 9, 5 },  // 5
+  { 6, 10, 7 }, // 6
+  { 5, 11, 6 }, // 7
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType PointToIncidentFaces[vtkVoxel::NumberOfPoints][vtkVoxel::MaximumValence] = {
+  { 2, 0, 4 }, // 0
+  { 4, 1, 2 }, // 1
+  { 4, 0, 3 }, // 2
+  { 4, 3, 1 }, // 3
+  { 5, 0, 2 }, // 4
+  { 2, 1, 5 }, // 5
+  { 3, 0, 5 }, // 6
+  { 1, 3, 5 }, // 7
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType PointToOneRingPoints[vtkVoxel::NumberOfPoints][vtkVoxel::MaximumValence] = {
+  { 1, 4, 2 }, // 0
+  { 0, 3, 5 }, // 1
+  { 3, 0, 6 }, // 2
+  { 1, 2, 7 }, // 3
+  { 5, 6, 0 }, // 4
+  { 4, 1, 7 }, // 5
+  { 7, 2, 4 }, // 6
+  { 5, 3, 6 }, // 7
+};
+}
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkVoxel);
@@ -27,33 +150,18 @@ vtkStandardNewMacro(vtkVoxel);
 // Construct the voxel with eight points.
 vtkVoxel::vtkVoxel()
 {
-  int i;
-
   this->Points->SetNumberOfPoints(8);
   this->PointIds->SetNumberOfIds(8);
-  for (i = 0; i < 8; i++)
+  for (int i = 0; i < 8; i++)
   {
     this->Points->SetPoint(i, 0.0, 0.0, 0.0);
   }
-  for (i = 0; i < 8; i++)
+  for (int i = 0; i < 8; i++)
   {
     this->PointIds->SetId(i, 0);
   }
-  this->Line = nullptr;
-  this->Pixel = nullptr;
-}
-
-//------------------------------------------------------------------------------
-vtkVoxel::~vtkVoxel()
-{
-  if (this->Line)
-  {
-    this->Line->Delete();
-  }
-  if (this->Pixel)
-  {
-    this->Pixel->Delete();
-  }
+  this->Line = vtkSmartPointer<vtkLine>::New();
+  this->Pixel = vtkSmartPointer<vtkPixel>::New();
 }
 
 //------------------------------------------------------------------------------
@@ -109,9 +217,6 @@ double vtkVoxel::ComputeBoundingSphere(double center[3]) const
 int vtkVoxel::EvaluatePosition(const double x[3], double closestPoint[3], int& subId,
   double pcoords[3], double& dist2, double weights[])
 {
-  const double *pt1, *pt2, *pt3, *pt4;
-  int i;
-
   subId = 0;
   // Efficient point access
   const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
@@ -125,10 +230,10 @@ int vtkVoxel::EvaluatePosition(const double x[3], double closestPoint[3], int& s
   //
   // Get coordinate system
   //
-  pt1 = pts;
-  pt2 = pts + 3;
-  pt3 = pts + 6;
-  pt4 = pts + 12;
+  const double* pt1 = pts;
+  const double* pt2 = pts + 3;
+  const double* pt3 = pts + 6;
+  const double* pt4 = pts + 12;
   //
   // Develop parametric coordinates
   //
@@ -154,7 +259,7 @@ int vtkVoxel::EvaluatePosition(const double x[3], double closestPoint[3], int& s
     double pc[3], w[8];
     if (closestPoint)
     {
-      for (i = 0; i < 3; i++)
+      for (int i = 0; i < 3; i++)
       {
         if (pcoords[i] < 0.0)
         {
@@ -180,8 +285,6 @@ int vtkVoxel::EvaluatePosition(const double x[3], double closestPoint[3], int& s
 void vtkVoxel::EvaluateLocation(
   int& vtkNotUsed(subId), const double pcoords[3], double x[3], double* weights)
 {
-  const double *pt1, *pt2, *pt3, *pt4;
-
   // Efficient point access
   const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
   if (!pointsArray)
@@ -191,10 +294,10 @@ void vtkVoxel::EvaluateLocation(
   }
   const double* pts = pointsArray->GetPointer(0);
 
-  pt1 = pts;
-  pt2 = pts + 3;
-  pt3 = pts + 6;
-  pt4 = pts + 12;
+  const double* pt1 = pts;
+  const double* pt2 = pts + 3;
+  const double* pt3 = pts + 6;
+  const double* pt4 = pts + 12;
 
   for (int i = 0; i < 3; i++)
   {
@@ -208,10 +311,15 @@ void vtkVoxel::EvaluateLocation(
 //------------------------------------------------------------------------------
 int vtkVoxel::Inflate(double dist)
 {
+  const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
+  if (!pointsArray)
+  {
+    vtkErrorMacro(<< "Points should be double type");
+    return 0;
+  }
+  auto range = vtk::DataArrayTupleRange<3>(pointsArray);
   int index = 0;
-  auto range = vtk::DataArrayTupleRange<3>(this->Points->GetData());
-  using TupleRef = typename decltype(range)::TupleReferenceType;
-  for (TupleRef point : range)
+  for (auto point : range)
   {
     point[0] += dist * (index % 2 ? 1.0 : -1.0);
     point[1] += dist * ((index / 2) % 2 ? 1.0 : -1.0);
@@ -227,13 +335,11 @@ int vtkVoxel::Inflate(double dist)
 //
 void vtkVoxel::InterpolationFunctions(const double pcoords[3], double sf[8])
 {
-  double rm, sm, tm;
-
   double r = pcoords[0], s = pcoords[1], t = pcoords[2];
 
-  rm = 1. - r;
-  sm = 1. - s;
-  tm = 1. - t;
+  double rm = 1. - r;
+  double sm = 1. - s;
+  double tm = 1. - t;
 
   sf[0] = rm * sm * tm;
   sf[1] = r * sm * tm;
@@ -248,11 +354,9 @@ void vtkVoxel::InterpolationFunctions(const double pcoords[3], double sf[8])
 //------------------------------------------------------------------------------
 void vtkVoxel::InterpolationDerivs(const double pcoords[3], double derivs[24])
 {
-  double rm, sm, tm;
-
-  rm = 1. - pcoords[0];
-  sm = 1. - pcoords[1];
-  tm = 1. - pcoords[2];
+  double rm = 1. - pcoords[0];
+  double sm = 1. - pcoords[1];
+  double tm = 1. - pcoords[2];
 
   // r derivatives
   derivs[0] = -sm * tm;
@@ -358,143 +462,38 @@ int vtkVoxel::CellBoundary(int vtkNotUsed(subId), const double pcoords[3], vtkId
   }
 }
 
-namespace
-{
-//------------------------------------------------------------------------------
-// Voxel topology
-//
-//  2_______3
-//  |\     /|
-//  |6\___/7|
-//  | |   | |
-//  | |___| |
-//  |4/   \5|
-//  |/_____\|
-//  0       1
-//
-
-constexpr vtkIdType edges[vtkVoxel::NumberOfEdges][2] = {
-  { 0, 1 }, // 0
-  { 1, 3 }, // 1
-  { 2, 3 }, // 2
-  { 0, 2 }, // 3
-  { 4, 5 }, // 4
-  { 5, 7 }, // 5
-  { 6, 7 }, // 6
-  { 4, 6 }, // 7
-  { 0, 4 }, // 8
-  { 1, 5 }, // 9
-  { 2, 6 }, // 10
-  { 3, 7 }, // 11
-};
-// define in terms vtkPixel understands
-constexpr vtkIdType faces[vtkVoxel::NumberOfFaces][vtkVoxel::MaximumFaceSize + 1] = {
-  { 2, 0, 6, 4, -1 }, // 0
-  { 1, 3, 5, 7, -1 }, // 1
-  { 0, 1, 4, 5, -1 }, // 2
-  { 3, 2, 7, 6, -1 }, // 3
-  { 1, 0, 3, 2, -1 }, // 4
-  { 4, 5, 6, 7, -1 }, // 5
-};
-constexpr vtkIdType edgeToAdjacentFaces[vtkVoxel::NumberOfEdges][2] = {
-  { 2, 4 }, // 0
-  { 1, 4 }, // 1
-  { 3, 4 }, // 2
-  { 0, 4 }, // 3
-  { 2, 5 }, // 4
-  { 1, 5 }, // 5
-  { 3, 5 }, // 6
-  { 0, 5 }, // 7
-  { 0, 2 }, // 8
-  { 1, 2 }, // 9
-  { 0, 3 }, // 10
-  { 1, 3 }, // 11
-};
-constexpr vtkIdType faceToAdjacentFaces[vtkVoxel::NumberOfFaces][vtkVoxel::MaximumFaceSize] = {
-  { 5, 3, 4, 2 }, // 0
-  { 4, 3, 5, 2 }, // 1
-  { 4, 1, 5, 0 }, // 2
-  { 4, 0, 5, 1 }, // 3
-  { 2, 0, 3, 1 }, // 4
-  { 2, 1, 3, 0 }, // 5
-};
-constexpr vtkIdType pointToIncidentEdges[vtkVoxel::NumberOfPoints][vtkVoxel::MaximumValence] = {
-  { 0, 8, 3 },  // 0
-  { 0, 1, 9 },  // 1
-  { 2, 3, 10 }, // 2
-  { 1, 2, 11 }, // 3
-  { 4, 7, 8 },  // 4
-  { 4, 9, 5 },  // 5
-  { 6, 10, 7 }, // 6
-  { 5, 11, 6 }, // 7
-};
-constexpr vtkIdType pointToIncidentFaces[vtkVoxel::NumberOfPoints][vtkVoxel::MaximumValence] = {
-  { 2, 0, 4 }, // 0
-  { 4, 1, 2 }, // 1
-  { 4, 0, 3 }, // 2
-  { 4, 3, 1 }, // 3
-  { 5, 0, 2 }, // 4
-  { 2, 1, 5 }, // 5
-  { 3, 0, 5 }, // 6
-  { 1, 3, 5 }, // 7
-};
-constexpr vtkIdType pointToOneRingPoints[vtkVoxel::NumberOfPoints][vtkVoxel::MaximumValence] = {
-  { 1, 4, 2 }, // 0
-  { 0, 3, 5 }, // 1
-  { 3, 0, 6 }, // 2
-  { 1, 2, 7 }, // 3
-  { 5, 6, 0 }, // 4
-  { 4, 1, 7 }, // 5
-  { 7, 2, 4 }, // 6
-  { 5, 3, 6 }, // 7
-};
-}
-
 //----------------------------------------------------------------------------
-//
-// Marching cubes case table
-//
-VTK_ABI_NAMESPACE_END
-#include "vtkMarchingCubesTriangleCases.h"
-
-VTK_ABI_NAMESPACE_BEGIN
 void vtkVoxel::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
   vtkCellArray* verts, vtkCellArray* lines, vtkCellArray* polys, vtkPointData* inPd,
   vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd)
 {
   static const int CASE_MASK[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
-  vtkMarchingCubesTriangleCases* triCase;
-  int* edge;
-  int i, j, index;
-  const vtkIdType* vert;
-  static const int vertMap[8] = { 0, 1, 3, 2, 4, 5, 7, 6 };
-  int newCellId;
   vtkIdType pts[3];
-  double t, x1[3], x2[3], x[3];
+  double x1[3], x2[3], x[3];
   vtkIdType offset = verts->GetNumberOfCells() + lines->GetNumberOfCells();
 
   // Build the case table
-  for (i = 0, index = 0; i < 8; i++)
+  int caseIndex = 0;
+  for (int i = 0; i < 8; i++)
   {
-    if (cellScalars->GetComponent(vertMap[i], 0) >= value)
+    if (cellScalars->GetComponent(i, 0) >= value)
     {
-      index |= CASE_MASK[i];
+      caseIndex |= CASE_MASK[i];
     }
   }
 
-  triCase = vtkMarchingCubesTriangleCases::GetCases() + index;
-  edge = triCase->edges;
+  const int* edge = vtkMarchingCellsContourCases::GetVoxelCase(caseIndex);
 
   for (; edge[0] > -1; edge += 3)
   {
-    for (i = 0; i < 3; i++) // insert triangle
+    for (int i = 0; i < 3; i++) // insert triangle
     {
-      vert = edges[edge[i]];
-      t = (value - cellScalars->GetComponent(vert[0], 0)) /
+      const vtkIdType* vert = Edges[edge[i]];
+      const double t = (value - cellScalars->GetComponent(vert[0], 0)) /
         (cellScalars->GetComponent(vert[1], 0) - cellScalars->GetComponent(vert[0], 0));
       this->Points->GetPoint(vert[0], x1);
       this->Points->GetPoint(vert[1], x2);
-      for (j = 0; j < 3; j++)
+      for (int j = 0; j < 3; j++)
       {
         x[j] = x1[j] + t * (x2[j] - x1[j]);
       }
@@ -511,7 +510,7 @@ void vtkVoxel::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
     // check for degenerate triangle
     if (pts[0] != pts[1] && pts[0] != pts[2] && pts[1] != pts[2])
     {
-      newCellId = offset + polys->InsertNextCell(3, pts);
+      const vtkIdType newCellId = offset + polys->InsertNextCell(3, pts);
       if (outCd)
       {
         outCd->CopyData(inCd, cellId, newCellId);
@@ -521,31 +520,132 @@ void vtkVoxel::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
 }
 
 //------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetEdgeArray(vtkIdType edgeId)
+// Return the case table for table-based isocontouring (aka marching cubes
+// style implementations). A linear 3D cell with N vertices will have 2**N
+// cases. The cases list three Edges in order to produce one output triangle.
+int* vtkVoxel::GetTriangleCases(int caseId)
 {
-  return edges[edgeId];
+  return const_cast<int*>(vtkMarchingCellsContourCases::GetVoxelCase(caseId));
 }
 
 //------------------------------------------------------------------------------
-// Return the case table for table-based isocontouring (aka marching cubes
-// style implementations). A linear 3D cell with N vertices will have 2**N
-// cases. The cases list three edges in order to produce one output triangle.
-int* vtkVoxel::GetTriangleCases(int caseId)
+void vtkVoxel::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
+  vtkCellArray* connectivity, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd,
+  vtkIdType cellId, vtkCellData* outCd, int insideOut)
 {
-  return &(*(vtkMarchingCubesTriangleCases::GetCases() + caseId)->edges);
+  vtkIdType pts[8];
+  double coords[8][3];
+  double grdDiffs[8];
+  double x[3], x1[3], x2[3];
+  vtkIdType centroidIndex = 0;
+
+  // Build the case table
+  uint8_t caseIndex = 0;
+  for (int pointId = 0; pointId < 8; ++pointId)
+  {
+    grdDiffs[pointId] = cellScalars->GetComponent(pointId, 0) - value;
+    caseIndex |= (grdDiffs[pointId] >= 0.0) << pointId;
+  }
+  const uint8_t* thisCase = insideOut
+    ? vtkMarchingCellsClipCases<true>::GetCellCase(VTK_VOXEL, caseIndex)
+    : vtkMarchingCellsClipCases<false>::GetCellCase(VTK_VOXEL, caseIndex);
+  using MCCases = vtkMarchingCellsClipCasesBase;
+  const MCCases::EDGEIDXS* edgeVertices = MCCases::GetCellEdges(VTK_VOXEL);
+  const uint8_t numberOfOutputCells = *thisCase++;
+
+  for (uint8_t outputCellId = 0; outputCellId < numberOfOutputCells; ++outputCellId)
+  {
+    const uint8_t shape = *thisCase++;
+    const uint8_t numberOfCellPoints = *thisCase++;
+    for (int i = 0; i < numberOfCellPoints; ++i)
+    {
+      const uint8_t pointIndex = *thisCase++;
+      if (pointIndex <= MCCases::P7) // Input Point
+      {
+        this->Points->GetPoint(pointIndex, coords[i]);
+        if (locator->InsertUniquePoint(coords[i], pts[i]))
+        {
+          if (outPd)
+          {
+            outPd->CopyData(inPd, this->PointIds->GetId(pointIndex), pts[i]);
+          }
+        }
+      }
+      else if (pointIndex <= MCCases::EL) // Edge point
+      {
+        const auto& edgePoints = edgeVertices[pointIndex - MCCases::EA];
+        uint8_t point1Index = edgePoints[0];
+        uint8_t point2Index = edgePoints[1];
+        double point1ToPoint2 = grdDiffs[point2Index] - grdDiffs[point1Index];
+        if (point1ToPoint2 < 0)
+        {
+          std::swap(point1Index, point2Index);
+          point1ToPoint2 = -point1ToPoint2;
+        }
+        const double point1ToIso = 0.0 - grdDiffs[point1Index];
+        const double t = point1ToPoint2 != 0 ? point1ToIso / point1ToPoint2 : 0;
+        this->Points->GetPoint(point1Index, x1);
+        this->Points->GetPoint(point2Index, x2);
+        for (int j = 0; j < 3; j++)
+        {
+          coords[i][j] = x1[j] + t * (x2[j] - x1[j]);
+        }
+
+        if (locator->InsertUniquePoint(coords[i], pts[i]))
+        {
+          if (outPd)
+          {
+            vtkIdType pointIndex1 = this->PointIds->GetId(point1Index);
+            vtkIdType pointIndex2 = this->PointIds->GetId(point2Index);
+            outPd->InterpolateEdge(inPd, pts[i], pointIndex1, pointIndex2, t);
+          }
+        }
+      }
+      else // centroid point
+      {
+        pts[i] = centroidIndex;
+      }
+    }
+    if (shape != VTK_EMPTY_CELL) // normal cell
+    {
+      const vtkIdType newCellId = connectivity->InsertNextCell(numberOfCellPoints, pts);
+      if (outCd)
+      {
+        outCd->CopyData(inCd, cellId, newCellId);
+      }
+    }
+    else // centroid
+    {
+      x[0] = x[1] = x[2] = 0.0;
+      double weightFactor = 1.0 / numberOfCellPoints;
+      double weights[8];
+      for (int i = 0; i < numberOfCellPoints; ++i)
+      {
+        x[0] += coords[i][0];
+        x[1] += coords[i][1];
+        x[2] += coords[i][2];
+        weights[i] = weightFactor;
+      }
+      x[0] *= weightFactor;
+      x[1] *= weightFactor;
+      x[2] *= weightFactor;
+      if (locator->InsertUniquePoint(x, centroidIndex))
+      {
+        if (outPd)
+        {
+          vtkNew<vtkIdList> idList;
+          idList->SetList(pts, numberOfCellPoints, /*save*/ true);
+          outPd->InterpolatePoint(outPd, centroidIndex, idList, weights);
+        }
+      }
+    }
+  }
 }
 
 //------------------------------------------------------------------------------
 vtkCell* vtkVoxel::GetEdge(int edgeId)
 {
-  if (!this->Line)
-  {
-    this->Line = vtkLine::New();
-  }
-
-  const vtkIdType* verts;
-
-  verts = edges[edgeId];
+  const vtkIdType* verts = Edges[edgeId];
 
   // load point id's
   this->Line->PointIds->SetId(0, this->PointIds->GetId(verts[0]));
@@ -559,31 +659,118 @@ vtkCell* vtkVoxel::GetEdge(int edgeId)
 }
 
 //------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetFaceArray(vtkIdType faceId)
-{
-  return faces[faceId];
-}
-
-//------------------------------------------------------------------------------
 vtkCell* vtkVoxel::GetFace(int faceId)
 {
-  if (!this->Pixel)
-  {
-    this->Pixel = vtkPixel::New();
-  }
+  const vtkIdType* verts = Faces[faceId];
 
-  const vtkIdType* verts;
-  int i;
-
-  verts = faces[faceId];
-
-  for (i = 0; i < 4; i++)
+  for (int i = 0; i < 4; i++)
   {
     this->Pixel->PointIds->SetId(i, this->PointIds->GetId(verts[i]));
     this->Pixel->Points->SetPoint(i, this->Points->GetPoint(verts[i]));
   }
 
   return this->Pixel;
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetEdgeArray(vtkIdType edgeId)
+{
+  return Edges[edgeId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetFaceArray(vtkIdType faceId)
+{
+  return Faces[faceId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetEdgeToAdjacentFacesArray(vtkIdType edgeId)
+{
+  assert(edgeId < vtkVoxel::NumberOfEdges && "edgeId too large");
+  return EdgeToAdjacentFaces[edgeId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetFaceToAdjacentFacesArray(vtkIdType faceId)
+{
+  assert(faceId < vtkVoxel::NumberOfFaces && "faceId too large");
+  return FaceToAdjacentFaces[faceId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetPointToIncidentEdgesArray(vtkIdType pointId)
+{
+  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
+  return PointToIncidentEdges[pointId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetPointToIncidentFacesArray(vtkIdType pointId)
+{
+  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
+  return PointToIncidentFaces[pointId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkVoxel::GetPointToOneRingPointsArray(vtkIdType pointId)
+{
+  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
+  return PointToOneRingPoints[pointId];
+}
+
+//------------------------------------------------------------------------------
+void vtkVoxel::GetEdgePoints(vtkIdType edgeId, const vtkIdType*& pts)
+{
+  assert(edgeId < vtkVoxel::NumberOfEdges && "edgeId too large");
+  pts = this->GetEdgeArray(edgeId);
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkVoxel::GetFacePoints(vtkIdType faceId, const vtkIdType*& pts)
+{
+  assert(faceId < vtkVoxel::NumberOfFaces && "faceId too large");
+  pts = this->GetFaceArray(faceId);
+  return vtkVoxel::MaximumFaceSize;
+}
+
+//------------------------------------------------------------------------------
+void vtkVoxel::GetEdgeToAdjacentFaces(vtkIdType edgeId, const vtkIdType*& pts)
+{
+  assert(edgeId < vtkVoxel::NumberOfEdges && "edgeId too large");
+  pts = EdgeToAdjacentFaces[edgeId];
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkVoxel::GetFaceToAdjacentFaces(vtkIdType faceId, const vtkIdType*& faceIds)
+{
+  assert(faceId < vtkVoxel::NumberOfFaces && "faceId too large");
+  faceIds = FaceToAdjacentFaces[faceId];
+  return vtkVoxel::MaximumFaceSize;
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkVoxel::GetPointToIncidentEdges(vtkIdType pointId, const vtkIdType*& edgeIds)
+{
+  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
+  edgeIds = PointToIncidentEdges[pointId];
+  return vtkVoxel::MaximumValence;
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkVoxel::GetPointToIncidentFaces(vtkIdType pointId, const vtkIdType*& faceIds)
+{
+  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
+  faceIds = PointToIncidentFaces[pointId];
+  return vtkVoxel::MaximumValence;
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkVoxel::GetPointToOneRingPoints(vtkIdType pointId, const vtkIdType*& pts)
+{
+  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
+  pts = PointToOneRingPoints[pointId];
+  return vtkVoxel::MaximumValence;
 }
 
 //------------------------------------------------------------------------------
@@ -596,14 +783,13 @@ int vtkVoxel::IntersectWithLine(const double p1[3], const double p2[3], double t
   double minPt[3], maxPt[3];
   double bounds[6];
   double p21[3];
-  int i;
 
   subId = 0;
 
   this->Points->GetPoint(0, minPt);
   this->Points->GetPoint(7, maxPt);
 
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     p21[i] = p2[i] - p1[i];
     bounds[2 * i] = minPt[i];
@@ -618,7 +804,7 @@ int vtkVoxel::IntersectWithLine(const double p1[3], const double p2[3], double t
   //
   // Evaluate intersection
   //
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     pcoords[i] = (x[i] - minPt[i]) / (maxPt[i] - minPt[i]);
   }
@@ -637,13 +823,13 @@ int vtkVoxel::TriangulateLocalIds(int index, vtkIdList* ptIds)
   {
     constexpr vtkIdType ids[5][4] = { { 0, 1, 2, 4 }, { 1, 4, 5, 7 }, { 1, 4, 7, 2 },
       { 1, 2, 7, 3 }, { 2, 7, 6, 4 } };
-    std::copy(&ids[0][0], &ids[0][0] + 20, ptIds->begin());
+    std::copy_n(&ids[0][0], 20, ptIds->begin());
   }
   else
   {
     constexpr vtkIdType ids[5][4] = { { 3, 1, 5, 0 }, { 0, 3, 2, 6 }, { 3, 5, 7, 6 },
       { 0, 6, 4, 5 }, { 0, 3, 6, 5 } };
-    std::copy(&ids[0][0], &ids[0][0] + 20, ptIds->begin());
+    std::copy_n(&ids[0][0], 20, ptIds->begin());
   }
   return 1;
 }
@@ -652,8 +838,7 @@ int vtkVoxel::TriangulateLocalIds(int index, vtkIdList* ptIds)
 void vtkVoxel::Derivatives(
   int vtkNotUsed(subId), const double pcoords[3], const double* values, int dim, double* derivs)
 {
-  double functionDerivs[24], sum;
-  int i, j, k;
+  double functionDerivs[24];
   double x0[3], x1[3], x2[3], x4[3], spacing[3];
 
   this->Points->GetPoint(0, x0);
@@ -671,11 +856,12 @@ void vtkVoxel::Derivatives(
 
   // since the x-y-z axes are aligned with r-s-t axes, only need to scale
   // the derivative values by the data spacing.
-  for (k = 0; k < dim; k++) // loop over values per point
+  for (int k = 0; k < dim; k++) // loop over values per point
   {
-    for (j = 0; j < 3; j++) // loop over derivative directions
+    for (int j = 0; j < 3; j++) // loop over derivative directions
     {
-      for (sum = 0.0, i = 0; i < 8; i++) // loop over interp. function derivatives
+      double sum = 0.0;
+      for (int i = 0; i < 8; i++) // loop over interp. function derivatives
       {
         sum += functionDerivs[8 * j + i] * values[dim * i + k];
       }
@@ -685,101 +871,9 @@ void vtkVoxel::Derivatives(
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkVoxel::GetPointToOneRingPoints(vtkIdType pointId, const vtkIdType*& pts)
-{
-  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
-  pts = pointToOneRingPoints[pointId];
-  return vtkVoxel::MaximumValence;
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkVoxel::GetPointToIncidentFaces(vtkIdType pointId, const vtkIdType*& faceIds)
-{
-  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
-  faceIds = pointToIncidentFaces[pointId];
-  return vtkVoxel::MaximumValence;
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkVoxel::GetPointToIncidentEdges(vtkIdType pointId, const vtkIdType*& edgeIds)
-{
-  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
-  edgeIds = pointToIncidentEdges[pointId];
-  return vtkVoxel::MaximumValence;
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkVoxel::GetFaceToAdjacentFaces(vtkIdType faceId, const vtkIdType*& faceIds)
-{
-  assert(faceId < vtkVoxel::NumberOfFaces && "faceId too large");
-  faceIds = faceToAdjacentFaces[faceId];
-  return vtkVoxel::MaximumFaceSize;
-}
-
-//------------------------------------------------------------------------------
-void vtkVoxel::GetEdgeToAdjacentFaces(vtkIdType edgeId, const vtkIdType*& pts)
-{
-  assert(edgeId < vtkVoxel::NumberOfEdges && "edgeId too large");
-  pts = edgeToAdjacentFaces[edgeId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetEdgeToAdjacentFacesArray(vtkIdType edgeId)
-{
-  assert(edgeId < vtkVoxel::NumberOfEdges && "edgeId too large");
-  return edgeToAdjacentFaces[edgeId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetFaceToAdjacentFacesArray(vtkIdType faceId)
-{
-  assert(faceId < vtkVoxel::NumberOfFaces && "faceId too large");
-  return faceToAdjacentFaces[faceId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetPointToIncidentEdgesArray(vtkIdType pointId)
-{
-  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
-  return pointToIncidentEdges[pointId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetPointToIncidentFacesArray(vtkIdType pointId)
-{
-  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
-  return pointToIncidentFaces[pointId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkVoxel::GetPointToOneRingPointsArray(vtkIdType pointId)
-{
-  assert(pointId < vtkVoxel::NumberOfPoints && "pointId too large");
-  return pointToOneRingPoints[pointId];
-}
-
-//------------------------------------------------------------------------------
-void vtkVoxel::GetEdgePoints(vtkIdType edgeId, const vtkIdType*& pts)
-{
-  assert(edgeId < vtkVoxel::NumberOfEdges && "edgeId too large");
-  pts = this->GetEdgeArray(edgeId);
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkVoxel::GetFacePoints(vtkIdType faceId, const vtkIdType*& pts)
-{
-  assert(faceId < vtkVoxel::NumberOfFaces && "faceId too large");
-  pts = this->GetFaceArray(faceId);
-  return vtkVoxel::MaximumFaceSize;
-}
-
-static double vtkVoxelCellPCoords[24] = { 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0,
-  0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-//------------------------------------------------------------------------------
 double* vtkVoxel::GetParametricCoords()
 {
-  return vtkVoxelCellPCoords;
+  return ParametricCoords;
 }
 
 //------------------------------------------------------------------------------
@@ -788,22 +882,8 @@ void vtkVoxel::PrintSelf(ostream& os, vtkIndent indent)
   this->Superclass::PrintSelf(os, indent);
 
   os << indent << "Line:\n";
-  if (this->Line)
-  {
-    this->Line->PrintSelf(os, indent.GetNextIndent());
-  }
-  else
-  {
-    os << "None\n";
-  }
+  this->Line->PrintSelf(os, indent.GetNextIndent());
   os << indent << "Pixel:\n";
-  if (this->Pixel)
-  {
-    this->Pixel->PrintSelf(os, indent.GetNextIndent());
-  }
-  else
-  {
-    os << "None\n";
-  }
+  this->Pixel->PrintSelf(os, indent.GetNextIndent());
 }
 VTK_ABI_NAMESPACE_END

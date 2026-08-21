@@ -80,6 +80,29 @@ inline void RunSafeFilterParallel(Body&& body)
 }
 
 /**
+ * Threshold-aware overload. @p workSize is the number of items the wrapped
+ * vtkSMPTools::For region will iterate. When it is below vtkSMPTools::THRESHOLD
+ * the For() runs serially regardless, so entering a vtkSMPTools::LocalScope to
+ * activate the threading policy is pure overhead -- LocalScope save/sets/restores
+ * the process-global SMP singleton, which costs far more (~microseconds) than a
+ * tiny serial region. Callers that invoke a parallel region in a tight loop over
+ * small inputs (e.g. vtkLinearTransform::TransformPoints while glyphing a small
+ * source onto many points -- thousands of ~50-point transforms) MUST use this so
+ * the per-call scope does not dominate. Bit-exact: below the threshold both paths
+ * run the identical serial body; only the no-op backend activation is skipped.
+ */
+template <typename Body>
+inline void RunSafeFilterParallel(vtkIdType workSize, Body&& body)
+{
+  if (workSize < vtkSMPTools::THRESHOLD)
+  {
+    body();
+    return;
+  }
+  RunSafeFilterParallel(std::forward<Body>(body));
+}
+
+/**
  * True when the opt-in NON-EXACT fast mode is enabled (env CVISTA_FAST, set by the
  * Python cvista.EnableFast()). Default OFF. Read live so it can be toggled at
  * runtime. Filters whose threaded path is not byte-exact gate on this.

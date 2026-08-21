@@ -44,18 +44,26 @@ DTYPES = [
     np.float64,
 ]
 
-# numpy dtype -> the concrete class stock VTK's numpy_to_vtk returns.
+# numpy dtype -> the concrete AOS array class stock VTK's numpy_to_vtk returns,
+# matched by the tail of ``type(array).__name__``. VTK 9.7 wraps each AOS template
+# instantiation under a ``VTKAOSArray_`` prefix (so the reported name is e.g.
+# ``VTKAOSArray_vtkTypeInt8Array``, not the bare ``vtkTypeInt8Array`` of 9.6.2); we
+# strip that prefix and compare the concrete-class tail. The 64-bit signed/unsigned
+# types resolve to the platform's native long class -- ``long`` on LP64 (Linux,
+# macOS), ``long long`` on LLP64 (Windows) -- so each accepts both spellings. The
+# point of the check is unchanged from #255: a bare ``vtkDataArray`` here means the
+# concrete wrapper was dropped from the build.
 EXPECTED_CLASS = {
-    np.int8: 'vtkTypeInt8Array',
-    np.uint8: 'vtkTypeUInt8Array',
-    np.int16: 'vtkTypeInt16Array',
-    np.uint16: 'vtkTypeUInt16Array',
-    np.int32: 'vtkTypeInt32Array',
-    np.uint32: 'vtkTypeUInt32Array',
-    np.int64: 'vtkTypeInt64Array',
-    np.uint64: 'vtkTypeUInt64Array',
-    np.float32: 'vtkTypeFloat32Array',
-    np.float64: 'vtkTypeFloat64Array',
+    np.int8: {'vtkTypeInt8Array'},
+    np.uint8: {'vtkTypeUInt8Array'},
+    np.int16: {'vtkTypeInt16Array'},
+    np.uint16: {'vtkTypeUInt16Array'},
+    np.int32: {'vtkTypeInt32Array'},
+    np.uint32: {'vtkTypeUInt32Array'},
+    np.int64: {'vtkLongArray', 'vtkLongLongArray'},
+    np.uint64: {'vtkUnsignedLongArray', 'vtkUnsignedLongLongArray'},
+    np.float32: {'vtkTypeFloat32Array'},
+    np.float64: {'vtkTypeFloat64Array'},
 }
 
 
@@ -64,7 +72,14 @@ def test_numpy_to_vtk_returns_the_concrete_class(dtype):
     """A bare vtkDataArray here means the wrapper was dropped from the build."""
     array = numpy_to_vtk(np.arange(16).astype(dtype), deep=True)
 
-    assert type(array).__name__ == EXPECTED_CLASS[dtype]
+    name = type(array).__name__
+    assert name != 'vtkDataArray', (
+        f'{np.dtype(dtype).name}: numpy_to_vtk returned a bare vtkDataArray '
+        '-- the concrete array wrapper was dropped from the build')
+    concrete = name.removeprefix('VTKAOSArray_')
+    assert concrete in EXPECTED_CLASS[dtype], (
+        f'{np.dtype(dtype).name}: got {name!r}, expected one of '
+        f'{sorted(EXPECTED_CLASS[dtype])} (optionally VTKAOSArray_-prefixed)')
 
 
 @pytest.mark.parametrize('dtype', DTYPES, ids=lambda d: np.dtype(d).name)

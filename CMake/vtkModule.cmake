@@ -1269,6 +1269,7 @@ library as well where necessary.
 * :cmake:command:`vtk_module_compile_features`
 * :cmake:command:`vtk_module_link`
 * :cmake:command:`vtk_module_link_options`
+* :cmake:command:`vtk_module_precompile_headers`
 #]==]
 
 #[==[.rst:
@@ -1317,7 +1318,7 @@ function (_vtk_module_real_target var module)
 
   if (NOT _vtk_real_target_res)
     get_property(_vtk_real_target_res GLOBAL
-      PROPERTY "_vtk_module_${module}_target_name")
+      PROPERTY "_vtk_module_${module}_library_name")
     # Querying during the build.
     if (DEFINED _vtk_build_BUILD_WITH_KITS AND _vtk_build_BUILD_WITH_KITS)
       get_property(_vtk_real_target_kit GLOBAL
@@ -1386,7 +1387,7 @@ function (_vtk_module_real_target_kit var kit)
 
   if (NOT _vtk_real_target_res)
     get_property(_vtk_real_target_res GLOBAL
-      PROPERTY "_vtk_kit_${kit}_target_name")
+      PROPERTY "_vtk_kit_${kit}_library_name")
   endif ()
 
   if (NOT _vtk_real_target_res)
@@ -1822,7 +1823,7 @@ function (_vtk_private_kit_link_target module)
 
   # Compute the target name.
   get_property(_vtk_private_kit_link_base_target_name GLOBAL
-    PROPERTY "_vtk_module_${module}_target_name")
+    PROPERTY "_vtk_module_${module}_library_name")
   if (NOT _vtk_private_kit_link_base_target_name)
     message(FATAL_ERROR
       "_vtk_private_kit_link_target only works for modules built in the "
@@ -1941,6 +1942,54 @@ function (vtk_module_link module)
     ${_vtk_link_INTERFACE_args}
     ${_vtk_link_PUBLIC_args}
     ${_vtk_link_PRIVATE_args})
+endfunction ()
+
+#[==[.rst:
+.. cmake:command:: vtk_module_precompile_headers
+
+  Add precompiled headers to a target
+  |module|
+
+  Validate arguments and call ``target_precompile_headers`` with values.
+
+  .. code-block:: cmake
+
+    vtk_module_precompile_headers(<target>
+      [PUBLIC <headers>...]
+      [PRIVATE <headers>...]
+      [INTERFACE <header>...])
+#]==]
+function (vtk_module_precompile_headers target_module)
+  cmake_parse_arguments(PARSE_ARGV 1 _vtk_module_precompile
+    ""
+    ""
+    "INTERFACE;PUBLIC;PRIVATE")
+
+  if (_vtk_module_precompile_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR
+      "Unparsed arguments for vtk_module_precompile_headers: "
+      "${_vtk_module_precompile_UNPARSED_ARGUMENTS}.")
+  endif ()
+
+  _vtk_module_real_target(_vtk_pch_target_type "${target_module}")
+  _vtk_module_target_function(_vtk_module_precompile)
+
+  # PCH support requires CMake 3.16+
+  if (CMAKE_VERSION VERSION_LESS "3.16")
+    return ()
+  endif ()
+
+  if (NOT _vtk_module_precompile_INTERFACE_args AND
+      NOT _vtk_module_precompile_PUBLIC_args AND
+      NOT _vtk_module_precompile_PRIVATE_args)
+    return ()
+  endif ()
+
+  target_precompile_headers("${_vtk_pch_target_type}"
+    ${_vtk_module_precompile_INTERFACE_args}
+    ${_vtk_module_precompile_PUBLIC_args}
+    ${_vtk_module_precompile_PRIVATE_args})
+
 endfunction ()
 
 #[==[.rst:
@@ -2906,7 +2955,7 @@ function (vtk_module_build)
   if (_vtk_build_BUILD_WITH_KITS)
     foreach (_vtk_build_kit IN LISTS _vtk_build_KITS)
       get_property(_vtk_build_target_name GLOBAL
-        PROPERTY  "_vtk_kit_${_vtk_build_kit}_target_name")
+        PROPERTY  "_vtk_kit_${_vtk_build_kit}_library_name")
       set(_vtk_kit_source_file
         "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/vtk_module_kit_${_vtk_build_target_name}.c")
       file(GENERATE
@@ -2914,6 +2963,11 @@ function (vtk_module_build)
         CONTENT "void vtk_module_kit_${_vtk_build_target_name}(void);\nvoid vtk_module_kit_${_vtk_build_target_name}(void) {}\n")
       add_library("${_vtk_build_target_name}"
         "${_vtk_kit_source_file}")
+      get_property(_vtk_build_export_name GLOBAL
+        PROPERTY  "_vtk_kit_${_vtk_build_kit}_target_name")
+      set_property(TARGET "${_vtk_build_target_name}"
+        PROPERTY
+          EXPORT_NAME "${_vtk_build_export_name}")
       get_property(_vtk_build_namespace GLOBAL
         PROPERTY  "_vtk_kit_${_vtk_build_kit}_namespace")
       if (_vtk_build_TARGET_NAMESPACE STREQUAL "<AUTO>")
@@ -2939,7 +2993,7 @@ function (vtk_module_build)
         PROPERTY  "_vtk_kit_${_vtk_build_kit}_kit_modules")
       foreach (_vtk_build_kit_module IN LISTS _vtk_build_kit_modules)
         get_property(_vtk_build_kit_module_target_name GLOBAL
-          PROPERTY "_vtk_module_${_vtk_build_kit_module}_target_name")
+          PROPERTY "_vtk_module_${_vtk_build_kit_module}_library_name")
         list(APPEND _vtk_build_kit_modules_object_libraries
           "${_vtk_build_kit_module_target_name}-objects")
 
@@ -3006,8 +3060,8 @@ function (vtk_module_build)
       if (_vtk_build_LIBRARY_NAME_SUFFIX)
         string(APPEND _vtk_build_kit_library_name "-${_vtk_build_LIBRARY_NAME_SUFFIX}")
       endif ()
-      set_target_properties("${_vtk_build_target_name}"
-        PROPERTIES
+      set_property(TARGET "${_vtk_build_target_name}"
+        PROPERTY
           OUTPUT_NAME "${_vtk_build_kit_library_name}")
     endforeach ()
   endif ()
@@ -3697,7 +3751,7 @@ function (_vtk_module_write_wrap_hierarchy)
     PROPERTY
       "INTERFACE_vtk_module_hierarchy" "${_vtk_hierarchy_file}")
 
-  set(_vtk_add_module_target_name_iface "${_vtk_add_module_target_name}")
+  set(_vtk_add_module_target_name_iface "${_vtk_add_module_library_name}")
   if (_vtk_add_module_build_with_kit)
     string(APPEND _vtk_add_module_target_name_iface "-objects")
   endif ()
@@ -4172,6 +4226,30 @@ function (vtk_module_add_module name)
   get_property(_vtk_add_module_third_party GLOBAL
     PROPERTY  "_vtk_module_${_vtk_build_module}_third_party")
 
+  # cvista: Lever B (NOCOMPILE) can empty a module whose every class pyvista does
+  # not use. On VTK 9.6.2 such a module simply wasn't pulled into pyvista's
+  # closure; on 9.7 new inter-module DEPENDS (e.g. FiltersExtraction/IOHDF ->
+  # FiltersTemporal) drag it in as a link dependency, and 9.7 errors at generate
+  # time ("cannot determine linker language") on the empty objects target. Inject
+  # a tiny dummy translation unit so the library links; dependents only declare
+  # the dep (no kept class references its symbols, which is why it was safe to
+  # NOCOMPILE), so an otherwise-empty library satisfies them.
+  if (NOT _vtk_add_module_SOURCES AND NOT _vtk_add_module_HEADER_ONLY AND
+      NOT _vtk_add_module_third_party)
+    # Sanitise the module name for the filename: _vtk_build_module is namespaced
+    # (e.g. VTK::FiltersTemporal) and ':' is illegal in a Windows path, so the raw
+    # name fails `file(WRITE ...)` on Windows. Replace '::' with '_'.
+    string(REPLACE "::" "_" _cvista_empty_name "${_vtk_build_module}")
+    set(_cvista_empty_tu
+      "${CMAKE_CURRENT_BINARY_DIR}/${_cvista_empty_name}_cvistaEmpty.cxx")
+    if (NOT EXISTS "${_cvista_empty_tu}")
+      file(WRITE "${_cvista_empty_tu}"
+        "// cvista: dummy TU for a module emptied by CVISTA_NOCOMPILE_CLASSES.\n"
+        "// Keeps the object library's linker language defined on VTK 9.7.\n")
+    endif ()
+    list(APPEND _vtk_add_module_SOURCES "${_cvista_empty_tu}")
+  endif ()
+
   get_property(_vtk_add_module_library_name GLOBAL
     PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
   set(_vtk_add_module_module_header_name
@@ -4288,9 +4366,9 @@ function (vtk_module_add_module name)
 
   get_property(_vtk_add_module_namespace GLOBAL
     PROPERTY  "_vtk_module_${_vtk_build_module}_namespace")
-  get_property(_vtk_add_module_target_name GLOBAL
-    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
-  set(_vtk_add_module_real_target "${_vtk_add_module_target_name}")
+  get_property(_vtk_add_module_library_name GLOBAL
+    PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
+  set(_vtk_add_module_real_target "${_vtk_add_module_library_name}")
   if (_vtk_add_module_HEADER_ONLY)
     if (_vtk_add_module_build_with_kit)
       message(FATAL_ERROR
@@ -4545,7 +4623,7 @@ function (vtk_module_add_module name)
           # We're in the same kit; depend on the `-objects` library of the
           # module.
           get_property(_vtk_add_module_depend_target_name GLOBAL
-            PROPERTY "_vtk_module_${_vtk_add_module_depend}_target_name")
+            PROPERTY "_vtk_module_${_vtk_add_module_depend}_library_name")
           list(APPEND _vtk_add_module_depends_link
             "${_vtk_add_module_depend_target_name}-objects")
         else ()
@@ -4561,7 +4639,7 @@ function (vtk_module_add_module name)
           # We're in the same kit; depend on the `-objects` library of the
           # module.
           get_property(_vtk_add_module_private_depend_target_name GLOBAL
-            PROPERTY "_vtk_module_${_vtk_add_module_private_depend}_target_name")
+            PROPERTY "_vtk_module_${_vtk_add_module_private_depend}_library_name")
           list(APPEND _vtk_add_module_private_depends_link
             "${_vtk_add_module_private_depend_target_name}-objects")
         else ()
@@ -4581,7 +4659,7 @@ function (vtk_module_add_module name)
       list(REMOVE_ITEM _vtk_add_module_kit_modules "${_vtk_build_module}")
       foreach (_vtk_add_module_kit_module IN LISTS _vtk_add_module_kit_modules)
         get_property(_vtk_add_module_kit_module_target_name GLOBAL
-          PROPERTY "_vtk_module_${_vtk_add_module_kit_module}_target_name")
+          PROPERTY "_vtk_module_${_vtk_add_module_kit_module}_library_name")
         if (TARGET "${_vtk_add_module_kit_module_target_name}-objects")
           get_property(_vtk_add_module_kit_module_define_symbol
             TARGET    "${_vtk_add_module_kit_module_target_name}-objects"
@@ -4624,7 +4702,7 @@ function (vtk_module_add_module name)
             # We're in the same kit; depend on the `-objects` library of the
             # module to avoid circular dependency (see explanation earlier)
             get_property(_vtk_add_module_optional_depend_target_name GLOBAL
-              PROPERTY "_vtk_module_${_vtk_add_module_optional_depend}_target_name")
+              PROPERTY "_vtk_module_${_vtk_add_module_optional_depend}_library_name")
             set(_vtk_add_module_optional_depend_link "${_vtk_add_module_optional_depend_target_name}-objects")
           endif ()
         endif ()
@@ -4727,7 +4805,7 @@ function (vtk_module_add_module name)
   set(_vtk_add_module_autoinit_depends_includes)
   foreach (_vtk_add_module_autoinit_dependency IN LISTS _vtk_add_module_depends)
     get_property(_vtk_add_module_autoinit_dependency_target_name GLOBAL
-      PROPERTY "_vtk_module_${_vtk_add_module_autoinit_dependency}_target_name")
+      PROPERTY "_vtk_module_${_vtk_add_module_autoinit_dependency}_library_name")
     if (_vtk_add_module_autoinit_dependency_target_name)
       get_property(_vtk_add_module_depends_needs_autoinit
         TARGET    "${_vtk_add_module_autoinit_dependency_target_name}"
@@ -4830,13 +4908,13 @@ namespace
       CUSTOM_CONTENT_FROM_VARIABLE _vtk_add_module_module_content)
   endif ()
 
-  _vtk_module_apply_properties("${_vtk_add_module_target_name}")
+  _vtk_module_apply_properties("${_vtk_add_module_library_name}")
   _vtk_module_add_header_tests()
 
   if (NOT _vtk_add_module_NO_INSTALL)
-    _vtk_module_install("${_vtk_add_module_target_name}")
+    _vtk_module_install("${_vtk_add_module_library_name}")
     if (_vtk_add_module_build_with_kit)
-      _vtk_module_install("${_vtk_add_module_target_name}-objects")
+      _vtk_module_install("${_vtk_add_module_library_name}-objects")
     endif ()
   endif ()
 
@@ -4857,7 +4935,7 @@ namespace
   if (_vtk_build_GENERATE_SPDX AND NOT _vtk_add_module_third_party)
     _vtk_module_generate_spdx(
       MODULE_NAME "${_vtk_add_module_library_name}"
-      TARGET "${_vtk_add_module_target_name}-spdx"
+      TARGET "${_vtk_add_module_library_name}-spdx"
       OUTPUT "${_vtk_add_module_library_name}.spdx"
       SKIP_REGEX "${_vtk_add_module_SPDX_SKIP_REGEX}"
       INPUT_FILES
@@ -4867,7 +4945,7 @@ namespace
         ${_vtk_add_module_HEADERS}
         ${_vtk_add_module_NOWRAP_HEADERS}
         ${_vtk_add_module_PRIVATE_HEADERS})
-     add_dependencies("${_vtk_add_module_real_target}" "${_vtk_add_module_target_name}-spdx")
+     add_dependencies("${_vtk_add_module_real_target}" "${_vtk_add_module_library_name}-spdx")
 
     if (_vtk_build_TARGET_SPECIFIC_COMPONENTS)
       string(PREPEND _vtk_build_SPDX_COMPONENT "${_vtk_build_module}-")
@@ -5055,9 +5133,15 @@ function (vtk_module_install_headers)
         get_filename_component(_vtk_install_headers_destination_directory_subdir "${_vtk_install_headers_directory}" DIRECTORY)
       endif ()
     endif ()
+    set(_vtk_install_headers_full_destination
+      "${_vtk_install_headers_destination}")
+    if (_vtk_install_headers_destination_directory_subdir)
+      string(APPEND _vtk_install_headers_full_destination
+        "/${_vtk_install_headers_destination_directory_subdir}")
+    endif ()
     install(
       DIRECTORY   "${_vtk_install_headers_directory}"
-      DESTINATION "${_vtk_install_headers_destination}/${_vtk_install_headers_destination_directory_subdir}"
+      DESTINATION "${_vtk_install_headers_full_destination}"
       COMPONENT   "${_vtk_install_headers_headers_component}"
       ${_vtk_install_headers_exclude_from_all})
   endforeach ()
@@ -5105,6 +5189,16 @@ function (_vtk_module_apply_properties target)
     set(_vtk_apply_properties_BASENAME "${target}")
   endif ()
 
+  get_property(_vtk_add_module_module_library_name GLOBAL
+    PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
+  if (target STREQUAL _vtk_add_module_module_library_name)
+    get_property(_vtk_add_module_target_name GLOBAL
+      PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
+    set_property(TARGET "${target}"
+      PROPERTY
+        EXPORT_NAME "${_vtk_add_module_target_name}")
+  endif ()
+
   get_property(_vtk_add_module_type
     TARGET    "${target}"
     PROPERTY  TYPE)
@@ -5114,36 +5208,30 @@ function (_vtk_module_apply_properties target)
   endif ()
 
   set(_vtk_add_module_library_name "${_vtk_apply_properties_BASENAME}")
-  get_property(_vtk_add_module_target_name GLOBAL
-    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
-  if (_vtk_add_module_target_name STREQUAL "${target}")
-    get_property(_vtk_add_module_library_name GLOBAL
-      PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
-  endif ()
   set(_vtk_add_module_output_name "${_vtk_add_module_library_name}${_vtk_add_module_LIBRARY_NAME_SUFFIX}")
   if (_vtk_build_LIBRARY_NAME_SUFFIX)
     string(APPEND _vtk_add_module_output_name "-${_vtk_build_LIBRARY_NAME_SUFFIX}")
   endif ()
 
-  set_target_properties("${target}"
-    PROPERTIES
+  set_property(TARGET "${target}"
+    PROPERTY
       OUTPUT_NAME "${_vtk_add_module_output_name}")
 
   if (_vtk_build_VERSION AND NOT _vtk_add_module_type STREQUAL "EXECUTABLE")
-    set_target_properties("${target}"
-      PROPERTIES
+    set_property(TARGET "${target}"
+      PROPERTY
         VERSION "${_vtk_build_VERSION}")
   endif ()
 
   if (_vtk_build_SOVERSION)
-    set_target_properties("${target}"
-      PROPERTIES
+    set_property(TARGET "${target}"
+      PROPERTY
         SOVERSION "${_vtk_build_SOVERSION}")
   endif ()
 
   if (WIN32 AND NOT DEFINED CMAKE_DEBUG_POSTFIX)
-    set_target_properties("${target}"
-      PROPERTIES
+    set_property(TARGET "${target}"
+      PROPERTY
         DEBUG_POSTFIX "d")
   endif ()
 
@@ -5296,7 +5384,6 @@ function (vtk_module_add_executable name)
   endif ()
 
   set(_vtk_add_executable_target_name "${name}")
-  set(_vtk_add_executable_library_name "${name}")
   if (name STREQUAL _vtk_build_module)
     if (_vtk_add_executable_NO_INSTALL)
       message(FATAL_ERROR
@@ -5309,8 +5396,6 @@ function (vtk_module_add_executable name)
         "the associated `vtk.module` file.")
     endif ()
     get_property(_vtk_add_executable_target_name GLOBAL
-      PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
-    get_property(_vtk_add_executable_library_name GLOBAL
       PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
   endif ()
 
@@ -5791,7 +5876,7 @@ endif ()\n\n")
   set(_vtk_export_install_content)
   foreach (_vtk_export_module IN LISTS _vtk_export_MODULES)
     get_property(_vtk_export_target_name GLOBAL
-      PROPERTY "_vtk_module_${_vtk_export_module}_target_name")
+      PROPERTY "_vtk_module_${_vtk_export_module}_library_name")
     # Use the export name of the target if it has one set.
     get_property(_vtk_export_target_has_export_name
       TARGET    "${_vtk_export_target_name}"
@@ -6195,7 +6280,7 @@ function (vtk_module_third_party_external)
   endif ()
 
   get_property(_vtk_third_party_external_target_name GLOBAL
-    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
+    PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
 
   # Check if an imported target of the same name already exists.
   set(_vtk_third_party_external_real_target_name
@@ -6236,11 +6321,11 @@ function (vtk_module_third_party_external)
   endif ()
 
   add_library("${_vtk_third_party_external_real_target_name}" INTERFACE)
-  if (_vtk_third_party_external_using_mangled_name)
-    set_property(TARGET "${_vtk_third_party_external_real_target_name}"
-      PROPERTY
-        EXPORT_NAME "${_vtk_third_party_external_target_name}")
-  endif ()
+  get_property(_vtk_third_party_external_export_name GLOBAL
+    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
+  set_property(TARGET "${_vtk_third_party_external_real_target_name}"
+    PROPERTY
+      EXPORT_NAME "${_vtk_third_party_external_export_name}")
   if (NOT _vtk_build_module STREQUAL _vtk_third_party_external_target_name)
     add_library("${_vtk_build_module}" ALIAS
       "${_vtk_third_party_external_real_target_name}")
@@ -6435,7 +6520,7 @@ function (vtk_module_third_party_internal)
   endif ()
 
   get_property(_vtk_third_party_internal_target_name GLOBAL
-    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
+    PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
   set(_vtk_third_party_internal_include_type)
   if (_vtk_third_party_internal_INTERFACE)
     set(_vtk_third_party_internal_include_type INTERFACE)

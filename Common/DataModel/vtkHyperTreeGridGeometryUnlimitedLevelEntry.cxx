@@ -144,7 +144,12 @@ void vtkHyperTreeGridGeometryUnlimitedLevelEntry::ToChild(
   assert("pre: not_tree" && this->Tree);
   assert(
     "pre: depth_limiter" && this->Level <= const_cast<vtkHyperTreeGrid*>(grid)->GetDepthLimiter());
-  assert("pre: is_masked" && !this->IsMasked(grid));
+
+  if (this->IsMasked(grid))
+  {
+    this->Index = vtkHyperTreeGrid::InvalidIndex;
+    return;
+  }
 
   const double* sizeChild = this->Tree->GetScales()->ComputeScale(this->Level + 1);
 

@@ -18,7 +18,6 @@
 #ifndef vtkXMLWriter_h
 #define vtkXMLWriter_h
 
-#include "vtkDeprecation.h" // For VTK_DEPRECATED_IN_9_5_0
 #include "vtkIOXMLModule.h" // For export macro
 #include "vtkXMLWriterBase.h"
 
@@ -163,8 +162,6 @@ protected:
 
   // Utility methods for subclasses.
   vtkDataSet* GetDataSetInput();
-  VTK_DEPRECATED_IN_9_5_0("Use GetDataSetInput() instead.")
-  vtkDataSet* GetInputAsDataSet() { return this->GetDataSetInput(); }
   virtual int StartFile();
   virtual void WriteFileAttributes();
   virtual int EndFile();
@@ -199,9 +196,9 @@ protected:
   int WriteScalarAttribute(const char* name, vtkIdType data);
 #endif
 
-  int WriteVectorAttribute(const char* name, int length, int* data);
-  int WriteVectorAttribute(const char* name, int length, float* data);
-  int WriteVectorAttribute(const char* name, int length, double* data);
+  int WriteVectorAttribute(const char* name, int length, VTK_FUTURE_CONST int* data);
+  int WriteVectorAttribute(const char* name, int length, VTK_FUTURE_CONST float* data);
+  int WriteVectorAttribute(const char* name, int length, VTK_FUTURE_CONST double* data);
 #ifdef VTK_USE_64BIT_IDS
   int WriteVectorAttribute(const char* name, int length, vtkIdType* data);
 #endif

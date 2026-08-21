@@ -53,6 +53,7 @@
 
 #include "vtkObject.h"
 #include "vtkRenderingOpenGL2Module.h" // For export macro
+#include "vtkSmartPointer.h"           // for vtkSmartPointer
 #include <array>                       // for ivar
 #include <list>                        // for ivar
 #include <map>                         // for ivar
@@ -62,7 +63,9 @@
 VTK_ABI_NAMESPACE_BEGIN
 class vtkOpenGLFramebufferObject;
 class vtkOpenGLRenderWindow;
+class vtkOpenGLArrayTextureBufferCache;
 class vtkOpenGLShaderCache;
+class vtkOpenGLTextureNormalizationHelper;
 class vtkOpenGLVertexBufferObjectCache;
 class vtkTextureObject;
 class vtkTextureUnitManager;
@@ -322,6 +325,15 @@ public:
   // lists
   void SetVBOCache(vtkOpenGLVertexBufferObjectCache* val);
 
+  ///@{
+  /**
+   * Set/Get the array texture buffer cache to use for this state. This allows two contexts to share
+   * TBOs.
+   */
+  void SetArrayTextureBufferCache(vtkOpenGLArrayTextureBufferCache* cache);
+  vtkSmartPointer<vtkOpenGLArrayTextureBufferCache> GetArrayTextureBufferCache();
+  ///@}
+
   /**
    * Get a mapping of vtk data types to native texture formats for this window
    * we put this on the RenderWindow so that every texture does not have to
@@ -386,6 +398,22 @@ public:
    */
   std::string const& GetRenderer() { return this->Renderer; }
 
+  /**
+   * Return whether GL_R16 normalized formats are available for VTK_UNSIGNED_SHORT data.
+   * On desktop OpenGL this is always true. On GL ES 3.0 it requires GL_EXT_texture_norm16.
+   * When false, callers uploading VTK_UNSIGNED_SHORT data must convert to float first.
+   */
+  bool GetSupportsTextureNorm16() { return this->SupportsTextureNorm16; }
+
+  /**
+   * Get the texture normalization helper for GLES 3.0 without norm16 extension.
+   * Returns nullptr if no GPU-assisted conversion is available or on desktop OpenGL.
+   */
+  vtkOpenGLTextureNormalizationHelper* GetTextureNormalizationHelper()
+  {
+    return this->TextureNormalizationHelper;
+  }
+
 protected:
   vtkOpenGLState(); // set initial values
   ~vtkOpenGLState() override;
@@ -397,9 +425,11 @@ protected:
   void Viewport(std::array<int, 4> val);
 
   int TextureInternalFormats[VTK_OBJECT + 1][3][5];
+  bool SupportsTextureNorm16 = false;
   void InitializeTextureInternalFormats();
 
   vtkTextureUnitManager* TextureUnitManager;
+  vtkOpenGLTextureNormalizationHelper* TextureNormalizationHelper = nullptr;
   std::map<const vtkTextureObject*, int> TextureResourceIds;
 
   /**
@@ -486,6 +516,7 @@ protected:
   std::stack<GLState> Stack;
 
   vtkOpenGLVertexBufferObjectCache* VBOCache;
+  vtkSmartPointer<vtkOpenGLArrayTextureBufferCache> ArrayTextureBufferCache;
   vtkOpenGLShaderCache* ShaderCache;
 
 private:

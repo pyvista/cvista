@@ -588,13 +588,13 @@ public:
    * Normalize (in place) a 3-vector. Returns norm of vector.
    * (float version)
    */
-  static float Normalize(float v[3]);
+  static inline float Normalize(float v[3]);
 
   /**
    * Normalize (in place) a 3-vector. Returns norm of vector
    * (double version).
    */
-  static double Normalize(double v[3]);
+  static inline double Normalize(double v[3]);
 
   ///@{
   /**
@@ -661,6 +661,12 @@ public:
    * (double version).
    */
   static double Distance2BetweenPoints(const double p1[3], const double p2[3]);
+
+  /**
+   * Compute distance squared between two 2D points p1 and p2.
+   * (double version).
+   */
+  static double Distance2BetweenPoints2D(const double p1[2], const double p2[2]);
 
   /**
    * Compute angle in radians between two vectors.
@@ -1653,7 +1659,7 @@ public:
   /**
    * Test if a number is equal to the special floating point value Not-A-Number (Nan).
    */
-  static vtkTypeBool IsNan(double x);
+  static inline vtkTypeBool IsNan(double x);
 
   /**
    * Test if a number has finite value i.e. it is normal, subnormal or zero, but not infinite or
@@ -1848,7 +1854,7 @@ inline T vtkMath::Max(const T& a, const T& b)
 }
 
 //----------------------------------------------------------------------------
-inline float vtkMath::Normalize(float v[3])
+float vtkMath::Normalize(float v[3])
 {
   float den = vtkMath::Norm(v);
   if (den != 0.0)
@@ -1862,7 +1868,7 @@ inline float vtkMath::Normalize(float v[3])
 }
 
 //----------------------------------------------------------------------------
-inline double vtkMath::Normalize(double v[3])
+double vtkMath::Normalize(double v[3])
 {
   double den = vtkMath::Norm(v);
   if (den != 0.0)
@@ -1945,6 +1951,12 @@ inline ReturnTypeT vtkMath::Distance2BetweenPoints(const TupleRangeT1& p1, const
 {
   return ((p1[0] - p2[0]) * (p1[0] - p2[0]) + (p1[1] - p2[1]) * (p1[1] - p2[1]) +
     (p1[2] - p2[2]) * (p1[2] - p2[2]));
+}
+
+//------------------------------------------------------------------------------
+inline double vtkMath::Distance2BetweenPoints2D(const double p1[2], const double p2[2])
+{
+  return ((p1[0] - p2[0]) * (p1[0] - p2[0]) + (p1[1] - p2[1]) * (p1[1] - p2[1]));
 }
 
 //----------------------------------------------------------------------------
@@ -2366,7 +2378,7 @@ inline vtkTypeBool vtkMath::IsInf(double x)
 #if defined(VTK_HAS_STD_ISINF)
   return std::isinf(x);
 #else
-  return (isinf(x) != 0);    // Force conversion to bool
+  return (isinf(x) != 0); // Force conversion to bool
 #endif
 }
 #endif
@@ -2374,12 +2386,12 @@ inline vtkTypeBool vtkMath::IsInf(double x)
 //-----------------------------------------------------------------------------
 #if defined(VTK_HAS_ISNAN) || defined(VTK_HAS_STD_ISNAN)
 #define VTK_MATH_ISNAN_IS_INLINE
-inline vtkTypeBool vtkMath::IsNan(double x)
+vtkTypeBool vtkMath::IsNan(double x)
 {
 #if defined(VTK_HAS_STD_ISNAN)
   return std::isnan(x);
 #else
-  return (isnan(x) != 0);    // Force conversion to bool
+  return (isnan(x) != 0); // Force conversion to bool
 #endif
 }
 #endif

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkOpenGLRenderWindow.h"
+#include "vtkGenericOpenGLRenderWindow.h"
 #include "vtk_glad.h"
 
 #include "vtkOpenGLHelper.h"
@@ -11,6 +12,7 @@
 #include "vtkLogger.h"
 #include "vtkMemoryResourceStream.h"
 #include "vtkNew.h"
+#include "vtkOpenGLArrayTextureBufferCache.h"
 #include "vtkOpenGLBufferObject.h"
 #include "vtkOpenGLCamera.h"
 #include "vtkOpenGLError.h"
@@ -23,6 +25,7 @@
 #include "vtkOpenGLState.h"
 #include "vtkOpenGLVertexArrayObject.h"
 #include "vtkOutputWindow.h"
+#include "vtkOverrideAttribute.h"
 #include "vtkRenderTimerLog.h"
 #include "vtkRendererCollection.h"
 #include "vtkRenderingOpenGLConfigure.h"
@@ -72,6 +75,11 @@ VTK_ABI_NAMESPACE_BEGIN
 static int vtkOpenGLRenderWindowGlobalMaximumNumberOfMultiSamples = 8;
 VTK_ABI_NAMESPACE_END
 #endif
+
+namespace
+{
+bool vtkOpenGLRenderWindowUseGenericBackend = false;
+}
 
 // Some linux drivers have issues reading a multisampled texture,
 // so we check the driver's "Renderer" against this list of strings.
@@ -497,6 +505,18 @@ int vtkOpenGLRenderWindow::GetGlobalMaximumNumberOfMultiSamples()
 }
 
 //------------------------------------------------------------------------------
+void vtkOpenGLRenderWindow::SetUseGenericOpenGLRenderWindow(bool val)
+{
+  vtkOpenGLRenderWindowUseGenericBackend = val;
+}
+
+//------------------------------------------------------------------------------
+bool vtkOpenGLRenderWindow::GetUseGenericOpenGLRenderWindow()
+{
+  return vtkOpenGLRenderWindowUseGenericBackend;
+}
+
+//------------------------------------------------------------------------------
 const char* vtkOpenGLRenderWindow::GetRenderingBackend()
 {
   return "OpenGL2";
@@ -609,6 +629,10 @@ vtkOpenGLRenderWindow::~vtkOpenGLRenderWindow()
 //------------------------------------------------------------------------------
 vtkOpenGLRenderWindow* vtkOpenGLRenderWindow::New()
 {
+  if (vtkOpenGLRenderWindowUseGenericBackend)
+  {
+    return vtkGenericOpenGLRenderWindow::New();
+  }
   const char* backend = std::getenv("VTK_DEFAULT_OPENGL_WINDOW");
 #if defined(_WIN32)
   if ((backend == nullptr) || (std::string(backend) == "vtkWin32OpenGLRenderWindow"))
@@ -670,6 +694,14 @@ vtkOpenGLRenderWindow* vtkOpenGLRenderWindow::New()
   }
   // OSMesa support is always built, it might work if user has libOSMesa.so or osmesa.dll.
   return vtkOSOpenGLRenderWindow::New();
+}
+
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLRenderWindow::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
 }
 #endif
 
@@ -767,6 +799,7 @@ void vtkOpenGLRenderWindow::ReleaseGraphicsResources(vtkWindow* renWin)
 
   this->GetShaderCache()->ReleaseGraphicsResources(renWin);
   // this->VBOCache->ReleaseGraphicsResources(renWin);
+  this->GetArrayTextureBufferCache()->ReleaseGraphicsResources(renWin);
 
   this->GetState()->VerifyNoActiveTextures();
 
@@ -801,6 +834,12 @@ vtkOpenGLShaderCache* vtkOpenGLRenderWindow::GetShaderCache()
 vtkOpenGLVertexBufferObjectCache* vtkOpenGLRenderWindow::GetVBOCache()
 {
   return this->GetState()->GetVBOCache();
+}
+
+//------------------------------------------------------------------------------
+vtkOpenGLArrayTextureBufferCache* vtkOpenGLRenderWindow::GetArrayTextureBufferCache()
+{
+  return this->GetState()->GetArrayTextureBufferCache();
 }
 
 //------------------------------------------------------------------------------
@@ -3102,6 +3141,10 @@ void vtkOpenGLRenderWindow::Render()
   }
   if (this->Initialized)
   {
+    if (auto* atbCache = this->GetArrayTextureBufferCache())
+    {
+      atbCache->RemoveUnusedTextureBuffers(this);
+    }
     vtkOpenGLRenderUtilities::MarkDebugEvent("Completed vtkOpenGLRenderWIndow::Render");
   }
 }

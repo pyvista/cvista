@@ -7,17 +7,20 @@
  * vtkXMLReader uses vtkXMLDataParser to parse a
  * <a href="http://www.vtk.org/Wiki/VTK_XML_Formats">VTK XML</a> input file.
  * Concrete subclasses then traverse the parsed file structure and extract data.
+ * This reader supports reading from vtkResourceStream.
  */
 
 #ifndef vtkXMLReader_h
 #define vtkXMLReader_h
 
 #include "vtkAlgorithm.h"
-#include "vtkDeprecation.h"  // For VTK_DEPRECATED_IN_9_5_0
 #include "vtkIOXMLModule.h"  // For export macro
 #include "vtkSmartPointer.h" // for vtkSmartPointer.
 
-#include <string> // for std::string
+#include <istream>   // for IStream
+#include <memory>    // for std::unique_ptr
+#include <streambuf> // for Streambuf
+#include <string>    // for std::string
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkAbstractArray;
@@ -28,11 +31,12 @@ class vtkDataArray;
 class vtkDataArraySelection;
 class vtkDataSet;
 class vtkDataSetAttributes;
+class vtkInformation;
+class vtkInformationVector;
+class vtkResourceStream;
+class vtkStringArray;
 class vtkXMLDataElement;
 class vtkXMLDataParser;
-class vtkInformationVector;
-class vtkInformation;
-class vtkStringArray;
 
 class VTKIOXML_EXPORT vtkXMLReader : public vtkAlgorithm
 {
@@ -58,11 +62,13 @@ public:
   ///@{
   /**
    * Enable reading from an InputString instead of the default, a file.
+   * Default is false.
    */
   vtkSetMacro(ReadFromInputString, vtkTypeBool);
   vtkGetMacro(ReadFromInputString, vtkTypeBool);
   vtkBooleanMacro(ReadFromInputString, vtkTypeBool);
   ///@{
+
   /**
    * Specify the InputString for use when reading from a character array.
    * Optionally include the length for binary strings. Note that a copy
@@ -90,14 +96,40 @@ public:
   virtual void SetInputArray(vtkCharArray*);
   ///@}
 
+  ///@{
   /**
-   * Test whether the file (type) with the given name can be read by this
-   * reader. If the file has a newer version than the reader, we still say
-   * we can read the file type and we fail later, when we try to read the file.
-   * This enables clients (ParaView) to distinguish between failures when we
+   * Enable reading from an InputStream
+   * `ReadFromInputStream` has an higher priority than `ReadFromInputString`.
+   * Default is false.
+   */
+  vtkSetMacro(ReadFromInputStream, bool);
+  vtkGetMacro(ReadFromInputStream, bool);
+  vtkBooleanMacro(ReadFromInputStream, bool);
+  ///@}
+
+  ///@{
+  /**
+   * Specify resource stream to read from
+   * When both `Stream` and `Filename` or `InputString` are set, stream is used.
+   * Note the name of the actual member set here is ResourceStream, not Stream
+   * but we use SetStream for coherency with the rest of VTK API
+   */
+  void SetStream(vtkResourceStream* stream);
+  vtkResourceStream* GetStream();
+  ///@}
+
+  ///@{
+  /**
+   * Return 1 if, after a quick check of file header, it looks like the provided file or stream
+   * can be read. Return 0 if it is sure it cannot be read. The stream version may move the
+   * stream cursor. The filename version should be non-virtual but is not for backward compatibility
+   * reasons. It does not modify nor uses members. If the file has a newer version than the reader,
+   * this still returns 1. This enables clients (ParaView) to distinguish between failures when we
    * need to look for another reader and failures when we don't.
    */
   virtual int CanReadFile(VTK_FILEPATH const char* name);
+  bool CanReadFile(vtkResourceStream* stream);
+  ///@}
 
   ///@{
   /**
@@ -217,6 +249,11 @@ public:
   vtkGetObjectMacro(ParserErrorObserver, vtkCommand);
   ///@}
 
+  /**
+   * Overridden to take into account mtime from the internal vtkResourceStream.
+   */
+  vtkMTimeType GetMTime() override;
+
 protected:
   vtkXMLReader();
   ~vtkXMLReader() override;
@@ -330,16 +367,14 @@ protected:
   /**
    * Utility methods for subclasses.
    */
-  int IntersectExtents(int* extent1, int* extent2, int* result);
-  VTK_DEPRECATED_IN_9_5_0("Use std::min instead")
-  int Min(int a, int b);
-  VTK_DEPRECATED_IN_9_5_0("Use std::max instead")
-  int Max(int a, int b);
-  void ComputePointDimensions(int* extent, int* dimensions);
-  void ComputePointIncrements(int* extent, vtkIdType* increments);
-  void ComputeCellDimensions(int* extent, int* dimensions);
-  void ComputeCellIncrements(int* extent, vtkIdType* increments);
-  vtkIdType GetStartTuple(int* extent, vtkIdType* increments, int i, int j, int k);
+  int IntersectExtents(
+    VTK_FUTURE_CONST int extent1[6], VTK_FUTURE_CONST int extent2[6], int result[6]);
+  void ComputePointDimensions(VTK_FUTURE_CONST int extent[6], int* dimensions);
+  void ComputePointIncrements(VTK_FUTURE_CONST int extent[6], vtkIdType* increments);
+  void ComputeCellDimensions(VTK_FUTURE_CONST int extent[6], int* dimensions);
+  void ComputeCellIncrements(VTK_FUTURE_CONST int extent[6], vtkIdType* increments);
+  vtkIdType GetStartTuple(
+    VTK_FUTURE_CONST int extent[6], vtkIdType* increments, int i, int j, int k);
   void ReadAttributeIndices(vtkXMLDataElement* eDSA, vtkDataSetAttributes* dsa);
   char** CreateStringArray(int numStrings);
   void DestroyStringArray(int numStrings, char** strings);
@@ -415,7 +450,7 @@ protected:
   char* FileName;
 
   // The stream used to read the input.
-  istream* Stream;
+  std::istream* Stream;
 
   // Whether this object is reading from a string or a file.
   // Default is 0: read from file.
@@ -516,10 +551,22 @@ protected:
   void ReadFieldData();
 
 private:
+  int OpenVTKStream();
+
+  // The stream used to read the input if it is in a resource stream
+  vtkSmartPointer<vtkResourceStream> ResourceStream;
+
+  bool ReadFromInputStream = false;
+
   // The stream used to read the input if it is in a file.
   istream* FileStream;
   // The stream used to read the input if it is in a string.
   std::istringstream* StringStream;
+
+  // Used when converting vtkResourceStream into istream
+  std::unique_ptr<std::streambuf> Streambuf;
+  std::unique_ptr<std::istream> StreamBuffer;
+
   int TimeStepWasReadOnce;
 
   int FileMajorVersion;

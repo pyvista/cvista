@@ -15,6 +15,7 @@
 #include "vtkOpenGLError.h"
 #include "vtkOpenGLRenderWindow.h"
 #include "vtkOpenGLRenderer.h"
+#include "vtkOverrideAttribute.h"
 #include "vtkPointData.h"
 #include "vtkRenderWindow.h"
 
@@ -47,6 +48,14 @@ vtkOpenGLTexture::~vtkOpenGLTexture()
     this->TextureObject->Delete();
     this->TextureObject = nullptr;
   }
+}
+
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLTexture::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
 }
 
 //------------------------------------------------------------------------------
@@ -243,6 +252,11 @@ void vtkOpenGLTexture::Load(vtkRenderer* ren)
         vtkImageData* in = vtkImageData::SafeDownCast(this->GetInputDataObject(i, 0));
         // Get the scalars the user choose to color with.
         vtkDataArray* inscalars = this->GetInputArrayToProcess(i, in);
+        if (!inscalars->HasStandardMemoryLayout())
+        {
+          vtkWarningMacro(<< "Texture input scalars must have standard memory layout");
+          continue;
+        }
 
         // decide whether the texture needs to be resampled
         GLint maxDimGL;
@@ -268,7 +282,7 @@ void vtkOpenGLTexture::Load(vtkRenderer* ren)
         }
         else
         {
-          dataPtr[i] = inscalars->GetVoidPointer(0);
+          dataPtr[i] = inscalars->GetVoidPointer(0); // NOLINT(bugprone-unsafe-functions)
         }
 
         if (resampleNeeded)

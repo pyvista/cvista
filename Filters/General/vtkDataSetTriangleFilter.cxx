@@ -199,8 +199,8 @@ void vtkDataSetTriangleFilter::StructuredExecute(vtkDataSet* input, vtkUnstructu
           } // for all simplices
         }
       } // i dimension
-    }   // j dimension
-  }     // k dimension
+    } // j dimension
+  } // k dimension
 
   // Update output
   output->SetPoints(newPoints);
@@ -343,7 +343,7 @@ void vtkDataSetTriangleFilter::UnstructuredExecute(
           cell->Points->GetPoint(j, x);
         }
         this->Triangulator->InsertPoint(ptId, x, p, 0);
-      }                          // for all cell points
+      } // for all cell points
       if (cell->IsPrimaryCell()) // use templates if topology is fixed
       {
         int numEdges = cell->GetNumberOfEdges();
@@ -395,7 +395,7 @@ void vtkDataSetTriangleFilter::UnstructuredExecute(
         outCD->CopyData(tempCD, cellId, newCellId);
       }
     } // if 2D or less cell
-  }   // for all cells
+  } // for all cells
 
   // Update output
   output->Squeeze();

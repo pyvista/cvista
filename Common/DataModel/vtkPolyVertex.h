@@ -60,9 +60,9 @@ public:
 
 protected:
   vtkPolyVertex();
-  ~vtkPolyVertex() override;
+  ~vtkPolyVertex() override = default;
 
-  vtkVertex* Vertex;
+  vtkSmartPointer<vtkVertex> Vertex;
 
 private:
   vtkPolyVertex(const vtkPolyVertex&) = delete;

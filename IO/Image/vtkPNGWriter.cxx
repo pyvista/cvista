@@ -86,8 +86,8 @@ void vtkPNGWriter::Write()
 
   // Fill in image information.
   this->GetInputExecutive(0, 0)->UpdateInformation();
-  int* wExtent;
-  wExtent = vtkStreamingDemandDrivenPipeline::GetWholeExtent(this->GetInputInformation(0, 0));
+  const int* wExtent =
+    vtkStreamingDemandDrivenPipeline::GetWholeExtent(this->GetInputInformation(0, 0));
   this->FileNumber = wExtent[4];
   this->MinimumFileNumber = this->MaximumFileNumber = this->FileNumber;
   this->FilesDeleted = 0;
@@ -117,14 +117,14 @@ void vtkPNGWriter::Write()
         {
           VTK_FORMAT_IF_ERROR_RETURN(
             auto result = vtk::format_to_n(this->InternalFileName, internalFileNameSize,
-              this->FilePattern, this->FilePrefix, this->FileNumber);
+              vtk::runtime(this->FilePattern), this->FilePrefix, this->FileNumber);
             *result.out = '\0'; bytes_printed = result.size, );
         }
         else
         {
           VTK_FORMAT_IF_ERROR_RETURN(
             auto result = vtk::format_to_n(this->InternalFileName, internalFileNameSize,
-              this->FilePattern, "", this->FileNumber);
+              vtk::runtime(this->FilePattern), "", this->FileNumber);
             *result.out = '\0'; bytes_printed = result.size, );
         }
       }
@@ -202,7 +202,7 @@ extern "C"
 
 static constexpr unsigned int VTK_MAXIMUM_UNCOMPRESSED_TEXT_SIZE = 10000;
 
-void vtkPNGWriter::WriteSlice(vtkImageData* data, int* uExtent)
+void vtkPNGWriter::WriteSlice(vtkImageData* data, VTK_FUTURE_CONST int uExtent[6])
 {
   vtkInternals* impl = this->Internals;
   // Call The correct templated function for the output
@@ -244,7 +244,7 @@ void vtkPNGWriter::WriteSlice(vtkImageData* data, int* uExtent)
       uc->Delete();
     }
     // start out with 10K as a guess for the image size
-    uc->Allocate(10000);
+    uc->ReserveValues(10000);
     png_set_write_fn(png_ptr, static_cast<png_voidp>(this), vtkPNGWriteInit, vtkPNGWriteFlush);
   }
   else

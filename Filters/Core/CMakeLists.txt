@@ -21,6 +21,7 @@ set(classes
   vtkCleanPolyData
   vtkClipPolyData
   vtkCompositeCutter
+  vtkConvexHull
   vtkCompositeDataProbeFilter
   vtkConnectivityFilter
   vtkConstrainedSmoothingFilter
@@ -63,6 +64,7 @@ set(classes
   vtkGlyph3D
   vtkGridSynchronizedTemplates3D
   vtkHedgeHog
+  vtkHilbertCurveSorter
   vtkHull
   vtkHyperTreeGridProbeFilter
   vtkHyperTreeGridProbeFilterUtilities
@@ -117,6 +119,7 @@ set(classes
   vtkStructuredGridOutlineFilter
   vtkSurfaceNets2D
   vtkSurfaceNets3D
+  vtkSurfaceNetsAtlas
   vtkSynchronizedTemplates2D
   vtkSynchronizedTemplates3D
   vtkSynchronizedTemplatesCutter3D
@@ -139,8 +142,9 @@ set(classes
 set(headers
   vtkDecimatePolylineStrategy.h)
 
+set(private_classes
+  vtkSurfaceNets3DNonManifoldCases)
 set(private_headers
-  vtk3DLinearGridInternal.h
   vtkPolyDataEdgeNeighbors.h)
 
 vtk_module_add_module(VTK::FiltersCore
@@ -149,11 +153,17 @@ vtk_module_add_module(VTK::FiltersCore
   SOURCES cvistaFastClean.cxx cvistaFastCleanPoly.cxx cvistaFastStaticCleanPoly.cxx
     cvistaFastConnectivity.cxx cvistaFastClipPoly.cxx
     cvistaFastOrient.cxx
+  PRIVATE_CLASSES ${private_classes}
   PRIVATE_HEADERS ${private_headers}
     cvistaFastClean.h cvistaFastCleanPoly.h cvistaFastStaticCleanPoly.h cvistaFastConnectivity.h cvistaFastClipPoly.h cvistaFastOrient.h
     pvaClean.h pvaHash96.h pvaLinearProbeTable.h pvaParallelRadixSort.h pvaOrient.h)
 
 vtk_add_test_mangling(VTK::FiltersCore)
+
+# Add precompiled header to improve build performance
+if(VTK_USE_PCH)
+  vtk_module_precompile_headers(VTK::FiltersCore PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/vtkFiltersCorePCH.h>")
+endif()
 
 # compile those TUs with OpenMP when available, and keep them out of the unity
 # build so the vendored header stays isolated. Without OpenMP the adapters

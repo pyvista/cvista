@@ -10,21 +10,29 @@
 #include "vtkPoints.h"
 #include "vtkTriangle.h"
 
+namespace
+{
+//------------------------------------------------------------------------------
+[[maybe_unused]] constexpr const char* TriangleStripTopology = R"(
+   TriangleStrip topology:
+
+          2----4----6--- ...
+         /|\   |\   |
+        / | \  | \  |
+       /  |  \ |  \ |
+      /   |   \|   \|
+     0----1----3----5---- ...
+)";
+}
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkTriangleStrip);
 
 //------------------------------------------------------------------------------
 vtkTriangleStrip::vtkTriangleStrip()
 {
-  this->Line = vtkLine::New();
-  this->Triangle = vtkTriangle::New();
-}
-
-//------------------------------------------------------------------------------
-vtkTriangleStrip::~vtkTriangleStrip()
-{
-  this->Line->Delete();
-  this->Triangle->Delete();
+  this->Line = vtkSmartPointer<vtkLine>::New();
+  this->Triangle = vtkSmartPointer<vtkTriangle>::New();
 }
 
 //------------------------------------------------------------------------------
@@ -32,7 +40,7 @@ int vtkTriangleStrip::EvaluatePosition(const double x[3], double closestPoint[3]
   double pcoords[3], double& minDist2, double weights[])
 {
   double pc[3], dist2;
-  int ignoreId, i, returnStatus, status;
+  int ignoreId;
   double tempWeights[3], activeWeights[3];
   double closest[3];
 
@@ -42,14 +50,16 @@ int vtkTriangleStrip::EvaluatePosition(const double x[3], double closestPoint[3]
   activeWeights[1] = 0.0;
   activeWeights[2] = 0.0;
 
-  returnStatus = 0;
-  for (minDist2 = VTK_DOUBLE_MAX, i = 0; i < this->Points->GetNumberOfPoints() - 2; i++)
+  int returnStatus = 0;
+  minDist2 = VTK_DOUBLE_MAX;
+  int i;
+  for (i = 0; i < this->Points->GetNumberOfPoints() - 2; i++)
   {
     weights[i] = 0.0;
     this->Triangle->Points->SetPoint(0, this->Points->GetPoint(i));
     this->Triangle->Points->SetPoint(1, this->Points->GetPoint(i + 1));
     this->Triangle->Points->SetPoint(2, this->Points->GetPoint(i + 2));
-    status = this->Triangle->EvaluatePosition(x, closest, ignoreId, pc, dist2, tempWeights);
+    int status = this->Triangle->EvaluatePosition(x, closest, ignoreId, pc, dist2, tempWeights);
     if (status != -1 && ((dist2 < minDist2) || ((dist2 == minDist2) && (returnStatus == 0))))
     {
       returnStatus = status;
@@ -83,7 +93,7 @@ int vtkTriangleStrip::EvaluatePosition(const double x[3], double closestPoint[3]
 void vtkTriangleStrip::EvaluateLocation(
   int& subId, const double pcoords[3], double x[3], double* weights)
 {
-  static const int idx[2][3] = { { 0, 1, 2 }, { 1, 0, 2 } };
+  static constexpr int idx[2][3] = { { 0, 1, 2 }, { 1, 0, 2 } };
   const int order = subId % 2;
 
   // Efficient point access
@@ -114,7 +124,7 @@ void vtkTriangleStrip::EvaluateLocation(
 //------------------------------------------------------------------------------
 int vtkTriangleStrip::CellBoundary(int subId, const double pcoords[3], vtkIdList* pts)
 {
-  static const int idx[2][3] = { { 0, 1, 2 }, { 1, 0, 2 } };
+  static constexpr int idx[2][3] = { { 0, 1, 2 }, { 1, 0, 2 } };
   int order;
 
   order = subId % 2;
@@ -131,12 +141,12 @@ void vtkTriangleStrip::Contour(double value, vtkDataArray* cellScalars,
   vtkCellArray* polys, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId,
   vtkCellData* outCd)
 {
-  int i, numTris = this->Points->GetNumberOfPoints() - 2;
+  int numTris = this->Points->GetNumberOfPoints() - 2;
   vtkDataArray* triScalars = cellScalars->NewInstance();
   triScalars->SetNumberOfComponents(cellScalars->GetNumberOfComponents());
   triScalars->SetNumberOfTuples(3);
 
-  for (i = 0; i < numTris; i++)
+  for (int i = 0; i < numTris; i++)
   {
     this->Triangle->Points->SetPoint(0, this->Points->GetPoint(i));
     this->Triangle->Points->SetPoint(1, this->Points->GetPoint(i + 1));
@@ -217,12 +227,11 @@ int vtkTriangleStrip::TriangulateLocalIds(int vtkNotUsed(index), vtkIdList* ptId
 {
   int numTris = this->Points->GetNumberOfPoints() - 2;
   ptIds->SetNumberOfIds(3 * numTris);
-  int i, order;
-  constexpr int idx[2][3] = { { 0, 1, 2 }, { 1, 0, 2 } };
+  static constexpr int idx[2][3] = { { 0, 1, 2 }, { 1, 0, 2 } };
   for (int subId = 0; subId < numTris; subId++)
   {
-    order = subId % 2;
-    for (i = 0; i < 3; i++)
+    int order = subId % 2;
+    for (int i = 0; i < 3; i++)
     {
       ptIds->SetId(subId * 3 + i, subId + idx[order][i]);
     }
@@ -246,13 +255,11 @@ void vtkTriangleStrip::Derivatives(
 // polygons are appended to the end of the list of polygons.
 void vtkTriangleStrip::DecomposeStrip(int npts, const vtkIdType* pts, vtkCellArray* polys)
 {
-  int p1, p2, p3, i;
-
-  p1 = pts[0];
-  p2 = pts[1];
-  for (i = 0; i < (npts - 2); i++)
+  int p1 = pts[0];
+  int p2 = pts[1];
+  for (int i = 0; i < (npts - 2); i++)
   {
-    p3 = pts[i + 2];
+    int p3 = pts[i + 2];
     polys->InsertNextCell(3);
     if ((i % 2)) // flip ordering to preserve consistency
     {
@@ -276,13 +283,13 @@ void vtkTriangleStrip::Clip(double value, vtkDataArray* cellScalars,
   vtkIncrementalPointLocator* locator, vtkCellArray* tris, vtkPointData* inPd, vtkPointData* outPd,
   vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd, int insideOut)
 {
-  int i, numTris = this->Points->GetNumberOfPoints() - 2;
+  int numTris = this->Points->GetNumberOfPoints() - 2;
   int id1, id2, id3;
   vtkDataArray* triScalars = cellScalars->NewInstance();
   triScalars->SetNumberOfComponents(cellScalars->GetNumberOfComponents());
   triScalars->SetNumberOfTuples(3);
 
-  for (i = 0; i < numTris; i++)
+  for (int i = 0; i < numTris; i++)
   {
     if (i % 2)
     {

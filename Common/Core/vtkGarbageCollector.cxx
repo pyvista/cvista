@@ -65,6 +65,21 @@ static bool vtkGarbageCollectorGlobalDebugFlag;
 static vtkMultiThreaderIDType vtkGarbageCollectorMainThread;
 
 //------------------------------------------------------------------------------
+// This mutex is used to coordinate between weak pointer upgrades and garbage
+// collection traversings its graph. The reference count cannot change while
+// the graph traversal is happening so that the bookkeeping of the traversal
+// algorithm is accurate.  This must be default initialized to 0 by the
+// compiler and is therefore not initialized here.  The ClassInitialize and
+// ClassFinalize methods handle it.
+static std::mutex* vtkGarbageCollectorWeakPtrMutex;
+
+//------------------------------------------------------------------------------
+// This mutex is used to coordinate with weak pointers.  This must be default
+// initialized to 0 by the compiler and is therefore not initialized here.  The
+// ClassInitialize and ClassFinalize methods handle it.
+static std::recursive_mutex* vtkGarbageCollectorCollectionMutex;
+
+//------------------------------------------------------------------------------
 vtkGarbageCollector::vtkGarbageCollector() = default;
 
 //------------------------------------------------------------------------------
@@ -822,6 +837,12 @@ void vtkGarbageCollector::ClassInitialize()
   // Allocate the singleton used for delayed collection in the main
   // thread.
   vtkGarbageCollectorSingletonInstance = new vtkGarbageCollectorSingleton;
+
+  // Weak pointer mutex initialization.
+  vtkGarbageCollectorWeakPtrMutex = new std::mutex;
+
+  // Collection mutex.
+  vtkGarbageCollectorCollectionMutex = new std::recursive_mutex;
 }
 
 //------------------------------------------------------------------------------
@@ -835,6 +856,12 @@ void vtkGarbageCollector::ClassFinalize()
   // longer.
   delete vtkGarbageCollectorSingletonInstance;
   vtkGarbageCollectorSingletonInstance = nullptr;
+
+  delete vtkGarbageCollectorWeakPtrMutex;
+  vtkGarbageCollectorWeakPtrMutex = nullptr;
+
+  delete vtkGarbageCollectorCollectionMutex;
+  vtkGarbageCollectorCollectionMutex = nullptr;
 }
 
 //------------------------------------------------------------------------------
@@ -862,8 +889,29 @@ void vtkGarbageCollector::Collect()
 }
 
 //------------------------------------------------------------------------------
+std::mutex* vtkGarbageCollector::WeakPtrMutex()
+{
+  return vtkGarbageCollectorWeakPtrMutex;
+}
+
+//------------------------------------------------------------------------------
 void vtkGarbageCollector::Collect(vtkObjectBase* root)
 {
+  static size_t CollectRecursionCount = 0;
+
+  // Ensure that only one thread is collecting at a time.
+  std::lock_guard<std::recursive_mutex> guard(*vtkGarbageCollectorCollectionMutex);
+  (void)guard;
+  // How many times are we recursing?
+  ++CollectRecursionCount;
+
+  if (CollectRecursionCount == 1)
+  {
+    // Lock the WeakPtrMutexInstance if it's the first time we're collecting on
+    // this thread.
+    vtkGarbageCollectorWeakPtrMutex->lock();
+  }
+
   // Create a collector instance.
   vtkGarbageCollectorImpl collector;
 
@@ -873,6 +921,13 @@ void vtkGarbageCollector::Collect(vtkObjectBase* root)
   collector.CollectInternal(root);
 
   vtkDebugWithObjectMacro((&collector), "Finished collection check.");
+
+  --CollectRecursionCount;
+  if (CollectRecursionCount == 0)
+  {
+    // Release the WeakPtrMutexInstance lock if we're done on this thread.
+    vtkGarbageCollectorWeakPtrMutex->unlock();
+  }
 }
 
 //------------------------------------------------------------------------------

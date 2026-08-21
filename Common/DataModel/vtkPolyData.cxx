@@ -405,7 +405,7 @@ void vtkPolyData::ComputeCellsBounds()
       vtkBoundingBox::ComputeBounds(this->Points, ptUses, this->CellsBounds);
       delete[] ptUses;
     } // serial
-  }   // if modified mesh
+  } // if modified mesh
 }
 
 //------------------------------------------------------------------------------
@@ -955,7 +955,7 @@ void vtkPolyData::GetCellPoints(vtkIdType cellId, vtkIdList* ptIds)
   const TaggedCellId tag = this->Cells->GetTag(cellId);
   if (tag.IsDeleted())
   {
-    ptIds->SetNumberOfIds(0);
+    ptIds->Initialize();
   }
   else
   {
@@ -1836,10 +1836,10 @@ void vtkPolyData::RemoveGhostCells()
   inputToOutputPointMap->Fill(-1);
 
   vtkNew<vtkIdList> outputToInputPointMap;
-  outputToInputPointMap->Allocate(numPoints);
+  outputToInputPointMap->Reserve(numPoints);
 
   vtkNew<vtkIdList> outputToInputCellMap;
-  outputToInputCellMap->Allocate(numCells);
+  outputToInputCellMap->Reserve(numCells);
 
   vtkNew<vtkIdList> cellPoints;
 

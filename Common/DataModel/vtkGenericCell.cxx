@@ -89,15 +89,33 @@ vtkGenericCell::~vtkGenericCell()
 }
 
 //------------------------------------------------------------------------------
-void vtkGenericCell::ShallowCopy(vtkCell* c)
+void vtkGenericCell::ShallowCopy(vtkCell* cell)
 {
-  this->Cell->ShallowCopy(c);
+  this->SetCellType(cell->GetCellType());
+  vtkGenericCell* gCell = vtkGenericCell::SafeDownCast(cell);
+  if (gCell)
+  {
+    this->Cell->ShallowCopy(gCell->GetRepresentativeCell());
+  }
+  else
+  {
+    this->Cell->ShallowCopy(cell);
+  }
 }
 
 //------------------------------------------------------------------------------
-void vtkGenericCell::DeepCopy(vtkCell* c)
+void vtkGenericCell::DeepCopy(vtkCell* cell)
 {
-  this->Cell->DeepCopy(c);
+  this->SetCellType(cell->GetCellType());
+  vtkGenericCell* gCell = vtkGenericCell::SafeDownCast(cell);
+  if (gCell)
+  {
+    this->Cell->DeepCopy(gCell->GetRepresentativeCell());
+  }
+  else
+  {
+    this->Cell->DeepCopy(cell);
+  }
 }
 
 //------------------------------------------------------------------------------

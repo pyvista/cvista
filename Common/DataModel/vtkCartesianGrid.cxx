@@ -10,6 +10,7 @@
 #include "vtkDataSetAttributes.h"
 #include "vtkGenericCell.h"
 #include "vtkInformation.h"
+#include "vtkInformationVector.h"
 #include "vtkPointData.h"
 #include "vtkPoints.h"
 #include "vtkStructuredCellArray.h"
@@ -102,6 +103,11 @@ vtkPoints* vtkCartesianGrid::GetPoints()
 {
   if (this->StructuredPoints == nullptr)
   {
+    auto pts = vtkSmartPointer<vtkPoints>::New();
+    auto spa = vtkSmartPointer<vtkStructuredPointArray<double>>::New();
+    spa->SetNumberOfComponents(3);
+    pts->SetData(spa);
+    this->SetStructuredPoints(pts);
     this->BuildPoints();
   }
   return this->StructuredPoints.Get();
@@ -143,28 +149,10 @@ void vtkCartesianGrid::GetCellPoints(vtkIdType cellId, vtkIdList* ptIds)
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkCartesianGrid::FindCell(double x[3], vtkCell* vtkNotUsed(cell),
-  vtkGenericCell* vtkNotUsed(gencell), vtkIdType vtkNotUsed(cellId), double tol2, int& subId,
-  double pcoords[3], double* weights)
+vtkIdType vtkCartesianGrid::FindCell(double x[3], vtkCell* cell, vtkIdType cellId, double tol2,
+  int& subId, double pcoords[3], double* weights)
 {
-  return this->FindCell(x, nullptr, 0, tol2, subId, pcoords, weights);
-}
-
-//------------------------------------------------------------------------------
-vtkCell* vtkCartesianGrid::FindAndGetCell(double x[3], vtkCell* vtkNotUsed(cell),
-  vtkIdType vtkNotUsed(cellId), double tol2, int& subId, double pcoords[3], double* weights)
-{
-  const vtkIdType cellId = this->FindCell(x, nullptr, 0, tol2, subId, pcoords, nullptr);
-
-  if (cellId < 0)
-  {
-    return nullptr;
-  }
-
-  vtkCell* cell = this->GetCell(cellId);
-  cell->InterpolateFunctions(pcoords, weights);
-
-  return cell;
+  return this->FindCell(x, cell, nullptr, cellId, tol2, subId, pcoords, weights);
 }
 
 //------------------------------------------------------------------------------
@@ -242,7 +230,8 @@ void vtkCartesianGrid::GetCellNeighbors(
     vtkIdType* pCellIds = cellIds->GetPointer(0);
     vtkIdType* end =
       std::remove_if(pCellIds, pCellIds + cellIds->GetNumberOfIds(), CellVisibility(this));
-    cellIds->Resize(std::distance(pCellIds, end));
+    cellIds->SetNumberOfIds(std::distance(pCellIds, end));
+    cellIds->Squeeze();
   }
 }
 
@@ -414,18 +403,12 @@ void vtkCartesianGrid::GetDimensions(vtkIdType dims[3])
 //------------------------------------------------------------------------------
 void vtkCartesianGrid::SetExtent(int x1, int x2, int y1, int y2, int z1, int z2)
 {
-  int ext[6];
-  ext[0] = x1;
-  ext[1] = x2;
-  ext[2] = y1;
-  ext[3] = y2;
-  ext[4] = z1;
-  ext[5] = z2;
+  VTK_FUTURE_CONST int ext[6] = { x1, x2, y1, y2, z1, z2 };
   this->SetExtent(ext);
 }
 
 //------------------------------------------------------------------------------
-void vtkCartesianGrid::SetExtent(int* extent)
+void vtkCartesianGrid::SetExtent(VTK_FUTURE_CONST int extent[6])
 {
   int description;
 
@@ -556,7 +539,7 @@ void vtkCartesianGrid::BuildCellTypes()
 //------------------------------------------------------------------------------
 // This Method returns an index to a location in the vtkImageData.
 // Coordinates are in pixel units and are relative to the whole image origin.
-vtkIdType vtkCartesianGrid::GetTupleIndex(vtkDataArray* array, int coordinate[3])
+vtkIdType vtkCartesianGrid::GetTupleIndex(vtkDataArray* array, VTK_FUTURE_CONST int coordinate[3])
 {
   vtkIdType incs[3];
   vtkIdType idx;
@@ -613,14 +596,15 @@ vtkIdType vtkCartesianGrid::GetTupleIndex(vtkDataArray* array, int x, int y, int
 }
 
 //-------------------------------------------------------------------------------
-vtkIdType vtkCartesianGrid::GetTupleIndexForExtent(vtkDataArray* array, int extent[6])
+vtkIdType vtkCartesianGrid::GetTupleIndexForExtent(
+  vtkDataArray* array, VTK_FUTURE_CONST int extent[6])
 {
   int tmp[3] = { extent[0], extent[2], extent[4] };
   return this->GetTupleIndex(array, tmp);
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkCartesianGrid::GetValueIndex(vtkDataArray* array, int coordinate[3])
+vtkIdType vtkCartesianGrid::GetValueIndex(vtkDataArray* array, VTK_FUTURE_CONST int coordinate[3])
 {
   vtkIdType tupleIndex = this->GetTupleIndex(array, coordinate);
   return tupleIndex >= 0 ? tupleIndex * array->GetNumberOfComponents() : -1;
@@ -634,10 +618,23 @@ vtkIdType vtkCartesianGrid::GetValueIndex(vtkDataArray* array, int x, int y, int
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkCartesianGrid::GetValueIndexForExtent(vtkDataArray* array, int extent[6])
+vtkIdType vtkCartesianGrid::GetValueIndexForExtent(
+  vtkDataArray* array, VTK_FUTURE_CONST int extent[6])
 {
   int tmp[3] = { extent[0], extent[2], extent[4] };
   return this->GetValueIndex(array, tmp);
+}
+
+//------------------------------------------------------------------------------
+vtkCartesianGrid* vtkCartesianGrid::GetData(vtkInformation* info)
+{
+  return info ? vtkCartesianGrid::SafeDownCast(info->Get(DATA_OBJECT())) : nullptr;
+}
+
+//------------------------------------------------------------------------------
+vtkCartesianGrid* vtkCartesianGrid::GetData(vtkInformationVector* v, int i)
+{
+  return vtkCartesianGrid::GetData(v->GetInformationObject(i));
 }
 
 VTK_ABI_NAMESPACE_END

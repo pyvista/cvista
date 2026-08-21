@@ -14,6 +14,7 @@
 #import "vtkObjectFactory.h"
 #import "vtkOpenGLState.h"
 #import "vtkOpenGLVertexBufferObjectCache.h"
+#include "vtkOverrideAttribute.h"
 #import "vtkRenderWindowInteractor.h"
 #import "vtkRendererCollection.h"
 #import "vtkStringScanner.h"
@@ -250,6 +251,18 @@ vtkCocoaRenderWindow::~vtkCocoaRenderWindow()
 
   // Release the cocoa object manager.
   this->SetCocoaManager(nullptr);
+}
+
+//----------------------------------------------------------------------------
+vtkOverrideAttribute* vtkCocoaRenderWindow::CreateOverrideAttributes()
+{
+  auto* platformAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("Platform", "macOS", nullptr);
+  auto* windowSystemAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("WindowSystem", "Cocoa", platformAttribute);
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", windowSystemAttribute);
+  return renderingBackendAttribute;
 }
 
 //----------------------------------------------------------------------------
@@ -1610,10 +1623,44 @@ void vtkCocoaRenderWindow::SetCurrentCursor(int shape)
   NSCursor* cursor = nil;
   switch (shape)
   {
-    case VTK_CURSOR_DEFAULT:
-    case VTK_CURSOR_CUSTOM:
     case VTK_CURSOR_ARROW:
       cursor = [NSCursor arrowCursor];
+      break;
+    case VTK_CURSOR_SIZENE:
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+      if (@available(macOS 15, *))
+      {
+        cursor = [NSCursor frameResizeCursorFromPosition:NSCursorFrameResizePositionTopRight
+                                            inDirections:NSCursorFrameResizeDirectionsAll];
+      }
+#endif
+      break;
+    case VTK_CURSOR_SIZENW:
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+      if (@available(macOS 15, *))
+      {
+        cursor = [NSCursor frameResizeCursorFromPosition:NSCursorFrameResizePositionTopLeft
+                                            inDirections:NSCursorFrameResizeDirectionsAll];
+      }
+#endif
+      break;
+    case VTK_CURSOR_SIZESE:
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+      if (@available(macOS 15, *))
+      {
+        cursor = [NSCursor frameResizeCursorFromPosition:NSCursorFrameResizePositionBottomRight
+                                            inDirections:NSCursorFrameResizeDirectionsAll];
+      }
+#endif
+      break;
+    case VTK_CURSOR_SIZESW:
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+      if (@available(macOS 15, *))
+      {
+        cursor = [NSCursor frameResizeCursorFromPosition:NSCursorFrameResizePositionBottomLeft
+                                            inDirections:NSCursorFrameResizeDirectionsAll];
+      }
+#endif
       break;
     case VTK_CURSOR_SIZENS:
       cursor = [NSCursor resizeUpDownCursor];
@@ -1621,21 +1668,25 @@ void vtkCocoaRenderWindow::SetCurrentCursor(int shape)
     case VTK_CURSOR_SIZEWE:
       cursor = [NSCursor resizeLeftRightCursor];
       break;
+    case VTK_CURSOR_SIZEALL:
+      cursor = [NSCursor openHandCursor]; // Or closedHandCursor
+      break;
     case VTK_CURSOR_HAND:
       cursor = [NSCursor pointingHandCursor];
       break;
     case VTK_CURSOR_CROSSHAIR:
       cursor = [NSCursor crosshairCursor];
       break;
-
-    // NSCursor does not have cursors for these.
-    case VTK_CURSOR_SIZENE:
-    case VTK_CURSOR_SIZESW:
-    case VTK_CURSOR_SIZENW:
-    case VTK_CURSOR_SIZESE:
-    case VTK_CURSOR_SIZEALL:
+    case VTK_CURSOR_DEFAULT:
+    default:
       cursor = [NSCursor arrowCursor];
       break;
+  }
+
+  // Worst case fallback.
+  if (!cursor)
+  {
+    cursor = [NSCursor arrowCursor];
   }
 
   [cursor set];

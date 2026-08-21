@@ -73,8 +73,8 @@ public:
   /**
    * API to get/set partitions using a tuple index.
    */
-  void SetPartition(unsigned int idx, unsigned int partition, vtkDataObject* object);
-  vtkDataSet* GetPartition(unsigned int idx, unsigned int partition);
+  virtual void SetPartition(unsigned int idx, unsigned int partition, vtkDataObject* object);
+  virtual vtkDataSet* GetPartition(unsigned int idx, unsigned int partition);
   vtkDataObject* GetPartitionAsDataObject(unsigned int idx, unsigned int partition);
   ///@}
 

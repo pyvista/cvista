@@ -72,10 +72,10 @@ public:
 
 protected:
   vtkTriangleStrip();
-  ~vtkTriangleStrip() override;
+  ~vtkTriangleStrip() override = default;
 
-  vtkLine* Line;
-  vtkTriangle* Triangle;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkTriangle> Triangle;
 
 private:
   vtkTriangleStrip(const vtkTriangleStrip&) = delete;

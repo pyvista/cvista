@@ -19,15 +19,20 @@
 #include "vtkWrappingHints.h"          // For VTK_MARSHALAUTO
 
 VTK_ABI_NAMESPACE_BEGIN
-class vtkRenderWindow;
-class vtkOpenGLRenderWindow;
+// Forward declarations
 class vtkActor;
+class vtkHardwareSelector;
+class vtkOpenGLHelper;
+class vtkOverrideAttribute;
+class vtkRenderWindow;
 
 class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLImageSliceMapper
   : public vtkImageSliceMapper
 {
 public:
   static vtkOpenGLImageSliceMapper* New();
+  VTK_NEWINSTANCE
+  static vtkOverrideAttribute* CreateOverrideAttributes();
   vtkTypeMacro(vtkOpenGLImageSliceMapper, vtkImageSliceMapper);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
@@ -75,6 +80,12 @@ protected:
   void RenderBackground(vtkActor* actor, vtkPoints* points, const int extent[6], vtkRenderer* ren);
 
   /**
+   * Render for selection.  This method uses a special shader program
+   * to encode the cell IDs into the texture that is rendered.
+   */
+  void RenderForSelection(vtkRenderer* ren, vtkImageSlice* prop, vtkHardwareSelector* selector);
+
+  /**
    * Given an extent that describes a slice (it must have unit thickness
    * in one of the three directions), return the dimension indices that
    * correspond to the texture "x" and "y", provide the x, y image size,
@@ -99,6 +110,7 @@ protected:
   vtkActor* PolyDataActor;
   vtkActor* BackingPolyDataActor;
   vtkActor* BackgroundPolyDataActor;
+  vtkOpenGLHelper* SelectionHelper;
 
   vtkTimeStamp LoadTime;
 
@@ -106,6 +118,7 @@ private:
   vtkOpenGLImageSliceMapper(const vtkOpenGLImageSliceMapper&) = delete;
   void operator=(const vtkOpenGLImageSliceMapper&) = delete;
 };
-
+#define vtkOpenGLImageSliceMapper_OVERRIDE_ATTRIBUTES                                              \
+  vtkOpenGLImageSliceMapper::CreateOverrideAttributes()
 VTK_ABI_NAMESPACE_END
 #endif

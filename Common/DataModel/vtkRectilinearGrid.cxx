@@ -148,8 +148,21 @@ void vtkRectilinearGrid::BuildPoints()
   static double identityMatrix[9] = { 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 };
   if (this->XCoordinates && this->YCoordinates && this->ZCoordinates)
   {
-    this->SetStructuredPoints(vtkStructuredData::GetPoints(this->XCoordinates, this->YCoordinates,
-      this->ZCoordinates, this->GetExtent(), identityMatrix));
+    // Update the existing structured point array in place so that external
+    // pointers obtained via GetPoints() or GetPoints()->GetData() remain valid.
+    vtkPoints* pts = this->GetPoints();
+    auto* spa = vtkStructuredPointArray<double>::FastDownCast(pts->GetData());
+    if (!spa)
+    {
+      vtkErrorMacro("GetPoints()->GetData() is not a vtkStructuredPointArray. "
+                    "Cannot update points in place.");
+      return;
+    }
+    VTK_FUTURE_CONST int* extent = this->GetExtent();
+    int dataDescription = vtkStructuredData::GetDataDescriptionFromExtent(extent);
+    spa->ConstructBackend(this->XCoordinates, this->YCoordinates, this->ZCoordinates, extent,
+      dataDescription, identityMatrix);
+    spa->SetNumberOfTuples(vtkStructuredData::GetNumberOfPoints(extent));
   }
 }
 
@@ -283,9 +296,8 @@ vtkIdType vtkRectilinearGrid::FindPoint(double x[3])
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkRectilinearGrid::FindCell(double x[3], vtkCell* vtkNotUsed(cell),
-  vtkIdType vtkNotUsed(cellId), double vtkNotUsed(tol2), int& subId, double pcoords[3],
-  double* weights)
+vtkIdType vtkRectilinearGrid::FindCell(double x[3], vtkCell* cell, vtkGenericCell* genCell,
+  vtkIdType cellId, double vtkNotUsed(tol2), int& subId, double pcoords[3], double* weights)
 {
   int loc[3];
 
@@ -299,16 +311,20 @@ vtkIdType vtkRectilinearGrid::FindCell(double x[3], vtkCell* vtkNotUsed(cell),
     vtkVoxel::InterpolationFunctions(pcoords, weights);
   }
 
-  //
-  //  From this location get the cell id
-  //
+  // From this location get the cell id
   subId = 0;
-  const vtkIdType cellId = this->ComputeCellId(loc);
-  if (!this->IsCellVisible(cellId))
+  const vtkIdType newCellId = this->ComputeCellId(loc);
+  if (!this->IsCellVisible(newCellId))
   {
     return -1;
   }
-  return cellId;
+  // if cell is requested, and we don't already have it
+  if (genCell && (newCellId != cellId || genCell->GetRepresentativeCell() != cell))
+  {
+    // extract the new cell
+    this->GetCell(newCellId, genCell);
+  }
+  return newCellId;
 }
 
 //------------------------------------------------------------------------------
@@ -484,7 +500,7 @@ void vtkRectilinearGrid::DeepCopy(vtkDataObject* dataObject)
 }
 
 //------------------------------------------------------------------------------
-void vtkRectilinearGrid::Crop(const int* updateExtent)
+void vtkRectilinearGrid::Crop(const int updateExtent[6])
 {
   const int* extent = this->GetExtent();
 

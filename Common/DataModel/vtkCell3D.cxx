@@ -19,6 +19,7 @@
 #include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
+//----------------------------------------------------------------------------
 vtkCell3D::vtkCell3D()
 {
   this->Triangulator = nullptr;
@@ -27,22 +28,7 @@ vtkCell3D::vtkCell3D()
   this->ClipScalars = nullptr;
 }
 
-vtkCell3D::~vtkCell3D()
-{
-  if (this->Triangulator)
-  {
-    this->Triangulator->Delete();
-    this->Triangulator = nullptr;
-  }
-  if (this->ClipTetra)
-  {
-    this->ClipTetra->Delete();
-    this->ClipTetra = nullptr;
-    this->ClipScalars->Delete();
-    this->ClipScalars = nullptr;
-  }
-}
-
+//----------------------------------------------------------------------------
 bool vtkCell3D::IsInsideOut()
 {
   // Strategy:
@@ -58,14 +44,13 @@ bool vtkCell3D::IsInsideOut()
   for (vtkIdType faceId = 0; faceId < this->GetNumberOfFaces(); ++faceId)
   {
     const vtkIdType* pointIds;
-    vtkIdType faceSize = this->GetFacePoints(faceId, pointIds);
-    if (faceSize)
+    if (vtkIdType faceSize = this->GetFacePoints(faceId, pointIds))
     {
       this->Points->GetPoint(pointIds[0], point);
       vtkPolygon::ComputeNormal(this->Points, faceSize, pointIds, normal);
+      const double area = vtkPolygon::ComputeArea(this->Points, faceSize, pointIds, normal);
       signedDistanceToCentroid +=
-        vtkPolygon::ComputeArea(this->Points, faceSize, pointIds, normal) *
-        (vtkMath::Dot(normal, centroid) - vtkMath::Dot(normal, point));
+        area * (vtkMath::Dot(normal, centroid) - vtkMath::Dot(normal, point));
     }
   }
   return signedDistanceToCentroid > 0.0;
@@ -74,63 +59,108 @@ bool vtkCell3D::IsInsideOut()
 //----------------------------------------------------------------------------
 int vtkCell3D::Inflate(double dist)
 {
-  // Strategy:
-  // For each point, store in a buffer its inflated position by moving each
-  // incident face their normal direction by a distance of dist. This new
-  // position is done by solving a linear system of equation (intersection of 3
-  // planes). It is enough to pick 3 non-coplanar incident faces. Thus, only 3
-  // are picked (we discard faces coplanar to any already included face)
-  // Then, each point is updated using this buffer.
+  // -----------------------------------------------------------------------
+  // Setup
+  // -----------------------------------------------------------------------
 
-  std::vector<double> buf(3 * this->Points->GetNumberOfPoints(), 0.0);
-  double* position = buf.data();
-  dist *= this->IsInsideOut() ? -1.0 : 1.0;
-  auto pointRange = vtk::DataArrayTupleRange<3>(this->Points->GetData());
-  for (vtkIdType pointId = 0; pointId < this->GetNumberOfPoints(); ++pointId, position += 3)
+  const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
+  if (!pointsArray)
   {
-    double normalBase[3][3] = { { 0.0 } };
-    int normalId = 0;
+    vtkErrorMacro(<< "Points should be double type");
+    return 0;
+  }
+
+  using Scalar = vtkDoubleArray::ValueType;
+  auto pointRange = vtk::DataArrayTupleRange<3>(pointsArray);
+  const vtkIdType numPoints = pointsArray->GetNumberOfTuples();
+
+  // Buffer to accumulate new positions before writing back to Points.
+  // We can't update Points in-place — later iterations still need original positions.
+  std::vector<Scalar> buf(3 * numPoints, 0.0);
+
+  // IsInsideOut flips which direction "outward" is.
+  dist *= this->IsInsideOut() ? -1.0 : 1.0;
+
+  // -----------------------------------------------------------------------
+  // Main loop: for each point, compute its displaced position.
+  //
+  // Strategy: each point is shared by several faces. We displace each face
+  // outward along its normal by dist, then find the new point position as
+  // the intersection of 3 non-coplanar displaced planes (a 3x3 linear system).
+  // We only need 3 planes — coplanar faces are skipped since they would make
+  // the system singular.
+  // If fewer than 3 non-coplanar faces exist (degenerate point), we skip it
+  // and leave its position unchanged.
+  // -----------------------------------------------------------------------
+
+  Scalar* newPosition = buf.data();
+  for (vtkIdType pointId = 0; pointId < numPoints; ++pointId, newPosition += 3)
+  {
+    // Collect up to 3 non-coplanar face normals incident to this point
+    Scalar faceNormals[3][3] = { { 0.0 } };
+    int faceId = 0;
+
     const vtkIdType* incidentFaceIds;
     vtkIdType numberOfIncidentFaces = this->GetPointToIncidentFaces(pointId, incidentFaceIds);
-    for (vtkIdType id = 0; id < numberOfIncidentFaces && normalId < 3; ++id)
+
+    for (vtkIdType id = 0; id < numberOfIncidentFaces && faceId < 3; ++id)
     {
       const vtkIdType* incidentFacePointIds;
       vtkIdType incidentFaceSize = this->GetFacePoints(incidentFaceIds[id], incidentFacePointIds);
       vtkPolygon::ComputeNormal(
-        this->Points, incidentFaceSize, incidentFacePointIds, normalBase[normalId]);
+        this->Points, incidentFaceSize, incidentFacePointIds, faceNormals[faceId]);
 
-      if (normalId == 0 ||
-        (normalId == 1 &&
-          (!vtkMathUtilities::NearlyEqual(
-            std::fabs(vtkMath::Dot(normalBase[0], normalBase[1])), 1.0))) ||
-        (normalId == 2 &&
-          !vtkMathUtilities::NearlyEqual(
-            std::fabs(vtkMath::Dot(normalBase[0], normalBase[2])), 1.0) &&
-          !vtkMathUtilities::NearlyEqual(
-            std::fabs(vtkMath::Dot(normalBase[1], normalBase[2])), 1.0)))
+      // Only accept this face if its normal is not coplanar with any already accepted face.
+      // Two normals are coplanar if their dot product is ±1.
+      switch (faceId)
       {
-        ++normalId;
+        case 0:
+        {
+          ++faceId;
+          break;
+        }
+        case 1:
+        {
+          const double dotFaceNormals01 = vtkMath::Dot(faceNormals[0], faceNormals[1]);
+          if (!vtkMathUtilities::NearlyEqual(std::abs(dotFaceNormals01), 1.0))
+          {
+            ++faceId;
+          }
+          break;
+        }
+        case 2:
+        default:
+        {
+          const double dotFaceNormals02 = vtkMath::Dot(faceNormals[0], faceNormals[2]);
+          const double dotFaceNormals12 = vtkMath::Dot(faceNormals[1], faceNormals[2]);
+          if (!vtkMathUtilities::NearlyEqual(std::abs(dotFaceNormals02), 1.0) &&
+            !vtkMathUtilities::NearlyEqual(std::abs(dotFaceNormals12), 1.0))
+          {
+            ++faceId;
+          }
+          break;
+        }
       }
     }
-    if (normalId != 3)
+    // Degenerate point: fewer than 3 non-coplanar faces — leave position unchanged.
+    if (faceId != 3)
     {
       continue;
     }
+
+    // Build the right-hand side: for each plane n·x = dot(n, p) + dist
     auto point = pointRange[pointId];
-    double d[3] = { vtkMath::Dot(normalBase[0], point) + dist,
-      vtkMath::Dot(normalBase[1], point) + dist, vtkMath::Dot(normalBase[2], point) + dist };
-    vtkMath::LinearSolve3x3(normalBase, d, position);
+    const Scalar displacedFaceOffsets[3] = { vtkMath::Dot(faceNormals[0], point) + dist,
+      vtkMath::Dot(faceNormals[1], point) + dist, vtkMath::Dot(faceNormals[2], point) + dist };
+
+    // Solve the 3x3 system to find where the 3 displaced faces intersect
+    vtkMath::LinearSolve3x3(faceNormals, displacedFaceOffsets, newPosition);
   }
 
-  using TupleRef = decltype(pointRange)::TupleReferenceType;
-  position = buf.data();
-  for (TupleRef point : pointRange)
-  {
-    point[0] = position[0];
-    point[1] = position[1];
-    point[2] = position[2];
-    position += 3;
-  }
+  // -----------------------------------------------------------------------
+  // Write-back: apply all buffered positions to Points
+  // -----------------------------------------------------------------------
+  std::copy_n(buf.data(), buf.size(), pointsArray->GetPointer(0));
   return 1;
 }
 
@@ -144,20 +174,20 @@ void vtkCell3D::Contour(double value, vtkDataArray* cellScalars,
   int numEdges = this->GetNumberOfEdges();
   const vtkIdType* tets;
   int v1, v2;
-  int i, j;
+  int i;
   int type;
   vtkIdType id, ptId;
   vtkIdType internalId[VTK_CELL_SIZE];
-  double s1, s2, x[3], t, p1[3], p2[3], deltaScalar;
+  double s1, x[3], p1[3], p2[3];
 
   // Create a triangulator if necessary.
   if (!this->Triangulator)
   {
-    this->Triangulator = vtkOrderedTriangulator::New();
+    this->Triangulator = vtkSmartPointer<vtkOrderedTriangulator>::New();
     this->Triangulator->PreSortedOff();
     this->Triangulator->UseTemplatesOn();
-    this->ClipTetra = vtkTetra::New();
-    this->ClipScalars = vtkDoubleArray::New();
+    this->ClipTetra = vtkSmartPointer<vtkTetra>::New();
+    this->ClipScalars = vtkSmartPointer<vtkDoubleArray>::New();
     this->ClipScalars->SetNumberOfTuples(4);
   }
 
@@ -239,11 +269,11 @@ void vtkCell3D::Contour(double value, vtkDataArray* cellScalars,
     // Has to be done in same direction to ensure coincident points are
     // merged (different interpolation direction causes perturbations).
     s1 = cellScalars->GetComponent(tets[0], 0);
-    s2 = cellScalars->GetComponent(tets[1], 0);
+    double s2 = cellScalars->GetComponent(tets[1], 0);
 
     if ((s1 <= value && s2 >= value) || (s1 >= value && s2 <= value))
     {
-      deltaScalar = s2 - s1;
+      double deltaScalar = s2 - s1;
 
       if (deltaScalar > 0)
       {
@@ -258,7 +288,8 @@ void vtkCell3D::Contour(double value, vtkDataArray* cellScalars,
       }
 
       // linear interpolation
-      t = (deltaScalar == 0.0 ? 0.0 : (value - cellScalars->GetComponent(v1, 0)) / deltaScalar);
+      double t =
+        (deltaScalar == 0.0 ? 0.0 : (value - cellScalars->GetComponent(v1, 0)) / deltaScalar);
 
       if (t < this->MergeTolerance)
       {
@@ -276,7 +307,7 @@ void vtkCell3D::Contour(double value, vtkDataArray* cellScalars,
       pc1 = pPtr + 3 * v1;
       pc2 = pPtr + 3 * v2;
 
-      for (j = 0; j < 3; j++)
+      for (int j = 0; j < 3; j++)
       {
         x[j] = p1[j] + t * (p2[j] - p1[j]);
         pc[j] = pc1[j] + t * (pc2[j] - pc1[j]);
@@ -292,7 +323,7 @@ void vtkCell3D::Contour(double value, vtkDataArray* cellScalars,
       this->Triangulator->InsertPoint(ptId, x, pc, 2);
 
     } // if edge intersects value
-  }   // for all edges
+  } // for all edges
 
   // triangulate the points
   this->Triangulator->Triangulate();
@@ -320,11 +351,11 @@ void vtkCell3D::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPoin
   // Create a triangulator if necessary.
   if (!this->Triangulator)
   {
-    this->Triangulator = vtkOrderedTriangulator::New();
+    this->Triangulator = vtkSmartPointer<vtkOrderedTriangulator>::New();
     this->Triangulator->PreSortedOff();
     this->Triangulator->UseTemplatesOn();
-    this->ClipTetra = vtkTetra::New();
-    this->ClipScalars = vtkDoubleArray::New();
+    this->ClipTetra = vtkSmartPointer<vtkTetra>::New();
+    this->ClipScalars = vtkSmartPointer<vtkDoubleArray>::New();
     this->ClipScalars->SetNumberOfTuples(4);
   }
 
@@ -493,7 +524,7 @@ void vtkCell3D::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPoin
       this->Triangulator->InsertPoint(ptId, x, pc, 2);
 
     } // if edge intersects value
-  }   // for all edges
+  } // for all edges
 
   // triangulate the points
   this->Triangulator->Triangulate();

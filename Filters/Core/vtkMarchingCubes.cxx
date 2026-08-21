@@ -6,27 +6,20 @@
 #include "vtkCellArray.h"
 #include "vtkCharArray.h"
 #include "vtkDataArrayRange.h"
-#include "vtkDoubleArray.h"
 #include "vtkFloatArray.h"
+#include "vtkHexahedron.h"
 #include "vtkImageTransform.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
-#include "vtkIntArray.h"
-#include "vtkLongArray.h"
-#include "vtkMarchingCubesTriangleCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkMath.h"
 #include "vtkMergePoints.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
-#include "vtkShortArray.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 #include "vtkStructuredPoints.h"
-#include "vtkUnsignedCharArray.h"
-#include "vtkUnsignedIntArray.h"
-#include "vtkUnsignedLongArray.h"
-#include "vtkUnsignedShortArray.h"
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkMarchingCubes);
@@ -159,9 +152,7 @@ struct ComputeGradientWorker
     int i, j, k;
     vtkIdType sliceSize;
     static const int CASE_MASK[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
-    vtkMarchingCubesTriangleCases *triCase, *triCases;
-    int* edge;
-    int contNum, jOffset, ii, index, *vert;
+    int contNum, jOffset, ii, index;
     vtkIdType kOffset, idx;
     vtkIdType ptIds[3];
     vtkTypeBool ComputeNormals = newNormals != nullptr;
@@ -171,13 +162,9 @@ struct ComputeGradientWorker
     int extent[6];
     double t, *x1, *x2, x[3], *n1, *n2, n[3], min, max;
     double pts[8][3], gradients[8][3], xp, yp, zp;
-    static int edges[12][2] = { { 0, 1 }, { 1, 2 }, { 3, 2 }, { 0, 3 }, { 4, 5 }, { 5, 6 },
-      { 7, 6 }, { 4, 7 }, { 0, 4 }, { 1, 5 }, { 3, 7 }, { 2, 6 } };
 
     vtkInformation* inInfo = self->GetExecutive()->GetInputInformation(0, 0);
     inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT(), extent);
-
-    triCases = vtkMarchingCubesTriangleCases::GetCases();
 
     //
     // Get min/max contour values
@@ -302,14 +289,13 @@ struct ComputeGradientWorker
             {
               continue;
             }
-            triCase = triCases + index;
-            edge = triCase->edges;
+            const int* edge = vtkMarchingCellsContourCases::GetHexahedronCase(index);
 
             for (; edge[0] > -1; edge += 3)
             {
               for (ii = 0; ii < 3; ii++) // insert triangle
               {
-                vert = edges[edge[ii]];
+                const vtkIdType* vert = vtkHexahedron::GetEdgeArray(edge[ii]);
                 t = (value - s[vert[0]]) / (s[vert[1]] - s[vert[0]]);
                 x1 = pts[vert[0]];
                 x2 = pts[vert[1]];
@@ -349,10 +335,10 @@ struct ComputeGradientWorker
                 newPolys->InsertNextCell(3, ptIds);
               }
             } // for each triangle
-          }   // for all contours
-        }     // for i
-      }       // for j
-    }         // for k
+          } // for all contours
+        } // for i
+      } // for j
+    } // for k
   }
 };
 
@@ -432,7 +418,7 @@ int vtkMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   estimatedSize = std::max<vtkIdType>(estimatedSize, 1024);
   vtkDebugMacro(<< "Estimated allocation size is " << estimatedSize);
   newPts = vtkPoints::New();
-  newPts->Allocate(estimatedSize, estimatedSize / 2);
+  newPts->Reserve(estimatedSize);
   // compute bounds for merging points
   for (int i = 0; i < 3; i++)
   {
@@ -449,7 +435,7 @@ int vtkMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   {
     newNormals = vtkFloatArray::New();
     newNormals->SetNumberOfComponents(3);
-    newNormals->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    newNormals->ReserveTuples(estimatedSize);
   }
   else
   {
@@ -460,7 +446,7 @@ int vtkMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   {
     newGradients = vtkFloatArray::New();
     newGradients->SetNumberOfComponents(3);
-    newGradients->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    newGradients->ReserveTuples(estimatedSize);
   }
   else
   {
@@ -473,7 +459,7 @@ int vtkMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   if (this->ComputeScalars)
   {
     newScalars = vtkFloatArray::New();
-    newScalars->Allocate(estimatedSize, estimatedSize / 2);
+    newScalars->ReserveValues(estimatedSize);
   }
   else
   {

@@ -76,7 +76,9 @@ vtkAxis::vtkAxis()
   this->GridVisible = true;
   this->LabelsVisible = true;
   this->RangeLabelsVisible = false;
+  this->VerticalLabels = false;
   this->LabelOffset = 7;
+  this->OverlappingLabels = true;
   this->TicksVisible = true;
   this->AxisVisible = true;
   this->Precision = 2;
@@ -118,40 +120,96 @@ void vtkAxis::SetPosition(int position)
   if (this->Position != position)
   {
     this->Position = position;
-    // Draw the axis label
-    switch (this->Position)
-    {
-      case vtkAxis::LEFT:
-        this->TitleProperties->SetOrientation(90.0);
-        this->TitleProperties->SetVerticalJustificationToBottom();
-        this->LabelProperties->SetJustificationToRight();
-        this->LabelProperties->SetVerticalJustificationToCentered();
-        break;
-      case vtkAxis::RIGHT:
-        this->TitleProperties->SetOrientation(90.0);
-        this->TitleProperties->SetVerticalJustificationToTop();
-        this->LabelProperties->SetJustificationToLeft();
-        this->LabelProperties->SetVerticalJustificationToCentered();
-        break;
-      case vtkAxis::BOTTOM:
-        this->TitleProperties->SetOrientation(0.0);
-        this->TitleProperties->SetVerticalJustificationToTop();
-        this->LabelProperties->SetJustificationToCentered();
-        this->LabelProperties->SetVerticalJustificationToTop();
-        break;
-      case vtkAxis::TOP:
-        this->TitleProperties->SetOrientation(0.0);
-        this->TitleProperties->SetVerticalJustificationToBottom();
+    this->UpdateOrientation();
+    this->Modified();
+  }
+}
+
+void vtkAxis::SetVerticalLabels(bool verticalLabels)
+{
+  if (this->VerticalLabels != verticalLabels)
+  {
+    this->VerticalLabels = verticalLabels;
+    this->UpdateOrientation();
+    this->Modified();
+  }
+}
+
+void vtkAxis::UpdateOrientation()
+{
+  switch (this->Position)
+  {
+    case vtkAxis::LEFT:
+      this->TitleProperties->SetOrientation(90.0);
+      this->TitleProperties->SetVerticalJustificationToBottom();
+      if (this->VerticalLabels)
+      {
         this->LabelProperties->SetJustificationToCentered();
         this->LabelProperties->SetVerticalJustificationToBottom();
-        break;
-      case vtkAxis::PARALLEL:
-        this->TitleProperties->SetOrientation(0.0);
-        this->TitleProperties->SetVerticalJustificationToTop();
+      }
+      else
+      {
         this->LabelProperties->SetJustificationToRight();
         this->LabelProperties->SetVerticalJustificationToCentered();
-        break;
-    }
+      }
+      break;
+    case vtkAxis::RIGHT:
+      this->TitleProperties->SetOrientation(90.0);
+      this->TitleProperties->SetVerticalJustificationToTop();
+      if (this->VerticalLabels)
+      {
+        this->LabelProperties->SetJustificationToCentered();
+        this->LabelProperties->SetVerticalJustificationToTop();
+      }
+      else
+      {
+        this->LabelProperties->SetJustificationToLeft();
+        this->LabelProperties->SetVerticalJustificationToCentered();
+      }
+      break;
+    case vtkAxis::BOTTOM:
+      this->TitleProperties->SetOrientation(0.0);
+      this->TitleProperties->SetVerticalJustificationToTop();
+      if (this->VerticalLabels)
+      {
+        this->LabelProperties->SetJustificationToRight();
+        this->LabelProperties->SetVerticalJustificationToCentered();
+      }
+      else
+      {
+        this->LabelProperties->SetJustificationToCentered();
+        this->LabelProperties->SetVerticalJustificationToTop();
+      }
+      break;
+    case vtkAxis::TOP:
+      this->TitleProperties->SetOrientation(0.0);
+      this->TitleProperties->SetVerticalJustificationToBottom();
+      if (this->VerticalLabels)
+      {
+        this->LabelProperties->SetJustificationToLeft();
+        this->LabelProperties->SetVerticalJustificationToCentered();
+      }
+      else
+      {
+        this->LabelProperties->SetJustificationToCentered();
+        this->LabelProperties->SetVerticalJustificationToBottom();
+      }
+      break;
+    case vtkAxis::PARALLEL:
+      this->TitleProperties->SetOrientation(0.0);
+      this->TitleProperties->SetVerticalJustificationToTop();
+      this->LabelProperties->SetJustificationToRight();
+      this->LabelProperties->SetVerticalJustificationToCentered();
+      break;
+  }
+
+  if (this->VerticalLabels)
+  {
+    this->LabelProperties->SetOrientation(90);
+  }
+  else
+  {
+    this->LabelProperties->SetOrientation(0);
   }
 }
 
@@ -347,9 +405,9 @@ bool vtkAxis::Paint(vtkContext2D* painter)
     tileScale = this->Scene->GetLogicalTileScale();
   }
 
-  vtkRectf minLabelRect(0, 0, 0, 0);
+  vtkRectf prevLabelRect(0, 0, 0, 0);
   vtkRectf maxLabelRect(0, 0, 0, 0);
-  float* minLabelBounds = minLabelRect.GetData();
+  float* prevLabelBounds = prevLabelRect.GetData();
   float* maxLabelBounds = maxLabelRect.GetData();
 
   // Scale tickLength and labelOffset to the tiling scale of the scene
@@ -381,7 +439,7 @@ bool vtkAxis::Paint(vtkContext2D* painter)
       maxString = this->GenerateSprintfLabel(this->UnscaledMaximum, this->RangeLabelFormat);
     }
 
-    painter->ComputeJustifiedStringBounds(minString.c_str(), minLabelBounds);
+    painter->ComputeJustifiedStringBounds(minString.c_str(), prevLabelBounds);
     painter->ComputeJustifiedStringBounds(maxString.c_str(), maxLabelBounds);
 
     float minLabelShift[2] = { 0, 0 };
@@ -422,17 +480,17 @@ bool vtkAxis::Paint(vtkContext2D* painter)
     painter->DrawString(minLabelShift[0], minLabelShift[1], minString);
     painter->DrawString(maxLabelShift[0], maxLabelShift[1], maxString);
 
-    minLabelBounds[0] += minLabelShift[0];
-    minLabelBounds[1] += minLabelShift[1];
+    prevLabelBounds[0] += minLabelShift[0];
+    prevLabelBounds[1] += minLabelShift[1];
     maxLabelBounds[0] += maxLabelShift[0];
     maxLabelBounds[1] += maxLabelShift[1];
 
     // Pad the range label bounds by a few pixels.
     float pad = 4;
-    minLabelBounds[0] -= pad;
-    minLabelBounds[1] -= pad;
-    minLabelBounds[2] += 2 * pad;
-    minLabelBounds[3] += 2 * pad;
+    prevLabelBounds[0] -= pad;
+    prevLabelBounds[1] -= pad;
+    prevLabelBounds[2] += 2 * pad;
+    prevLabelBounds[3] += 2 * pad;
 
     maxLabelBounds[0] -= pad;
     maxLabelBounds[1] -= pad;
@@ -464,10 +522,20 @@ bool vtkAxis::Paint(vtkContext2D* painter)
         bounds[1] += pos[1];
 
         vtkRectf boundsRect(bounds[0], bounds[1], bounds[2], bounds[3]);
-        if (!boundsRect.IntersectsWith(minLabelRect) && !boundsRect.IntersectsWith(maxLabelRect))
+        if (!boundsRect.IntersectsWith(prevLabelRect) && !boundsRect.IntersectsWith(maxLabelRect))
         {
           painter->DrawString(pos[0], pos[1], tickLabel[i]);
           skipTick = false;
+
+          // Update prevLabelBounds if the current label has text
+          if (!this->OverlappingLabels && !tickLabel[i].empty())
+          {
+            float pad = 4;
+            prevLabelBounds[0] = bounds[0] - pad;
+            prevLabelBounds[1] = bounds[1] - pad;
+            prevLabelBounds[2] = bounds[2] + 2 * pad;
+            prevLabelBounds[3] = bounds[3] + 2 * pad;
+          }
         }
       }
 
@@ -497,10 +565,20 @@ bool vtkAxis::Paint(vtkContext2D* painter)
         bounds[0] += pos[0];
         bounds[1] += pos[1];
         vtkRectf boundsRect(bounds[0], bounds[1], bounds[2], bounds[3]);
-        if (!boundsRect.IntersectsWith(minLabelRect) && !boundsRect.IntersectsWith(maxLabelRect))
+        if (!boundsRect.IntersectsWith(prevLabelRect) && !boundsRect.IntersectsWith(maxLabelRect))
         {
           painter->DrawString(pos[0], pos[1], tickLabel[i]);
           skipTick = false;
+
+          // Update prevLabelBounds if the current label has text
+          if (!this->OverlappingLabels && !tickLabel[i].empty())
+          {
+            float pad = 4;
+            prevLabelBounds[0] = bounds[0] - pad;
+            prevLabelBounds[1] = bounds[1] - pad;
+            prevLabelBounds[2] = bounds[2] + 2 * pad;
+            prevLabelBounds[3] = bounds[3] + 2 * pad;
+          }
         }
       }
 
@@ -939,15 +1017,15 @@ bool vtkAxis::SetCustomTickPositions(vtkDoubleArray* positions, vtkStringArray* 
   {
     this->CustomTickLabels = false;
     this->TickMarksDirty = true;
-    this->TickPositions->SetNumberOfTuples(0);
-    this->TickLabels->SetNumberOfTuples(0);
+    this->TickPositions->Initialize();
+    this->TickLabels->Initialize();
     this->Modified();
     return true;
   }
   else if (positions && !labels)
   {
     this->TickPositions->DeepCopy(positions);
-    this->TickLabels->SetNumberOfTuples(0);
+    this->TickLabels->Initialize();
     this->CustomTickLabels = true;
     this->TickMarksDirty = false;
     this->Modified();
@@ -1146,8 +1224,8 @@ void vtkAxis::GenerateTickLabels(double min, double max)
     return;
   }
   // Now calculate the tick labels, and positions within the axis range
-  this->TickPositions->SetNumberOfTuples(0);
-  this->TickLabels->SetNumberOfTuples(0);
+  this->TickPositions->Initialize();
+  this->TickLabels->Initialize();
 
   // We generate a logarithmic scale when logarithmic axis is activated and the
   // order of magnitude of the axis is higher than 0.6.
@@ -1249,8 +1327,7 @@ void vtkAxis::GenerateTickLabels(double min, double max)
       this->LabelProperties->SetFontSize(tickPositionExtended->GetFontSize());
       if (tickPositionExtended->GetOrientation() == 1)
       {
-        // Set this to 90 to make the labels vertical
-        this->LabelProperties->SetOrientation(90);
+        this->SetVerticalLabels(true);
       }
     }
 
@@ -1320,7 +1397,7 @@ void vtkAxis::GenerateTickLabels(double min, double max)
 //------------------------------------------------------------------------------
 void vtkAxis::GenerateTickLabels()
 {
-  this->TickLabels->SetNumberOfTuples(0);
+  this->TickLabels->Initialize();
   for (vtkIdType i = 0; i < this->TickPositions->GetNumberOfTuples(); ++i)
   {
     double value = this->TickPositions->GetValue(i);
@@ -1534,13 +1611,14 @@ void vtkAxis::GenerateLabelFormat(int notation, double n)
 vtkStdString vtkAxis::GenerateSprintfLabel(double value, const std::string& format)
 {
   // the format is expected to be in printf style format, so it's converted to std::format
-  VTK_FORMAT_IF_ERROR_RETURN(return vtk::format(vtk::printf_to_std_format(format), value), "");
+  VTK_FORMAT_IF_ERROR_RETURN(
+    return vtk::format(vtk::runtime(vtk::printf_to_std_format(format)), value), "");
 }
 
 //------------------------------------------------------------------------------
 vtkStdString vtkAxis::GenerateStdFormatLabel(double value, const std::string& format)
 {
-  VTK_FORMAT_IF_ERROR_RETURN(return vtk::format(format, value), "");
+  VTK_FORMAT_IF_ERROR_RETURN(return vtk::format(vtk::runtime(format), value), "");
 }
 
 //------------------------------------------------------------------------------

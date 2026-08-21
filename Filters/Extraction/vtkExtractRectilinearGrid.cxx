@@ -177,8 +177,8 @@ bool vtkExtractRectilinearGrid::RequestDataImpl(
   vtkPointData* outPD = output->GetPointData();
   vtkCellData* outCD = output->GetCellData();
 
-  int* inExt = input->GetExtent();
-  int* outExt = output->GetExtent();
+  VTK_FUTURE_CONST int* inExt = input->GetExtent();
+  VTK_FUTURE_CONST int* outExt = output->GetExtent();
 
   int outDims[3];
   vtkStructuredData::GetDimensionsFromExtent(outExt, outDims);
@@ -217,7 +217,7 @@ bool vtkExtractRectilinearGrid::RequestDataImpl(
       int inExtIdx = this->Internal->GetMappedIndex(dim, outExtIdx);
       out_coords[dim]->SetTuple(outExtIdx, inExtIdx, in_coords[dim]);
     } // END for all points along this dimension in the output
-  }   // END for all dimensions
+  } // END for all dimensions
 
   output->SetXCoordinates(out_coords[0]);
   output->SetYCoordinates(out_coords[1]);

@@ -54,13 +54,20 @@ int vtkHyperTreeGridGhostCellsGenerator::FillInputPortInformation(int, vtkInform
 }
 
 //------------------------------------------------------------------------------
-void vtkHyperTreeGridGhostCellsGenerator::ExchangeHTGMetadata(vtkHyperTreeGrid* inputHTG)
+bool vtkHyperTreeGridGhostCellsGenerator::ExchangeHTGMetadata(vtkHyperTreeGrid* inputHTG)
 {
   int metadataSourceProcess = 0;
   double* bounds = inputHTG->GetBounds();
   int processInit = bounds[0] <= bounds[1] ? this->Controller->GetLocalProcessId()
                                            : std::numeric_limits<int>::max();
   this->Controller->AllReduce(&processInit, &metadataSourceProcess, 1, vtkCommunicator::MIN_OP);
+
+  if (metadataSourceProcess == std::numeric_limits<int>::max())
+  {
+    vtkDebugMacro("No valid HTG found in any process");
+    return false;
+  }
+
   vtkDebugMacro("Metadata source process is " << metadataSourceProcess);
 
   // Exchange BranchFactor
@@ -169,6 +176,8 @@ void vtkHyperTreeGridGhostCellsGenerator::ExchangeHTGMetadata(vtkHyperTreeGrid* 
     }
     arr->FastDelete();
   }
+
+  return true;
 }
 
 //------------------------------------------------------------------------------
@@ -234,7 +243,38 @@ int vtkHyperTreeGridGhostCellsGenerator::RequestData(vtkInformation* vtkNotUsed(
     vtkWarningMacro("Incorrect HTG for piece " << currentPiece);
   }
 
-  this->ExchangeHTGMetadata(inputHTG);
+  double bounds[6];
+  inputHTG->GetGridBounds(bounds);
+
+  double minBounds[6];
+  double maxBounds[6];
+  this->Controller->AllReduce(bounds, minBounds, 6, vtkCommunicator::MIN_OP);
+  this->Controller->AllReduce(bounds, maxBounds, 6, vtkCommunicator::MAX_OP);
+  bool sameHTG = true;
+  for (int i = 0; i < 6; i++)
+  {
+    if (minBounds[i] != maxBounds[i])
+    {
+      sameHTG = false;
+      break;
+    }
+  }
+  if (!sameHTG)
+  {
+    // No ghost cells to generate if the HTGs do not have the same grid bounds
+    vtkWarningMacro("The HyperTreeGrids on the different processes do not have the same grid "
+                    "bounds, the ghost cells can't be generated.");
+    if (outputHTG)
+    {
+      outputHTG->ShallowCopy(inputHTG);
+    }
+    return 1;
+  }
+
+  if (!this->ExchangeHTGMetadata(inputHTG))
+  {
+    return 1;
+  }
 
   // Make sure every HTG piece has a correct extent and can be processed.
   // This way, we make sure the `ProcessTrees` function will either be executed by all ranks

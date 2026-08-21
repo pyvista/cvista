@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkSurfaceNets2D.h"
 
+#include "vtkAffineArray.h"
 #include "vtkArrayComponents.h"
 #include "vtkArrayDispatch.h"
 #include "vtkCellArray.h"
@@ -289,27 +290,56 @@ struct SurfaceNets
   struct GenerateLinesImpl : public vtkCellArray::DispatchUtilities
   {
     template <class OffsetsT, class ConnectivityT>
-    void operator()(OffsetsT* vtkNotUsed(offsets), ConnectivityT* conn, unsigned char sqCase,
-      vtkIdType* pIds, vtkIdType& lineId)
+    void operator()(OffsetsT* vtkNotUsed(offsets), ConnectivityT* conn, unsigned char squareCase,
+      vtkIdType i, vtkIdType row, vtkIdType* pIds, vtkIdType& lineId, SurfaceNets* snet)
     {
       auto connRange = GetRange(conn);
       auto connIter = connRange.begin() + (lineId * 2);
 
-      if (SurfaceNets::GenerateXLine(sqCase))
+      const T bgLabel = snet->BackgroundLabel;
+      const unsigned char* dPtr = snet->DyadCases + row * snet->DyadDims[0];
+      const unsigned char* dPtrAbove = dPtr + snet->DyadDims[0];
+
+      // in/out state of the three pixels forming the corner of the square.
+      // inOut[0]=above-left, inOut[1]=above-right, inOut[2]=right
+      const bool inOut[3] = { static_cast<bool>(*(dPtrAbove + i) & 0x1),
+        static_cast<bool>(*(dPtrAbove + i + 1) & 0x1), static_cast<bool>(*(dPtr + i + 1) & 0x1) };
+
+      if (SurfaceNets::GenerateXLine(squareCase))
       {
-        lineId++;
         *connIter++ = pIds[1];
         *connIter++ = pIds[1] + 1; // in the +x direction
+        if (snet->HasNewScalars)
+        {
+          T s0 = (inOut[2] ? snet->GetPixelForDyad(i + 1, row) : bgLabel);
+          T s1 = (inOut[1] ? snet->GetPixelForDyad(i + 1, row + 1) : bgLabel);
+          if (s0 == bgLabel || (s1 != bgLabel && s0 > s1))
+          {
+            std::swap(s0, s1);
+          }
+          snet->WriteScalarTuple(s0, s1, lineId);
+        }
+        ++lineId;
       }
 
-      if (SurfaceNets::GenerateYLine(sqCase))
+      if (SurfaceNets::GenerateYLine(squareCase))
       {
-        lineId++;
         *connIter++ = pIds[1];
         *connIter++ = pIds[2]; // in the +y direction
+        if (snet->HasNewScalars)
+        {
+          T s0 = (inOut[0] ? snet->GetPixelForDyad(i, row + 1) : bgLabel);
+          T s1 = (inOut[1] ? snet->GetPixelForDyad(i + 1, row + 1) : bgLabel);
+          if (s0 == bgLabel || (s1 != bgLabel && s0 > s1))
+          {
+            std::swap(s0, s1);
+          }
+          snet->WriteScalarTuple(s0, s1, lineId);
+        }
+        ++lineId;
       }
     } // operator()
-  };  // GenerateLinesImpl
+  }; // GenerateLinesImpl
 
   // Produce the smoothing stencils for this square.
   struct GenerateStencilImpl : public vtkCellArray::DispatchUtilities
@@ -367,7 +397,7 @@ struct SurfaceNets
         *connIter++ = pId + 1;
       }
     } // operator()
-  };  // GenerateStencilImpl
+  }; // GenerateStencilImpl
 
   // Finalize the stencils array: after all the stencils are inserted, the
   // last offset has to be added to complete the offsets array.
@@ -387,18 +417,6 @@ struct SurfaceNets
   // Initialize the 2-tuple cell scalars array. Used when only a
   // singled labeled region is being extracted (for performance
   // reasons).
-  void InitializeScalars(vtkIdType numScalars)
-  {
-    T label = this->LabelValues[0];
-    T background = this->BackgroundLabel;
-    TOutPtr s = this->NewScalars;
-    for (auto i = 0; i < numScalars; ++i)
-    {
-      *s++ = label;
-      *s++ = background;
-    }
-  }
-
   // Given a dyad i,j, return the pixel value. Note that the
   // dyad i,j are shifted by 1 due to the padding of the image
   // with boundary dyads.
@@ -407,54 +425,13 @@ struct SurfaceNets
     return *(this->Scalars + (row - 1) * this->Inc1 + (i - 1) * this->Inc0);
   }
 
-  // Generate the 2-tuple scalar cell data for the generated
-  // line segments. Used when multiple labeled regions are
-  // being extracted. Since only line segments can be created
-  // in the +x and +y directions, only the dyads to the right
-  // and top of the square is needed.
-  void GenerateScalars(unsigned char sqCase, vtkIdType i, vtkIdType row, unsigned char rDyad,
-    unsigned char rDyadAbove, unsigned char dyadAbove, vtkIdType& scalarId)
+  // Write the (s0, s1) boundary-label 2-tuple for a line at index lineId.
+  void WriteScalarTuple(T s0, T s1, vtkIdType lineId)
   {
-    T backgroundLabel = this->BackgroundLabel;
-    T s0, s1;
-    TOutPtr scalars = this->NewScalars + 2 * scalarId;
-
-    // Get the in/out state of the three pixels which form the "corner"
-    // of the square that the lines intersect.
-    bool inOut[3];
-    inOut[0] = (dyadAbove & 0x1);
-    inOut[1] = (rDyadAbove & 0x1);
-    inOut[2] = (rDyad & 0x1);
-
-    // Process the two potential edges independently
-    if (SurfaceNets::GenerateXLine(sqCase))
-    {
-      s0 = (inOut[2] ? this->GetPixelForDyad(i + 1, row) : backgroundLabel);
-      s1 = (inOut[1] ? this->GetPixelForDyad(i + 1, row + 1) : backgroundLabel);
-      if (s0 == backgroundLabel || (s1 != backgroundLabel && s0 > s1))
-      {
-        // Background label is placed last; s0<s1 if both inside
-        std::swap(s0, s1);
-      }
-      *scalars++ = s0; // write 2-tuple
-      *scalars++ = s1;
-      ++scalarId;
-    }
-
-    if (SurfaceNets::GenerateYLine(sqCase))
-    {
-      s0 = (inOut[0] ? this->GetPixelForDyad(i, row + 1) : backgroundLabel);
-      s1 = (inOut[1] ? this->GetPixelForDyad(i + 1, row + 1) : backgroundLabel);
-      if (s0 == backgroundLabel || (s1 != backgroundLabel && s0 > s1))
-      {
-        // Background label is placed last; s0<s1 if both inside
-        std::swap(s0, s1);
-      }
-      *scalars++ = s0; // write 2-tuple
-      *scalars++ = s1;
-      ++scalarId;
-    }
-  } // GenerateScalars
+    TOutPtr scalars = this->NewScalars + 2 * lineId;
+    scalars[0] = s0;
+    scalars[1] = s1;
+  }
 
   // The following are methods supporting the four passes of the
   // surface nets extraction.
@@ -596,7 +573,7 @@ void SurfaceNets<TArray>::ClassifyXEdges(TInPtr inPtr, vtkIdType row, vtkLabelMa
       minInt = (i < minInt ? i : minInt);
       maxInt = i + 1;
     } // if contour interacts with this dyad
-  }   // for all dyad-x-edges along this image x-edge
+  } // for all dyad-x-edges along this image x-edge
 
   // The beginning and ending of intersections along the edge is used for
   // computational trimming.
@@ -696,7 +673,7 @@ void SurfaceNets<TArray>::ProduceSquareCases(vtkIdType rowPair, bool odd)
       minInt = (i < minInt ? i : minInt);
       maxInt = i + 1;
     } // if produces a point
-  }   // for all dyads on this row
+  } // for all dyads on this row
   eMD[3] = minInt;
   eMD[4] = (maxInt < numDyads ? maxInt : numDyads);
 } // ProduceSquareCases
@@ -782,13 +759,6 @@ void SurfaceNets<TArray>::ConfigureOutput(
       newScalars->SetNumberOfTuples(numOutLines);
       this->NewScalars = vtk::DataArrayValueRange<2>(TArray::FastDownCast(newScalars)).begin();
       this->HasNewScalars = true;
-      // In the special case when there is just a single segmented
-      // object extracted, the scalars are initialized with the
-      // two labels: [LabelValues[0],BackgroundLabel].
-      if (this->NumLabels == 1)
-      {
-        this->InitializeScalars(numOutLines);
-      }
     }
 
     // Smoothing stencils, which are represented by a vtkCellArray
@@ -840,7 +810,6 @@ void SurfaceNets<TArray>::GenerateOutput(vtkIdType row)
   // dyads[1], and the dyads of the square below dyads[0] and above dyads[2].
   unsigned char dyads[3];   // dyads below, current, and above the current square
   unsigned char rDyad;      // dyad of the right square
-  unsigned char rDyadAbove; // dyad of the top-right square
   unsigned char squareCase; // the case of the current square
 
   // Initialize the point numbering process using a row iterator. This uses
@@ -852,12 +821,8 @@ void SurfaceNets<TArray>::GenerateOutput(vtkIdType row)
   // The point ids are advanced as a function of the three dyads dyads[3].
   vtkIdType pIds[3];
   this->InitRowIterator(row, pIds);
-  vtkIdType lineId = eMD[1];   // starting line id for this row of squares
-  vtkIdType sOffset = eMD[2];  // starting stencil offset for this row of squares
-  vtkIdType scalarId = lineId; // starting scalar id to generate 2-tuples
-
-  // Control whether 2-tuple scalars need to be generated.
-  bool genScalars = (this->HasNewScalars && this->NumLabels > 1);
+  vtkIdType lineId = eMD[1];  // starting line id for this row of squares
+  vtkIdType sOffset = eMD[2]; // starting stencil offset for this row of squares
 
   // Now traverse all the squares in this row, generating points, lines,
   // stencils, and optional scalar data. Points are only generated from the
@@ -880,16 +845,9 @@ void SurfaceNets<TArray>::GenerateOutput(vtkIdType row)
       this->GeneratePoint(pIds[1], i, row);
 
       // Lines, if any. (Only +x and +y line segments can be generated.)
-      // If lines are produced, then scalar data may need to be generated
-      // as well.
       if (this->GetNumberOfLines(squareCase) > 0)
       {
-        this->NewLines->Dispatch(GenerateLinesImpl{}, squareCase, pIds, lineId);
-        if (genScalars)
-        {
-          rDyadAbove = *(dPtrAbove + i + 1);
-          this->GenerateScalars(squareCase, i, row, rDyad, rDyadAbove, dyads[2], scalarId);
-        }
+        this->NewLines->Dispatch(GenerateLinesImpl{}, squareCase, i, row, pIds, lineId, this);
       }
 
       // Smoothing stencil (i.e., how generated points are connected to other points)
@@ -959,23 +917,39 @@ struct NetsWorker
   }; // Pass1 dispatch
 
   // PASS 2: Process all squares on the given x-rows to classify dyad y-axis,
-  // and classify squares. Interface to vtkSMPTools::For(). Note that dyad row i
-  // corresponds to image row (i-1).
+  // and classify squares. To avoid race conditions when reading dyad cases from
+  // neighboring rows (dPtrAbove), Pass 2 is executed in two phases: first processing
+  // odd rows (1, 3, 5, ...), then even rows (0, 2, 4, ...). Since each row reads
+  // from the row above it (row k reads row k+1), and odd/even neighbors are in
+  // different sets, processing one complete set before the other eliminates
+  // simultaneous read/write conflicts. Interface to vtkSMPTools::For(). Note that
+  // dyad row i corresponds to image row (i-1).
   template <typename TArray>
   struct Pass2
   {
     using TInPtr = typename vtk::detail::ValueRange<TArray, 1>::iterator;
-    using T = vtk::GetAPIType<TArray>;
-
     SurfaceNets<TArray>* Algo;
-    Pass2(SurfaceNets<TArray>* algo) { this->Algo = algo; }
-    void operator()(vtkIdType row, vtkIdType end)
+    vtkNew<vtkAffineArray<vtkIdType>> Rows;
+
+    // Constructor creates an affine array containing either odd or even row indices.
+    // The affine array generates the sequence with stride=2, starting at 1 (odd) or 0 (even).
+    Pass2(SurfaceNets<TArray>* algo, bool odd, vtkIdType numTotalRows)
     {
-      TInPtr rowPtr = this->Algo->Scalars + (row - 1) * this->Algo->Inc1;
-      for (; row < end; ++row)
+      this->Algo = algo;
+      vtkIdType numRows = odd ? (numTotalRows / 2) : ((numTotalRows + 1) / 2);
+      this->Rows->SetNumberOfValues(numRows);
+      this->Rows->ConstructBackend(2, odd ? 1 : 0); // stride=2, start=1 (odd) or 0 (even)
+    }
+
+    void operator()(vtkIdType beginRowId, vtkIdType endRowId)
+    {
+      // Process row-by-row using the affine array of odd or even rows.
+      // Note that the bottom and top rows are not processed (they return early).
+      for (vtkIdType rowId = beginRowId; rowId < endRowId; ++rowId)
       {
+        const vtkIdType row = this->Rows->GetValue(rowId);
+        TInPtr rowPtr = this->Algo->Scalars + (row - 1) * this->Algo->Inc1;
         this->Algo->ClassifyYEdges(rowPtr, row);
-        rowPtr += this->Algo->Inc1;
       } // for all rows in this batch
     }
   }; // Pass2 dispatch
@@ -1007,8 +981,9 @@ struct NetsWorker
 
   // Dispatch to SurfaceNets.
   template <typename TArray>
-  void operator()(TArray* scalarsArray, vtkSurfaceNets2D* self, vtkImageData* input, int* updateExt,
-    vtkPoints* newPts, vtkCellArray* newLines, vtkDataArray* newScalars, vtkCellArray* stencils)
+  void operator()(TArray* scalarsArray, vtkSurfaceNets2D* self, vtkImageData* input,
+    VTK_FUTURE_CONST int updateExt[6], vtkPoints* newPts, vtkCellArray* newLines,
+    vtkDataArray* newScalars, vtkCellArray* stencils)
   {
     // The type of data carried by the scalarsArray
     using T = vtk::GetAPIType<TArray>;
@@ -1114,8 +1089,14 @@ struct NetsWorker
     vtkSMPTools::For(1, algo.DyadDims[1] - 1, pass1);
 
     // Classify the dyad y-edges; finalize the dyad classification.
-    Pass2<TArray> pass2(&algo);
-    vtkSMPTools::For(0, algo.DyadDims[1] - 1, pass2);
+    // Process in two passes (odd rows, then even rows) to avoid race conditions.
+    // Since each row reads from the row above (dPtrAbove), and odd/even neighbors
+    // are in different sets, processing one complete set before the other eliminates races.
+    Pass2<TArray> pass2Odd(&algo, true, algo.DyadDims[1] - 1);
+    vtkSMPTools::For(0, pass2Odd.Rows->GetNumberOfValues(), pass2Odd);
+
+    Pass2<TArray> pass2Even(&algo, false, algo.DyadDims[1] - 1);
+    vtkSMPTools::For(0, pass2Even.Rows->GetNumberOfValues(), pass2Even);
 
     // Prefix sum to determine the size and character of the output, and
     // then allocate it.
@@ -1215,7 +1196,7 @@ int vtkSurfaceNets2D::RequestData(vtkInformation* vtkNotUsed(request),
       return 1;
     }
 
-    int* ext = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    VTK_FUTURE_CONST int* ext = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     vtkSmartPointer<vtkDataArray> inScalars = this->GetInputArrayToProcess(0, inputVector);
     if (inScalars == nullptr)
     {
@@ -1290,10 +1271,8 @@ int vtkSurfaceNets2D::RequestData(vtkInformation* vtkNotUsed(request),
     // before smoothing.
     vtkImageTransform::TransformPointSet(input, output);
 
-    // For now let's stash the data. If caching is disabled, we'll flush it
-    // at the end.
+    // For now let's stash the data. If caching is disabled, we'll flush it at the end.
     this->CacheData(output, stencils);
-
   } // Extract boundary geometry
 
   // If smoothing is to occur, then do it now. It has to be done after image
@@ -1307,16 +1286,14 @@ int vtkSurfaceNets2D::RequestData(vtkInformation* vtkNotUsed(request),
   }
   else
   {
-    output->CopyStructure(this->GeometryCache);
-    output->GetCellData()->PassData(this->GeometryCache->GetCellData());
+    output->ShallowCopy(this->GeometryCache);
   }
   this->SmoothingTime.Modified();
 
   // Flush the cache if caching is disabled.
   if (!this->DataCaching)
   {
-    this->GeometryCache = nullptr;
-    this->StencilsCache = nullptr;
+    this->CacheData(nullptr, nullptr);
   }
 
   return 1;
@@ -1331,13 +1308,8 @@ bool vtkSurfaceNets2D::IsCacheEmpty()
 //------------------------------------------------------------------------------
 void vtkSurfaceNets2D::CacheData(vtkPolyData* pd, vtkCellArray* stencils)
 {
-  if (this->DataCaching)
-  {
-    this->GeometryCache->CopyStructure(pd);
-    this->GeometryCache->GetCellData()->PassData(pd->GetCellData());
-
-    this->StencilsCache = stencils;
-  }
+  this->GeometryCache = pd;
+  this->StencilsCache = stencils;
 }
 
 //------------------------------------------------------------------------------

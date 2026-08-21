@@ -16,12 +16,9 @@ vtkStandardNewMacro(vtkBMPReader);
 
 vtkBMPReader::vtkBMPReader()
 {
-  this->Colors = nullptr;
   this->SetDataByteOrderToLittleEndian();
-  this->Depth = 0;
   // we need to create it now in case its asked for later (pointer must be valid)
   this->LookupTable = vtkLookupTable::New();
-  this->Allow8BitBMP = 0;
 }
 
 //------------------------------------------------------------------------------
@@ -41,6 +38,9 @@ vtkBMPReader::~vtkBMPReader()
 //------------------------------------------------------------------------------
 void vtkBMPReader::ExecuteInformation()
 {
+  // Invalidated last information
+  this->Validated = false;
+
   // free any old memory
   delete[] this->Colors;
   this->Colors = nullptr;
@@ -73,44 +73,9 @@ void vtkBMPReader::ExecuteInformation()
   }
   stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
 
-  // compare magic numbers to determine file type
-  char magicB, magicM;
-  if (stream->Read(&magicB, 1) != 1 || stream->Read(&magicM, 1) != 1)
+  vtkTypeInt32 offset, infoSize;
+  if (!vtkBMPReader::ReadAndCheckHeader(stream, false, offset, infoSize))
   {
-    vtkErrorMacro("Error reading magic numbers");
-    return;
-  }
-  if (magicB != 'B' || magicM != 'M')
-  {
-    vtkErrorMacro(<< "Unknown file type! " << this->InternalFileName
-                  << " is not a Windows BMP file!");
-    return;
-  }
-
-  // skip 8 bytes
-  stream->Seek(8, vtkResourceStream::SeekDirection::Current);
-
-  // read the offset
-  vtkTypeInt32 offset;
-  if (stream->Read(&offset, 4) != 4)
-  {
-    vtkErrorMacro("Error reading offset");
-    return;
-  }
-
-  // get size of header
-  vtkTypeInt32 infoSize;
-  if (stream->Read(&infoSize, 4) != 4)
-  {
-    vtkErrorMacro("Error reading header size");
-    return;
-  }
-  vtkByteSwap::Swap4LE(&infoSize);
-
-  // error checking
-  if ((infoSize != 40) && (infoSize != 12))
-  {
-    vtkErrorMacro("Unknown file type! Not a Windows BMP file!");
     return;
   }
 
@@ -226,7 +191,6 @@ void vtkBMPReader::ExecuteInformation()
   }
 
   // Offset is the true header size. See bug 14397
-  vtkByteSwap::Swap4LE(&offset);
   this->ManualHeaderSize = 1;
   this->HeaderSize = offset;
 
@@ -262,6 +226,9 @@ void vtkBMPReader::ExecuteInformation()
   }
 
   this->vtkImageReader::ExecuteInformation();
+
+  // All data checks passed
+  this->Validated = true;
 }
 
 //------------------------------------------------------------------------------
@@ -376,6 +343,19 @@ void vtkBMPReaderUpdate2(vtkBMPReader* self, vtkImageData* data, OT* outPtr)
   if (!self->GetFileLowerLeft())
   {
     streamSkip0 = static_cast<vtkIdType>(-streamRead - self->GetDataIncrements()[1]);
+  }
+
+  // Ensure vector "buf" will not be overrun
+  // Note : this code is for maximum saftey but as far as I can determine the only case where this
+  // is true is when GetDepth() == 0
+  if ((((dataExtent[1] - dataExtent[0]) * pixelSkip) + ((self->GetDepth() == 8) ? 1 : 3)) >
+    streamRead)
+  {
+    vtkErrorWithObjectMacro(self,
+      "Row data buffer overrun, Image likely has unsupported depth. File "
+        << self->GetInternalFileName());
+    self->CloseFile();
+    return;
   }
 
   target = (unsigned long)((dataExtent[5] - dataExtent[4] + 1) *
@@ -500,6 +480,13 @@ void vtkBMPReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
 
   data->GetPointData()->GetScalars()->SetName("BMPImage");
 
+  // Ensure ExecuteInformation() was called without issue
+  if (!this->Validated)
+  {
+    vtkErrorMacro("Invalid information when parsing header");
+    return;
+  }
+
   this->ComputeDataIncrements();
 
   // Call the correct templated function for the output
@@ -534,59 +521,86 @@ void vtkBMPReader::PrintSelf(ostream& os, vtkIndent indent)
 }
 
 //------------------------------------------------------------------------------
-int vtkBMPReader::CanReadFile(const char* fname)
+int vtkBMPReader::CanReadFile(const char* filename)
 {
-  // get the magic number by reading in a file
-  FILE* fp = vtksys::SystemTools::Fopen(fname, "rb");
-  if (!fp)
+  vtkNew<vtkFileResourceStream> stream;
+  if (!stream->Open(filename))
+  {
+    return 0;
+  }
+  return this->CanReadFile(stream);
+}
+
+//------------------------------------------------------------------------------
+int vtkBMPReader::CanReadFile(vtkResourceStream* stream)
+{
+  if (!stream)
   {
     return 0;
   }
 
-  // compare magic number to determine file type
-  if ((fgetc(fp) != 'B') || (fgetc(fp) != 'M'))
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+  vtkTypeInt32 offset, infoSize;
+  return vtkBMPReader::ReadAndCheckHeader(stream, true, offset, infoSize) ? 1 : 0;
+}
+
+//------------------------------------------------------------------------------
+bool vtkBMPReader::ReadAndCheckHeader(
+  vtkResourceStream* stream, bool quiet, vtkTypeInt32& offset, vtkTypeInt32& infoSize) const
+{
+  // compare magic numbers to determine file type
+  char magicB, magicM;
+  if (stream->Read(&magicB, 1) != 1 || stream->Read(&magicM, 1) != 1)
   {
-    fclose(fp);
-    return 0;
+    if (!quiet)
+    {
+      vtkErrorMacro("Error reading magic numbers");
+    }
+    return false;
+  }
+  if (magicB != 'B' || magicM != 'M')
+  {
+    if (!quiet)
+    {
+      vtkErrorMacro(<< "Unknown type! file is not a Windows BMP file!");
+    }
+    return false;
   }
 
-  vtkTypeInt32 tmp;
-  vtkTypeInt32 infoSize = 0;
+  // skip 8 bytes
+  stream->Seek(8, vtkResourceStream::SeekDirection::Current);
 
-  // error indicator
-  bool errorOccurred = false;
-
-  // skip 4 bytes
-  if (fread(&tmp, 4, 1, fp) != 1)
-  {
-    errorOccurred = true;
-  }
-  // skip 4 more bytes
-  else if (fread(&tmp, 4, 1, fp) != 1)
-  {
-    errorOccurred = true;
-  }
   // read the offset
-  else if (fread(&tmp, 4, 1, fp) != 1)
+  if (stream->Read(&offset, 4) != 4)
   {
-    errorOccurred = true;
+    if (!quiet)
+    {
+      vtkErrorMacro("Error reading offset");
+    }
+    return false;
   }
-  // get size of header
-  else if (fread(&infoSize, 4, 1, fp) != 1)
-  {
-    infoSize = 0;
-    errorOccurred = true;
-  }
+  vtkByteSwap::Swap4LE(&offset);
 
+  if (stream->Read(&infoSize, 4) != 4)
+  {
+    if (!quiet)
+    {
+      vtkErrorMacro("Error reading header size");
+    }
+    return false;
+  }
   vtkByteSwap::Swap4LE(&infoSize);
 
   // error checking
   if ((infoSize != 40) && (infoSize != 12))
   {
-    errorOccurred = true;
+    if (!quiet)
+    {
+      vtkErrorMacro("Unknown file type! Not a Windows BMP file!");
+    }
+    return false;
   }
-
-  fclose(fp);
-  return !errorOccurred;
+  return true;
 }
+
 VTK_ABI_NAMESPACE_END

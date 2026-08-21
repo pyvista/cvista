@@ -8,7 +8,6 @@
 #ifndef vtkDataArrayValueRange_Generic_h
 #define vtkDataArrayValueRange_Generic_h
 
-#include "vtkDataArrayAccessor.h"
 #include "vtkDataArrayMeta.h"
 
 #include <algorithm>
@@ -222,7 +221,7 @@ struct ConstValueReference
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using IdStorageType = IdStorage<TupleSize>;
   using APIType = GetAPIType<ArrayType, ForceValueTypeForVtkDataArray>;
@@ -307,7 +306,7 @@ struct ValueReference
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using APIType = GetAPIType<ArrayType, ForceValueTypeForVtkDataArray>;
   using IdStorageType = IdStorage<TupleSize>;
@@ -412,8 +411,8 @@ public:
 
   friend VTK_ITER_INLINE void swap(ValueReference lhs, ValueReference rhs) noexcept
   { // Swap values, not references:
-    APIType tmp = std::move(static_cast<APIType>(lhs));
-    lhs = std::move(static_cast<APIType>(rhs));
+    APIType tmp = static_cast<APIType>(lhs);
+    lhs = static_cast<APIType>(rhs);
     rhs = std::move(tmp);
   }
 
@@ -426,14 +425,14 @@ public:
     static_assert(
       std::is_same<APIType, OAPIType>::value, "Cannot swap components with different types.");
 
-    APIType tmp = std::move(static_cast<APIType>(lhs));
-    lhs = std::move(static_cast<APIType>(rhs));
+    APIType tmp = static_cast<APIType>(lhs);
+    lhs = static_cast<APIType>(rhs);
     rhs = std::move(tmp);
   }
 
   friend VTK_ITER_INLINE void swap(ValueReference lhs, APIType& rhs) noexcept
   {
-    APIType tmp = std::move(static_cast<APIType>(lhs));
+    APIType tmp = static_cast<APIType>(lhs);
     lhs = std::move(rhs);
     rhs = std::move(tmp);
   }
@@ -441,7 +440,7 @@ public:
   friend VTK_ITER_INLINE void swap(APIType& lhs, ValueReference rhs) noexcept
   {
     APIType tmp = std::move(lhs);
-    lhs = std::move(static_cast<APIType>(rhs));
+    lhs = static_cast<APIType>(rhs);
     rhs = std::move(tmp);
   }
 
@@ -491,7 +490,7 @@ public:
     lhs = newVal;                                                                                  \
     return lhs;                                                                                    \
   }                                                                                                \
-  friend VTK_ITER_INLINE APIType& operator Op(APIType& lhs, ValueReference val) noexcept           \
+  friend VTK_ITER_INLINE APIType& operator Op(APIType & lhs, ValueReference val) noexcept          \
   {                                                                                                \
     const APIType newVal = lhs ImplOp val;                                                         \
     lhs = newVal;                                                                                  \
@@ -502,6 +501,9 @@ public:
   VTK_REF_OP_OVERLOADS(-=, -)
   VTK_REF_OP_OVERLOADS(*=, *)
   VTK_REF_OP_OVERLOADS(/=, /)
+  VTK_REF_OP_OVERLOADS(|=, |)
+  VTK_REF_OP_OVERLOADS(&=, &)
+  VTK_REF_OP_OVERLOADS(^=, ^)
 
 #undef VTK_REF_OP_OVERLOADS
 
@@ -526,7 +528,7 @@ struct ConstValueIterator
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using APIType = GetAPIType<ArrayType, ForceValueTypeForVtkDataArray>;
   using IdStorageType = IdStorage<TupleSize>;
@@ -688,7 +690,7 @@ struct ValueIterator
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using APIType = GetAPIType<ArrayType, ForceValueTypeForVtkDataArray>;
   using IdStorageType = IdStorage<TupleSize>;
@@ -857,7 +859,7 @@ struct ValueRange
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayTypeT>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayTypeT>::value, "Invalid array type.");
 
   using IdStorageType = IdStorage<TupleSize>;
   using NumCompsType = GenericTupleSize<TupleSize>;
@@ -966,11 +968,13 @@ public:
   VTK_DEPRECATED_IN_9_6_0("Use iterators instead.")
   value_type* data() noexcept
   {
+    // NOLINTNEXTLINE(bugprone-unsafe-functions)
     return reinterpret_cast<value_type*>(this->Array->GetVoidPointer(0));
   }
   VTK_DEPRECATED_IN_9_6_0("Use iterators instead.")
   value_type* data() const noexcept
   {
+    // NOLINTNEXTLINE(bugprone-unsafe-functions)
     return reinterpret_cast<value_type*>(this->Array->GetVoidPointer(0));
   }
   ///@}
@@ -994,7 +998,7 @@ private:
 // Unimplemented, only used inside decltype in SelectValueRange:
 template <typename ArrayType, ComponentIdType TupleSize, typename ForceValueTypeForVtkDataArray>
 ValueRange<ArrayType, TupleSize, ForceValueTypeForVtkDataArray> DeclareValueRangeSpecialization(
-  vtkDataArray*);
+  vtkAbstractArray*);
 
 VTK_ABI_NAMESPACE_END
 } // end namespace detail

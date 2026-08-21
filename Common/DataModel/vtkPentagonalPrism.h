@@ -186,12 +186,12 @@ public:
 
 protected:
   vtkPentagonalPrism();
-  ~vtkPentagonalPrism() override;
+  ~vtkPentagonalPrism() override = default;
 
-  vtkLine* Line;
-  vtkQuad* Quad;
-  vtkPolygon* Polygon;
-  vtkTriangle* Triangle;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkQuad> Quad;
+  vtkSmartPointer<vtkPolygon> Polygon;
+  vtkSmartPointer<vtkTriangle> Triangle;
 
 private:
   vtkPentagonalPrism(const vtkPentagonalPrism&) = delete;

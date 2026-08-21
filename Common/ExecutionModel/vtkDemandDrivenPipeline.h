@@ -28,12 +28,34 @@ class vtkInformationVector;
 class vtkInformationKeyVectorKey;
 class vtkInformationUnsignedLongKey;
 
-///\defgroup InformationKeys Information Keys
-/// The VTK pipeline relies on algorithms providing information about their
-/// input and output and responding to requests.  The information objects used
-/// to perform these actions map known keys to values.  This is a list of keys
-/// that information objects use and what each key should be used for.
-///
+/**
+ *\defgroup InformationKeys Information Keys
+ * The VTK pipeline relies on algorithms providing information about their
+ * input and output and responding to requests.
+ *
+ * Those metadata are provided through a vtkInformation object, that acts as
+ * a dictionary of information. This is a list of keys
+ * that information objects use and what each key should be used for.
+ *
+ * Information keys usually fall under one of those categories:
+ * - data description. Stored in vtkDataObject::GetInformation,
+ * those keys are set inside vtkDataObject subclasses when depending
+ * on data type only, or in vtkAlgorithm REQUEST_DATA pass to described the data produced.
+ * - pipeline available data. Provided during the REQUEST_INFORMATION pass, some keys described
+ * the data variants that could be produced like a list of available timesteps or the ability to
+ * produce only a subextent of data.
+ * - pipeline update request. Provided when updating an algorithm.
+ * They can be seen as a generic way to configure the algorithm, for instance
+ * to produce a specific timestep or subextent.
+ * - pipeline flow control. Those are more internal keys to control the pipeline execution.
+ * They are usually not used directly but through dedicated API (for instance UpdateInformation
+ * create a request with the REQUEST_INFORMATION key)
+ *
+ * There are more use cases not covered here.
+ * In fact, arbitrary classes can define new keys for their own purposes.
+ *
+ * @see vtkExecutive, vtkAlgorithm, vtkDataObject and their subclasses.
+ */
 
 class VTKCOMMONEXECUTIONMODEL_EXPORT VTK_MARSHALAUTO vtkDemandDrivenPipeline : public vtkExecutive
 {

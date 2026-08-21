@@ -819,12 +819,12 @@ vtkOpenGLLowMemoryBatchedPolyDataMapper::GetTextures(vtkActor* actor)
 //------------------------------------------------------------------------------
 bool vtkOpenGLLowMemoryBatchedPolyDataMapper::IsDataObjectUpToDate()
 {
-  bool uptodate = true;
+  bool isUpToDate = true;
   for (auto& iter : this->VTKPolyDataToGLBatchElement)
   {
-    uptodate &= (this->RenderTimeStamp > iter.second->Parent.PolyData->GetMTime());
+    isUpToDate &= (this->RenderTimeStamp > iter.second->Parent.PolyData->GetMTime());
   }
-  return uptodate;
+  return isUpToDate;
 }
 
 //------------------------------------------------------------------------------
@@ -912,7 +912,7 @@ void vtkOpenGLLowMemoryBatchedPolyDataMapper::UpdateShiftScale(
 //------------------------------------------------------------------------------
 bool vtkOpenGLLowMemoryBatchedPolyDataMapper::IsShaderColorSourceUpToDate(vtkActor* actor)
 {
-  bool uptodate = true;
+  bool isUpToDate = true;
   for (auto& iter : this->VTKPolyDataToGLBatchElement)
   {
     auto glBatchElement = iter.second.get();
@@ -932,21 +932,21 @@ bool vtkOpenGLLowMemoryBatchedPolyDataMapper::IsShaderColorSourceUpToDate(vtkAct
     SCOPED_ROLLBACK(vtkTypeBool, InterpolateScalarsBeforeMapping);
     SCOPED_ROLLBACK_ARRAY_ELEMENT(double, ScalarRange, 0);
     SCOPED_ROLLBACK_ARRAY_ELEMENT(double, ScalarRange, 1);
-    uptodate &= this->Superclass::IsShaderColorSourceUpToDate(actor);
+    isUpToDate &= this->Superclass::IsShaderColorSourceUpToDate(actor);
   }
-  return uptodate;
+  return isUpToDate;
 }
 
 //------------------------------------------------------------------------------
 bool vtkOpenGLLowMemoryBatchedPolyDataMapper::IsShaderNormalSourceUpToDate(vtkActor* actor)
 {
-  bool uptodate = true;
+  bool isUpToDate = true;
   for (auto& iter : this->VTKPolyDataToGLBatchElement)
   {
     this->CurrentInput = iter.second->Parent.PolyData;
-    uptodate &= this->Superclass::IsShaderNormalSourceUpToDate(actor);
+    isUpToDate &= this->Superclass::IsShaderNormalSourceUpToDate(actor);
   }
-  return uptodate;
+  return isUpToDate;
 }
 
 //------------------------------------------------------------------------------

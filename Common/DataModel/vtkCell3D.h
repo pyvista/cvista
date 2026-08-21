@@ -193,14 +193,14 @@ public:
 
 protected:
   vtkCell3D();
-  ~vtkCell3D() override;
+  ~vtkCell3D() override = default;
 
-  vtkOrderedTriangulator* Triangulator;
+  vtkSmartPointer<vtkOrderedTriangulator> Triangulator;
   double MergeTolerance;
 
   // used to support clipping
-  vtkTetra* ClipTetra;
-  vtkDoubleArray* ClipScalars;
+  vtkSmartPointer<vtkTetra> ClipTetra;
+  vtkSmartPointer<vtkDoubleArray> ClipScalars;
 
 private:
   vtkCell3D(const vtkCell3D&) = delete;

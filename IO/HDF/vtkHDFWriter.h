@@ -44,9 +44,14 @@ VTK_ABI_NAMESPACE_BEGIN
 class vtkCellArray;
 class vtkDataObjectTree;
 class vtkDataSet;
+class vtkHyperTreeGrid;
+class vtkImageData;
 class vtkPoints;
 class vtkPointSet;
 class vtkPolyData;
+class vtkRectilinearGrid;
+class vtkStructuredGrid;
+class vtkTable;
 class vtkUnstructuredGrid;
 class vtkPartitionedDataSet;
 class vtkPartitionedDataSetCollection;
@@ -108,11 +113,11 @@ public:
    * Get/set the chunk size used for chunk storage layout. Chunked storage is required for
    * extensible/unlimited dimensions datasets (such as time-dependent data), and filters such as
    * compression. Read more about chunks and chunk size here :
-   * https://support.hdfgroup.org/HDF5/doc/Advanced/Chunking/
+   * https://support.hdfgroup.org/documentation/hdf5/latest/hdf5_chunking.html
    *
    * Regarding performance impact of chunking and how to find the optimal value depending on the
    * data, please check this documentation:
-   * https://docs.hdfgroup.org/hdf5/develop/_l_b_dset_layout.html
+   * https://support.hdfgroup.org/documentation/hdf5/latest/_l_b_dset_layout.html
    *
    * Defaults to 25000 (to fit with the default chunk cache of 1Mb of HDF5).
    */
@@ -210,27 +215,33 @@ private:
    * Open destination file and write the input dataset to the file specified by the filename
    * attribute in vtkHDF format.
    */
-  void WriteData() override;
+  bool WriteDataAndReturn() override;
 
   /**
    * Dispatch the input vtkDataObject to the right writing function, depending on its dynamic type.
    * Data will be written in the specified group, which must already exist.
+   * Return true on success.
    */
-  void DispatchDataObject(hid_t group, vtkDataObject* input, unsigned int partId = 0);
+  bool DispatchDataObject(hid_t group, vtkDataObject* input, unsigned int partId = 0);
 
   /**
    * For distributed datasets, write the meta-file referencing sub-files using Virtual Datasets.
    * This file is written only on process/piece 0
    */
-  void WriteDistributedMetafile(vtkDataObject* input);
+  bool WriteDistributedMetafile(vtkDataObject* input);
 
   ///@{
   /**
    * Write the given dataset to the current FileName in vtkHDF format.
    * returns true if the writing operation completes successfully.
    */
+  bool WriteDatasetToFile(hid_t group, vtkImageData* input, unsigned int partId = 0);
+  bool WriteDatasetToFile(hid_t group, vtkRectilinearGrid* input, unsigned int partId = 0);
+  bool WriteDatasetToFile(hid_t group, vtkStructuredGrid* input, unsigned int partId = 0);
   bool WriteDatasetToFile(hid_t group, vtkPolyData* input, unsigned int partId = 0);
   bool WriteDatasetToFile(hid_t group, vtkUnstructuredGrid* input, unsigned int partId = 0);
+  bool WriteDatasetToFile(hid_t group, vtkTable* input, unsigned int partId = 0);
+  bool WriteDatasetToFile(hid_t group, vtkHyperTreeGrid* input, unsigned int partId = 0);
   bool WriteDatasetToFile(hid_t group, vtkPartitionedDataSet* input);
   bool WriteDatasetToFile(hid_t group, vtkDataObjectTree* input);
   ///@}
@@ -238,9 +249,14 @@ private:
   ///@{
   /**
    * For temporal data, update the steps group with information relevant to the current timestep.
+   * return true if the operation was successful.
    */
-  bool UpdateStepsGroup(hid_t group, vtkUnstructuredGrid* input);
-  bool UpdateStepsGroup(hid_t group, vtkPolyData* input);
+  bool UpdateStepsGroup(hid_t group, vtkRectilinearGrid* input);
+  bool UpdateStepsGroup(hid_t group, vtkStructuredGrid* input);
+  bool UpdateStepsGroup(hid_t group, vtkUnstructuredGrid* input, unsigned int partId);
+  bool UpdateStepsGroup(hid_t group, vtkPolyData* input, unsigned int partId);
+  bool UpdateStepsGroup(hid_t group, vtkHyperTreeGrid* input, unsigned int partId,
+    vtkIdType numberOfCellsPerDepthSize, vtkIdType descriptorsSize, vtkIdType maskSize);
   ///@}
 
   ///@{
@@ -248,8 +264,12 @@ private:
    * Initialize the `Steps` group for temporal data, and extendable datasets where needed.
    * This way, the other functions will append to existing datasets every step.
    */
+  bool InitializeTemporalRectilinearGrid(hid_t group);
+  bool InitializeTemporalStructuredGrid(hid_t group);
   bool InitializeTemporalPolyData(hid_t group);
   bool InitializeTemporalUnstructuredGrid(hid_t group);
+  bool InitializeTemporalPolyhedra(hid_t group);
+  bool InitializeTemporalHTG(hid_t group);
   ///@}
 
   ///@{
@@ -259,9 +279,17 @@ private:
    */
   bool InitializeChunkedDatasets(hid_t group, vtkUnstructuredGrid* input);
   bool InitializeChunkedDatasets(hid_t group, vtkPolyData* input);
+  bool InitializeChunkedDatasets(hid_t group, vtkHyperTreeGrid* input);
   bool InitializePointDatasets(hid_t group, vtkPoints* input);
   bool InitializePrimitiveDataset(hid_t group);
+  bool InitializePolyhedraDatasets(hid_t group);
   ///@}
+
+  /**
+   * Add the three coordinate arrays to the file
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendRectilinearCoordinates(hid_t group, vtkRectilinearGrid* input);
 
   /**
    * Add the number of points to the file
@@ -272,14 +300,28 @@ private:
   /**
    * Add the points of the point set to the file
    * OpenRoot should succeed on this->Impl before calling this function
+   * dims provides the dimensions of the structured dataset. Used only for ImageData,
+   * RectilinearGrid and StructuredGrid for now.
    */
-  bool AppendPoints(hid_t group, vtkPointSet* input);
+  bool AppendPoints(hid_t group, vtkPointSet* input, const int* dims = nullptr);
 
   /**
    * Add the number of cells to the file.
    * OpenRoot should succeed on this->Impl before calling this function
    */
   bool AppendNumberOfCells(hid_t group, vtkCellArray* input);
+
+  /**
+   * Add the number of face connectivity Ids to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendNumberOfFaceConnectivityIds(hid_t group, vtkCellArray* input);
+
+  /**
+   * Add the number of faces to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendNumberOfFaces(hid_t group, vtkCellArray* input);
 
   /**
    * Add the number of connectivity Ids to the file.
@@ -306,6 +348,36 @@ private:
   bool AppendConnectivity(hid_t group, vtkCellArray* input);
 
   /**
+   * Add the face connectivity array to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendFaceConnectivity(hid_t group, vtkCellArray* input);
+
+  /**
+   * Add the face offsets array to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendFaceOffsets(hid_t group, vtkCellArray* input);
+
+  /**
+   * Add the polyhedron to faces array to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendPolyhedronToFaces(hid_t group, vtkCellArray* input);
+
+  /**
+   * Add the polyhedron offsets array to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendPolyhedronOffsets(hid_t group, vtkCellArray* input);
+
+  /**
+   * Append the number of polyhedron to face Ids to the file.
+   * OpenRoot should succeed on this->Impl before calling this function
+   */
+  bool AppendNumberOfPolyhedronToFaceIds(hid_t group, vtkCellArray* input);
+
+  /**
    * Add the cells of the polydata to the file
    * OpenRoot should succeed on this->Impl before calling this function
    */
@@ -315,9 +387,14 @@ private:
   /**
    * Add the data arrays of the object to the file
    * OpenRoot should succeed on this->Impl before calling this function
+   * cellIdMap is an IdList giving the cell ids in Breadth-first order, used to rearange the arrays
+   * before being written. Used exclusively for HTG for now.
+   * dims provides the dimensions of the structured dataset. Used only for ImageData,
+   * RectilinearGrid and StructuredGrid for now.
    */
   bool AppendDataArrays(hid_t group, vtkDataObject* input, unsigned int partId = 0);
-  bool AppendDataSetAttributes(hid_t group, vtkDataObject* input, unsigned int partId = 0);
+  bool AppendDataSetAttributes(hid_t group, vtkDataObject* input, unsigned int partId = 0,
+    vtkIdList* cellIdMap = nullptr, const int* dims = nullptr);
   bool AppendFieldDataArrays(hid_t group, vtkDataObject* input, unsigned int partId = 0);
   ///@}
 
@@ -355,7 +432,7 @@ private:
    * Write the current non-null composite block with given index to the root group with the given
    * unique name, properly setting MeshMTime for the block
    */
-  void AppendIterDataObject(vtkDataObjectTreeIterator* treeIter, const int& leafIndex,
+  bool AppendIterDataObject(vtkDataObjectTreeIterator* treeIter, const int& leafIndex,
     const std::string& uniqueSubTreeName);
 
   /**
@@ -364,16 +441,16 @@ private:
    * composite block is null for rank 0 but not for other ranks, and block characteristics (type,
    * arrays) need to be deducted from non-null ranks first.
    */
-  void AppendCompositeSubfilesDataObject(const std::string& uniqueSubTreeName);
+  bool AppendCompositeSubfilesDataObject(const std::string& uniqueSubTreeName);
 
   ///@{
   /**
    * Append the offset data in the steps group for the current array for temporal data
    */
   bool AppendDataArrayOffset(hid_t baseGroup, vtkAbstractArray* array, const std::string& arrayName,
-    const std::string& offsetsGroupName);
+    const std::string& offsetsGroupName, unsigned int partId, bool isStructured = false);
   bool AppendDataArraySizeOffset(hid_t baseGroup, vtkAbstractArray* array,
-    const std::string& arrayName, const std::string& offsetsGroupName);
+    const std::string& arrayName, const std::string& offsetsGroupName, unsigned int partId);
   ///@}
 
   /**

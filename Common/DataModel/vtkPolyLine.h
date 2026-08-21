@@ -13,15 +13,15 @@
 
 #include "vtkCell.h"
 #include "vtkCommonDataModelModule.h" // For export macro
-#include "vtkNew.h"                   // For vtkNew.
 
 VTK_ABI_NAMESPACE_BEGIN
-class vtkPoints;
+class vtkDoubleArray;
 class vtkCellArray;
 class vtkCellData;
 class vtkDataArray;
-class vtkLine;
 class vtkIncrementalPointLocator;
+class vtkLine;
+class vtkPoints;
 
 class VTKCOMMONDATAMODEL_EXPORT vtkPolyLine : public vtkCell
 {
@@ -82,9 +82,10 @@ public:
 
 protected:
   vtkPolyLine();
-  ~vtkPolyLine() override;
+  ~vtkPolyLine() override = default;
 
-  vtkNew<vtkLine> Line;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkDoubleArray> LineScalars;
 
 private:
   vtkPolyLine(const vtkPolyLine&) = delete;

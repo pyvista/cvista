@@ -3,7 +3,6 @@
 
 #include "vtk3DLinearGridCrinkleExtractor.h"
 
-#include "vtk3DLinearGridInternal.h"
 #include "vtkArrayDispatch.h"
 #include "vtkArrayDispatchDataSetArrayList.h"
 #include "vtkArrayListTemplate.h" // For processing attribute data
@@ -21,7 +20,6 @@
 #include "vtkObjectFactory.h"
 #include "vtkPlane.h"
 #include "vtkPointData.h"
-#include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
 #include "vtkUnsignedCharArray.h"
 #include "vtkUnstructuredGrid.h"
@@ -164,7 +162,7 @@ struct ExtractCellsBase
     OriginCellType LocalOrigins;
     CellTypesType LocalTypes;
     vtkIdType LocalNumCells;
-    CellIter LocalCellIter;
+    vtkSmartPointer<vtkIdList> LocalPointIds;
 
     LocalDataType()
       : LocalNumCells(0)
@@ -173,7 +171,7 @@ struct ExtractCellsBase
   };
 
   const unsigned char* InOut;
-  CellIter* Iter;
+  vtkUnstructuredGrid* Input;
   vtkIdType InputNumPts;
   vtkIdType OutputNumPts;
   vtkIdType OutputNumCells;
@@ -188,10 +186,10 @@ struct ExtractCellsBase
   vtkSMPThreadLocal<LocalDataType> LocalData;
   vtk3DLinearGridCrinkleExtractor* Filter;
 
-  ExtractCellsBase(vtkIdType inNumPts, CellIter* c, unsigned char* inout, vtkUnstructuredGrid* grid,
-    vtkCellArray* cells, vtk3DLinearGridCrinkleExtractor* filter)
+  ExtractCellsBase(vtkIdType inNumPts, vtkUnstructuredGrid* input, unsigned char* inout,
+    vtkUnstructuredGrid* grid, vtkCellArray* cells, vtk3DLinearGridCrinkleExtractor* filter)
     : InOut(inout)
-    , Iter(c)
+    , Input(input)
     , InputNumPts(inNumPts)
     , OutputNumPts(0)
     , OutputNumCells(0)
@@ -222,7 +220,7 @@ struct ExtractCellsBase
   void Initialize()
   {
     auto& localData = this->LocalData.Local();
-    localData.LocalCellIter = *(this->Iter);
+    localData.LocalPointIds = vtkSmartPointer<vtkIdList>::New();
   }
 
 }; // ExtractCellsBase
@@ -230,9 +228,9 @@ struct ExtractCellsBase
 // Traverse all cells and extract intersected cells
 struct ExtractCells : public ExtractCellsBase
 {
-  ExtractCells(vtkIdType inNumPts, CellIter* c, unsigned char* inout, vtkUnstructuredGrid* grid,
-    vtkCellArray* cells, vtk3DLinearGridCrinkleExtractor* filter)
-    : ExtractCellsBase(inNumPts, c, inout, grid, cells, filter)
+  ExtractCells(vtkIdType inNumPts, vtkUnstructuredGrid* input, unsigned char* inout,
+    vtkUnstructuredGrid* grid, vtkCellArray* cells, vtk3DLinearGridCrinkleExtractor* filter)
+    : ExtractCellsBase(inNumPts, input, inout, grid, cells, filter)
   {
   }
 
@@ -245,11 +243,11 @@ struct ExtractCells : public ExtractCellsBase
     auto& lCells = localData.LocalCells;
     auto& lOrigins = localData.LocalOrigins;
     auto& lTypes = localData.LocalTypes;
-    CellIter* cellIter = &localData.LocalCellIter;
-    const vtkIdType* c = cellIter->Initialize(cellId); // connectivity array
+    auto& lPointIds = localData.LocalPointIds;
     const unsigned char* inout = this->InOut;
     vtkIdType& lNumCells = localData.LocalNumCells;
     vtkIdType npts;
+    const vtkIdType* pts;
 
     bool isFirst = vtkSMPTools::GetSingleThread();
     vtkIdType checkAbortInterval = std::min((endCellId - cellId) / 10 + 1, (vtkIdType)1000);
@@ -267,14 +265,13 @@ struct ExtractCells : public ExtractCellsBase
           break;
         }
       }
+      this->Input->GetCellPoints(cellId, npts, pts, lPointIds);
       // Does the implicit function cut this cell?
-      npts = cellIter->NumVerts;
-      if (ExtractCellsBase::Intersects(inout, npts, c))
+      if (ExtractCellsBase::Intersects(inout, npts, pts))
       {
         ++lNumCells;
-        lTypes.emplace_back(cellIter->GetCellType(cellId));
+        lTypes.emplace_back(this->Input->GetCellType(cellId));
         lCells.emplace_back(npts);
-        const vtkIdType* pts = cellIter->GetCellIds(cellId);
         for (auto i = 0; i < npts; ++i)
         {
           lCells.emplace_back(pts[i]);
@@ -283,9 +280,8 @@ struct ExtractCells : public ExtractCellsBase
         {
           lOrigins.emplace_back(cellId); // to support cell data copying
         }
-      }                     // if implicit function intersects
-      c = cellIter->Next(); // move to the next cell
-    }                       // for all cells in this batch
+      } // if implicit function intersects
+    } // for all cells in this batch
   }
 
   // Composite local thread data. Basically build the output unstructured grid.
@@ -307,7 +303,7 @@ struct ExtractCells : public ExtractCellsBase
     // Now allocate the cell array, offset array, and cell types array.
     this->Cells->AllocateExact(numCells, size - numCells);
     vtkNew<vtkUnsignedCharArray> cellTypes;
-    unsigned char* ctptr = static_cast<unsigned char*>(cellTypes->WriteVoidPointer(0, numCells));
+    unsigned char* ctptr = cellTypes->WritePointer(0, numCells);
 
     // If cell data is requested, roll up generating cell ids
     vtkIdType* cellMap = nullptr;
@@ -342,9 +338,9 @@ struct ExtractCells : public ExtractCellsBase
 // Traverse all cells to extract intersected cells and remapped points
 struct ExtractPointsAndCells : public ExtractCellsBase
 {
-  ExtractPointsAndCells(vtkIdType inNumPts, CellIter* c, unsigned char* inout,
+  ExtractPointsAndCells(vtkIdType inNumPts, vtkUnstructuredGrid* input, unsigned char* inout,
     vtkUnstructuredGrid* grid, vtkCellArray* cells, vtk3DLinearGridCrinkleExtractor* filter)
-    : ExtractCellsBase(inNumPts, c, inout, grid, cells, filter)
+    : ExtractCellsBase(inNumPts, input, inout, grid, cells, filter)
   {
     this->PointMap = new vtkIdType[inNumPts];
     std::fill_n(this->PointMap, inNumPts, (-1));
@@ -359,11 +355,11 @@ struct ExtractPointsAndCells : public ExtractCellsBase
     auto& lCells = localData.LocalCells;
     auto& lOrigins = localData.LocalOrigins;
     auto& lTypes = localData.LocalTypes;
-    CellIter* cellIter = &localData.LocalCellIter;
-    const vtkIdType* c = cellIter->Initialize(cellId); // connectivity array
+    auto& lPointIds = localData.LocalPointIds;
     const unsigned char* inout = this->InOut;
     vtkIdType& lNumCells = localData.LocalNumCells;
     vtkIdType npts;
+    const vtkIdType* pts;
     vtkIdType* pointMap = this->PointMap;
 
     bool isFirst = vtkSMPTools::GetSingleThread();
@@ -383,13 +379,12 @@ struct ExtractPointsAndCells : public ExtractCellsBase
         }
       }
       // Does the implicit function cut this cell?
-      npts = cellIter->NumVerts;
-      if (ExtractCellsBase::Intersects(inout, npts, c))
+      this->Input->GetCellPoints(cellId, npts, pts, lPointIds);
+      if (ExtractCellsBase::Intersects(inout, npts, pts))
       {
         ++lNumCells;
-        lTypes.emplace_back(cellIter->GetCellType(cellId));
+        lTypes.emplace_back(this->Input->GetCellType(cellId));
         lCells.emplace_back(npts);
-        const vtkIdType* pts = cellIter->GetCellIds(cellId);
         for (auto i = 0; i < npts; ++i)
         {
           pointMap[pts[i]] = 1; // this point is used
@@ -399,9 +394,8 @@ struct ExtractPointsAndCells : public ExtractCellsBase
         {
           lOrigins.emplace_back(cellId); // to support cell data copying
         }
-      }                     // if implicit function intersects
-      c = cellIter->Next(); // move to the next cell
-    }                       // for all cells in this batch
+      } // if implicit function intersects
+    } // for all cells in this batch
   }
 
   // Composite local thread data. Basically build the output unstructured grid.
@@ -435,7 +429,7 @@ struct ExtractPointsAndCells : public ExtractCellsBase
     // Now allocate the cell array, offset array, and cell types array.
     this->Cells->AllocateExact(numCells, size - numCells);
     vtkNew<vtkUnsignedCharArray> cellTypes;
-    unsigned char* ctptr = static_cast<unsigned char*>(cellTypes->WriteVoidPointer(0, numCells));
+    unsigned char* ctptr = cellTypes->WritePointer(0, numCells);
 
     // If cell data is requested, roll up generating cell ids
     vtkIdType* cellMap = nullptr;
@@ -466,7 +460,7 @@ struct ExtractPointsAndCells : public ExtractCellsBase
           this->Cells->InsertCellPoint(ptMap[*threadCells++]);
         }
       } // over all the cells in this thread
-    }   // for this thread
+    } // for this thread
 
     // Define the grid
     this->Grid->SetCells(cellTypes, this->Cells);
@@ -699,9 +693,6 @@ int vtk3DLinearGridCrinkleExtractor::ProcessPiece(
   // Output cells go here.
   vtkNew<vtkCellArray> newCells;
 
-  // Set up the cells for processing. A specialized iterator is used to traverse the cells.
-  CellIter* cellIter = new CellIter(numCells, input->GetCellTypes(), cells);
-
   // Classify the cell points based on the specified implicit function.
   vtkNew<vtkAOSDataArrayTemplate<unsigned char>> inoutArray;
   inoutArray->SetNumberOfValues(numPts);
@@ -736,7 +727,7 @@ int vtk3DLinearGridCrinkleExtractor::ProcessPiece(
   vtkCellData* inCD = input->GetCellData();
   if (!this->RemoveUnusedPoints)
   {
-    ExtractCells extract(numPts, cellIter, inout, grid, newCells, this);
+    ExtractCells extract(numPts, input, inout, grid, newCells, this);
     EXECUTE_REDUCED_SMPFOR(
       this->SequentialProcessing, numCells, extract, this->NumberOfThreadsUsed);
 
@@ -753,7 +744,7 @@ int vtk3DLinearGridCrinkleExtractor::ProcessPiece(
 
   else
   {
-    ExtractPointsAndCells extract(numPts, cellIter, inout, grid, newCells, this);
+    ExtractPointsAndCells extract(numPts, input, inout, grid, newCells, this);
     EXECUTE_REDUCED_SMPFOR(
       this->SequentialProcessing, numCells, extract, this->NumberOfThreadsUsed);
 
@@ -824,9 +815,6 @@ int vtk3DLinearGridCrinkleExtractor::ProcessPiece(
   vtkLog(TRACE,
     "Extracted: " << grid->GetNumberOfPoints() << " points, " << grid->GetNumberOfCells()
                   << " cells");
-
-  // Clean up
-  delete cellIter;
 
   return 1;
 }

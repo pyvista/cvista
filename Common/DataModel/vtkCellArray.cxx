@@ -146,8 +146,8 @@ struct InitializeImpl : public vtkCellArray::DispatchUtilities
     if (offsets->GetArrayType() == vtkArrayTypes::VTK_AFFINE_ARRAY)
     {
       // AffineArray's Initialize destroys the backend of the offsets array,
-      // so we only set the number of values to 0 to preserve the backend.
-      offsets->SetNumberOfValues(0);
+      offsets->Reset();   // Changed only Max Id
+      offsets->Squeeze(); // Change Capacity too
     }
     else
     {
@@ -277,7 +277,7 @@ struct ExtractAndInitialize : public vtkCellArray::DispatchUtilities
       return true;
     }
     // Check that allocation succeeds:
-    if (!dst->Resize(src->GetNumberOfTuples()))
+    if (!dst->ReserveTuples(src->GetNumberOfTuples()))
     {
       return false;
     }
@@ -286,7 +286,16 @@ struct ExtractAndInitialize : public vtkCellArray::DispatchUtilities
     dst->DeepCopy(src);
 
     // Free old memory:
-    src->Resize(0);
+    if (src->GetArrayType() == vtkArrayTypes::VTK_AFFINE_ARRAY)
+    {
+      // AffineArray's Initialize destroys the backend of the offsets array,
+      src->Reset();   // Changed only Max Id
+      src->Squeeze(); // Change Capacity too
+    }
+    else
+    {
+      src->Initialize();
+    }
 
     return true;
   }
@@ -334,7 +343,18 @@ struct AllocateExactImpl : public vtkCellArray::DispatchUtilities
   {
     using ValueType = GetAPIType<OffsetsT>;
     using AccessorType = vtkDataArrayAccessor<OffsetsT>;
-    result = (offsets->Allocate(numCells + 1) && conn->Allocate(connectivitySize));
+    conn->Initialize();
+    if (offsets->GetArrayType() == vtkArrayTypes::VTK_AFFINE_ARRAY)
+    {
+      // AffineArray's Initialize destroys the backend of the offsets array,
+      offsets->Reset();   // Changed only Max Id
+      offsets->Squeeze(); // Change Capacity too
+    }
+    else
+    {
+      offsets->Initialize();
+    }
+    result = (offsets->ReserveValues(numCells + 1) && conn->ReserveValues(connectivitySize));
     if (result)
     {
       AccessorType accessor(offsets);
@@ -585,7 +605,7 @@ bool vtkCellArray::DefaultStorageIs64Bit = false;
 vtkIdType vtkCellArray::GetSize()
 {
   // We can still compute roughly the same result, so go ahead and do that.
-  return this->GetOffsetsArray()->GetSize() + this->GetConnectivityArray()->GetSize();
+  return this->GetOffsetsArray()->GetCapacity() + this->GetConnectivityArray()->GetCapacity();
 }
 
 //------------------------------------------------------------------------------
@@ -1487,7 +1507,8 @@ void vtkCellArray::ExportLegacyFormat(vtkIdTypeArray* data)
 {
   vtkIdType size;
   this->Dispatch(GetLegacyDataSizeImpl{}, size);
-  data->Allocate(size);
+  data->Initialize();
+  data->ReserveValues(size);
 
   auto it = vtk::TakeSmartPointer(this->NewIterator());
 

@@ -414,7 +414,7 @@ int vtkCutter::RequestData(
   }
   else if (vtkUnstructuredGridBase::SafeDownCast(input))
   {
-    if (plane && this->GetGenerateCutScalars() == 0 && this->GetGenerateTriangles() == 1)
+    if (plane && this->GetGenerateCutScalars() == 0)
     {
       executePlaneCutter();
     }
@@ -492,7 +492,7 @@ void vtkCutter::DataSetCutter(vtkDataSet* input, vtkPolyData* output)
   {
     newPoints->SetDataType(VTK_DOUBLE);
   }
-  newPoints->Allocate(estimatedSize, estimatedSize / 2);
+  newPoints->Reserve(estimatedSize);
   newVerts = vtkCellArray::New();
   newVerts->AllocateEstimate(estimatedSize, 1);
   newLines = vtkCellArray::New();
@@ -538,7 +538,7 @@ void vtkCutter::DataSetCutter(vtkDataSet* input, vtkPolyData* output)
   //
   cell = vtkGenericCell::New();
   vtkContourHelper helper(this->Locator, newVerts, newLines, newPolys, inPD, inCD, outPD, outCD,
-    estimatedSize, this->GenerateTriangles != 0);
+    this->GenerateTriangles != 0);
   // cutScalars and cellScalars are concrete single-component vtkDoubleArrays
   // created above; cutScalars is fully populated by the FunctionValue loop and
   // never modified by the cell loops below. Devirtualize the per-cell-point
@@ -588,8 +588,8 @@ void vtkCutter::DataSetCutter(vtkDataSet* input, vtkPolyData* output)
 
         helper.Contour(cell, value, cellScalars, cellId);
       } // for all cells
-    }   // for all contour values
-  }     // sort by cell
+    } // for all contour values
+  } // sort by cell
 
   else // VTK_SORT_BY_VALUE:
   {
@@ -650,9 +650,9 @@ void vtkCutter::DataSetCutter(vtkDataSet* input, vtkPolyData* output)
           value = this->ContourValues->GetValue(iter);
           helper.Contour(cell, value, cellScalars, cellId);
         } // for all contour values
-      }   // for all cells
-    }     // for all dimensions.
-  }       // sort by value
+      } // for all cells
+    } // for all dimensions.
+  } // sort by value
 
   // Update ourselves.  Because we don't know upfront how many verts, lines,
   // polys we've created, take care to reclaim memory.
@@ -745,7 +745,7 @@ void vtkCutter::UnstructuredGridCutter(vtkDataSet* input, vtkPolyData* output)
   {
     newPoints->SetDataType(VTK_DOUBLE);
   }
-  newPoints->Allocate(estimatedSize, estimatedSize / 2);
+  newPoints->Reserve(estimatedSize);
   newVerts = vtkCellArray::New();
   newVerts->AllocateEstimate(estimatedSize, 1);
   newLines = vtkCellArray::New();
@@ -793,10 +793,10 @@ void vtkCutter::UnstructuredGridCutter(vtkDataSet* input, vtkPolyData* output)
   cellScalars = cutScalars->NewInstance();
   cellScalars->SetNumberOfComponents(cutScalars->GetNumberOfComponents());
   int maxCellSize = input->GetMaxCellSize();
-  cellScalars->Allocate(maxCellSize * cutScalars->GetNumberOfComponents());
+  cellScalars->ReserveTuples(maxCellSize);
 
   vtkContourHelper helper(this->Locator, newVerts, newLines, newPolys, inPD, inCD, outPD, outCD,
-    estimatedSize, this->GenerateTriangles != 0);
+    this->GenerateTriangles != 0);
   if (this->SortBy == VTK_SORT_BY_CELL)
   {
     // Compute some information for progress methods
@@ -861,8 +861,8 @@ void vtkCutter::UnstructuredGridCutter(vtkDataSet* input, vtkPolyData* output)
         }
 
       } // for all cells
-    }   // for all contour values
-  }     // sort by cell
+    } // for all contour values
+  } // sort by cell
 
   else // SORT_BY_VALUE:
   {
@@ -949,10 +949,10 @@ void vtkCutter::UnstructuredGridCutter(vtkDataSet* input, vtkPolyData* output)
           {
             helper.Contour(cell, *contourIter, cellScalars, cellIter->GetCellId());
           } // for all contour values
-        }   // if need cell
-      }     // for all cells
-    }       // for all dimensions (1,2,3).
-  }         // sort by value
+        } // if need cell
+      } // for all cells
+    } // for all dimensions (1,2,3).
+  } // sort by value
 
   // Update ourselves.  Because we don't know upfront how many verts, lines,
   // polys we've created, take care to reclaim memory.

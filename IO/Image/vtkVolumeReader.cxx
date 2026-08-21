@@ -25,7 +25,7 @@ vtkVolumeReader::~vtkVolumeReader()
 
 void vtkVolumeReader::SetFilePattern(const char* formatArg)
 {
-  vtkSetStringBodyMacro(FilePattern, formatArg);
+  vtkSetStringBodyMacro(FilePattern, formatArg)
 }
 
 void vtkVolumeReader::PrintSelf(ostream& os, vtkIndent indent)

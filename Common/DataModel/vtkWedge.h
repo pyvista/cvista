@@ -8,9 +8,9 @@
  * wedge. A wedge consists of two triangular and three quadrilateral faces
  * and is defined by the six points (0-5). vtkWedge uses the standard
  * isoparametric shape functions for a linear wedge. The wedge is defined
- * by the six points (0-5) where (0,1,2) is the base of the wedge which,
- * using the right hand rule, forms a triangle whose normal points outward
- * (away from the triangular face (3,4,5)).
+ * by the six points (0-5) where (0,2,1) is the base of the wedge which,
+ * using the right hand rule, forms a triangle whose normal
+ * points away from the triangular face (3,4,5) which points outwards.
  *
  * @sa
  * vtkConvexPointSet vtkHexahedron vtkPyramid vtkTetra vtkVoxel
@@ -93,6 +93,9 @@ public:
   void Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
     vtkCellArray* verts, vtkCellArray* lines, vtkCellArray* polys, vtkPointData* inPd,
     vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd) override;
+  void Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
+    vtkCellArray* connectivity, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd,
+    vtkIdType cellId, vtkCellData* outCd, int insideOut) override;
   int EvaluatePosition(const double x[3], double closestPoint[3], int& subId, double pcoords[3],
     double& dist2, double weights[]) override;
   void EvaluateLocation(int& subId, const double pcoords[3], double x[3], double* weights) override;
@@ -111,6 +114,7 @@ public:
    * output triangle which may be repeated to generate multiple triangles. The
    * list of cases terminates with a -1 entry.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use vtkMarchingCellsContourCases::GetWedgeCase instead.")
   static int* GetTriangleCases(int caseId);
 
   /**
@@ -181,11 +185,11 @@ public:
 
 protected:
   vtkWedge();
-  ~vtkWedge() override;
+  ~vtkWedge() override = default;
 
-  vtkLine* Line;
-  vtkTriangle* Triangle;
-  vtkQuad* Quad;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkTriangle> Triangle;
+  vtkSmartPointer<vtkQuad> Quad;
 
 private:
   vtkWedge(const vtkWedge&) = delete;

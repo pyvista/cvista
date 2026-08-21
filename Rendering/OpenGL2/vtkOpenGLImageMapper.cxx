@@ -9,13 +9,13 @@
 #include "vtkImageData.h"
 #include "vtkObjectFactory.h"
 #include "vtkViewport.h"
-#
 #include "vtkWindow.h"
 
 #include "vtkCellArray.h"
 #include "vtkFloatArray.h"
 #include "vtkOpenGLRenderWindow.h"
 #include "vtkOpenGLState.h"
+#include "vtkOverrideAttribute.h"
 #include "vtkPointData.h"
 #include "vtkPoints.h"
 #include "vtkPolyData.h"
@@ -75,6 +75,14 @@ vtkOpenGLImageMapper::vtkOpenGLImageMapper()
 vtkOpenGLImageMapper::~vtkOpenGLImageMapper()
 {
   this->Actor->UnRegister(this);
+}
+
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLImageMapper::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
 }
 
 //------------------------------------------------------------------------------

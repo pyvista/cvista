@@ -1,5 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 // SPDX-License-Identifier: BSD-3-Clause
+
+// VTK_DEPRECATED_IN_9_7_0
+#define VTK_DEPRECATION_LEVEL 0
+
 #include "vtkVoronoi2D.h"
 
 #include "vtkAbstractTransform.h"
@@ -546,7 +550,7 @@ struct VTile
           this->UpdateFlowerFootprint();
         }
       } // if bucket should be processed
-    }   // while error metric not satisfied
+    } // while error metric not satisfied
 
     return true;
   }
@@ -655,7 +659,7 @@ struct VoronoiTiles
   void Initialize()
   {
     vtkIdList*& pIds = this->PIds.Local();
-    pIds->Allocate(128); // allocate some memory
+    pIds->Reserve(128); // allocate some memory
 
     LocalDataType& localData = this->LocalData.Local();
     localData.Tile.NPts = this->NPts;
@@ -729,7 +733,7 @@ struct VoronoiTiles
         numTiles++;
         numPoints += nPts;
       } // if tile built
-    }   // for all points
+    } // for all points
   }
 
   void Reduce()

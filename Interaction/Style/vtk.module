@@ -25,8 +25,15 @@ DEPENDS
 PRIVATE_DEPENDS
   VTK::CommonCore
   VTK::CommonMath
+  VTK::CommonSystem
   VTK::CommonTransforms
   VTK::FiltersCore
   VTK::FiltersExtraction
   VTK::FiltersSources
+TEST_DEPENDS
+  VTK::FiltersSources
+  VTK::IOImage
+  VTK::TestingRendering
+  VTK::RenderingOpenGL2
+  VTK::RenderingUI
 INCLUDE_MARSHAL

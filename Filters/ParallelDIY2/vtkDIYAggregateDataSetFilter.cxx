@@ -453,7 +453,7 @@ void vtkDIYAggregateDataSetFilter::ComputeProcessesIReceiveFrom(
   int myRank = controller->GetLocalProcessId();
   int numberOfProcesses = controller->GetNumberOfProcesses();
   int dimensions[3] = { 0, 0, 0 };
-  processesIReceiveFrom->SetNumberOfIds(0);
+  processesIReceiveFrom->Initialize();
   for (int i = 0; i < 3; i++)
   {
     if (wholeExtent[2 * i] < wholeExtent[2 * i + 1])
@@ -496,7 +496,7 @@ int vtkDIYAggregateDataSetFilter::GetTargetProcessId(int sourceProcessId, int nu
 
 //------------------------------------------------------------------------------
 bool vtkDIYAggregateDataSetFilter::DoExtentsOverlap(
-  int extent1[6], int extent2[6], int dimensions[3], int* overlappingExtent)
+  int extent1[6], int extent2[6], int dimensions[3], int overlappingExtent[6])
 {
   for (int i = 0; i < 3; i++)
   {

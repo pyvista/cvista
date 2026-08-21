@@ -278,17 +278,19 @@ void vtkOctreePointLocator::DivideRegion(vtkOctreePointLocatorNode* node, int* o
 //------------------------------------------------------------------------------
 void vtkOctreePointLocator::BuildLocator()
 {
-  // don't rebuild if build time is newer than modified and dataset modified time
-  if (this->Top && this->BuildTime > this->MTime && this->BuildTime > this->DataSet->GetMTime())
+  // if a search structure already exists
+  if (this->Top)
   {
-    return;
-  }
-  // don't rebuild if UseExistingSearchStructure is ON and a search structure already exists
-  if (this->Top && this->UseExistingSearchStructure)
-  {
-    this->BuildTime.Modified();
-    vtkDebugMacro(<< "BuildLocator exited - UseExistingSearchStructure");
-    return;
+    // don't rebuild if UseExistingSearchStructure is ON
+    if (this->UseExistingSearchStructure)
+    {
+      return;
+    }
+    // don't rebuild if build time is newer than modified and dataset modified time
+    if (this->BuildTime > this->MTime && this->BuildTime > this->DataSet->GetMTime())
+    {
+      return;
+    }
   }
   this->BuildLocatorInternal();
 }
@@ -1038,7 +1040,7 @@ void vtkOctreePointLocator::GenerateRepresentation(int level, vtkPolyData* pd)
   const vtkIdType npolys = 6 * static_cast<vtkIdType>(nodesAtLevel.size());
 
   vtkPoints* pts = vtkPoints::New();
-  pts->Allocate(npoints);
+  pts->Reserve(npoints);
   vtkCellArray* polys = vtkCellArray::New();
   polys->AllocateEstimate(npolys, 4);
 

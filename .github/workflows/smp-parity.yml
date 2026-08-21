@@ -107,7 +107,12 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true') && !(github.event_name == 'workflow_dispatch' && (inputs.asan || inputs.tsan || inputs.gdb || inputs.native)) && !(github.event_name == 'workflow_dispatch' && inputs.run_stress) }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
-    timeout-minutes: 90
+    # Windows gets 180: no ccache (MSVC) so every build is cold, and with
+    # CVISTA_WRAP_UNITY defaulted OFF on the 9.7 base (per-class Python wrappers,
+    # ~2x the wrapper-compile work) the cold MSVC build overran the old 90-min cap
+    # (same as sdk.yml). The ccache'd Linux/macOS legs finish in ~5 min. Revisit
+    # when the wrapper-unity lever is re-hardened (cvista-config/refork/07).
+    timeout-minutes: ${{ matrix.os == 'windows' && 180 || 90 }}
     strategy:
       fail-fast: false
       matrix:

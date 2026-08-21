@@ -114,11 +114,11 @@ struct ProbePoints
   void Initialize()
   {
     vtkIdList*& pIds = this->PIds.Local();
-    pIds->Allocate(128); // allocate some memory
+    pIds->Reserve(128); // allocate some memory
     vtkDoubleArray*& weights = this->Weights.Local();
-    weights->Allocate(128);
+    weights->ReserveValues(128);
     vtkDoubleArray*& gradWeights = this->DerivWeights.Local();
-    gradWeights->Allocate(128);
+    gradWeights->ReserveValues(128);
   }
 
   // Threaded interpolation method
@@ -379,8 +379,8 @@ void vtkSPHInterpolator::Probe(vtkDataSet* input, vtkDataSet* source, vtkDataSet
           worker(da, shepardArray);
         }
       } // not density array
-    }   // for all arrays
-  }     // if Shepard normalization
+    } // for all arrays
+  } // if Shepard normalization
 
   // Clean up
   if (shepardSumArray)

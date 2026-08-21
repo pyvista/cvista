@@ -114,9 +114,13 @@
 #  endif
 #  ifdef XDMF_USE_ANSI_STDLIB
 #   include <iostream>
-/* <strstream> is unavailable on modern libc++; use the local <sstream>-backed
-   compatibility shim, which provides the exact subset xdmf2's libsrc uses. */
-#   include "vtkXdmfStrstreamCompat.h"
+/* We'll need to migrate to sstream */
+/* #   include <sstream> */
+/* But for now use strstream */
+/* RHEL give Deprecated warning ... ignore them for now */
+#undef __DEPRECATED
+#   include <strstream>
+#define __DEPRECATED
 #   include <fstream>
 #   include <iomanip>
 using std::cerr;
@@ -127,9 +131,9 @@ using std::endl;
 using std::ends;
 using std::ostream;
 using std::istream;
-using xdmf2compat::ostrstream;
-using xdmf2compat::istrstream;
-using xdmf2compat::strstream;
+using std::ostrstream;
+using std::istrstream;
+using std::strstream;
 using std::ofstream;
 using std::ifstream;
 using std::fstream;

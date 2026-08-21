@@ -18,6 +18,7 @@
       background-color: black;
     }
   </style>
+  @webxr_import@
 </head>
 <body>
   <canvas class="vtk_test_suite" id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
@@ -97,7 +98,6 @@
       preRun: (runtime) => {
         // cache the VTK wasm runtime instance.
         vtkWasmRuntime = runtime;
-        vtkWasmRuntime.ENV.VTK_GRAPHICS_BACKEND = "@graphics_backend@";
         vtkWasmRuntime.ENV.VTK_TESTING_WASM_HTTP_SERVER_URL = "@url@";
       },
       onRuntimeInitialized: () => {
@@ -105,7 +105,11 @@
           lockCanvasSize(vtkWasmRuntime);
         }
       },
-      onExit: finalize,
+      postRun: () => {
+        if (vtkWasmRuntime !== null && EXITSTATUS !== undefined) {
+          finalize(EXITSTATUS);
+        }
+      },
       arguments: "@test_args@".split(";") // Comes in as a stringified cmake list
     };
   </script>

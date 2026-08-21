@@ -105,11 +105,7 @@ protected:
   void SyncDataArraySelections(
     vtkXMLReader* accum, vtkXMLDataElement* xmlElem, const std::string& filePath);
 
-  // Adds a child data object to the composite parent. childXML is the XML for
-  // the child data object need to obtain certain meta-data about the child.
-  void AddChild(vtkCompositeDataSet* parent, vtkDataObject* child, vtkXMLDataElement* childXML);
-
-  // Read the XML element for the subtree of a the composite dataset.
+  // Read the XML element for the subtree of a composite dataset.
   // dataSetIndex is used to rank the leaf nodes in an inorder traversal.
   virtual void ReadComposite(vtkXMLDataElement* element, vtkCompositeDataSet* composite,
     const char* filePath, unsigned int& dataSetIndex) = 0;
@@ -119,16 +115,21 @@ protected:
 
   // Read the vtkDataObject (a leaf) in the composite dataset.
   virtual vtkDataObject* ReadDataObject(vtkXMLDataElement* xmlElem, const char* filePath);
+  // Sets the file name or the input data for the reader
+  // The default function simply calls SetFileName on the reader. In this case
+  // the reader opens the file and reads the data from it.
+  // An override, could specify that data is read from an input string using
+  // ReadFromInputStringOn and SetInputString. In this case the data is read
+  // by the function and then set to the reader.
+  virtual bool ReaderSetFileNameOrData(vtkXMLReader* reader, const char* fileName);
 
   /**
    * Given the inorder index for a leaf node, this method tells if the current
    * process should read the dataset.
    *
-   * For a dataset that is part of a vtkParititionedDataSet or a
-   * vtkMultiPieceDataset, valid `pieceIndex` and `numPieces` should be specified such that
-   * `pieceIndex < numPieces`. When provided, this method can use the
-   * `PieceDistribution` selection to distribute each vtkMultiPieceDataset and
-   * vtkParititionedDataSet across ranks.
+   * For a dataset that is part of a vtkPartitionedDataSet valid `pieceIndex` and `numPieces` should
+   * be specified such that `pieceIndex < numPieces`. When provided, this method can use the
+   * `PieceDistribution` selection to distribute each vtkPartitionedDataSet across ranks.
    *
    */
   int ShouldReadDataSet(
@@ -141,7 +142,29 @@ protected:
    */
   static unsigned int CountNestedElements(vtkXMLDataElement* element, const std::string& tagName,
     const std::set<std::string>& exclusions = std::set<std::string>());
+
 #endif
+
+  /**
+   * Prepare to create the meta-data from the composite dataset from the file.
+   * This is called before CreateMetaData.
+   */
+  virtual void PrepareToCreateMetaData(vtkXMLDataElement* vtkNotUsed(ePrimary)) {}
+
+  /**
+   * Create the meta-data from the composite dataset from the file.
+   */
+  virtual void CreateMetaData(vtkXMLDataElement* ePrimary) = 0;
+
+  /**
+   * Recursively synchronize the data array selection of the reader for the file specified in the
+   * XML element.
+   */
+  virtual void SyncCompositeDataArraySelections(
+    vtkCompositeDataSet* composite, vtkXMLDataElement* element, const std::string& filePath) = 0;
+
+  vtkSmartPointer<vtkCompositeDataSet> Metadata;
+
 private:
   vtkXMLCompositeDataReader(const vtkXMLCompositeDataReader&) = delete;
   void operator=(const vtkXMLCompositeDataReader&) = delete;

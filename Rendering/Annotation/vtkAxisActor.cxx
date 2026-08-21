@@ -120,7 +120,7 @@ void vtkAxisActor::SetLabelFormat(const char* formatArg)
 {
   std::string format = formatArg ? vtk::to_std_format(formatArg) : "";
   const char* formatStr = format.c_str();
-  vtkSetStringBodyMacro(LabelFormat, formatStr);
+  vtkSetStringBodyMacro(LabelFormat, formatStr)
 }
 
 //------------------------------------------------------------------------------
@@ -506,10 +506,6 @@ void vtkAxisActor::SetLabelPositions(vtkViewport* viewport, bool force)
 
     // WARNING: calling GetBounds() before ComputeTransformMatrix(), prevent this->Transform to be
     // updated
-
-    // previous version: this->LabelActors[i]->GetMapper()->GetBounds(bounds); didn't include scale
-    // labels
-    // vtkProp3D::GetBounds() include previous transform (scale, orientation, translation)
     pAxisFollower->GetBounds(bounds);
     double labelWidth = (bounds[1] - bounds[0]);
     double labelHeight = (bounds[3] - bounds[2]);
@@ -1014,7 +1010,7 @@ void vtkAxisActor::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
 
-  os << indent << "Title: " << (this->Title.empty() ? this->Title : "(none)") << "\n";
+  os << indent << "Title: " << (!this->Title.empty() ? this->Title : "(none)") << "\n";
   os << indent << "Number Of Labels Built: " << this->NumberOfLabelsBuilt << "\n";
   os << indent << "Range: (" << this->Range[0] << ", " << this->Range[1] << ")\n";
 
@@ -2586,18 +2582,6 @@ vtkProp3DAxisFollower* vtkAxisActor::GetLabelFollower3D(int index)
 }
 
 //------------------------------------------------------------------------------
-vtkProp3DAxisFollower** vtkAxisActor::GetLabelProps3D()
-{
-  this->LabelProps3D.clear();
-  for (const auto& label : this->LabelProps)
-  {
-    this->LabelProps3D.push_back(label->GetFollower3D());
-  }
-
-  return this->LabelProps3D.data();
-}
-
-//------------------------------------------------------------------------------
 vtkAxisFollower* vtkAxisActor::GetLabelFollower(int index)
 {
   if (static_cast<int>(this->LabelProps.size()) > index)
@@ -2606,18 +2590,6 @@ vtkAxisFollower* vtkAxisActor::GetLabelFollower(int index)
   }
 
   return nullptr;
-}
-
-//------------------------------------------------------------------------------
-vtkAxisFollower** vtkAxisActor::GetLabelActors()
-{
-  this->LabelActors.clear();
-  for (const auto& label : this->LabelProps)
-  {
-    this->LabelActors.push_back(label->GetFollower());
-  }
-
-  return this->LabelActors.data();
 }
 
 //------------------------------------------------------------------------------

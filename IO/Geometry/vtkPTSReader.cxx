@@ -310,7 +310,7 @@ int vtkPTSReader::RequestData(vtkInformation* vtkNotUsed(request),
   {
     newPts->SetDataTypeToFloat();
   }
-  newPts->Allocate(targetNumPts);
+  newPts->Reserve(targetNumPts);
 
   vtkNew<vtkUnsignedCharArray> colors;
   vtkNew<vtkFloatArray> intensities;
@@ -327,7 +327,7 @@ int vtkPTSReader::RequestData(vtkInformation* vtkNotUsed(request),
   {
     colors->SetNumberOfComponents(3);
     colors->SetName("Color");
-    colors->Allocate(targetNumPts * 3);
+    colors->ReserveTuples(targetNumPts);
     output->GetPointData()->SetScalars(colors);
     if (!this->IncludeColorAndLuminance)
     {
@@ -338,8 +338,7 @@ int vtkPTSReader::RequestData(vtkInformation* vtkNotUsed(request),
   if (wantIntensities)
   {
     intensities->SetName("Intensities");
-    intensities->SetNumberOfComponents(1);
-    intensities->Allocate(targetNumPts);
+    intensities->ReserveValues(targetNumPts);
     output->GetPointData()->AddArray(intensities);
   }
 
@@ -479,6 +478,40 @@ vtkMTimeType vtkPTSReader::GetMTime()
     mtime = std::max(mtime, this->Stream->GetMTime());
   }
   return mtime;
+}
+
+//------------------------------------------------------------------------------
+bool vtkPTSReader::CanReadFile(const char* filename)
+{
+  vtkNew<vtkFileResourceStream> stream;
+  if (!stream->Open(filename))
+  {
+    return false;
+  }
+  return vtkPTSReader::CanReadFile(stream);
+}
+
+//------------------------------------------------------------------------------
+bool vtkPTSReader::CanReadFile(vtkResourceStream* stream)
+{
+  if (!stream)
+  {
+    return false;
+  }
+
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+  vtkNew<vtkResourceParser> asciiTester;
+  asciiTester->SetStream(stream);
+
+  std::string line;
+  if (asciiTester->ReadLine(line) != vtkParseResult::EndOfLine)
+  {
+    return false;
+  }
+
+  auto resultInt = vtk::scan_int<int>(line);
+  auto resultPoint = vtk::scan<double, double, double>(line, "{:f} {:f} {:f}");
+  return resultPoint || resultInt;
 }
 
 VTK_ABI_NAMESPACE_END

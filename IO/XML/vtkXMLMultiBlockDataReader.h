@@ -21,8 +21,11 @@
 #include "vtkIOXMLModule.h" // For export macro
 #include "vtkXMLCompositeDataReader.h"
 
+#include <set>    // For std::set
+#include <vector> // For std::vector
+
 VTK_ABI_NAMESPACE_BEGIN
-class vtkMultiBlockDataSet;
+class vtkDataAssembly;
 
 class VTKIOXML_EXPORT vtkXMLMultiBlockDataReader : public vtkXMLCompositeDataReader
 {
@@ -31,11 +34,56 @@ public:
   vtkTypeMacro(vtkXMLMultiBlockDataReader, vtkXMLCompositeDataReader);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
+  /**
+   * Get the data full data assembly associated with the input
+   */
+  vtkGetNewMacro(Assembly, vtkDataAssembly);
+
+  /**
+   * Whenever the assembly is changed, this tag gets changed. Note, users should
+   * not assume that this is monotonically increasing but instead simply rely on
+   * its value to determine if the assembly may have changed since last time.
+   *
+   * It is set to 0 whenever there's no valid assembly available.
+   */
+  vtkGetMacro(AssemblyTag, int);
+
+  ///@{
+  /**
+   * API to set selectors. Multiple selectors can be added using `AddSelector`.
+   * The order in which selectors are specified is not preserved and has no
+   * impact on the result.
+   *
+   * `AddSelector` returns true if the selector was added, false if the selector
+   * was already specified and hence not added.
+   *
+   * The default is "/" to maintain backwards compatibility
+   *
+   * @sa vtkDataAssembly::SelectNodes
+   */
+  bool AddSelector(const char* selector);
+  void ClearSelectors();
+  void SetSelector(const char* selector);
+  ///@}
+
+  ///@{
+  /**
+   * API to access selectors.
+   */
+  int GetNumberOfSelectors() const;
+  const char* GetSelector(int index) const;
+  ///@}
+
 protected:
   vtkXMLMultiBlockDataReader();
   ~vtkXMLMultiBlockDataReader() override;
 
-  // Read the XML element for the subtree of a the composite dataset.
+  // Get the name of the data set being read.
+  const char* GetDataSetName() override;
+
+  int FillOutputPortInformation(int, vtkInformation* info) override;
+
+  // Read the XML element for the subtree of a composite dataset.
   // dataSetIndex is used to rank the leaf nodes in an inorder traversal.
   void ReadComposite(vtkXMLDataElement* element, vtkCompositeDataSet* composite,
     const char* filePath, unsigned int& dataSetIndex) override;
@@ -44,20 +92,35 @@ protected:
   virtual void ReadVersion0(vtkXMLDataElement* element, vtkCompositeDataSet* composite,
     const char* filePath, unsigned int& dataSetIndex);
 
-  // Get the name of the data set being read.
-  const char* GetDataSetName() override;
+  void PrepareToCreateMetaData(vtkXMLDataElement* ePrimary) override;
 
-  int FillOutputPortInformation(int, vtkInformation* info) override;
+  /**
+   * Read the meta-data from the Multiblock from the file.
+   */
+  void CreateMetaData(vtkXMLDataElement* ePrimary) override;
 
-  int RequestInformation(vtkInformation*, vtkInformationVector**, vtkInformationVector*) override;
-
-  virtual int FillMetaData(vtkCompositeDataSet* metadata, vtkXMLDataElement* element,
-    const std::string& filePath, unsigned int& dataSetIndex);
+  /**
+   * Recursively synchronize the data array selection of the reader for the file specified in the
+   * XML element.
+   */
+  void SyncCompositeDataArraySelections(vtkCompositeDataSet* composite, vtkXMLDataElement* element,
+    const std::string& filePath) override;
 
 private:
   vtkXMLMultiBlockDataReader(const vtkXMLMultiBlockDataReader&) = delete;
   void operator=(const vtkXMLMultiBlockDataReader&) = delete;
 
+  virtual int FillMetaData(vtkCompositeDataSet* composite, vtkXMLDataElement* element);
+
+  void ReadCompositeInternal(vtkXMLDataElement* element, vtkCompositeDataSet* composite,
+    const char* filePath, unsigned int& dataSetIndex, unsigned int& compositeIndex);
+
+  bool IsBlockSelected(unsigned int compositeIndex);
+
+  int AssemblyTag = 0;
+  vtkNew<vtkDataAssembly> Assembly;
+  std::set<std::string> Selectors;
+  std::vector<unsigned int> SelectedCompositeIds;
   bool DistributePiecesInMultiPieces;
 };
 

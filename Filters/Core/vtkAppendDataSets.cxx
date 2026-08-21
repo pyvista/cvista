@@ -4,16 +4,17 @@
 
 #include "vtkAppendFilter.h"
 #include "vtkAppendPolyData.h"
-#include "vtkBoundingBox.h"
 #include "vtkCellData.h"
 #include "vtkCleanPolyData.h"
+#include "vtkDataObjectMeshCache.h"
 #include "vtkDataObjectTypes.h"
-#include "vtkDataSetCollection.h"
 #include "vtkIncrementalOctreePointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
+#include "vtkMeshCacheRunner.h"
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
+#include "vtkPartitionedDataSetCollection.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
 #include "vtkSmartPointer.h"
@@ -32,6 +33,7 @@ vtkAppendDataSets::vtkAppendDataSets()
   , OutputDataSetType(VTK_UNSTRUCTURED_GRID)
   , OutputPointsPrecision(DEFAULT_PRECISION)
 {
+  this->MeshCache->SetConsumer(this);
 }
 
 //------------------------------------------------------------------------------
@@ -104,11 +106,52 @@ int vtkAppendDataSets::RequestData(vtkInformation* vtkNotUsed(request),
     vtkUnstructuredGrid::SafeDownCast(outInfo->Get(vtkDataObject::DATA_OBJECT()));
   vtkPolyData* outputPD = vtkPolyData::SafeDownCast(outInfo->Get(vtkDataObject::DATA_OBJECT()));
 
+  // group dataset for cache manip
+
+  int nbOfInputs = inputVector[0]->GetNumberOfInformationObjects();
+  std::vector<vtkDataSet*> inputDataSets;
+  std::vector<vtkPolyData*> inputPolyData;
+  vtkNew<vtkPartitionedDataSetCollection> collection;
+  collection->SetNumberOfPartitionedDataSets(nbOfInputs);
+  for (int cc = 0; cc < nbOfInputs; cc++)
+  {
+    auto input = vtkDataSet::GetData(inputVector[0], cc);
+    collection->SetPartition(cc, 0, input);
+    inputDataSets.push_back(input);
+    auto poly = vtkPolyData::SafeDownCast(input);
+    if (poly)
+    {
+      inputPolyData.push_back(poly);
+    }
+  }
+
+  vtkMeshCacheRunner runner{ this->MeshCache, collection, output, true };
+  if (runner.GetCacheLoaded())
+  {
+    output->GetPointData()->CopyAllOn(vtkDataSetAttributes::COPYTUPLE);
+    vtkAppendFilter::AppendArrays(inputDataSets, vtkDataObject::POINT, outputUG,
+      output->GetNumberOfPoints(), this->UseImplicitArray);
+    output->GetCellData()->CopyAllOn(vtkDataSetAttributes::COPYTUPLE);
+    if (outputUG)
+    {
+      vtkAppendFilter::AppendArrays(inputDataSets, vtkDataObject::CELL, outputUG,
+        output->GetNumberOfCells(), this->UseImplicitArray);
+    }
+    else if (outputPD)
+    {
+      vtkAppendPolyData::PolyDataOffsets stats(inputPolyData);
+      vtkAppendPolyData::AppendCellData(stats, inputPolyData, outputPD, this->UseImplicitArray);
+    }
+
+    return 1;
+  }
+
   vtkDebugMacro("Appending data together");
 
   if (outputUG)
   {
     vtkNew<vtkAppendFilter> appender;
+    appender->SetUseImplicitArray(this->UseImplicitArray);
     appender->SetContainerAlgorithm(this);
     appender->SetOutputPointsPrecision(this->GetOutputPointsPrecision());
     appender->SetMergePoints(this->GetMergePoints());
@@ -129,6 +172,7 @@ int vtkAppendDataSets::RequestData(vtkInformation* vtkNotUsed(request),
   else if (outputPD)
   {
     vtkNew<vtkAppendPolyData> appender;
+    appender->SetUseImplicitArray(this->UseImplicitArray);
     appender->SetContainerAlgorithm(this);
     appender->SetOutputPointsPrecision(this->GetOutputPointsPrecision());
     for (int cc = 0; cc < inputVector[0]->GetNumberOfInformationObjects(); cc++)

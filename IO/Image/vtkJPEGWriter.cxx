@@ -70,8 +70,8 @@ void vtkJPEGWriter::Write()
 
   // Fill in image information.
   vtkDemandDrivenPipeline::SafeDownCast(this->GetInputExecutive(0, 0))->UpdateInformation();
-  int* wExtent;
-  wExtent = this->GetInputInformation(0, 0)->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
+  const int* wExtent =
+    this->GetInputInformation(0, 0)->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
   this->FileNumber = wExtent[4];
   this->MinimumFileNumber = this->MaximumFileNumber = this->FileNumber;
   this->FilesDeleted = 0;
@@ -97,14 +97,14 @@ void vtkJPEGWriter::Write()
       {
         VTK_FORMAT_IF_ERROR_RETURN(
           auto result = vtk::format_to_n(this->InternalFileName, this->InternalFileNameSize,
-            this->FilePattern, this->FilePrefix, this->FileNumber);
+            vtk::runtime(this->FilePattern), this->FilePrefix, this->FileNumber);
           *result.out = '\0', );
       }
       else
       {
         VTK_FORMAT_IF_ERROR_RETURN(
           auto result = vtk::format_to_n(this->InternalFileName, this->InternalFileNameSize,
-            this->FilePattern, "", this->FileNumber);
+            vtk::runtime(this->FilePattern), "", this->FileNumber);
           *result.out = '\0', );
       }
     }
@@ -138,10 +138,10 @@ extern "C"
         self->SetResult(uc);
         uc->Delete();
         // start out with 10K as a guess for the image size
-        uc->Allocate(10000);
+        uc->ReserveValues(10000);
       }
       cinfo->dest->next_output_byte = uc->GetPointer(0);
-      cinfo->dest->free_in_buffer = uc->GetSize();
+      cinfo->dest->free_in_buffer = uc->GetCapacity();
     }
   }
 }
@@ -157,10 +157,10 @@ extern "C"
     {
       vtkUnsignedCharArray* uc = self->GetResult();
       // we must grow the array
-      vtkIdType oldSize = uc->GetSize();
-      uc->Resize(oldSize + oldSize / 2);
-      // Resize do grow the array but it is not the size we expect
-      vtkIdType newSize = uc->GetSize();
+      vtkIdType oldSize = uc->GetCapacity();
+      uc->ReserveTuples(oldSize + oldSize / 2);
+      // ReserveTuples do grow the array but it is not the size we expect
+      vtkIdType newSize = uc->GetCapacity();
       cinfo->dest->next_output_byte = uc->GetPointer(oldSize);
       cinfo->dest->free_in_buffer = static_cast<size_t>(newSize - oldSize);
     }
@@ -177,7 +177,7 @@ extern "C"
     {
       vtkUnsignedCharArray* uc = self->GetResult();
       // we must close the array
-      vtkIdType realSize = uc->GetSize() - static_cast<vtkIdType>(cinfo->dest->free_in_buffer);
+      vtkIdType realSize = uc->GetCapacity() - static_cast<vtkIdType>(cinfo->dest->free_in_buffer);
       uc->SetNumberOfTuples(realSize);
     }
   }
@@ -218,7 +218,7 @@ VTK_ABI_NAMESPACE_BEGIN
 #if defined(_MSC_VER) && !defined(VTK_DISPLAY_WIN32_WARNINGS)
 #pragma warning(disable : 4611)
 #endif
-void vtkJPEGWriter::WriteSlice(vtkImageData* data, int* uExtent)
+void vtkJPEGWriter::WriteSlice(vtkImageData* data, VTK_FUTURE_CONST int uExtent[6])
 {
   // Call the correct templated function for the output
   unsigned int ui;

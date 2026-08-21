@@ -118,7 +118,7 @@ void vtkCubeAxesActor2D::SetLabelFormat(const char* formatArg)
 {
   std::string format = formatArg ? vtk::to_std_format(formatArg) : "";
   const char* formatStr = format.c_str();
-  vtkSetStringBodyMacro(LabelFormat, formatStr);
+  vtkSetStringBodyMacro(LabelFormat, formatStr)
 }
 
 //------------------------------------------------------------------------------
@@ -920,9 +920,9 @@ int vtkCubeAxesActor2D::ClipBounds(vtkViewport* viewport, double pts[8][3], doub
               maxVal = val;
             }
           } // if in bounding box
-        }   // i
-      }     // j
-    }       // k
+        } // i
+      } // j
+    } // k
 
     delX /= (VTK_DIVS - 1) * 1.414;
     delY /= (VTK_DIVS - 1) * 1.414;

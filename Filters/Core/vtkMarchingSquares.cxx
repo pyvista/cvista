@@ -6,24 +6,17 @@
 #include "vtkCellArray.h"
 #include "vtkCharArray.h"
 #include "vtkDataArrayRange.h"
-#include "vtkDoubleArray.h"
-#include "vtkFloatArray.h"
 #include "vtkImageTransform.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
-#include "vtkIntArray.h"
-#include "vtkLongArray.h"
-#include "vtkMarchingSquaresLineCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkMergePoints.h"
 #include "vtkObjectFactory.h"
+#include "vtkPixel.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
-#include "vtkShortArray.h"
 #include "vtkStructuredPoints.h"
-#include "vtkUnsignedCharArray.h"
-#include "vtkUnsignedIntArray.h"
-#include "vtkUnsignedLongArray.h"
 #include "vtkUnsignedShortArray.h"
 
 #include <cmath>
@@ -109,15 +102,10 @@ struct ContourImageWorker
     vtkIdType ptIds[2];
     double t, x[3];
     double min, max;
-    int contNum, jOffset, idx, ii, jj, index, *vert;
-    static const int CASE_MASK[4] = { 1, 2, 8, 4 };
-    vtkMarchingSquaresLineCases *lineCase, *lineCases;
-    static int edges[4][2] = { { 0, 1 }, { 1, 3 }, { 2, 3 }, { 0, 2 } };
-    int* edge;
+    int contNum, jOffset, idx, ii, jj, index;
+    static const int CASE_MASK[4] = { 1, 2, 4, 8 };
     double value, s[4];
     bool abortExecute = false;
-
-    lineCases = vtkMarchingSquaresLineCases::GetCases();
     //
     // Get min/max contour values
     //
@@ -195,14 +183,13 @@ struct ContourImageWorker
             continue; // no lines
           }
 
-          lineCase = lineCases + index;
-          edge = lineCase->edges;
+          const int* edges = vtkMarchingCellsContourCases::GetPixelCase(index);
 
-          for (; edge[0] > -1; edge += 2)
+          for (; edges[0] > -1; edges += 2)
           {
             for (ii = 0; ii < 2; ii++) // insert line
             {
-              vert = edges[edge[ii]];
+              const vtkIdType* vert = vtkPixel::GetEdgeArray(edges[ii]);
               t = (value - s[vert[0]]) / (s[vert[1]] - s[vert[0]]);
               x1 = pts[vert[0]];
               x2 = pts[vert[1]];
@@ -222,9 +209,9 @@ struct ContourImageWorker
             }
 
           } // for each line
-        }   // for all contours
-      }     // for i
-    }       // for j
+        } // for all contours
+      } // for i
+    } // for j
   }
 };
 
@@ -390,7 +377,7 @@ int vtkMarchingSquares::RequestData(vtkInformation* vtkNotUsed(request),
   estimatedSize = std::max(estimatedSize, 1024);
 
   newPts = vtkPoints::New();
-  newPts->Allocate(estimatedSize, estimatedSize);
+  newPts->Reserve(estimatedSize);
   newLines = vtkCellArray::New();
   newLines->AllocateEstimate(estimatedSize, 2);
 
@@ -402,7 +389,7 @@ int vtkMarchingSquares::RequestData(vtkInformation* vtkNotUsed(request),
   this->Locator->InitPointInsertion(newPts, input->GetBounds());
 
   newScalars = inScalars->NewInstance();
-  newScalars->Allocate(5000, 25000);
+  newScalars->ReserveValues(5000);
 
   ContourImageWorker worker;
   using Dispatcher = vtkArrayDispatch::Dispatch;

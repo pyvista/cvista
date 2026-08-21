@@ -132,16 +132,16 @@ void vtkImageReader2::ComputeInternalFileName(int slice)
       size_t size = strlen(this->FilePrefix) + filePattern.size() + 10;
       this->InternalFileName = new char[size];
       VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(this->InternalFileName, size,
-                                   filePattern, this->FilePrefix, slicenum);
+                                   vtk::runtime(filePattern), this->FilePrefix, slicenum);
                                  *result.out = '\0', );
     }
     else if (!filePattern.empty())
     {
       size_t size = filePattern.size() + 10;
       this->InternalFileName = new char[size];
-      VTK_FORMAT_IF_ERROR_RETURN(
-        auto result = vtk::format_to_n(this->InternalFileName, size, filePattern, "", slicenum);
-        *result.out = '\0', );
+      VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(this->InternalFileName, size,
+                                   vtk::runtime(filePattern), "", slicenum);
+                                 *result.out = '\0', );
     }
     else
     {
@@ -219,7 +219,7 @@ void vtkImageReader2::SetFileNames(vtkStringArray* filenames)
 // pattern of a series: image.001, image.002 ...
 void vtkImageReader2::SetFilePattern(const char* formatArg)
 {
-  vtkSetStringBodyMacro(FilePattern, formatArg);
+  vtkSetStringBodyMacro(FilePattern, formatArg)
 }
 
 //------------------------------------------------------------------------------
@@ -691,7 +691,7 @@ void vtkImageReader2::ExecuteDataWithInformation(vtkDataObject* output, vtkInfor
   data->GetPointData()->GetScalars()->SetName("ImageFile");
 
 #ifndef NDEBUG
-  int* ext = data->GetExtent();
+  const int* ext = data->GetExtent();
 #endif
 
   vtkDebugMacro("Reading extent: " << ext[0] << ", " << ext[1] << ", " << ext[2] << ", " << ext[3]

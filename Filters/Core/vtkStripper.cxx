@@ -99,7 +99,7 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
 
   pts = new vtkIdType[this->MaximumLength + 2]; // working array
   cellIds = vtkIdList::New();
-  cellIds->Allocate(this->MaximumLength + 2);
+  cellIds->Reserve(this->MaximumLength + 2);
 
   // The new field data object that maintains the transformed cell data.
   if (this->PassCellDataAsFieldData)
@@ -133,20 +133,16 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
   {
     OriginalCellIds = vtkIdTypeArray::New();
     OriginalCellIds->SetName("vtkOriginalCellIds");
-    OriginalCellIds->SetNumberOfComponents(1);
-    OriginalCellIds->Allocate(3 * numCells + 3);
+    OriginalCellIds->ReserveValues(3 * numCells + 3);
 
     origPolyIds = vtkIdTypeArray::New();
-    origPolyIds->SetNumberOfComponents(1);
-    origPolyIds->Allocate(inNumPolys + 1);
+    origPolyIds->ReserveValues(inNumPolys + 1);
 
     origLineIds = vtkIdTypeArray::New();
-    origLineIds->SetNumberOfComponents(1);
-    origLineIds->Allocate(inNumLines + 1);
+    origLineIds->ReserveValues(inNumLines + 1);
 
     origStripIds = vtkIdTypeArray::New();
-    origStripIds->SetNumberOfComponents(1);
-    origStripIds->Allocate(3 * inNumPolys + 3);
+    origStripIds->ReserveValues(3 * inNumPolys + 3);
   }
 
   // pre-load existing strips
@@ -373,8 +369,8 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
               neighbor = (-1);
             }
           } // while
-        }   // else continue strip
-      }     // if triangle
+        } // else continue strip
+      } // if triangle
 
       else if (cellType == VTK_LINE)
       {
@@ -472,8 +468,8 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
               neighbor = (-1);
             }
           } // while
-        }   // else continue line
-      }     // if line
+        } // else continue line
+      } // if line
 
       // not line, triangle, or strip must be quad or tpolygon which we pass through
       else if (cellType == VTK_POLYGON || cellType == VTK_QUAD)
@@ -491,7 +487,7 @@ int vtkStripper::RequestData(vtkInformation* vtkNotUsed(request),
       }
 
     } // if not visited
-  }   // for all elements
+  } // for all elements
 
   // Update output and release memory
   //

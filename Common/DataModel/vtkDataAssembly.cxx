@@ -429,7 +429,7 @@ std::string vtkDataAssembly::MakeValidNodeName(const char* name)
   }
 
   constexpr char sorted_valid_chars[] =
-    ".-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+    "-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
   const auto sorted_valid_chars_len = strlen(sorted_valid_chars);
 
   std::string result;
@@ -579,6 +579,19 @@ int vtkDataAssembly::AddNode(const char* name, int parent)
     vtkErrorMacro("Parent node with id=" << parent << " not found.");
     return -1;
   }
+  // check if name is unique within the children of the parent node
+  // to ensure uniqueness among selectors
+  for (auto child : pnode.children())
+  {
+    // Only compare against other structural nodes,
+    // ignoring internal <dataset> tags.
+    if (::IsAssemblyNode(child) && strcmp(child.name(), name) == 0)
+    {
+      vtkErrorMacro(
+        "A child node with name '" << name << "' already exists under parent with id=" << parent);
+      return -1;
+    }
+  }
 
   auto child = ++internals.MaxUniqueId;
   auto cnode = pnode.append_child(name);
@@ -599,7 +612,8 @@ std::vector<int> vtkDataAssembly::AddNodes(const std::vector<std::string>& names
     return std::vector<int>{};
   }
 
-  // validate names first to avoid partial additions.
+  // 1. Validate names and check for duplicates within the input vector itself
+  std::unordered_set<std::string> uniqueNames;
   for (const auto& name : names)
   {
     if (!vtkDataAssembly::IsNodeNameValid(name.c_str()))
@@ -607,8 +621,30 @@ std::vector<int> vtkDataAssembly::AddNodes(const std::vector<std::string>& names
       vtkErrorMacro("Invalid name specified '" << name << "'.");
       return std::vector<int>{};
     }
+
+    if (!uniqueNames.insert(name).second)
+    {
+      vtkErrorMacro("Duplicate name '" << name << "' found in the input list.");
+      return std::vector<int>{};
+    }
   }
 
+  // 2. Check if any of these names already exist under the parent
+  for (auto child : pnode.children())
+  {
+    if (::IsAssemblyNode(child))
+    {
+      const char* existingName = child.name();
+      if (uniqueNames.find(existingName) != uniqueNames.end())
+      {
+        vtkErrorMacro("A child node with name '"
+          << existingName << "' already exists under parent with id=" << parent);
+        return std::vector<int>{};
+      }
+    }
+  }
+
+  // 3. All checks passed. Perform the additions.
   std::vector<int> ids;
   for (const auto& name : names)
   {
@@ -931,6 +967,33 @@ int vtkDataAssembly::GetChild(int parent, int index) const
       ++cur_child;
     }
   }
+  return -1;
+}
+
+//------------------------------------------------------------------------------
+int vtkDataAssembly::GetChild(int parent, const char* name) const
+{
+  if (!vtkDataAssembly::IsNodeNameValid(name))
+  {
+    vtkErrorMacro("Invalid name specified '" << (name ? name : "(nullptr)"));
+    return -1;
+  }
+
+  const auto& internals = (*this->Internals);
+  const auto node = internals.FindNode(parent);
+
+  for (const auto& cnode : node.children())
+  {
+    if (::IsAssemblyNode(cnode))
+    {
+      if (strcmp(cnode.name(), name) == 0)
+      {
+        return cnode.attribute("id").as_int(-1);
+      }
+    }
+  }
+
+  // Return -1 to indicate no child with that name was found
   return -1;
 }
 

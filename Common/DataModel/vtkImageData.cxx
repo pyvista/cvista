@@ -182,8 +182,20 @@ void vtkImageData::BuildPoints()
       axisCoords[i]->SetValue(1, this->Origin[i] + this->Spacing[i]);
     }
   }
-  this->SetStructuredPoints(vtkStructuredData::GetPoints(
-    xCoords, yCoords, zCoords, extent, this->DirectionMatrix->GetData()));
+  // Update the existing structured point array in place so that external
+  // pointers obtained via GetPoints() or GetPoints()->GetData() remain valid.
+  vtkPoints* pts = this->GetPoints();
+  auto* spa = vtkStructuredPointArray<double>::FastDownCast(pts->GetData());
+  if (!spa)
+  {
+    vtkErrorMacro("GetPoints()->GetData() is not a vtkStructuredPointArray. "
+                  "Cannot update points in place.");
+    return;
+  }
+  int dataDescription = vtkStructuredData::GetDataDescriptionFromExtent(extent);
+  spa->ConstructBackend(
+    xCoords, yCoords, zCoords, extent, dataDescription, this->DirectionMatrix->GetData());
+  spa->SetNumberOfTuples(vtkStructuredData::GetNumberOfPoints(extent));
 }
 
 //------------------------------------------------------------------------------
@@ -354,8 +366,8 @@ vtkIdType vtkImageData::FindPoint(double x[3])
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkImageData::FindCell(double x[3], vtkCell* vtkNotUsed(cell),
-  vtkIdType vtkNotUsed(cellId), double tol2, int& subId, double pcoords[3], double* weights)
+vtkIdType vtkImageData::FindCell(double x[3], vtkCell* cell, vtkGenericCell* genCell,
+  vtkIdType cellId, double tol2, int& subId, double pcoords[3], double* weights)
 {
   int idx[3];
 
@@ -428,16 +440,20 @@ vtkIdType vtkImageData::FindCell(double x[3], vtkCell* vtkNotUsed(cell),
     vtkVoxel::InterpolationFunctions(pcoords, weights);
   }
 
-  //
-  //  From this location get the cell id
-  //
+  // From this location get the cell id
   subId = 0;
-  const vtkIdType cellId = this->ComputeCellId(idx);
-  if (!this->IsCellVisible(cellId))
+  const vtkIdType newCellId = this->ComputeCellId(idx);
+  if (!this->IsCellVisible(newCellId))
   {
     return -1;
   }
-  return cellId;
+  // if cell is requested, and we don't already have it
+  if (genCell && (newCellId != cellId || genCell->GetRepresentativeCell() != cell))
+  {
+    // extract the new cell
+    this->GetCell(newCellId, genCell);
+  }
+  return newCellId;
 }
 
 //------------------------------------------------------------------------------
@@ -813,13 +829,13 @@ void vtkImageData::GetIncrements(vtkDataArray* scalars, vtkIdType inc[3])
 
 //------------------------------------------------------------------------------
 void vtkImageData::GetContinuousIncrements(
-  int extent[6], vtkIdType& incX, vtkIdType& incY, vtkIdType& incZ)
+  VTK_FUTURE_CONST int extent[6], vtkIdType& incX, vtkIdType& incY, vtkIdType& incZ)
 {
   this->GetContinuousIncrements(this->GetPointData()->GetScalars(), extent, incX, incY, incZ);
 }
 //------------------------------------------------------------------------------
-void vtkImageData::GetContinuousIncrements(
-  vtkDataArray* scalars, int extent[6], vtkIdType& incX, vtkIdType& incY, vtkIdType& incZ)
+void vtkImageData::GetContinuousIncrements(vtkDataArray* scalars, VTK_FUTURE_CONST int extent[6],
+  vtkIdType& incX, vtkIdType& incY, vtkIdType& incZ)
 {
   int e0, e1, e2, e3;
 
@@ -950,7 +966,7 @@ void* vtkImageData::GetScalarPointer(int x, int y, int z)
 // This Method returns a pointer to a location in the vtkImageData.
 // Coordinates are in pixel units and are relative to the whole
 // image origin.
-void* vtkImageData::GetScalarPointerForExtent(int extent[6])
+void* vtkImageData::GetScalarPointerForExtent(VTK_FUTURE_CONST int extent[6])
 {
   return this->GetArrayPointerForExtent(this->GetPointData()->GetScalars(), extent);
 }
@@ -966,7 +982,12 @@ void* vtkImageData::GetScalarPointer(int coordinate[3])
 void* vtkImageData::GetScalarPointer()
 {
   auto array = this->GetPointData()->GetScalars();
-  return array ? array->GetVoidPointer(0) : nullptr;
+  if (array && !array->HasStandardMemoryLayout())
+  {
+    vtkErrorMacro("GetScalarPointer() can only be used with arrays having standard memory layout.");
+    return nullptr;
+  }
+  return array ? array->GetVoidPointer(0) : nullptr; // NOLINT(bugprone-unsafe-functions)
 }
 
 //------------------------------------------------------------------------------
@@ -1081,8 +1102,8 @@ int vtkImageData::GetScalarSize()
 //------------------------------------------------------------------------------
 // This templated function executes the filter for any type of data.
 template <class IT, class OT>
-void vtkImageDataCastExecute(
-  vtkImageData* inData, IT* inPtr, vtkImageData* outData, OT* outPtr, int outExt[6])
+void vtkImageDataCastExecute(vtkImageData* inData, IT* inPtr, vtkImageData* outData, OT* outPtr,
+  VTK_FUTURE_CONST int outExt[6])
 {
   int idxR, idxY, idxZ;
   int maxY, maxZ;
@@ -1121,7 +1142,8 @@ void vtkImageDataCastExecute(
 
 //------------------------------------------------------------------------------
 template <class T>
-void vtkImageDataCastExecute(vtkImageData* inData, T* inPtr, vtkImageData* outData, int outExt[6])
+void vtkImageDataCastExecute(
+  vtkImageData* inData, T* inPtr, vtkImageData* outData, VTK_FUTURE_CONST int outExt[6])
 {
   void* outPtr = outData->GetScalarPointerForExtent(outExt);
 
@@ -1147,7 +1169,7 @@ void vtkImageDataCastExecute(vtkImageData* inData, T* inPtr, vtkImageData* outDa
 // algorithm to fill the output from the input.
 // It just executes a switch statement to call the correct function for
 // the regions data types.
-void vtkImageData::CopyAndCastFrom(vtkImageData* inData, int extent[6])
+void vtkImageData::CopyAndCastFrom(vtkImageData* inData, VTK_FUTURE_CONST int extent[6])
 {
   void* inPtr = inData->GetScalarPointerForExtent(extent);
 
@@ -1168,7 +1190,7 @@ void vtkImageData::CopyAndCastFrom(vtkImageData* inData, int extent[6])
 }
 
 //------------------------------------------------------------------------------
-void vtkImageData::Crop(const int* updateExtent)
+void vtkImageData::Crop(const int updateExtent[6])
 {
   const int* extent = this->GetExtent();
 
@@ -1338,7 +1360,7 @@ double vtkImageData::GetScalarTypeMax()
 
 //------------------------------------------------------------------------------
 void vtkImageData::SetAxisUpdateExtent(
-  int idx, int min, int max, const int* updateExtent, int* axisUpdateExtent)
+  int idx, int min, int max, const int updateExtent[6], int axisUpdateExtent[6])
 {
   if (idx > 2)
   {
@@ -1358,7 +1380,7 @@ void vtkImageData::SetAxisUpdateExtent(
 }
 
 //------------------------------------------------------------------------------
-void vtkImageData::GetAxisUpdateExtent(int idx, int& min, int& max, const int* updateExtent)
+void vtkImageData::GetAxisUpdateExtent(int idx, int& min, int& max, const int updateExtent[6])
 {
   if (idx > 2)
   {
@@ -1441,9 +1463,9 @@ void vtkImageData::GetArrayIncrements(vtkDataArray* array, vtkIdType increments[
 }
 
 //------------------------------------------------------------------------------
-void* vtkImageData::GetArrayPointerForExtent(vtkDataArray* array, int extent[6])
+void* vtkImageData::GetArrayPointerForExtent(vtkDataArray* array, VTK_FUTURE_CONST int extent[6])
 {
-  int tmp[3] = { extent[0], extent[2], extent[4] };
+  VTK_FUTURE_CONST int tmp[3] = { extent[0], extent[2], extent[4] };
   return this->GetArrayPointer(array, tmp);
 }
 
@@ -1451,9 +1473,15 @@ void* vtkImageData::GetArrayPointerForExtent(vtkDataArray* array, int extent[6])
 // This Method returns a pointer to a location in the vtkImageData.
 // Coordinates are in pixel units and are relative to the whole
 // image origin.
-void* vtkImageData::GetArrayPointer(vtkDataArray* array, int coordinate[3])
+void* vtkImageData::GetArrayPointer(vtkDataArray* array, VTK_FUTURE_CONST int coordinate[3])
 {
   vtkIdType valueIndex = this->GetValueIndex(array, coordinate);
+  if (array && !array->HasStandardMemoryLayout())
+  {
+    vtkErrorMacro("GetArrayPointer() can only be used with arrays having standard memory layout.");
+    return nullptr;
+  }
+  // NOLINTNEXTLINE(bugprone-unsafe-functions)
   return valueIndex >= 0 ? array->GetVoidPointer(valueIndex) : nullptr;
 }
 //------------------------------------------------------------------------------

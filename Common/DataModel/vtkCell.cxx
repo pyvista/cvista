@@ -4,15 +4,16 @@
 #include "vtkCell.h"
 
 #include "vtkDataArrayRange.h"
+#include "vtkDoubleArray.h"
 #include "vtkMath.h"
 #include "vtkMathUtilities.h"
 #include "vtkNew.h"
 #include "vtkPoints.h"
 #include "vtkPolygon.h"
-#include "vtkSmartPointer.h"
 #include "vtkTetra.h"
 #include "vtkTriangle.h"
 
+#include <limits>
 #include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -276,7 +277,7 @@ double vtkCell::ComputeBoundingSphere(double center[3]) const
       // Then, we take the max between this shifted dist2 and the new sphere
       // radius that we just caught.
       double maxCenterEpsilon = VTK_DBL_EPSILON *
-        std::max({ std::fabs(center[0]), std::fabs(center[1]), std::fabs(center[2]) });
+        std::max({ std::abs(center[0]), std::abs(center[1]), std::abs(center[2]) });
       dist2 += std::max(dist2 * VTK_DBL_EPSILON, maxCenterEpsilon * maxCenterEpsilon);
       dist2 = std::max(dist2, vtkMath::Distance2BetweenPoints(p, center));
     }
@@ -295,113 +296,144 @@ int vtkCell::Inflate(double dist)
     return 0;
   }
 
-  // Strategy:
-  // For each point, store in a buffer its inflated position by moving each
-  // incident edge their normal direction by a distance of dist. This new
-  // position is done by solving a linear system of equation (intersection of 2
-  // lines).
+  // -----------------------------------------------------------------------
+  // Setup
+  // -----------------------------------------------------------------------
 
-  auto pointRange = vtk::DataArrayTupleRange<3>(this->Points->GetData());
-  using ConstTupleRef = typename decltype(pointRange)::ConstTupleReferenceType;
-  using TupleRef = typename decltype(pointRange)::TupleReferenceType;
-  using ConstScalar = typename ConstTupleRef::value_type;
-  using Scalar = typename TupleRef::value_type;
+  const auto pointsArray = vtkDoubleArray::FastDownCast(this->Points->GetData());
+  if (!pointsArray)
+  {
+    vtkErrorMacro(<< "Points should be double type");
+    return 0;
+  }
+  using Scalar = vtkDoubleArray::ValueType;
+  auto pointRange = vtk::DataArrayTupleRange<3>(pointsArray);
 
+  const vtkIdType numPoints = pointsArray->GetNumberOfTuples();
+
+  // Buffer to accumulate new positions before writing back to Points.
+  // We can't update Points in-place — later iterations still need original positions.
   std::vector<Scalar> buf(3 * pointRange.size());
 
-  Scalar normal[3];
-  vtkPolygon::ComputeNormal(this->Points, normal);
+  // -----------------------------------------------------------------------
+  // Build a 2D projection basis aligned with this cell's plane.
+  //
+  // Solving two line intersections in 3D is awkward. Instead, we project
+  // into a 2D coordinate system where each line equation becomes n·x = d.
+  // The basis is derived from the cell normal and the first edge direction.
+  // -----------------------------------------------------------------------
 
-  // Matrix transforming the 3D world into a 2D space
-  // used for solving line intersection.
-  // 2x3 matrix
+  Scalar cellNormal[3];
+  vtkPolygon::ComputeNormal(this->Points, cellNormal);
+
+  // basis is a 2x3 matrix whose rows are two orthogonal in-plane unit vectors
   Scalar basis[6];
 
-  // This will be used to store consecutive edge line equations
-  // 2x2 matrix
-  Scalar normals2D[4];
+  // -----------------------------------------------------------------------
+  // Bootstrap: compute the incoming edge normal for the first point.
+  //
+  // The loop processes one edge at a time (the outgoing edge at point[i]).
+  // Each point needs both its incoming and outgoing edge normals to solve
+  // for its new position. We prime the rolling buffer with the last edge
+  // (point[N-1] -> point[0]) before the loop starts.
+  // -----------------------------------------------------------------------
 
   Scalar edgeNormal3D[3];
 
-  // Offset of the corresponding edge line equations in normals2D, shifted by
-  // dist
-  Scalar y[2];
+  // edgeNormals2D holds two consecutive edge normals in 2D (a 2x2 matrix).
+  // Slots alternate via baseId so we never recompute the previous edge.
+  Scalar edgeNormals2D[2][2];
 
-  // Intersection coordinates in 2D basis normals2D of the intersection between
-  // edges
-  Scalar x[2];
-
-  // Current index in normals2D and y. At each iteration, it binary swaps
-  int baseId = 1;
+  Scalar y[2]; // right-hand side of each line equation: n·x = dot(n, p) + dist
 
   {
-    ConstTupleRef p1 = pointRange[this->Points->GetNumberOfPoints() - 1], p2 = pointRange[0];
+    const auto p1 = pointRange[numPoints - 1];
+    const auto p2 = pointRange[0];
 
     // We do not support the case of collapsed edges
-    if (vtkMathUtilities::NearlyEqual<ConstScalar>(p1[0], p2[0]) &&
-      vtkMathUtilities::NearlyEqual<ConstScalar>(p1[1], p2[1]) &&
-      vtkMathUtilities::NearlyEqual<ConstScalar>(p1[2], p2[2]))
+    if (vtkMathUtilities::NearlyEqual<Scalar>(p1[0], p2[0]) &&
+      vtkMathUtilities::NearlyEqual<Scalar>(p1[1], p2[1]) &&
+      vtkMathUtilities::NearlyEqual<Scalar>(p1[2], p2[2]))
     {
-      return 0;
+      return 0; // degenerate: collapsed edge
     }
-    Scalar v[3] = { p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2] };
-    vtkMath::Normalize(v);
+    Scalar edgeDirection[3] = { p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2] };
+    vtkMath::Normalize(edgeDirection);
+    vtkMath::Cross(edgeDirection, cellNormal, edgeNormal3D);
 
-    // We create a 2D basis with normal to first edge
-    vtkMath::Cross(v, normal, basis);
-    vtkMath::Cross(normal, basis, basis + 3);
-
-    // In this basis the normal of first edge is (1.0, 0.0)
-    normals2D[0] = 1.0;
-    normals2D[1] = 0.0;
+    // Project the outgoing edge normal into 2D and store in the current slot.
+    // In this basis the first edge's normal projects to (1.0, 0.0)
+    edgeNormals2D[0][0] = 1.0;
+    edgeNormals2D[0][1] = 0.0;
 
     // Shifted line offset
     y[0] = dist;
+
+    // Build the 2D basis from this first edge: basis[0..2] = edge outward normal,
+    // basis[3..5] = perpendicular in-plane vector
+    std::copy_n(edgeNormal3D, 3, basis);
+    vtkMath::Cross(cellNormal, basis, basis + 3);
   }
 
-  double* bufIt = buf.data();
-  for (vtkIdType pointId = 0; pointId < this->Points->GetNumberOfPoints();
-       ++pointId, ++baseId %= 2, bufIt += 3)
+  // -----------------------------------------------------------------------
+  // Main loop: for each point, compute its displaced position
+  // -----------------------------------------------------------------------
+
+  // Current index in edgeNormals2D and y. At each iteration, it binary swaps
+  int baseId = 1;
+  Scalar x[2]; // solved 2D intersection coordinates
+
+  Scalar* newPosition = buf.data();
+  for (vtkIdType pointId = 0; pointId < numPoints; ++pointId, ++baseId %= 2, newPosition += 3)
   {
-    ConstTupleRef p1 = pointRange[pointId];
-    ConstTupleRef p2 = pointRange[(pointId + 1) % this->Points->GetNumberOfPoints()];
+    const auto p1 = pointRange[pointId];
+    const auto p2 = pointRange[(pointId + 1) % numPoints];
 
     // We do not support the case of collapsed edges
-    if (vtkMathUtilities::NearlyEqual<ConstScalar>(p1[0], p2[0]) &&
-      vtkMathUtilities::NearlyEqual<ConstScalar>(p1[1], p2[1]) &&
-      vtkMathUtilities::NearlyEqual<ConstScalar>(p1[2], p2[2]))
+    if (vtkMathUtilities::NearlyEqual<Scalar>(p1[0], p2[0]) &&
+      vtkMathUtilities::NearlyEqual<Scalar>(p1[1], p2[1]) &&
+      vtkMathUtilities::NearlyEqual<Scalar>(p1[2], p2[2]))
     {
-      return 0;
+      return 0; // degenerate: collapsed edge
     }
-    Scalar v[3] = { p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2] };
-    vtkMath::Normalize(v);
-    vtkMath::Cross(v, normal, edgeNormal3D);
-    vtkMath::MultiplyMatrixWithVector<2, 3>(basis, edgeNormal3D, normals2D + 2 * baseId);
+
+    // Compute the outgoing edge normal at p1 and store in the current slot
+    Scalar edgeDirection[3] = { p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2] };
+    vtkMath::Normalize(edgeDirection);
+    vtkMath::Cross(edgeDirection, cellNormal, edgeNormal3D);
+
+    // Project the outgoing edge normal into 2D and store in the current slot.
+    // In this basis this edge's normal projects to edgeNormals2D[baseId].
+    vtkMath::MultiplyMatrixWithVector<2, 3>(basis, edgeNormal3D, edgeNormals2D[baseId]);
+
+    // Shifted line offset
     y[baseId] = vtkMath::Dot(edgeNormal3D, p1) + dist;
-    if (std::fabs(vtkMath::Dot<Scalar, 2>(normals2D, normals2D + 2) - 1.0) <
-      std::numeric_limits<Scalar>::epsilon())
+
+    // Check if the incoming and outgoing edges are collinear (parallel normals).
+    // If so, the 2x2 system is singular — just displace directly along the normal.
+    const bool edgesAreCollinear =
+      std::abs(vtkMath::Dot<Scalar, 2>(edgeNormals2D[0], edgeNormals2D[1]) - 1.0) <
+      std::numeric_limits<Scalar>::epsilon();
+    if (edgesAreCollinear)
     {
-      // Incident edges are colinear, we handle that differently.
-      bufIt[0] = p1[0] + dist * edgeNormal3D[0];
-      bufIt[1] = p1[1] + dist * edgeNormal3D[1];
-      bufIt[2] = p1[2] + dist * edgeNormal3D[2];
+      // Incident edges are collinear, we handle that differently.
+      newPosition[0] = p1[0] + dist * edgeNormal3D[0];
+      newPosition[1] = p1[1] + dist * edgeNormal3D[1];
+      newPosition[2] = p1[2] + dist * edgeNormal3D[2];
     }
     else
     {
-      vtkMath::LinearSolve<2, 2>(normals2D, y, x);
+      // Solve n0·x = y[0], n1·x = y[1] in 2D, then project back to 3D
+      vtkMath::LinearSolve<2, 2>(edgeNormals2D, y, x);
       vtkMath::MultiplyMatrixWithVector<3, 2, vtkMatrixUtilities::Layout::Transpose>(
-        basis, x, bufIt);
+        basis, x, newPosition);
     }
   }
 
-  bufIt = buf.data();
-  for (TupleRef point : pointRange)
-  {
-    point[0] = bufIt[0];
-    point[1] = bufIt[1];
-    point[2] = bufIt[2];
-    bufIt += 3;
-  }
+  // -----------------------------------------------------------------------
+  // Write-back: apply all buffered positions to Points
+  // -----------------------------------------------------------------------
+  std::copy_n(buf.data(), buf.size(), pointsArray->GetPointer(0));
   return 1;
 }
 
@@ -490,13 +522,12 @@ double* vtkCell::GetBounds()
 // Compute Length squared of cell (i.e., bounding box diagonal squared).
 double vtkCell::GetLength2()
 {
-  double diff, l = 0.0;
-  int i;
+  double l = 0.0;
 
   this->GetBounds();
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
-    diff = this->Bounds[2 * i + 1] - this->Bounds[2 * i];
+    double diff = this->Bounds[2 * i + 1] - this->Bounds[2 * i];
     l += diff * diff;
   }
   return l;
@@ -519,10 +550,9 @@ int vtkCell::GetParametricCenter(double pcoords[3])
 // and tetrahedral topologies.
 double vtkCell::GetParametricDistance(const double pcoords[3])
 {
-  int i;
   double pDist, pDistMax = 0.0;
 
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     if (pcoords[i] < 0.0)
     {

@@ -3,6 +3,9 @@
 
 #include "vtkOpenGLPolyDataMapper.h"
 
+#include "vtkSetGet.h"
+#include "vtk_glad.h"
+
 #include "vtkArrayDispatch.h"
 #include "vtkCamera.h"
 #include "vtkCellArray.h"
@@ -42,6 +45,7 @@
 #include "vtkOpenGLVertexBufferObject.h"
 #include "vtkOpenGLVertexBufferObjectCache.h"
 #include "vtkOpenGLVertexBufferObjectGroup.h"
+#include "vtkOverrideAttribute.h"
 #include "vtkPBRIrradianceTexture.h"
 #include "vtkPBRLUTTexture.h"
 #include "vtkPBRPrefilterTexture.h"
@@ -184,6 +188,14 @@ vtkOpenGLPolyDataMapper::~vtkOpenGLPolyDataMapper()
 }
 
 //------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLPolyDataMapper::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
+}
+
+//------------------------------------------------------------------------------
 void vtkOpenGLPolyDataMapper::ReleaseGraphicsResources(vtkWindow* win)
 {
   if (!this->ResourceCallback->IsReleasing())
@@ -278,6 +290,26 @@ vtkPolyDataMapper::MapperHashType vtkOpenGLPolyDataMapper::GenerateHash(vtkPolyD
   hash += (usesCellColorTexture << 5);
   hash += (usesCellNormalTexture << 6);
   return hash;
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkOpenGLPolyDataMapper::GetMaximumNumberOfTriangles([[maybe_unused]] vtkRenderer* ren)
+{
+#ifndef GL_ES_VERSION_3_0
+  vtkOpenGLRenderer* renderer = vtkOpenGLRenderer::SafeDownCast(ren);
+  if (renderer)
+  {
+    int maxSize = -1;
+    vtkOpenGLState* state = renderer->GetState();
+    if (state)
+    {
+      state->vtkglGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &maxSize);
+      return static_cast<vtkIdType>(maxSize);
+    }
+  }
+#endif
+
+  return std::numeric_limits<vtkIdType>::max();
 }
 
 //------------------------------------------------------------------------------
@@ -811,6 +843,13 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderColor(
     colorImpl += "  vec3 ambientColor = ambientIntensity * vertexColorVSOutput.rgb;\n"
                  "  vec3 diffuseColor = diffuseIntensity * vertexColorVSOutput.rgb;\n"
                  "  float opacity = opacityUniform * vertexColorVSOutput.a;";
+
+    // PBR requires linear color space, we assume vertex colors are in sRGB space
+    if (actor->GetProperty()->GetInterpolation() == VTK_PBR)
+    {
+      colorImpl += "  ambientColor = pow(ambientColor, vec3(2.2));\n"
+                   "  diffuseColor = pow(diffuseColor, vec3(2.2));\n";
+    }
   }
   // handle point color texture map coloring
   else if (this->InterpolateScalarsBeforeMapping && this->ColorCoordinates &&
@@ -820,6 +859,13 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderColor(
                  "  vec3 ambientColor = ambientIntensity * texColor.rgb;\n"
                  "  vec3 diffuseColor = diffuseIntensity * texColor.rgb;\n"
                  "  float opacity = opacityUniform * texColor.a;";
+
+    // PBR requires linear color space, we assume vertex color map is in sRGB space
+    if (actor->GetProperty()->GetInterpolation() == VTK_PBR)
+    {
+      colorImpl += "  ambientColor = pow(ambientColor, vec3(2.2));\n"
+                   "  diffuseColor = pow(diffuseColor, vec3(2.2));\n";
+    }
   }
   // are we doing cell scalar coloring by texture?
   else if (this->HaveCellScalars && !this->DrawingVertices && !this->PointPicking)
@@ -829,6 +875,13 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderColor(
       "  vec3 ambientColor = ambientIntensity * texColor.rgb;\n"
       "  vec3 diffuseColor = diffuseIntensity * texColor.rgb;\n"
       "  float opacity = opacityUniform * texColor.a;";
+
+    // PBR requires linear color space, we assume cell color map is in sRGB space
+    if (actor->GetProperty()->GetInterpolation() == VTK_PBR)
+    {
+      colorImpl += "  ambientColor = pow(ambientColor, vec3(2.2));\n"
+                   "  diffuseColor = pow(diffuseColor, vec3(2.2));\n";
+    }
   }
   // just material but handle backfaceproperties
   else
@@ -1490,7 +1543,7 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderLight(
       {
         toString << "  // Multi-scatter approximation: see https://bruop.github.io/ibl/\n"
                     "  diffuse = (1.0 - metallic) * (1.0 - 0.04) * albedo;\n"
-                    "  vec3 Fr = max(vec3(1 - roughness), F0) - F0;\n"
+                    "  vec3 Fr = max(vec3(1.0 - roughness), F0) - F0;\n"
                     "  vec3 k_S = F0 + Fr * pow(1.0 - NdV, 5.0);\n"
                     "  vec3 FssEss = k_S * brdf.r + F90 * brdf.g;\n"
                     "  float Ems = 1.0 - (brdf.r + brdf.g);\n"
@@ -2194,7 +2247,14 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderNormal(
       //  if (int(gl_FrontFacing) == 0) does not work on mesa
       if (!this->DrawingPoints(*this->LastBoundBO, actor))
       {
-        toString << "  if (gl_FrontFacing == false) { normalVCVSOutput = -normalVCVSOutput; }\n";
+        if (this->DrawingLines(*this->LastBoundBO, actor))
+        {
+          toString << "  if (normalVCVSOutput.z < 0) { normalVCVSOutput = -normalVCVSOutput; }\n";
+        }
+        else
+        {
+          toString << "  if (gl_FrontFacing == false) { normalVCVSOutput = -normalVCVSOutput; }\n";
+        }
       }
       //"normalVC = normalVCVarying;";
       if (hasClearCoat)
@@ -2250,9 +2310,8 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderNormal(
             "//VTK::Normal::Dec\n"
             "uniform float anisotropyRotationUniform;\n");
 
-          bool rotationMap =
-            std::find_if(textures.begin(), textures.end(),
-              [](const texinfo& tex) { return tex.second == "anisotropyTex"; }) != textures.end();
+          bool rotationMap = std::find_if(textures.begin(), textures.end(), [](const texinfo& tex)
+                               { return tex.second == "anisotropyTex"; }) != textures.end();
           if (rotationMap)
           {
             // Sample the texture
@@ -2354,9 +2413,15 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderNormal(
       }
       if (!this->DrawingPoints(*this->LastBoundBO, actor))
       {
-        toString << "  if (gl_FrontFacing == false) { normalVCVSOutput = -normalVCVSOutput; }\n";
+        if (this->DrawingLines(*this->LastBoundBO, actor))
+        {
+          toString << "  if (normalVCVSOutput.z < 0) { normalVCVSOutput = -normalVCVSOutput; }\n";
+        }
+        else
+        {
+          toString << "  if (gl_FrontFacing == false) { normalVCVSOutput = -normalVCVSOutput; }\n";
+        }
       }
-
       if (hasClearCoat)
       {
         toString << "vec3 coatNormalVCVSOutput = normalVCVSOutput;\n";
@@ -2568,12 +2633,17 @@ bool vtkOpenGLPolyDataMapper::DrawingSpheres(vtkOpenGLHelper& cellBO, vtkActor* 
 }
 
 //------------------------------------------------------------------------------
-bool vtkOpenGLPolyDataMapper::DrawingTubes(vtkOpenGLHelper& cellBO, vtkActor* actor)
+bool vtkOpenGLPolyDataMapper::DrawingLines(vtkOpenGLHelper& cellBO, vtkActor* actor)
 {
-  return (actor->GetProperty()->GetRenderLinesAsTubes() &&
-    actor->GetProperty()->GetLineWidth() > 1.0 &&
+  return (actor->GetProperty()->GetLineWidth() > 1.0 &&
     this->GetOpenGLMode(actor->GetProperty()->GetRepresentation(), cellBO.PrimitiveType) ==
       GL_LINES);
+}
+
+//------------------------------------------------------------------------------
+bool vtkOpenGLPolyDataMapper::DrawingTubes(vtkOpenGLHelper& cellBO, vtkActor* actor)
+{
+  return (actor->GetProperty()->GetRenderLinesAsTubes() && this->DrawingLines(cellBO, actor));
 }
 
 //------------------------------------------------------------------------------
@@ -3858,26 +3928,26 @@ void vtkOpenGLPolyDataMapper::AppendCellTextures(vtkRenderer* /*ren*/, vtkActor*
       int numComp = this->Colors->GetNumberOfComponents();
       unsigned char* colorPtr = this->Colors->GetPointer(0);
       assert(numComp == 4);
-      newColors.reserve(numComp * ccmap->GetSize());
-      // use a single color value?
+      // Pre-allocate and gather-copy 32 bits at a time. numComp is asserted
+      // to be 4, newColors' allocator aligns to >= 4 bytes, and nOld is
+      // incremented by numComp*N by each composite delegator, so the
+      // reinterpret_casts stay on 4-byte-aligned addresses.
+      const size_t cSize = ccmap->GetSize();
+      const size_t nOld = newColors.size();
+      newColors.resize(nOld + numComp * cSize);
+      uint32_t* out32 = reinterpret_cast<uint32_t*>(newColors.data() + nOld);
       if (this->FieldDataTupleId > -1 && this->ScalarMode == VTK_SCALAR_MODE_USE_FIELD_DATA)
       {
-        for (size_t i = 0; i < ccmap->GetSize(); i++)
-        {
-          for (int j = 0; j < numComp; j++)
-          {
-            newColors.push_back(colorPtr[this->FieldDataTupleId * numComp + j]);
-          }
-        }
+        uint32_t src =
+          *reinterpret_cast<const uint32_t*>(colorPtr + this->FieldDataTupleId * numComp);
+        std::fill(out32, out32 + cSize, src);
       }
       else
       {
-        for (size_t i = 0; i < ccmap->GetSize(); i++)
+        const uint32_t* in32 = reinterpret_cast<const uint32_t*>(colorPtr);
+        for (size_t i = 0; i < cSize; i++)
         {
-          for (int j = 0; j < numComp; j++)
-          {
-            newColors.push_back(colorPtr[ccmap->GetValue(i) * numComp + j]);
-          }
+          out32[i] = in32[ccmap->GetValue(i)];
         }
       }
     }
@@ -4158,6 +4228,13 @@ void vtkOpenGLPolyDataMapper::BuildIBO(vtkRenderer* ren, vtkActor* act, vtkPolyD
   // construct a string of values that impact the IBO and see if that string has
   // changed
 
+  // Clear TempState so the IBO cache key isn't contaminated by whatever the
+  // caller left in it. Notably, BuildBufferObjects leaves poly->GetMTime()
+  // in it via the CellTexture state check; without this Clear(), any bump
+  // of the polydata MTime (e.g. from a cell-scalar change) would force the
+  // IBO to rebuild on every update even though the cell arrays themselves
+  // are unchanged.
+  this->TempState.Clear();
   // So...polydata can return a dummy CellArray when there are no lines
   this->TempState.Append(prims[0]->GetNumberOfCells() ? prims[0]->GetMTime() : 0, "prim0 mtime");
   this->TempState.Append(prims[1]->GetNumberOfCells() ? prims[1]->GetMTime() : 0, "prim1 mtime");

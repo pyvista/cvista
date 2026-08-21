@@ -1295,6 +1295,14 @@ template void vtkBoundingBox::ComputeBounds(vtkPoints* pts,
 template void vtkBoundingBox::ComputeBounds(vtkPoints* pts,
   vtk::detail::ValueIterator<vtkDataArray, 1, unsigned long long> ptIds,
   vtkIdType numberOfPointsIds, double bounds[6]);
+#ifdef VTK_DEBUG_RANGE_ITERATORS
+template void vtkBoundingBox::ComputeBounds(vtkPoints* pts,
+  vtk::detail::ValueIterator<vtkAOSDataArrayTemplate<int>, 1, vtkIdType> ptIds,
+  vtkIdType numberOfPointsIds, double bounds[6]);
+template void vtkBoundingBox::ComputeBounds(vtkPoints* pts,
+  vtk::detail::ValueIterator<vtkAOSDataArrayTemplate<long long>, 1, vtkIdType> ptIds,
+  vtkIdType numberOfPointsIds, double bounds[6]);
+#endif
 
 // ---------------------------------------------------------------------------
 void vtkBoundingBox::ComputeLocalBounds(

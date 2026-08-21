@@ -30,11 +30,14 @@
 VTK_ABI_NAMESPACE_BEGIN
 class vtkOpenGLGlyph3DHelper;
 class vtkBitArray;
+class vtkOverrideAttribute;
 
 class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLGlyph3DMapper : public vtkGlyph3DMapper
 {
 public:
   static vtkOpenGLGlyph3DMapper* New();
+  VTK_NEWINSTANCE
+  static vtkOverrideAttribute* CreateOverrideAttributes();
   vtkTypeMacro(vtkOpenGLGlyph3DMapper, vtkGlyph3DMapper);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
@@ -62,6 +65,7 @@ public:
    * Set the number of LOD.
    */
   void SetNumberOfLOD(vtkIdType nb) override;
+  vtkIdType GetNumberOfLOD() { return this->LODs.size(); }
 
   /**
    * Configure LODs. Culling must be enabled.
@@ -73,6 +77,14 @@ public:
    */
   void SetLODDistanceAndTargetReduction(
     vtkIdType index, float distance, float targetReduction) override;
+
+  // Set, Get, and GetNumberOf are needed to auto generate (de)serialization code.
+  void SetLODDistance(vtkIdType index, float distance);
+  void SetLODTargetReduction(vtkIdType index, float targetReduction);
+  float GetLODDistance(vtkIdType index);
+  float GetLODTargetReduction(vtkIdType index);
+  int GetNumberOfLODDistances() { return static_cast<int>(this->LODs.size()); }
+  int GetNumberOfLODTargetReductions() { return static_cast<int>(this->LODs.size()); }
   ///@}
 
 protected:
@@ -137,5 +149,7 @@ private:
   void ClearUnusedCachedEntries(vtkDataObject* inputDO);
 };
 
+#define vtkOpenGLGlyph3DMapper_OVERRIDE_ATTRIBUTES                                                 \
+  vtkOpenGLGlyph3DMapper::CreateOverrideAttributes()
 VTK_ABI_NAMESPACE_END
 #endif

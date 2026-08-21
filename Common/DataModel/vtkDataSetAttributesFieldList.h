@@ -94,6 +94,17 @@ public:
 
   ///@{
   /**
+   * Generate an implicit array from the provided fields that are registered
+   * so far to generate a composite array and an index array. Then, it add them in the outputData.
+   * If no index array is provided, it only generates a composite array.
+   */
+  void GenerateCompositeArray(std::vector<vtkFieldData*> fields, vtkDataSetAttributes* outputData);
+  void GenerateCompositeArray(
+    std::vector<vtkFieldData*> fields, vtkIdList* indexArray, vtkDataSetAttributes* outputData);
+  ///@}
+
+  ///@{
+  /**
    * These methods can called to generate and update the output
    * vtkDataSetAttributes. These match corresponding API on vtkDataSetAttributes
    * and can be called via the output vtkDataSetAttributes instance

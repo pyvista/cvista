@@ -145,7 +145,7 @@ int vtkLinearExtrusionFilter::RequestData(vtkInformation* vtkNotUsed(request),
   }
 
   cellIds = vtkIdList::New();
-  cellIds->Allocate(VTK_CELL_SIZE);
+  cellIds->Reserve(VTK_CELL_SIZE);
 
   // Allocate memory for output. We don't copy normals because surface geometry
   // is modified. Copy all points - this is the usual requirement and it makes
@@ -326,9 +326,9 @@ int vtkLinearExtrusionFilter::RequestData(vtkInformation* vtkNotUsed(request),
             stripIds->InsertNextId(inCellId);
           }
         } // for each sub-edge
-      }   // for each edge
-    }     // for each polygon or triangle strip
-  }       // for each cell
+      } // for each edge
+    } // for each polygon or triangle strip
+  } // for each cell
   cell->Delete();
 
   // Now Copy cell data.

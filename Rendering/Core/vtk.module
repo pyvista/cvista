@@ -32,8 +32,12 @@ PRIVATE_DEPENDS
   VTK::FiltersGeneral
   VTK::FiltersGeometry
   VTK::FiltersSources
+  VTK::jsoncpp
   VTK::vtksys
 TEST_DEPENDS
+  VTK::IOImage
+  VTK::IOXML
+  VTK::CommonColor
   VTK::CommonSystem
   VTK::FiltersExtraction
   VTK::FiltersGeneral
@@ -43,15 +47,17 @@ TEST_DEPENDS
   VTK::FiltersTexture
   VTK::ImagingSources
   VTK::InteractionStyle
+  VTK::InteractionWidgets
   VTK::IOImage
+  VTK::IOPLY
   VTK::IOLegacy
   VTK::IOParallel
   VTK::IOXML
   VTK::RenderingAnnotation
-  VTK::RenderingOpenGL2
   VTK::RenderingVRModels
-  # Enable for webgpu tests
-  # VTK::RenderingWebGPU
   VTK::TestingCore
   VTK::TestingRendering
+TEST_OPTIONAL_DEPENDS
+  VTK::RenderingOpenGL2
+  VTK::RenderingWebGPU
 INCLUDE_MARSHAL

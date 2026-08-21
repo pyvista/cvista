@@ -28,14 +28,15 @@ namespace
 template <class F>
 struct vtkInterpolateNOP
 {
-  static void InterpolationFunc(vtkInterpolationInfo* info, const F point[3], F* outPtr);
+  static void InterpolationFunc(
+    VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr);
 
   static void RowInterpolationFunc(
     vtkInterpolationWeights* weights, int idX, int idY, int idZ, F* outPtr, int n);
 };
 
 template <class F>
-void vtkInterpolateNOP<F>::InterpolationFunc(vtkInterpolationInfo*, const F[3], F*)
+void vtkInterpolateNOP<F>::InterpolationFunc(VTK_FUTURE_CONST vtkInterpolationInfo*, const F[3], F*)
 {
 }
 
@@ -319,7 +320,7 @@ namespace
 template <class F>
 void vtkSlidingWindowAllocateWorkspace(vtkInterpolationWeights* weights, F*)
 {
-  int* extent = weights->WeightExtent;
+  const int* extent = weights->WeightExtent;
 
   int kernelSizeX = weights->KernelSize[0];
   int kernelSizeY = weights->KernelSize[1];
@@ -716,8 +717,14 @@ void vtkAbstractImageInterpolator::Update()
   vtkDataArray* scalars = this->Scalars;
 
   // check for scalars
-  if (!scalars)
+  if (!scalars || !scalars->HasStandardMemoryLayout())
   {
+    if (scalars && !scalars->HasStandardMemoryLayout())
+    {
+      vtkErrorMacro(
+        "vtkAbstractImageInterpolator can only be used with arrays having standard memory layout.");
+      return;
+    }
     this->InterpolationInfo->Pointer = nullptr;
     this->InterpolationInfo->NumberOfComponents = 1;
 
@@ -789,7 +796,7 @@ void vtkAbstractImageInterpolator::Update()
   component = ((component < ncomp) ? component : ncomp - 1);
 
   int dataSize = scalars->GetDataTypeSize();
-  void* inPtr = scalars->GetVoidPointer(0);
+  void* inPtr = scalars->GetVoidPointer(0); // NOLINT(bugprone-unsafe-functions)
   info->Pointer = static_cast<char*>(inPtr) + component * dataSize;
 
   info->Array = scalars;
@@ -884,13 +891,13 @@ double vtkAbstractImageInterpolator::Interpolate(double x, double y, double z, i
 
 //------------------------------------------------------------------------------
 void vtkAbstractImageInterpolator::GetInterpolationFunc(
-  void (**)(vtkInterpolationInfo*, const double[3], double*))
+  void (**)(VTK_FUTURE_CONST vtkInterpolationInfo*, const double[3], double*))
 {
 }
 
 //------------------------------------------------------------------------------
 void vtkAbstractImageInterpolator::GetInterpolationFunc(
-  void (**)(vtkInterpolationInfo*, const float[3], float*))
+  void (**)(VTK_FUTURE_CONST vtkInterpolationInfo*, const float[3], float*))
 {
 }
 
@@ -939,7 +946,7 @@ void vtkAbstractImageInterpolator::PrecomputeWeightsForExtent(
 //------------------------------------------------------------------------------
 void vtkAbstractImageInterpolator::FreePrecomputedWeights(vtkInterpolationWeights*& weights)
 {
-  int* extent = weights->WeightExtent;
+  VTK_FUTURE_CONST int* extent = weights->WeightExtent;
 
   for (int k = 0; k < 3; k++)
   {

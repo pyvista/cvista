@@ -8,6 +8,8 @@
 #include "vtkDoubleArray.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkLine.h"
+#include "vtkMarchingCellsClipCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkMath.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
@@ -17,28 +19,39 @@
 
 #include <algorithm> //std::copy
 #include <cassert>
-#include <vector>
-
-VTK_ABI_NAMESPACE_BEGIN
-vtkStandardNewMacro(vtkWedge);
 
 namespace
 {
-constexpr double VTK_DIVERGED = 1.e6;
 //------------------------------------------------------------------------------
-// Wedge topology:
-//
-//         2
-//        /|\.
-//       / | \.
-//      /  |  \.
-//     /  /5\  \.
-//    |  /___\  |
-//    | /3   4\ |
-//    |/_______\|
-//    0         1
-//
-vtkIdType edges[vtkWedge::NumberOfEdges][2] = {
+[[maybe_unused]] constexpr const char* Topology = R"(
+   Wedge topology:
+
+           2
+          /|\
+         / | \
+        /  |  \
+       /   |   \
+      0----|----1    ← back triangle
+      |    5    |
+      |   / \   |
+      |  /   \  |
+      | /     \ |
+      |/       \|
+      3---------4    ← front triangle
+)";
+
+//------------------------------------------------------------------------------
+double ParametricCoords[18] = {
+  0.0, 0.0, 0.0, //
+  1.0, 0.0, 0.0, //
+  0.0, 1.0, 0.0, //
+  0.0, 0.0, 1.0, //
+  1.0, 0.0, 1.0, //
+  0.0, 1.0, 1.0  //
+};
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType Edges[vtkWedge::NumberOfEdges][2] = {
   { 0, 1 }, // 0
   { 1, 2 }, // 1
   { 2, 0 }, // 2
@@ -49,14 +62,18 @@ vtkIdType edges[vtkWedge::NumberOfEdges][2] = {
   { 1, 4 }, // 7
   { 2, 5 }, // 8
 };
-vtkIdType faces[vtkWedge::NumberOfFaces][vtkWedge::MaximumFaceSize + 1] = {
-  { 0, 1, 2, -1, -1 }, // 0
-  { 3, 5, 4, -1, -1 }, // 1
-  { 0, 3, 4, 1, -1 },  // 2
-  { 1, 4, 5, 2, -1 },  // 3
-  { 2, 5, 3, 0, -1 },  // 4
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType Faces[vtkWedge::NumberOfFaces][vtkWedge::MaximumFaceSize + 1] = {
+  { 0, 2, 1, -1, -1 }, // 0
+  { 3, 4, 5, -1, -1 }, // 1
+  { 0, 1, 4, 3, -1 },  // 2
+  { 1, 2, 5, 4, -1 },  // 3
+  { 2, 0, 3, 5, -1 },  // 4
 };
-constexpr vtkIdType edgeToAdjacentFaces[vtkWedge::NumberOfEdges][2] = {
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType EdgeToAdjacentFaces[vtkWedge::NumberOfEdges][2] = {
   { 0, 2 }, // 0
   { 0, 3 }, // 1
   { 0, 3 }, // 2
@@ -67,14 +84,18 @@ constexpr vtkIdType edgeToAdjacentFaces[vtkWedge::NumberOfEdges][2] = {
   { 2, 3 }, // 7
   { 3, 4 }, // 8
 };
-constexpr vtkIdType faceToAdjacentFaces[vtkWedge::NumberOfFaces][vtkWedge::MaximumFaceSize] = {
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType FaceToAdjacentFaces[vtkWedge::NumberOfFaces][vtkWedge::MaximumFaceSize] = {
   { 4, 3, 2, -1 }, // 0
   { 2, 3, 4, -1 }, // 1
   { 0, 3, 1, 4 },  // 2
   { 0, 4, 1, 2 },  // 3
   { 0, 2, 1, 3 },  // 4
 };
-constexpr vtkIdType pointToIncidentEdges[vtkWedge::NumberOfPoints][vtkWedge::MaximumValence] = {
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType PointToIncidentEdges[vtkWedge::NumberOfPoints][vtkWedge::MaximumValence] = {
   { 0, 6, 2 }, // 0
   { 0, 1, 7 }, // 1
   { 1, 2, 8 }, // 2
@@ -82,7 +103,9 @@ constexpr vtkIdType pointToIncidentEdges[vtkWedge::NumberOfPoints][vtkWedge::Max
   { 3, 7, 4 }, // 4
   { 4, 8, 5 }, // 5
 };
-constexpr vtkIdType pointToIncidentFaces[vtkWedge::NumberOfPoints][vtkWedge::MaximumValence] = {
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType PointToIncidentFaces[vtkWedge::NumberOfPoints][vtkWedge::MaximumValence] = {
   { 2, 4, 0 }, // 0
   { 0, 3, 2 }, // 1
   { 0, 4, 3 }, // 2
@@ -90,7 +113,9 @@ constexpr vtkIdType pointToIncidentFaces[vtkWedge::NumberOfPoints][vtkWedge::Max
   { 2, 3, 1 }, // 4
   { 3, 4, 1 }, // 5
 };
-constexpr vtkIdType pointToOneRingPoints[vtkWedge::NumberOfPoints][vtkWedge::MaximumValence] = {
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType PointToOneRingPoints[vtkWedge::NumberOfPoints][vtkWedge::MaximumValence] = {
   { 1, 3, 2 }, // 0
   { 0, 2, 4 }, // 1
   { 1, 0, 5 }, // 2
@@ -98,13 +123,39 @@ constexpr vtkIdType pointToOneRingPoints[vtkWedge::NumberOfPoints][vtkWedge::Max
   { 3, 1, 5 }, // 4
   { 4, 2, 3 }, // 5
 };
-constexpr vtkIdType numberOfPointsInFace[vtkWedge::NumberOfFaces] = {
+
+//------------------------------------------------------------------------------
+constexpr vtkIdType NumberOfPointsInFace[vtkWedge::NumberOfFaces] = {
   3, // 0
   3, // 1
   4, // 2
   4, // 3
   4, // 4
 };
+
+constexpr double VTK_DIVERGED = 1.e6;
+constexpr int VTK_MAX_ITERATIONS = 20;
+constexpr double VTK_CONVERGED = 1.e-04;
+}
+
+VTK_ABI_NAMESPACE_BEGIN
+vtkStandardNewMacro(vtkWedge);
+
+//------------------------------------------------------------------------------
+// Construct the wedge with six points.
+vtkWedge::vtkWedge()
+{
+  this->Points->SetNumberOfPoints(6);
+  this->PointIds->SetNumberOfIds(6);
+
+  for (int i = 0; i < 6; i++)
+  {
+    this->Points->SetPoint(i, 0.0, 0.0, 0.0);
+    this->PointIds->SetId(i, 0);
+  }
+  this->Line = vtkSmartPointer<vtkLine>::New();
+  this->Triangle = vtkSmartPointer<vtkTriangle>::New();
+  this->Quad = vtkSmartPointer<vtkQuad>::New();
 }
 
 //------------------------------------------------------------------------------
@@ -120,17 +171,17 @@ bool vtkWedge::ComputeCentroid(vtkPoints* points, const vtkIdType* pointIds, dou
   centroid[0] = centroid[1] = centroid[2] = 0.0;
   if (!pointIds)
   {
-    vtkTriangle::ComputeCentroid(points, faces[0], centroid);
-    vtkTriangle::ComputeCentroid(points, faces[1], p);
+    vtkTriangle::ComputeCentroid(points, Faces[0], centroid);
+    vtkTriangle::ComputeCentroid(points, Faces[1], p);
   }
   else
   {
-    vtkIdType facePointsIds[3] = { pointIds[faces[0][0]], pointIds[faces[0][1]],
-      pointIds[faces[0][2]] };
+    vtkIdType facePointsIds[3] = { pointIds[Faces[0][0]], pointIds[Faces[0][1]],
+      pointIds[Faces[0][2]] };
     vtkTriangle::ComputeCentroid(points, facePointsIds, centroid);
-    facePointsIds[0] = pointIds[faces[1][0]];
-    facePointsIds[1] = pointIds[faces[1][1]];
-    facePointsIds[2] = pointIds[faces[1][2]];
+    facePointsIds[0] = pointIds[Faces[1][0]];
+    facePointsIds[1] = pointIds[Faces[1][1]];
+    facePointsIds[2] = pointIds[Faces[1][2]];
     vtkTriangle::ComputeCentroid(points, facePointsIds, p);
   }
   centroid[0] += p[0];
@@ -170,35 +221,6 @@ bool vtkWedge::IsInsideOut()
 }
 
 //------------------------------------------------------------------------------
-// Construct the wedge with six points.
-vtkWedge::vtkWedge()
-{
-  this->Points->SetNumberOfPoints(6);
-  this->PointIds->SetNumberOfIds(6);
-
-  for (int i = 0; i < 6; i++)
-  {
-    this->Points->SetPoint(i, 0.0, 0.0, 0.0);
-    this->PointIds->SetId(i, 0);
-  }
-
-  this->Line = vtkLine::New();
-  this->Triangle = vtkTriangle::New();
-  this->Quad = vtkQuad::New();
-}
-
-//------------------------------------------------------------------------------
-vtkWedge::~vtkWedge()
-{
-  this->Line->Delete();
-  this->Triangle->Delete();
-  this->Quad->Delete();
-}
-
-static constexpr int VTK_WEDGE_MAX_ITERATION = 10;
-static constexpr double VTK_WEDGE_CONVERGED = 1.e-03;
-
-//------------------------------------------------------------------------------
 int vtkWedge::EvaluatePosition(const double x[3], double closestPoint[3], int& subId,
   double pcoords[3], double& dist2, double weights[])
 {
@@ -219,8 +241,8 @@ int vtkWedge::EvaluatePosition(const double x[3], double closestPoint[3], int& s
   double longestEdge = 0;
   for (int i = 0; i < 9; i++)
   {
-    pt0 = pts + 3 * edges[i][0];
-    pt1 = pts + 3 * edges[i][1];
+    pt0 = pts + 3 * Edges[i][0];
+    pt1 = pts + 3 * Edges[i][1];
     double d2 = vtkMath::Distance2BetweenPoints(pt0, pt1);
     longestEdge = std::max(longestEdge, d2);
   }
@@ -234,7 +256,7 @@ int vtkWedge::EvaluatePosition(const double x[3], double closestPoint[3], int& s
 
   //  enter iteration loop
   int converged = 0;
-  for (int iteration = 0; !converged && (iteration < VTK_WEDGE_MAX_ITERATION); iteration++)
+  for (int iteration = 0; !converged && (iteration < VTK_MAX_ITERATIONS); iteration++)
   {
     //  calculate element interpolation functions and derivatives
     vtkWedge::InterpolationFunctions(pcoords, weights);
@@ -262,7 +284,7 @@ int vtkWedge::EvaluatePosition(const double x[3], double closestPoint[3], int& s
 
     //  compute determinants and generate improvements
     double d = vtkMath::Determinant3x3(rcol, scol, tcol);
-    if (fabs(d) < determinantTolerance)
+    if (std::abs(d) < determinantTolerance)
     {
       vtkDebugMacro(<< "Determinant incorrect, iteration " << iteration);
       return -1;
@@ -273,15 +295,15 @@ int vtkWedge::EvaluatePosition(const double x[3], double closestPoint[3], int& s
     pcoords[2] = params[2] - vtkMath::Determinant3x3(rcol, scol, fcol) / d;
 
     //  check for convergence
-    if (((fabs(pcoords[0] - params[0])) < VTK_WEDGE_CONVERGED) &&
-      ((fabs(pcoords[1] - params[1])) < VTK_WEDGE_CONVERGED) &&
-      ((fabs(pcoords[2] - params[2])) < VTK_WEDGE_CONVERGED))
+    if (std::abs(pcoords[0] - params[0]) < VTK_CONVERGED &&
+      std::abs(pcoords[1] - params[1]) < VTK_CONVERGED &&
+      std::abs(pcoords[2] - params[2]) < VTK_CONVERGED)
     {
       converged = 1;
     }
     // Test for bad divergence (S.Hirschberg 11.12.2001)
-    else if ((fabs(pcoords[0]) > VTK_DIVERGED) || (fabs(pcoords[1]) > VTK_DIVERGED) ||
-      (fabs(pcoords[2]) > VTK_DIVERGED))
+    else if (std::abs(pcoords[0]) > VTK_DIVERGED || std::abs(pcoords[1]) > VTK_DIVERGED ||
+      std::abs(pcoords[2]) > VTK_DIVERGED)
     {
       return -1;
     }
@@ -346,9 +368,6 @@ int vtkWedge::EvaluatePosition(const double x[3], double closestPoint[3], int& s
 void vtkWedge::EvaluateLocation(
   int& vtkNotUsed(subId), const double pcoords[3], double x[3], double* weights)
 {
-  int i, j;
-  const double* pt;
-
   vtkWedge::InterpolationFunctions(pcoords, weights);
 
   // Efficient point access
@@ -361,10 +380,10 @@ void vtkWedge::EvaluateLocation(
   const double* pts = pointsArray->GetPointer(0);
 
   x[0] = x[1] = x[2] = 0.0;
-  for (i = 0; i < 6; i++)
+  for (int i = 0; i < 6; i++)
   {
-    pt = pts + 3 * i;
-    for (j = 0; j < 3; j++)
+    const double* pt = pts + 3 * i;
+    for (int j = 0; j < 3; j++)
     {
       x[j] += pt[j] * weights[i];
     }
@@ -376,7 +395,6 @@ void vtkWedge::EvaluateLocation(
 // parametrically.
 int vtkWedge::CellBoundary(int vtkNotUsed(subId), const double pcoords[3], vtkIdList* pts)
 {
-  int i;
 
   // define 9 planes that separate regions
   static double normals[9][3] = { { 0.0, 0.83205, -0.5547 }, { -0.639602, -0.639602, -0.426401 },
@@ -387,7 +405,7 @@ int vtkWedge::CellBoundary(int vtkNotUsed(subId), const double pcoords[3], vtkId
   double vals[9];
 
   // evaluate 9 plane equations
-  for (i = 0; i < 9; i++)
+  for (int i = 0; i < 9; i++)
   {
     vals[i] = normals[i][0] * (pcoords[0] - point[0]) + normals[i][1] * (pcoords[1] - point[1]) +
       normals[i][2] * (pcoords[2] - point[2]);
@@ -449,94 +467,15 @@ int vtkWedge::CellBoundary(int vtkNotUsed(subId), const double pcoords[3], vtkId
   }
 }
 
-namespace
-{ // required so we don't violate ODR
-struct TRIANGLE_CASES_t
-{
-  int edges[13];
-};
-using TRIANGLE_CASES = struct TRIANGLE_CASES_t;
-
-TRIANGLE_CASES triCases[] = {
-  { { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } }, // 0
-  { { 0, 6, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 1
-  { { 0, 1, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 2
-  { { 6, 1, 7, 6, 2, 1, -1, -1, -1, -1, -1, -1, -1 } },       // 3
-  { { 1, 2, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 4
-  { { 6, 1, 0, 6, 8, 1, -1, -1, -1, -1, -1, -1, -1 } },       // 5
-  { { 0, 2, 8, 7, 0, 8, -1, -1, -1, -1, -1, -1, -1 } },       // 6
-  { { 7, 6, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 7
-  { { 3, 5, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 8
-  { { 3, 5, 0, 5, 2, 0, -1, -1, -1, -1, -1, -1, -1 } },       // 9
-  { { 0, 1, 7, 6, 3, 5, -1, -1, -1, -1, -1, -1, -1 } },       // 10
-  { { 1, 7, 3, 1, 3, 5, 1, 5, 2, -1, -1, -1, -1 } },          // 11
-  { { 2, 8, 1, 6, 3, 5, -1, -1, -1, -1, -1, -1, -1 } },       // 12
-  { { 0, 3, 1, 1, 3, 5, 1, 5, 8, -1, -1, -1, -1 } },          // 13
-  { { 6, 3, 5, 0, 8, 7, 0, 2, 8, -1, -1, -1, -1 } },          // 14
-  { { 7, 3, 5, 7, 5, 8, -1, -1, -1, -1, -1, -1, -1 } },       // 15
-  { { 7, 4, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 16
-  { { 7, 4, 3, 0, 6, 2, -1, -1, -1, -1, -1, -1, -1 } },       // 17
-  { { 0, 1, 3, 1, 4, 3, -1, -1, -1, -1, -1, -1, -1 } },       // 18
-  { { 1, 4, 3, 1, 3, 6, 1, 6, 2, -1, -1, -1, -1 } },          // 19
-  { { 7, 4, 3, 2, 8, 1, -1, -1, -1, -1, -1, -1, -1 } },       // 20
-  { { 7, 4, 3, 6, 1, 0, 6, 8, 1, -1, -1, -1, -1 } },          // 21
-  { { 0, 4, 3, 0, 8, 4, 0, 2, 8, -1, -1, -1, -1 } },          // 22
-  { { 6, 8, 3, 3, 8, 4, -1, -1, -1, -1, -1, -1, -1 } },       // 23
-  { { 6, 7, 4, 6, 4, 5, -1, -1, -1, -1, -1, -1, -1 } },       // 24
-  { { 0, 7, 5, 7, 4, 5, 2, 0, 5, -1, -1, -1, -1 } },          // 25
-  { { 1, 6, 0, 1, 5, 6, 1, 4, 5, -1, -1, -1, -1 } },          // 26
-  { { 2, 1, 5, 5, 1, 4, -1, -1, -1, -1, -1, -1, -1 } },       // 27
-  { { 2, 8, 1, 6, 7, 5, 7, 4, 5, -1, -1, -1, -1 } },          // 28
-  { { 0, 7, 5, 7, 4, 5, 0, 5, 1, 1, 5, 8, -1 } },             // 29
-  { { 0, 2, 8, 0, 8, 4, 0, 4, 5, 0, 5, 6, -1 } },             // 30
-  { { 8, 4, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 31
-  { { 4, 8, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 32
-  { { 4, 8, 5, 0, 6, 2, -1, -1, -1, -1, -1, -1, -1 } },       // 33
-  { { 4, 8, 5, 0, 1, 7, -1, -1, -1, -1, -1, -1, -1 } },       // 34
-  { { 4, 8, 5, 6, 1, 7, 6, 2, 1, -1, -1, -1, -1 } },          // 35
-  { { 1, 5, 4, 2, 5, 1, -1, -1, -1, -1, -1, -1, -1 } },       // 36
-  { { 1, 5, 4, 1, 6, 5, 1, 0, 6, -1, -1, -1, -1 } },          // 37
-  { { 5, 4, 7, 5, 7, 0, 5, 0, 2, -1, -1, -1, -1 } },          // 38
-  { { 6, 4, 7, 6, 5, 4, -1, -1, -1, -1, -1, -1, -1 } },       // 39
-  { { 6, 3, 8, 3, 4, 8, -1, -1, -1, -1, -1, -1, -1 } },       // 40
-  { { 0, 3, 4, 0, 4, 8, 0, 8, 2, -1, -1, -1, -1 } },          // 41
-  { { 7, 0, 1, 6, 3, 4, 6, 4, 8, -1, -1, -1, -1 } },          // 42
-  { { 1, 7, 3, 1, 3, 2, 2, 3, 8, 8, 3, 4, -1 } },             // 43
-  { { 2, 6, 1, 6, 3, 1, 3, 4, 1, -1, -1, -1, -1 } },          // 44
-  { { 0, 3, 1, 1, 3, 4, -1, -1, -1, -1, -1, -1, -1 } },       // 45
-  { { 7, 0, 4, 4, 0, 2, 4, 2, 3, 3, 2, 6, -1 } },             // 46
-  { { 7, 3, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 47
-  { { 7, 8, 5, 7, 5, 3, -1, -1, -1, -1, -1, -1, -1 } },       // 48
-  { { 0, 6, 2, 7, 8, 5, 7, 5, 3, -1, -1, -1, -1 } },          // 49
-  { { 0, 1, 3, 1, 5, 3, 1, 8, 5, -1, -1, -1, -1 } },          // 50
-  { { 2, 1, 6, 6, 1, 3, 5, 1, 8, 3, 1, 5, -1 } },             // 51
-  { { 1, 3, 7, 1, 5, 3, 1, 2, 5, -1, -1, -1, -1 } },          // 52
-  { { 1, 0, 6, 1, 6, 5, 1, 5, 7, 7, 5, 3, -1 } },             // 53
-  { { 0, 2, 5, 0, 5, 3, -1, -1, -1, -1, -1, -1, -1 } },       // 54
-  { { 3, 6, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 55
-  { { 7, 8, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 56
-  { { 0, 7, 8, 0, 8, 2, -1, -1, -1, -1, -1, -1, -1 } },       // 57
-  { { 0, 1, 6, 1, 8, 6, -1, -1, -1, -1, -1, -1, -1 } },       // 58
-  { { 2, 1, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 59
-  { { 6, 7, 1, 6, 1, 2, -1, -1, -1, -1, -1, -1, -1 } },       // 60
-  { { 0, 7, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 61
-  { { 0, 2, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } },    // 62
-  { { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 } }  // 63
-};
-}
-
 //------------------------------------------------------------------------------
 void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
   vtkCellArray* verts, vtkCellArray* lines, vtkCellArray* polys, vtkPointData* inPd,
   vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd)
 {
   static const int CASE_MASK[6] = { 1, 2, 4, 8, 16, 32 };
-  TRIANGLE_CASES* triCase;
-  int* edge;
-  int i, j, index, v1, v2, newCellId;
-  const vtkIdType* vert;
+  int v1, v2;
   vtkIdType pts[3];
-  double t, x1buf[3], x2buf[3], x[3], deltaScalar;
+  double x1buf[3], x2buf[3], x[3];
   vtkIdType offset = verts->GetNumberOfCells() + lines->GetNumberOfCells();
 
   // When the cell's Points are stored as VTK_DOUBLE (the common case), read the
@@ -549,22 +488,22 @@ void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
   const double* pointsPtr = pointsArray ? pointsArray->GetPointer(0) : nullptr;
 
   // Build the case table
-  for (i = 0, index = 0; i < 6; i++)
+  int caseIndex = 0;
+  for (int i = 0; i < 6; i++)
   {
     if (cellScalars->GetComponent(i, 0) >= value)
     {
-      index |= CASE_MASK[i];
+      caseIndex |= CASE_MASK[i];
     }
   }
 
-  triCase = triCases + index;
-  edge = triCase->edges;
+  const int* edge = vtkMarchingCellsContourCases::GetWedgeCase(caseIndex);
 
   for (; edge[0] > -1; edge += 3)
   {
-    for (i = 0; i < 3; i++) // insert triangle
+    for (int i = 0; i < 3; i++) // insert triangle
     {
-      vert = edges[edge[i]];
+      const vtkIdType* vert = Edges[edge[i]];
 
       // calculate a preferred interpolation direction
       // Cache the two endpoint scalars; the value reused below for the
@@ -573,7 +512,7 @@ void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
       // keeping the floating-point operations bit-for-bit identical.
       double s0 = cellScalars->GetComponent(vert[0], 0);
       double s1 = cellScalars->GetComponent(vert[1], 0);
-      deltaScalar = (s1 - s0);
+      double deltaScalar = (s1 - s0);
       double v1Scalar;
       if (deltaScalar > 0)
       {
@@ -590,7 +529,7 @@ void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
       }
 
       // linear interpolation
-      t = (deltaScalar == 0.0 ? 0.0 : (value - v1Scalar) / deltaScalar);
+      double t = (deltaScalar == 0.0 ? 0.0 : (value - v1Scalar) / deltaScalar);
 
       const double* x1;
       const double* x2;
@@ -607,7 +546,7 @@ void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
         x2 = x2buf;
       }
 
-      for (j = 0; j < 3; j++)
+      for (int j = 0; j < 3; j++)
       {
         x[j] = x1[j] + t * (x2[j] - x1[j]);
       }
@@ -624,7 +563,7 @@ void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
     // check for degenerate triangle
     if (pts[0] != pts[1] && pts[0] != pts[2] && pts[1] != pts[2])
     {
-      newCellId = offset + polys->InsertNextCell(3, pts);
+      const vtkIdType newCellId = offset + polys->InsertNextCell(3, pts);
       if (outCd)
       {
         outCd->CopyData(inCd, cellId, newCellId);
@@ -634,62 +573,132 @@ void vtkWedge::Contour(double value, vtkDataArray* cellScalars, vtkIncrementalPo
 }
 
 //------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetEdgeToAdjacentFacesArray(vtkIdType edgeId)
-{
-  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
-  return edgeToAdjacentFaces[edgeId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetFaceToAdjacentFacesArray(vtkIdType faceId)
-{
-  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
-  return faceToAdjacentFaces[faceId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetPointToIncidentEdgesArray(vtkIdType pointId)
-{
-  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
-  return pointToIncidentEdges[pointId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetPointToIncidentFacesArray(vtkIdType pointId)
-{
-  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
-  return pointToIncidentFaces[pointId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetPointToOneRingPointsArray(vtkIdType pointId)
-{
-  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
-  return pointToOneRingPoints[pointId];
-}
-
-//------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetEdgeArray(vtkIdType edgeId)
-{
-  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
-  return edges[edgeId];
-}
-
-//------------------------------------------------------------------------------
 // Return the case table for table-based isocontouring (aka marching cubes
 // style implementations). A linear 3D cell with N vertices will have 2**N
-// cases. The cases list three edges in order to produce one output triangle.
+// cases. The cases list three Edges in order to produce one output triangle.
 int* vtkWedge::GetTriangleCases(int caseId)
 {
-  return triCases[caseId].edges;
+  return const_cast<int*>(vtkMarchingCellsContourCases::GetWedgeCase(caseId));
+}
+
+//------------------------------------------------------------------------------
+void vtkWedge::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPointLocator* locator,
+  vtkCellArray* connectivity, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd,
+  vtkIdType cellId, vtkCellData* outCd, int insideOut)
+{
+  vtkIdType pts[8];
+  double coords[8][3];
+  double grdDiffs[6];
+  double x[3], x1[3], x2[3];
+  vtkIdType centroidIndex = 0;
+
+  // Build the case table
+  uint8_t caseIndex = 0;
+  for (int pointId = 0; pointId < 6; ++pointId)
+  {
+    grdDiffs[pointId] = cellScalars->GetComponent(pointId, 0) - value;
+    caseIndex |= (grdDiffs[pointId] >= 0.0) << pointId;
+  }
+  const uint8_t* thisCase = insideOut
+    ? vtkMarchingCellsClipCases<true>::GetCellCase(VTK_WEDGE, caseIndex)
+    : vtkMarchingCellsClipCases<false>::GetCellCase(VTK_WEDGE, caseIndex);
+  using MCCases = vtkMarchingCellsClipCasesBase;
+  const MCCases::EDGEIDXS* edgeVertices = MCCases::GetCellEdges(VTK_WEDGE);
+  const uint8_t numberOfOutputCells = *thisCase++;
+
+  for (uint8_t outputCellId = 0; outputCellId < numberOfOutputCells; ++outputCellId)
+  {
+    const uint8_t shape = *thisCase++;
+    const uint8_t numberOfCellPoints = *thisCase++;
+    for (int i = 0; i < numberOfCellPoints; ++i)
+    {
+      const uint8_t pointIndex = *thisCase++;
+      if (pointIndex <= MCCases::P7) // Input Point
+      {
+        this->Points->GetPoint(pointIndex, coords[i]);
+        if (locator->InsertUniquePoint(coords[i], pts[i]))
+        {
+          if (outPd)
+          {
+            outPd->CopyData(inPd, this->PointIds->GetId(pointIndex), pts[i]);
+          }
+        }
+      }
+      else if (pointIndex <= MCCases::EL) // Edge point
+      {
+        const auto& edgePoints = edgeVertices[pointIndex - MCCases::EA];
+        uint8_t point1Index = edgePoints[0];
+        uint8_t point2Index = edgePoints[1];
+        double point1ToPoint2 = grdDiffs[point2Index] - grdDiffs[point1Index];
+        if (point1ToPoint2 < 0)
+        {
+          std::swap(point1Index, point2Index);
+          point1ToPoint2 = -point1ToPoint2;
+        }
+        const double point1ToIso = 0.0 - grdDiffs[point1Index];
+        const double t = point1ToPoint2 != 0 ? point1ToIso / point1ToPoint2 : 0;
+        this->Points->GetPoint(point1Index, x1);
+        this->Points->GetPoint(point2Index, x2);
+        for (int j = 0; j < 3; j++)
+        {
+          coords[i][j] = x1[j] + t * (x2[j] - x1[j]);
+        }
+
+        if (locator->InsertUniquePoint(coords[i], pts[i]))
+        {
+          if (outPd)
+          {
+            vtkIdType pointIndex1 = this->PointIds->GetId(point1Index);
+            vtkIdType pointIndex2 = this->PointIds->GetId(point2Index);
+            outPd->InterpolateEdge(inPd, pts[i], pointIndex1, pointIndex2, t);
+          }
+        }
+      }
+      else // centroid point
+      {
+        pts[i] = centroidIndex;
+      }
+    }
+    if (shape != VTK_EMPTY_CELL) // normal cell
+    {
+      const vtkIdType newCellId = connectivity->InsertNextCell(numberOfCellPoints, pts);
+      if (outCd)
+      {
+        outCd->CopyData(inCd, cellId, newCellId);
+      }
+    }
+    else // centroid
+    {
+      x[0] = x[1] = x[2] = 0.0;
+      double weightFactor = 1.0 / numberOfCellPoints;
+      double weights[8];
+      for (int i = 0; i < numberOfCellPoints; ++i)
+      {
+        x[0] += coords[i][0];
+        x[1] += coords[i][1];
+        x[2] += coords[i][2];
+        weights[i] = weightFactor;
+      }
+      x[0] *= weightFactor;
+      x[1] *= weightFactor;
+      x[2] *= weightFactor;
+      if (locator->InsertUniquePoint(x, centroidIndex))
+      {
+        if (outPd)
+        {
+          vtkNew<vtkIdList> idList;
+          idList->SetList(pts, numberOfCellPoints, /*save*/ true);
+          outPd->InterpolatePoint(outPd, centroidIndex, idList, weights);
+        }
+      }
+    }
+  }
 }
 
 //------------------------------------------------------------------------------
 vtkCell* vtkWedge::GetEdge(int edgeId)
 {
-  const vtkIdType* verts;
-
-  verts = edges[edgeId];
+  const vtkIdType* verts = Edges[edgeId];
 
   // load point id's
   this->Line->PointIds->SetId(0, this->PointIds->GetId(verts[0]));
@@ -703,16 +712,9 @@ vtkCell* vtkWedge::GetEdge(int edgeId)
 }
 
 //------------------------------------------------------------------------------
-const vtkIdType* vtkWedge::GetFaceArray(vtkIdType faceId)
-{
-  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
-  return faces[faceId];
-}
-
-//------------------------------------------------------------------------------
 vtkCell* vtkWedge::GetFace(int faceId)
 {
-  const vtkIdType* verts = faces[faceId];
+  const vtkIdType* verts = Faces[faceId];
 
   if (verts[3] != -1) // quad cell
   {
@@ -747,7 +749,110 @@ vtkCell* vtkWedge::GetFace(int faceId)
 }
 
 //------------------------------------------------------------------------------
-// Intersect faces against line.
+const vtkIdType* vtkWedge::GetEdgeArray(vtkIdType edgeId)
+{
+  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
+  return Edges[edgeId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkWedge::GetFaceArray(vtkIdType faceId)
+{
+  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
+  return Faces[faceId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkWedge::GetEdgeToAdjacentFacesArray(vtkIdType edgeId)
+{
+  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
+  return EdgeToAdjacentFaces[edgeId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkWedge::GetFaceToAdjacentFacesArray(vtkIdType faceId)
+{
+  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
+  return FaceToAdjacentFaces[faceId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkWedge::GetPointToIncidentEdgesArray(vtkIdType pointId)
+{
+  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
+  return PointToIncidentEdges[pointId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkWedge::GetPointToIncidentFacesArray(vtkIdType pointId)
+{
+  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
+  return PointToIncidentFaces[pointId];
+}
+
+//------------------------------------------------------------------------------
+const vtkIdType* vtkWedge::GetPointToOneRingPointsArray(vtkIdType pointId)
+{
+  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
+  return PointToOneRingPoints[pointId];
+}
+
+//------------------------------------------------------------------------------
+void vtkWedge::GetEdgePoints(vtkIdType edgeId, const vtkIdType*& pts)
+{
+  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
+  pts = this->GetEdgeArray(edgeId);
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkWedge::GetFacePoints(vtkIdType faceId, const vtkIdType*& pts)
+{
+  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
+  pts = this->GetFaceArray(faceId);
+  return NumberOfPointsInFace[faceId];
+}
+
+//------------------------------------------------------------------------------
+void vtkWedge::GetEdgeToAdjacentFaces(vtkIdType edgeId, const vtkIdType*& pts)
+{
+  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
+  pts = EdgeToAdjacentFaces[edgeId];
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkWedge::GetFaceToAdjacentFaces(vtkIdType faceId, const vtkIdType*& faceIds)
+{
+  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
+  faceIds = FaceToAdjacentFaces[faceId];
+  return NumberOfPointsInFace[faceId];
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkWedge::GetPointToIncidentEdges(vtkIdType pointId, const vtkIdType*& edgeIds)
+{
+  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
+  edgeIds = PointToIncidentEdges[pointId];
+  return vtkWedge::MaximumValence;
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkWedge::GetPointToIncidentFaces(vtkIdType pointId, const vtkIdType*& faceIds)
+{
+  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
+  faceIds = PointToIncidentFaces[pointId];
+  return vtkWedge::MaximumValence;
+}
+
+//------------------------------------------------------------------------------
+vtkIdType vtkWedge::GetPointToOneRingPoints(vtkIdType pointId, const vtkIdType*& pts)
+{
+  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
+  pts = PointToOneRingPoints[pointId];
+  return vtkWedge::MaximumValence;
+}
+
+//------------------------------------------------------------------------------
+// Intersect Faces against line.
 //
 int vtkWedge::IntersectWithLine(const double p1[3], const double p2[3], double tol, double& t,
   double x[3], double pcoords[3], int& subId)
@@ -760,12 +865,12 @@ int vtkWedge::IntersectWithLine(const double p1[3], const double p2[3], double t
 
   t = VTK_DOUBLE_MAX;
 
-  // first intersect the triangle faces
+  // first intersect the triangle Faces
   for (faceNum = 0; faceNum < 2; faceNum++)
   {
-    this->Points->GetPoint(faces[faceNum][0], pt1);
-    this->Points->GetPoint(faces[faceNum][1], pt2);
-    this->Points->GetPoint(faces[faceNum][2], pt3);
+    this->Points->GetPoint(Faces[faceNum][0], pt1);
+    this->Points->GetPoint(Faces[faceNum][1], pt2);
+    this->Points->GetPoint(Faces[faceNum][2], pt3);
 
     this->Triangle->Points->SetPoint(0, pt1);
     this->Triangle->Points->SetPoint(1, pt2);
@@ -798,13 +903,13 @@ int vtkWedge::IntersectWithLine(const double p1[3], const double p2[3], double t
     }
   }
 
-  // now intersect the quad faces
+  // now intersect the quad Faces
   for (faceNum = 2; faceNum < 5; faceNum++)
   {
-    this->Points->GetPoint(faces[faceNum][0], pt1);
-    this->Points->GetPoint(faces[faceNum][1], pt2);
-    this->Points->GetPoint(faces[faceNum][2], pt3);
-    this->Points->GetPoint(faces[faceNum][3], pt4);
+    this->Points->GetPoint(Faces[faceNum][0], pt1);
+    this->Points->GetPoint(Faces[faceNum][1], pt2);
+    this->Points->GetPoint(Faces[faceNum][2], pt3);
+    this->Points->GetPoint(Faces[faceNum][3], pt4);
 
     this->Quad->Points->SetPoint(0, pt1);
     this->Quad->Points->SetPoint(1, pt2);
@@ -850,11 +955,11 @@ int vtkWedge::IntersectWithLine(const double p1[3], const double p2[3], double t
 //------------------------------------------------------------------------------
 int vtkWedge::TriangulateLocalIds(int vtkNotUsed(index), vtkIdList* ptIds)
 {
-  // one wedge (or prism) is decomposed into 3 tetrahedrons and four
-  // pairs of (pointId, pointCoordinates) are provided for each tetrahedron
+  // one wedge (or prism) is decomposed into 3 tetrahedrons
+  // and four pairs of (pointId, pointCoordinates) are provided for each tetrahedron
   ptIds->SetNumberOfIds(12);
-  constexpr vtkIdType ids[3][4] = { { 0, 2, 1, 3 }, { 1, 3, 5, 4 }, { 1, 2, 5, 3 } };
-  std::copy(&ids[0][0], &ids[0][0] + 12, ptIds->begin());
+  constexpr vtkIdType ids[3][4] = { { 0, 1, 2, 3 }, { 1, 4, 5, 3 }, { 1, 3, 5, 2 } };
+  std::copy_n(&ids[0][0], 12, ptIds->begin());
   return 1;
 }
 
@@ -863,8 +968,7 @@ void vtkWedge::Derivatives(
   int vtkNotUsed(subId), const double pcoords[3], const double* values, int dim, double* derivs)
 {
   double *jI[3], j0[3], j1[3], j2[3];
-  double functionDerivs[18], sum[3], value;
-  int i, j, k;
+  double functionDerivs[18], sum[3];
 
   // compute inverse Jacobian and interpolation function derivatives
   jI[0] = j0;
@@ -873,18 +977,18 @@ void vtkWedge::Derivatives(
   this->JacobianInverse(pcoords, jI, functionDerivs);
 
   // now compute derivates of values provided
-  for (k = 0; k < dim; k++) // loop over values per point
+  for (int k = 0; k < dim; k++) // loop over values per point
   {
     sum[0] = sum[1] = sum[2] = 0.0;
-    for (i = 0; i < 6; i++) // loop over interp. function derivatives
+    for (int i = 0; i < 6; i++) // loop over interp. function derivatives
     {
-      value = values[dim * i + k];
+      double value = values[dim * i + k];
       sum[0] += functionDerivs[i] * value;
       sum[1] += functionDerivs[6 + i] * value;
       sum[2] += functionDerivs[12 + i] * value;
     }
 
-    for (j = 0; j < 3; j++) // loop over derivative directions
+    for (int j = 0; j < 3; j++) // loop over derivative directions
     {
       derivs[3 * k + j] = sum[0] * jI[j][0] + sum[1] * jI[j][1] + sum[2] * jI[j][2];
     }
@@ -938,7 +1042,6 @@ void vtkWedge::InterpolationDerivs(const double pcoords[3], double derivs[18])
 // function derivatives. Returns 0 if no inverse exists.
 int vtkWedge::JacobianInverse(const double pcoords[3], double** inverse, double derivs[18])
 {
-  int i, j;
   double *m[3], m0[3], m1[3], m2[3];
   double x[3];
 
@@ -949,15 +1052,15 @@ int vtkWedge::JacobianInverse(const double pcoords[3], double** inverse, double 
   m[0] = m0;
   m[1] = m1;
   m[2] = m2;
-  for (i = 0; i < 3; i++) // initialize matrix
+  for (int i = 0; i < 3; i++) // initialize matrix
   {
     m0[i] = m1[i] = m2[i] = 0.0;
   }
 
-  for (j = 0; j < 6; j++)
+  for (int j = 0; j < 6; j++)
   {
     this->Points->GetPoint(j, x);
-    for (i = 0; i < 3; i++)
+    for (int i = 0; i < 3; i++)
     {
       m0[i] += x[i] * derivs[j];
       m1[i] += x[i] * derivs[6 + j];
@@ -979,72 +1082,9 @@ int vtkWedge::JacobianInverse(const double pcoords[3], double** inverse, double 
 }
 
 //------------------------------------------------------------------------------
-vtkIdType vtkWedge::GetPointToOneRingPoints(vtkIdType pointId, const vtkIdType*& pts)
-{
-  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
-  pts = pointToOneRingPoints[pointId];
-  return vtkWedge::MaximumValence;
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkWedge::GetPointToIncidentFaces(vtkIdType pointId, const vtkIdType*& faceIds)
-{
-  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
-  faceIds = pointToIncidentFaces[pointId];
-  return vtkWedge::MaximumValence;
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkWedge::GetPointToIncidentEdges(vtkIdType pointId, const vtkIdType*& edgeIds)
-{
-  assert(pointId < vtkWedge::NumberOfPoints && "pointId too large");
-  edgeIds = pointToIncidentEdges[pointId];
-  return vtkWedge::MaximumValence;
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkWedge::GetFaceToAdjacentFaces(vtkIdType faceId, const vtkIdType*& faceIds)
-{
-  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
-  faceIds = faceToAdjacentFaces[faceId];
-  return numberOfPointsInFace[faceId];
-}
-
-//------------------------------------------------------------------------------
-void vtkWedge::GetEdgeToAdjacentFaces(vtkIdType edgeId, const vtkIdType*& pts)
-{
-  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
-  pts = edgeToAdjacentFaces[edgeId];
-}
-
-//------------------------------------------------------------------------------
-void vtkWedge::GetEdgePoints(vtkIdType edgeId, const vtkIdType*& pts)
-{
-  assert(edgeId < vtkWedge::NumberOfEdges && "edgeId too large");
-  pts = this->GetEdgeArray(edgeId);
-}
-
-//------------------------------------------------------------------------------
-vtkIdType vtkWedge::GetFacePoints(vtkIdType faceId, const vtkIdType*& pts)
-{
-  assert(faceId < vtkWedge::NumberOfFaces && "faceId too large");
-  pts = this->GetFaceArray(faceId);
-  return numberOfPointsInFace[faceId];
-}
-
-static double vtkWedgeCellPCoords[18] = {
-  0.0, 0.0, 0.0, //
-  1.0, 0.0, 0.0, //
-  0.0, 1.0, 0.0, //
-  0.0, 0.0, 1.0, //
-  1.0, 0.0, 1.0, //
-  0.0, 1.0, 1.0  //
-};
-
-//------------------------------------------------------------------------------
 double* vtkWedge::GetParametricCoords()
 {
-  return vtkWedgeCellPCoords;
+  return ParametricCoords;
 }
 
 //------------------------------------------------------------------------------

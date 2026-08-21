@@ -3225,7 +3225,7 @@ int vtkCGNSReader::GetUnstructuredZone(
           for (vtkIdType nf = 0; nf < numCellFaces; ++nf)
           {
             vtkIdType faceId = cellElementsArr[cellElementsIdx[nc] + nf];
-            bool mustReverse = faceId > 0;
+            bool mustReverse = (faceId > 0) == this->FlipFaceNormals;
             faceId = std::abs(faceId);
 
             // The following is needed because when the NGON_n face data does not precede the
@@ -5445,17 +5445,19 @@ int vtkCGNSReader::CanReadFile(const char* name)
   if (intFileVersion > CGNS_VERSION)
   {
     // This code allows reading version newer than the lib,
-    // as long as the 1st digit of the versions are equal
+    // if 1st digit of the versions are different new features
+    // may be present in the file but should be ignored at node parsing level
     if ((intFileVersion / 1000) > (CGNS_VERSION / 1000))
     {
-      vtkErrorMacro(<< "The file " << name
-                    << " was written with a more recent version"
-                       "of the CGNS library.  You must update your CGNS"
-                       "library before trying to read this file.");
-      ierr = 0;
+      vtkWarningMacro(<< "The file " << name
+                      << " was written with a more recent version"
+                         "of the CGNS library. New features used by a more recent"
+                         " version will not be handled correctly."
+                         " You should update your CGNS"
+                         "library before trying to read this file.");
     }
     // warn only if different in second digit
-    if ((intFileVersion / 100) > (CGNS_VERSION / 100))
+    else if ((intFileVersion / 100) > (CGNS_VERSION / 100))
     {
       vtkWarningMacro(<< "The file being read is more recent"
                          "than the CGNS library used");

@@ -9,7 +9,6 @@
 #define vtkDataArrayTupleRange_Generic_h
 
 #include "vtkAssume.h"
-#include "vtkDataArrayAccessor.h"
 #include "vtkDataArrayMeta.h"
 
 #include <algorithm>
@@ -52,7 +51,7 @@ struct ConstComponentReference
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
   using APIType = GetAPIType<ArrayType>;
@@ -150,7 +149,7 @@ struct ComponentReference
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
   using APIType = GetAPIType<ArrayType>;
@@ -262,8 +261,8 @@ public:
 
   friend VTK_ITER_INLINE void swap(ComponentReference lhs, ComponentReference rhs) noexcept
   { // Swap values, not references:
-    APIType tmp = std::move(static_cast<APIType>(lhs));
-    lhs = std::move(static_cast<APIType>(rhs));
+    APIType tmp = static_cast<APIType>(lhs);
+    lhs = static_cast<APIType>(rhs);
     rhs = std::move(tmp);
   }
 
@@ -275,14 +274,14 @@ public:
     static_assert(
       std::is_same<APIType, OAPIType>::value, "Cannot swap components with different types.");
 
-    APIType tmp = std::move(static_cast<APIType>(lhs));
-    lhs = std::move(static_cast<APIType>(rhs));
+    APIType tmp = static_cast<APIType>(lhs);
+    lhs = static_cast<APIType>(rhs);
     rhs = std::move(tmp);
   }
 
   friend VTK_ITER_INLINE void swap(ComponentReference lhs, APIType& rhs) noexcept
   {
-    APIType tmp = std::move(static_cast<APIType>(lhs));
+    APIType tmp = static_cast<APIType>(lhs);
     lhs = std::move(rhs);
     rhs = std::move(tmp);
   }
@@ -290,7 +289,7 @@ public:
   friend VTK_ITER_INLINE void swap(APIType& lhs, ComponentReference rhs) noexcept
   {
     APIType tmp = std::move(lhs);
-    lhs = std::move(static_cast<APIType>(rhs));
+    lhs = static_cast<APIType>(rhs);
     rhs = std::move(tmp);
   }
 
@@ -341,7 +340,7 @@ public:
     lhs = newVal;                                                                                  \
     return lhs;                                                                                    \
   }                                                                                                \
-  friend VTK_ITER_INLINE APIType& operator Op(APIType& lhs, ComponentReference val) noexcept       \
+  friend VTK_ITER_INLINE APIType& operator Op(APIType & lhs, ComponentReference val) noexcept      \
   {                                                                                                \
     const APIType newVal = lhs ImplOp val;                                                         \
     lhs = newVal;                                                                                  \
@@ -352,6 +351,9 @@ public:
   VTK_REF_OP_OVERLOADS(-=, -)
   VTK_REF_OP_OVERLOADS(*=, *)
   VTK_REF_OP_OVERLOADS(/=, /)
+  VTK_REF_OP_OVERLOADS(|=, |)
+  VTK_REF_OP_OVERLOADS(&=, &)
+  VTK_REF_OP_OVERLOADS(^=, ^)
 
 #undef VTK_REF_OP_OVERLOADS
 
@@ -381,7 +383,7 @@ struct ConstComponentIterator
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
 
@@ -565,7 +567,7 @@ struct ComponentIterator
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
   using APIType = GetAPIType<ArrayType>;
@@ -755,7 +757,7 @@ struct ConstTupleReference
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
   using APIType = GetAPIType<ArrayType>;
@@ -972,7 +974,7 @@ struct TupleReference
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
   using APIType = GetAPIType<ArrayType>;
@@ -1353,7 +1355,7 @@ struct ConstTupleIterator
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
 
@@ -1537,7 +1539,7 @@ struct TupleIterator
 {
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayType>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayType>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
 
@@ -1723,7 +1725,7 @@ struct TupleRange
 
 private:
   static_assert(IsValidTupleSize<TupleSize>::value, "Invalid tuple size.");
-  static_assert(IsVtkDataArray<ArrayTypeT>::value, "Invalid array type.");
+  static_assert(IsVtkArray<ArrayTypeT>::value, "Invalid array type.");
 
   using NumCompsType = GenericTupleSize<TupleSize>;
 
@@ -1897,7 +1899,7 @@ private:
 
 // Unimplemented, only used inside decltype in SelectTupleRange:
 template <typename ArrayType, ComponentIdType TupleSize>
-TupleRange<ArrayType, TupleSize> DeclareTupleRangeSpecialization(vtkDataArray*);
+TupleRange<ArrayType, TupleSize> DeclareTupleRangeSpecialization(vtkAbstractArray*);
 
 VTK_ABI_NAMESPACE_END
 } // end namespace detail

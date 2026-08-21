@@ -165,7 +165,7 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
         {
           newPts->SetDataType(VTK_DOUBLE);
         }
-        newPts->Allocate(1);
+        newPts->Reserve(1);
         newVerts = vtkCellArray::New();
         newVerts->AllocateEstimate(1, 1);
         outPD->CopyAllocate(pd, 1);
@@ -207,7 +207,7 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
       {
         newPts->SetDataType(VTK_DOUBLE);
       }
-      newPts->Allocate(totPoints);
+      newPts->Reserve(totPoints);
       newLines = vtkCellArray::New();
       newLines->AllocateEstimate(totPoints - 1, 2);
       outPD->CopyAllocate(pd, totPoints);
@@ -296,7 +296,7 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
       {
         newPts->SetDataType(VTK_DOUBLE);
       }
-      newPts->Allocate(totPoints);
+      newPts->Reserve(totPoints);
       newPolys = vtkCellArray::New();
       newPolys->AllocateEstimate(numPolys, 4);
       outPD->CopyAllocate(pd, totPoints);
@@ -397,7 +397,7 @@ int vtkStructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(requ
       {
         newPts->SetDataType(VTK_DOUBLE);
       }
-      newPts->Allocate(totPoints);
+      newPts->Reserve(totPoints);
       newVerts = vtkCellArray::New();
       newVerts->AllocateEstimate(totPoints, 1);
       outPD->CopyAllocate(pd, totPoints);
@@ -513,7 +513,7 @@ int vtkStructuredGridGeometryFilter::RequestUpdateExtent(vtkInformation* vtkNotU
   // get the info objects
   vtkInformation* inInfo = inputVector[0]->GetInformationObject(0);
 
-  int* wholeExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
+  const int* wholeExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
 
   // Copy whole extent only if present
   int ext[6];

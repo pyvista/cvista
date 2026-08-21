@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkDataSetAttributesFieldList.h"
 
+#include "vtkArrayDispatch.h"
+#include "vtkCompositeArray.h"
 #include "vtkDataArray.h"
 #include "vtkDataSetAttributes.h"
 #include "vtkIdList.h"
+#include "vtkIndexedArray.h"
 #include "vtkInformation.h"
 #include "vtkLookupTable.h"
 #include "vtkObjectFactory.h"
@@ -127,7 +130,7 @@ struct FieldInfo
     return info;
   }
 
-  void InitializeArray(vtkAbstractArray* array, vtkIdType sz, vtkIdType ext) const
+  void InitializeArray(vtkAbstractArray* array, vtkIdType sz, vtkIdType vtkNotUsed(ext)) const
   {
     if (array)
     {
@@ -152,7 +155,7 @@ struct FieldInfo
       {
         darray->SetLookupTable(this->LUT);
       }
-      array->Allocate(sz, ext);
+      array->ReserveValues(sz);
     }
   }
 
@@ -294,6 +297,49 @@ VTK_ABI_NAMESPACE_END
 } // namespace detail
 
 VTK_ABI_NAMESPACE_BEGIN
+
+/**
+ * Populate the output data with composite array
+ */
+struct AddCompositeArrayWorker
+{
+  // the input array is used to retrieve the value type and the name of the array
+  template <typename ArrayType>
+  void operator()(ArrayType* inputArray, std::vector<vtkDataArray*> arrayList,
+    vtkDataSetAttributes* outputData) const
+  {
+    using ValueType = vtk::GetAPIType<ArrayType>;
+
+    vtkSmartPointer<vtkCompositeArray<ValueType>> compositeArr =
+      vtk::ConcatenateDataArrays<ValueType>(arrayList);
+    compositeArr->SetName(inputArray->GetName());
+
+    // Add the new composite array
+    outputData->AddArray(compositeArr);
+  }
+};
+
+struct AddCompositeIndexedArrayWorker
+{
+  template <typename ArrayType>
+  void operator()(ArrayType* inputArray, std::vector<vtkDataArray*> arrayList,
+    vtkIdList* indexArray, vtkFieldData* outputFD) const
+  {
+    using ValueType = vtk::GetAPIType<ArrayType>;
+    vtkSmartPointer<vtkCompositeArray<ValueType>> compositeArr =
+      vtk::ConcatenateDataArrays<ValueType>(arrayList);
+
+    vtkNew<vtkIndexedArray<ValueType>> indexedArray;
+    indexedArray->SetName(inputArray->GetName());
+    indexedArray->SetBackend(
+      std::make_shared<vtkIndexedImplicitBackend<ValueType>>(indexArray, compositeArr, true));
+    indexedArray->SetNumberOfComponents(inputArray->GetNumberOfComponents());
+    indexedArray->SetNumberOfTuples(indexArray->GetNumberOfIds());
+
+    // Replace existing array
+    outputFD->AddArray(indexedArray);
+  }
+};
 
 class vtkDataSetAttributesFieldList::vtkInternals
 {
@@ -557,6 +603,88 @@ void vtkDataSetAttributesFieldList::UnionFieldList(vtkDataSetAttributes* dsa)
   }
 
   internals.NumberOfInputs++;
+}
+
+//------------------------------------------------------------------------------
+void vtkDataSetAttributesFieldList::GenerateCompositeArray(
+  std::vector<vtkFieldData*> fields, vtkDataSetAttributes* outputData)
+{
+  GenerateCompositeArray(fields, nullptr, outputData);
+}
+
+//------------------------------------------------------------------------------
+void vtkDataSetAttributesFieldList::GenerateCompositeArray(
+  std::vector<vtkFieldData*> fields, vtkIdList* indexArray, vtkDataSetAttributes* outputData)
+{
+  int outputArrayIndex = 0;
+  std::vector<vtkDataArray*> arrayList(this->Internals->NumberOfInputs);
+  for (auto& pair : this->Internals->Fields)
+  {
+    auto& fieldInfo = pair.second;
+
+    // Check if for each field there are the same number of arrays as inputs
+    if (this->Internals->NumberOfInputs != static_cast<int>(fieldInfo.Location.size()))
+    {
+      continue;
+    }
+
+    vtkDataArray* da = nullptr;
+    // Check if each array has a valid location in the input
+    bool locationValid = true;
+    for (int i = 0; i < this->Internals->NumberOfInputs; i++)
+    {
+      if (fieldInfo.Location[i] != -1)
+      {
+        da = vtkDataArray::SafeDownCast(
+          vtkDataArray::SafeDownCast(fields[i]->GetAbstractArray(fieldInfo.Location[i])));
+
+        arrayList[i] = da;
+      }
+      else
+      {
+        locationValid = false;
+        break;
+      }
+    }
+
+    if (!locationValid)
+    {
+      continue;
+    }
+
+    using SupportedTypes = vtkTypeList::Append<vtkArrayDispatch::AllTypes, std::string>::Result;
+    using Dispatcher = vtkArrayDispatch::DispatchByValueType<SupportedTypes>;
+
+    // We only need a composite array if the output is not a vtkPolyData
+    if (!indexArray)
+    {
+      AddCompositeArrayWorker worker;
+      if (!Dispatcher::Execute(da, worker, arrayList, outputData))
+      {
+        worker(da, arrayList, outputData);
+      }
+    }
+    else
+    {
+      AddCompositeIndexedArrayWorker worker;
+      if (!Dispatcher::Execute(da, worker, arrayList, indexArray, outputData))
+      {
+        worker(da, arrayList, indexArray, outputData);
+      }
+    }
+
+    // Append attributes to the output array if the input array had one
+    const auto attributePtrs = detail::GetAttributes(this->Internals->Fields);
+    for (int attrType = 0; attrType < vtkDataSetAttributes::NUM_ATTRIBUTES; ++attrType)
+    {
+      if (attributePtrs[attrType] == &fieldInfo)
+      {
+        outputData->SetActiveAttribute(outputArrayIndex, attrType);
+        break;
+      }
+    }
+    outputArrayIndex++;
+  }
 }
 
 //------------------------------------------------------------------------------

@@ -5,15 +5,14 @@
 #define vtkScaledSOADataArrayTemplate_txx
 
 #ifdef VTK_SCALED_SOA_DATA_ARRAY_TEMPLATE_INSTANTIATING
-#define VTK_GDA_VALUERANGE_INSTANTIATING
 #include "vtkDataArrayPrivate.txx"
-#undef VTK_GDA_VALUERANGE_INSTANTIATING
 #endif
 
 #include "vtkScaledSOADataArrayTemplate.h"
 
 #include "vtkArrayIteratorTemplate.h"
 #include "vtkBuffer.h"
+#include "vtkCommand.h"
 
 #include <cassert>
 
@@ -28,8 +27,7 @@ vtkScaledSOADataArrayTemplate<ValueType>* vtkScaledSOADataArrayTemplate<ValueTyp
 //-----------------------------------------------------------------------------
 template <class ValueType>
 vtkScaledSOADataArrayTemplate<ValueType>::vtkScaledSOADataArrayTemplate()
-  : AoSCopy(nullptr)
-  , Scale(1)
+  : Scale(1)
 {
 }
 
@@ -42,11 +40,6 @@ vtkScaledSOADataArrayTemplate<ValueType>::~vtkScaledSOADataArrayTemplate()
     this->Data[cc]->Delete();
   }
   this->Data.clear();
-  if (this->AoSCopy)
-  {
-    this->AoSCopy->Delete();
-    this->AoSCopy = nullptr;
-  }
 }
 
 //-----------------------------------------------------------------------------
@@ -83,7 +76,7 @@ void vtkScaledSOADataArrayTemplate<ValueType>::ShallowCopy(vtkDataArray* other)
   SelfType* o = SelfType::FastDownCast(other);
   if (o)
   {
-    this->Size = o->Size;
+    this->Capacity = o->Capacity;
     this->MaxId = o->MaxId;
     this->SetName(o->Name);
     this->SetNumberOfComponents(o->NumberOfComponents);
@@ -150,16 +143,21 @@ void vtkScaledSOADataArrayTemplate<ValueType>::InsertTuples(
   }
 
   vtkIdType newSize = (maxDstTupleId + 1) * this->NumberOfComponents;
-  if (this->Size < newSize)
+  if (this->Capacity < newSize)
   {
-    if (!this->Resize(maxDstTupleId + 1))
+    if (!this->ReserveTuples(maxDstTupleId + 1))
     {
-      vtkErrorMacro("Resize failed.");
+      vtkErrorMacro("ReserveTuples failed.");
       return;
     }
   }
 
-  this->MaxId = std::max(this->MaxId, newSize - 1);
+  // Update the MaxId only if actually larger.
+  // NB: for thread safety, don't use std::max here because it would write unconditionally.
+  if (newSize - 1 > this->MaxId) // NOLINT(readability-use-std-min-max)
+  {
+    this->MaxId = newSize - 1;
+  }
 
   std::vector<ValueType> vals(numComps);
   for (vtkIdType i = 0; i < n; i++)
@@ -214,8 +212,8 @@ void vtkScaledSOADataArrayTemplate<ValueType>::SetArray(
 
   if (updateMaxId)
   {
-    this->Size = numComps * size;
-    this->MaxId = this->Size - 1;
+    this->Capacity = numComps * size;
+    this->MaxId = this->Capacity - 1;
   }
   this->DataChanged();
 }
@@ -265,6 +263,20 @@ vtkScaledSOADataArrayTemplate<ValueType>::GetComponentArrayPointer(int comp)
 
 //-----------------------------------------------------------------------------
 template <class ValueType>
+vtkBuffer<ValueType>* vtkScaledSOADataArrayTemplate<ValueType>::GetComponentBuffer(int comp)
+{
+  const int numComps = this->GetNumberOfComponents();
+  if (comp >= numComps || comp < 0)
+  {
+    vtkErrorMacro("Invalid component number '" << comp << "' specified.");
+    return nullptr;
+  }
+
+  return this->Data[comp];
+}
+
+//-----------------------------------------------------------------------------
+template <class ValueType>
 bool vtkScaledSOADataArrayTemplate<ValueType>::AllocateTuples(vtkIdType numTuples)
 {
   for (size_t cc = 0, max = this->Data.size(); cc < max; ++cc)
@@ -283,54 +295,17 @@ bool vtkScaledSOADataArrayTemplate<ValueType>::ReallocateTuples(vtkIdType numTup
 {
   for (size_t cc = 0, max = this->Data.size(); cc < max; ++cc)
   {
-    if (!this->Data[cc]->Reallocate(numTuples))
+    vtkIdType oldSize = this->Data[cc]->GetSize();
+    if (numTuples != oldSize)
     {
-      return false;
+      if (!this->Data[cc]->Reallocate(numTuples))
+      {
+        return false;
+      }
     }
   }
+
   return true;
-}
-
-//-----------------------------------------------------------------------------
-template <class ValueType>
-void* vtkScaledSOADataArrayTemplate<ValueType>::GetVoidPointer(vtkIdType valueIdx)
-{
-  // Allow warnings to be silenced:
-  const char* silence = getenv("VTK_SILENCE_GET_VOID_POINTER_WARNINGS");
-  if (!silence)
-  {
-    vtkWarningMacro(<< "GetVoidPointer called. This is very expensive for "
-                       "non-array-of-structs subclasses, as the scalar array "
-                       "must be generated for each call. Using the "
-                       "vtkGenericDataArray API with vtkArrayDispatch are "
-                       "preferred. Define the environment variable "
-                       "VTK_SILENCE_GET_VOID_POINTER_WARNINGS to silence "
-                       "this warning. Additionally, for the vtkScaledSOADataArrayTemplate "
-                       "class we also set Scale to 1 since we've scaled how "
-                       "we're storing the data in memory now. ");
-  }
-
-  size_t numValues = this->GetNumberOfValues();
-
-  if (!this->AoSCopy)
-  {
-    this->AoSCopy = vtkBuffer<ValueType>::New();
-  }
-
-  if (!this->AoSCopy->Allocate(static_cast<vtkIdType>(numValues)))
-  {
-    vtkErrorMacro(<< "Error allocating a buffer of " << numValues << " '"
-                  << this->GetDataTypeAsString() << "' elements.");
-    return nullptr;
-  }
-
-  this->ExportToVoidPointer(static_cast<void*>(this->AoSCopy->GetBuffer()));
-
-  // This is the hacky thing with this class that we now need to set the scale
-  // to 1 since we internally are storing the memory in an unscaled manner
-  this->Scale = 1.0;
-
-  return static_cast<void*>(this->AoSCopy->GetBuffer() + valueIdx);
 }
 
 //-----------------------------------------------------------------------------

@@ -4,6 +4,8 @@
 
 #include "vtkConvertToMultiBlockDataSet.h"
 #include "vtkConvertToPartitionedDataSetCollection.h"
+#include "vtkDataAssembly.h"
+#include "vtkDataAssemblyUtilities.h"
 #include "vtkDataSet.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
@@ -19,11 +21,6 @@
 
 #include <string>
 #include <vector>
-
-#include <vtk_fmt.h>
-// clang-format off
-#include VTK_FMT(fmt/format.h)
-// clang-format on
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkGroupDataSetsFilter::vtkInternals
@@ -44,7 +41,7 @@ public:
       return this->Names[index];
     }
 
-    return fmt::format("Block {:0{}d}", index, precision);
+    return vtk::format("Block {:0{}d}", index, precision);
   }
 };
 
@@ -295,6 +292,12 @@ int vtkGroupDataSetsFilter::RequestData(vtkInformation* vtkNotUsed(request),
         }
       }
     }
+
+    // generate a default assembly
+    vtkNew<vtkPartitionedDataSetCollection> pdc;
+    vtkNew<vtkDataAssembly> assembly;
+    vtkDataAssemblyUtilities::GenerateHierarchy(output, assembly, pdc);
+    output->ShallowCopy(pdc);
   }
   else
   {

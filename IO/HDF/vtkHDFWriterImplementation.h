@@ -13,9 +13,9 @@
 #include "vtkAbstractArray.h"
 #include "vtkCellArray.h"
 #include "vtkHDF5ScopedHandle.h"
-#include "vtkHDFUtilities.h"
 #include "vtkHDFWriter.h"
 #include "vtkType.h"
+#include "vtk_hdf5.h"
 
 #include <array>
 #include <string>
@@ -121,27 +121,35 @@ public:
   vtkHDF::ScopedH5AHandle CreateScalarAttribute(hid_t group, const char* name, int value);
 
   /**
-   * Create an unlimited HDF dataspace with a dimension of `0 * numCols`.
-   * This dataspace can be attached to a chunked dataset and extended afterwards.
-   * Returned scoped handle may be invalid
+   * Create a vector attribute (1D array) with arbitrary type and size in the given group.
+   * Noop if the attribute already exists.
+   * Returned scoped handle may be invalid.
    */
-  vtkHDF::ScopedH5SHandle CreateUnlimitedSimpleDataspace(hsize_t numCols);
+  vtkHDF::ScopedH5AHandle CreateVectorAttribute(
+    hid_t group, const char* name, hid_t type, hsize_t size, const void* data);
 
   /**
-   * Create a group in the given group from a dataspace.
-   * Returned scoped handle may be invalid.
+   * Create a string attribute in the given group.
+   * Noop if the attribute already exists.
+   */
+  vtkHDF::ScopedH5AHandle CreateStringAttribute(
+    hid_t group, const char* name, const std::string& value);
+
+  /**
+   * Retrieve group if it exists, create it if needed.
+   * Returned scoped handle may be invalid when group could not be created
    */
   vtkHDF::ScopedH5GHandle CreateHdfGroup(hid_t group, const char* name);
 
   /**
-   * Create a group that keeps track of link creation order
-   * Returned scoped handle may be invalid.
+   * Retrieve or create a group that keeps track of link creation order
+   * Returned scoped handle may be invalid when group could not be created
    */
   vtkHDF::ScopedH5GHandle CreateHdfGroupWithLinkOrder(hid_t group, const char* name);
 
   /**
    * Create a soft link to the real group containing the block dataset.
-   * Return true if the operation succeeded.
+   * Return true if the operation succeeded or if it already exists.
    */
   bool CreateSoftLink(hid_t group, const char* groupName, const char* targetLink);
 
@@ -204,32 +212,28 @@ public:
   ///@}
 
   /**
-   * Create a chunked dataset in the given group from a dataspace.
-   * Chunked datasets are used to append data iteratively
-   * Returned scoped handle may be invalid
-   */
-  vtkHDF::ScopedH5DHandle CreateChunkedHdfDataset(hid_t group, const char* name, hid_t type,
-    hid_t dataspace, hsize_t numCols, hsize_t chunkSize[], int compressionLevel = 0);
-
-  /**
    * Creates a dataspace to the exact array dimensions
-   * Returned scoped handle may be invalid
+   * dims provides the dimensions of the structured dataset. If dims is empty, the dataspace shape
+   * is [nTuples] (or [nTuples, nComp] when nComp > 1). Returned scoped handle may be invalid
    */
-  vtkHDF::ScopedH5SHandle CreateDataspaceFromArray(vtkAbstractArray* dataArray);
+  vtkHDF::ScopedH5SHandle CreateDataspaceFromArray(
+    vtkAbstractArray* dataArray, const std::vector<hsize_t>& dims = {});
 
   /**
    * Creates a dataset in the given group from a dataArray and write data to it
-   * Returned scoped handle may be invalid
+   * dims provides the dimensions of the structured dataset. If dims is empty, the dataspace shape
+   * is [nTuples] (or [nTuples, nComp] when nComp > 1). Returned scoped handle may be invalid
    */
-  vtkHDF::ScopedH5DHandle CreateDatasetFromDataArray(
-    hid_t group, const char* name, hid_t type, vtkAbstractArray* dataArray);
+  vtkHDF::ScopedH5DHandle CreateDatasetFromDataArray(hid_t group, const char* name, hid_t type,
+    vtkAbstractArray* dataArray, const std::vector<hsize_t>& dims = {});
 
   ///@{
   /**
-   * Creates a dataset and write a value to it.
+   * Creates a dataset and write a row of values to it.
    * Returned scoped handle may be invalid
    */
-  vtkHDF::ScopedH5DHandle CreateSingleValueDataset(hid_t group, const char* name, vtkIdType value);
+  vtkHDF::ScopedH5DHandle CreateSingleRowDataset(
+    hid_t group, const char* name, const std::vector<vtkIdType>& values);
   ///@}
 
   /**
@@ -241,12 +245,21 @@ public:
     hsize_t chunkSize[], int compressionLevel = 0);
 
   /**
-   * Add a single value of integer type to an existing dataspace.
+   * Create a chunked dataset with an empty extendable dataspace using chunking and set the desired
+   * level of compression.
+   * Return true if the operation was successful.
+   */
+  bool InitDynamicDataset(hid_t group, const char* name, hid_t type,
+    const std::vector<hsize_t>& dims, hsize_t chunkSize[], int compressionLevel = 0);
+
+  /**
+   * Add a single row of integer type to an existing dataspace.
    * The trim parameter allows to overwrite the last data instead
    * of appending it to the dataset.
    * Return true if the write operation was successful.
    */
-  bool AddSingleValueToDataset(hid_t dataset, vtkIdType value, bool offset, bool trim = false);
+  bool AddSingleRowToDataset(
+    hid_t dataset, const std::vector<vtkIdType>& value, bool offset, bool trim = false);
 
   /**
    * Add a 2D value of integer type to an existing dataspace which represents the FieldDataSize.
@@ -262,24 +275,27 @@ public:
    * it appends data array at the end of the dataset.
    * Return true if the write operation was successful.
    */
-  bool AddArrayToDataset(hid_t dataset, vtkAbstractArray* dataArray, int trim = 0);
+  bool AddArrayToDataset(hid_t dataset, vtkAbstractArray* dataArray, int trim = 0,
+    const std::vector<hsize_t>& dims = {});
 
   /**
    * Append the given array to the dataset with the given `name`, creating it if it does not exist
-   * yet. If the dataset/dataspace already exists, array types much match.
+   * yet. If the dataset/dataspace already exists, array types must match.
+   * dims provides the dimensions of the structured dataset. Used only for ImageData for now.
    * Return true if the operation was successful.
    */
-  bool AddOrCreateDataset(hid_t group, const char* name, hid_t type, vtkAbstractArray* dataArray);
+  bool AddOrCreateDataset(hid_t group, const char* name, hid_t type, vtkAbstractArray* dataArray,
+    const std::vector<hsize_t>& dims = {});
 
   /**
-   * Append a single integer value to the dataset with name `name` in `group` group.
+   * Append a single row of integer values to the dataset with name `name` in `group` group.
    * Create the dataset and dataspace if it does not exist yet.
    * When offset is true, the value written to the dataset is offset by the previous value of the
    * dataspace.
    * Return true if the operation is successful.
    */
-  bool AddOrCreateSingleValueDataset(
-    hid_t group, const char* name, vtkIdType value, bool offset = false, bool trim = false);
+  bool AddOrCreateSingleRowDataset(hid_t group, const char* name,
+    const std::vector<vtkIdType>& value, bool offset = false, bool trim = false);
 
   /**
    * Append a 2D integer value to the dataset with name `FieldDataSize`.
@@ -363,6 +379,10 @@ private:
     Points,
     Cells,
     Connectivity,
+    TreeDepths,
+    Trees,
+    Descriptor,
+    HTGCoords,
     MetaData,
     Undefined
   };

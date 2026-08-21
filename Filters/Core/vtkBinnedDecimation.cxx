@@ -1259,7 +1259,7 @@ struct MapOffsets
         return;
       }
     } // for all batches in this range
-  }   // operator()
+  } // operator()
 };
 
 // Count the number of averaged points in each z-slice of the binning volume.
@@ -1426,8 +1426,8 @@ struct GenerateAveBinPoints
           }
           ++binNum;
         } // for i
-      }   // for j
-    }     // for all slices in this batch
+      } // for j
+    } // for all slices in this batch
   }
 };
 

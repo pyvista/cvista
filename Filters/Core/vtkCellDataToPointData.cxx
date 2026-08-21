@@ -324,9 +324,9 @@ public:
   int InterpolatePointDataWithMask(vtkCellDataToPointData* filter, T* input, vtkDataSet* output)
   {
     vtkNew<vtkIdList> allCellIds;
-    allCellIds->Allocate(8);
+    allCellIds->Reserve(8);
     vtkNew<vtkIdList> cellIds;
-    cellIds->Allocate(8);
+    cellIds->Reserve(8);
 
     const vtkIdType numberOfPoints = input->GetNumberOfPoints();
 

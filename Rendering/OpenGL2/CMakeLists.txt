@@ -14,21 +14,25 @@ set(classes
   vtkEquirectangularToCubeMapTexture
   vtkFastLabeledDataMapper
   vtkFramebufferPass
-  vtkGaussianBlurPass
-  vtkGenericOpenGLRenderWindow
   vtkGLSLModCamera
   vtkGLSLModCoincidentTopology
-  vtkGLSLModLight
-  vtkGLSLModPixelDebugger
   vtkGLSLModifierBase
   vtkGLSLModifierFactory
+  vtkGLSLModLight
+  vtkGLSLModPixelDebugger
+  vtkHexagonalBokehBlurPass
+  vtkGaussianBlurPass
+  vtkGenericOpenGLRenderWindow
   vtkHiddenLineRemovalPass
   vtkImageProcessingPass
   vtkLightingMapPass
   vtkLightsPass
+  vtkOSOpenGLRenderWindow
   vtkOpaquePass
   vtkOpenGLActor
   vtkOpenGLArrayTextureBufferAdapter
+  vtkOpenGLArrayTextureBufferCache
+  vtkOpenGLBatchedLabeledDataMapper
   vtkOpenGLBatchedPolyDataMapper
   vtkOpenGLBillboardTextActor3D
   vtkOpenGLBufferObject
@@ -76,13 +80,16 @@ set(classes
   vtkOpenGLTextActor3D
   vtkOpenGLTextMapper
   vtkOpenGLTexture
+  vtkOpenGLTextureCPUNormalization
+  vtkOpenGLTextureComputeShaderNormalization
+  vtkOpenGLTextureFramebufferNormalization
+  vtkOpenGLTextureNormalizationHelper
   vtkOpenGLUniforms
   vtkOpenGLVertexArrayObject
   vtkOpenGLVertexBufferObject
   vtkOpenGLVertexBufferObjectCache
   vtkOpenGLVertexBufferObjectGroup
   vtkOrderIndependentTranslucentPass
-  vtkOSOpenGLRenderWindow
   vtkOutlineGlowPass
   vtkOverlayPass
   vtkPBRIrradianceTexture
@@ -132,7 +139,10 @@ if (VTK_USE_WIN32_OPENGL AND (NOT CMAKE_CROSSCOMPILING OR DEFINED CMAKE_CROSSCOM
 endif ()
 
 set(sources)
-set(private_sources)
+set(private_headers
+  "Private/vtkOpenGLBatchedLabeledDataMapperInternals.h")
+set(private_sources
+  "Private/vtkOpenGLBatchedLabeledDataMapperInternals.cxx")
 
 set(private_classes
   vtkOpenGLLowMemoryCellTypeAgent
@@ -233,6 +243,7 @@ set(opengl_overrides
   HardwareSelector
   ImageMapper
   ImageSliceMapper
+  BatchedLabeledDataMapper
   Glyph3DMapper
   HyperTreeGridMapper
   Light

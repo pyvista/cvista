@@ -28,34 +28,8 @@ class vtkIdList;
 class vtkPoints;
 class vtkStructuredCellArray;
 class vtkUnsignedCharArray;
-
-template <typename T, int ArrayType>
-class vtkImplicitArray;
-template <typename Type>
-struct vtkConstantImplicitBackend;
-template <typename Type>
-using vtkConstantArray =
-  vtkImplicitArray<vtkConstantImplicitBackend<Type>, vtkArrayTypes::VTK_CONSTANT_ARRAY>;
-
-enum vtkStructuredDataType
-{
-  VTK_UNCHANGED VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") =
-    0,
-  VTK_SINGLE_POINT VTK_DEPRECATED_IN_9_5_0(
-    "Use vtkStructuredData::VTK_STRUCTURED_* version instead") = 1,
-  VTK_X_LINE VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") = 2,
-  VTK_Y_LINE VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") = 3,
-  VTK_Z_LINE VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") = 4,
-  VTK_XY_PLANE VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") =
-    5,
-  VTK_YZ_PLANE VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") =
-    6,
-  VTK_XZ_PLANE VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") =
-    7,
-  VTK_XYZ_GRID VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") =
-    8,
-  VTK_EMPTY VTK_DEPRECATED_IN_9_5_0("Use vtkStructuredData::VTK_STRUCTURED_* version instead") = 9
-};
+template <typename T>
+class vtkConstantArray;
 
 class VTKCOMMONDATAMODEL_EXPORT vtkStructuredData : public vtkObject
 {
@@ -102,7 +76,7 @@ public:
    * VTK_STRUCTURED_X_LINE, VTK_STRUCTURED_XY_PLANE etc.)
    */
   static int GetDataDescription(int dims[3]);
-  static int GetDataDescriptionFromExtent(int ext[6]);
+  static int GetDataDescriptionFromExtent(VTK_FUTURE_CONST int ext[6]);
   ///@}
 
   ///@{
@@ -141,7 +115,7 @@ public:
    * Computes the structured grid dimensions based on the given extent.
    * The dataDescription field is not used.
    */
-  static void GetDimensionsFromExtent(
+  static inline void GetDimensionsFromExtent(
     const int ext[6], int dims[3], int dataDescription = vtkStructuredData::VTK_STRUCTURED_EMPTY);
 
   /**
@@ -412,7 +386,7 @@ inline void vtkStructuredData::GetCellExtentFromPointExtent(
 }
 
 //------------------------------------------------------------------------------
-inline void vtkStructuredData::GetDimensionsFromExtent(const int ext[6], int dims[3], int)
+void vtkStructuredData::GetDimensionsFromExtent(const int ext[6], int dims[3], int)
 {
   dims[0] = ext[1] - ext[0] + 1;
   dims[1] = ext[3] - ext[2] + 1;

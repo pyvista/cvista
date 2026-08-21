@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 // SPDX-License-Identifier: BSD-3-Clause
 
-// VTK_DEPRECATED_IN_9_5_0()
-// VTK_DEPRECATED_IN_9_6_0()
+// VTK_DEPRECATED_IN_9_7_0()
 #define VTK_DEPRECATION_LEVEL 0
 
 #include "vtkDataArray.h"
@@ -88,8 +87,6 @@ vtkDataArray* vtkDataArray::FastDownCast(vtkAbstractArray* source)
       // GenericDataArray subclasses
       case vtkArrayTypes::VTK_AOS_DATA_ARRAY:
       case vtkArrayTypes::VTK_SOA_DATA_ARRAY:
-      case vtkAbstractArray::TypedDataArray:
-      case vtkAbstractArray::MappedDataArray:
       case vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY:
       case vtkArrayTypes::VTKM_DATA_ARRAY:
       case vtkArrayTypes::VTK_PERIODIC_DATA_ARRAY:
@@ -136,6 +133,15 @@ void vtkDataArray::ShallowCopy(vtkDataArray* other)
 }
 
 //------------------------------------------------------------------------------
+void vtkDataArray::ShallowCopy(vtkAbstractArray* other)
+{
+  if (auto* da = vtkDataArray::FastDownCast(other))
+  {
+    this->ShallowCopy(da);
+  }
+}
+
+//------------------------------------------------------------------------------
 void vtkDataArray::SetTuple(vtkIdType i, const float* source)
 {
   for (int c = 0; c < this->NumberOfComponents; ++c)
@@ -158,16 +164,21 @@ void vtkDataArray::InsertTuple(
   vtkIdType dstTupleIdx, vtkIdType srcTupleIdx, vtkAbstractArray* source)
 {
   vtkIdType newSize = (dstTupleIdx + 1) * this->NumberOfComponents;
-  if (this->Size < newSize)
+  if (this->Capacity < newSize)
   {
-    if (!this->Resize(dstTupleIdx + 1))
+    if (!this->ReserveTuples(dstTupleIdx + 1))
     {
       vtkErrorMacro("Resize failed.");
       return;
     }
   }
 
-  this->MaxId = std::max(this->MaxId, newSize - 1);
+  // Update the MaxId only if actually larger.
+  // NB: for thread safety, don't use std::max here because it would write unconditionally.
+  if (newSize - 1 > this->MaxId) // NOLINT(readability-use-std-min-max)
+  {
+    this->MaxId = newSize - 1;
+  }
 
   this->SetTuple(dstTupleIdx, srcTupleIdx, source);
 }
@@ -686,7 +697,7 @@ unsigned long vtkDataArray::GetActualMemorySize() const
   double size;
   // The allocated array may be larger than the number of primitives used.
   // numPrims = this->GetNumberOfTuples() * this->GetNumberOfComponents();
-  numPrims = this->GetSize();
+  numPrims = this->GetCapacity();
 
   size = vtkDataArray::GetDataTypeSize(this->GetDataType());
 
@@ -1073,7 +1084,8 @@ void vtkDataArray::RemoveLastTuple()
 {
   if (this->GetNumberOfTuples() > 0)
   {
-    this->Resize(this->GetNumberOfTuples() - 1);
+    this->SetNumberOfTuples(this->GetNumberOfTuples() - 1);
+    this->Squeeze();
   }
 }
 
@@ -1093,7 +1105,7 @@ void vtkDataArray::PrintSelf(ostream& os, vtkIndent indent)
   }
   os << indent << "Number Of Components: " << this->NumberOfComponents << "\n";
   os << indent << "Number Of Tuples: " << this->GetNumberOfTuples() << "\n";
-  os << indent << "Size: " << this->Size << "\n";
+  os << indent << "Capacity: " << this->Capacity << "\n";
   os << indent << "MaxId: " << this->MaxId << "\n";
   if (this->LookupTable)
   {

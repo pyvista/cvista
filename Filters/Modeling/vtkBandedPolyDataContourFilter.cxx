@@ -3,6 +3,7 @@
 #include "vtkBandedPolyDataContourFilter.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <numeric>
 #include <vector>
@@ -33,6 +34,18 @@ namespace
 // stored, so we need a different value is not a valid cell index to indicate
 // that an edge has no intersection points.
 constexpr vtkIdType NO_INTERSECTION = -999;
+
+//------------------------------------------------------------------------------
+// Returns true if any vertex of a cell has a non-finite scalar component. Such
+// cells are skipped during contouring: comparisons against NaN are all false,
+// which would otherwise send the clip-value search and the polygon-band walk
+// into an infinite loop.
+bool CellHasNonFiniteScalar(
+  vtkDataArray* scalars, int component, vtkIdType npts, const vtkIdType* pts)
+{
+  return std::any_of(pts, pts + npts, [scalars, component](vtkIdType id)
+    { return !std::isfinite(scalars->GetComponent(id, component)); });
+}
 
 //------------------------------------------------------------------------------
 // Bookkeeping of polygon points
@@ -379,7 +392,15 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
   // intersections. First we sort the contour values into an ascending
   // list of clip values including the extreme min/max values.
   double range[2];
-  inScalars->GetRange(range);
+  inScalars->GetFiniteRange(range, this->Component);
+
+  // If every scalar is non-finite, the finite range collapses to [+inf, -inf]
+  // and there is nothing to contour.
+  if (!std::isfinite(range[0]) || !std::isfinite(range[1]) || range[1] < range[0])
+  {
+    vtkErrorMacro(<< "All scalar values are non-finite; nothing to contour.");
+    return 1;
+  }
 
   // base clip tolerance on overall input scalar range
   this->Internal->ClipTolerance = this->ClipTolerance * (range[1] - range[0]);
@@ -459,13 +480,13 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
   // Note: since we use the output scalars in the execution of the algorithm,
   // the output point scalars MUST BE double or bad things happen due to
   // numerical precision issues.
-  newPts->Allocate(estimatedSize, estimatedSize);
+  newPts->Reserve(estimatedSize);
   outPD->CopyScalarsOff();
   outPD->CopyFieldOff(inScalars->GetName());
   outPD->InterpolateAllocate(pd, 3 * numPts, numPts);
   vtkNew<vtkDoubleArray> outScalars;
   outScalars->SetName(inScalars->GetName());
-  outScalars->Allocate(3 * numPts, numPts);
+  outScalars->ReserveValues(3 * numPts);
   outPD->SetScalars(outScalars);
 
   for (int i = 0; i < numPts; i++)
@@ -478,7 +499,7 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
 
   // These are the new cell scalars
   vtkNew<vtkFloatArray> newScalars;
-  newScalars->Allocate(numCells * 5, numCells);
+  newScalars->ReserveValues(numCells * 5);
   newScalars->SetName("Scalars");
 
   // Used to keep track of intersections
@@ -496,6 +517,10 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
     for (verts->InitTraversal(); verts->GetNextCell(npts, pts) && !abort;
          abort = this->CheckAbort())
     {
+      if (::CellHasNonFiniteScalar(inScalars, this->Component, npts, pts))
+      {
+        continue;
+      }
       for (int i = 0; i < npts; i++)
       {
         cellId = this->InsertCell(newVerts, 1, pts + i, cellId,
@@ -524,6 +549,10 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
     for (lines->InitTraversal(); lines->GetNextCell(npts, pts) && !abort;
          abort = this->CheckAbort())
     {
+      if (::CellHasNonFiniteScalar(inScalars, this->Component, npts, pts))
+      {
+        continue;
+      }
       for (int i = 0; i < (npts - 1); i++)
       {
         numEdgePts = this->ClipEdge(
@@ -545,6 +574,10 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
     for (lines->InitTraversal(); lines->GetNextCell(npts, pts) && !abort;
          abort = this->CheckAbort())
     {
+      if (::CellHasNonFiniteScalar(inScalars, this->Component, npts, pts))
+      {
+        continue;
+      }
       for (int i = 0; i < (npts - 1); i++)
       {
         v = pts[i];
@@ -667,6 +700,11 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
         this->UpdateProgress(0.1 + 0.45 * (static_cast<double>(count) / numPolys));
       }
 
+      if (::CellHasNonFiniteScalar(inScalars, this->Component, npts, pts))
+      {
+        continue;
+      }
+
       for (int i = 0; i < npts; i++)
       {
         v = pts[i];
@@ -709,6 +747,11 @@ int vtkBandedPolyDataContourFilter::RequestData(vtkInformation* vtkNotUsed(reque
       if (!(++count % updateCount))
       {
         this->UpdateProgress(0.55 + 0.45 * (static_cast<double>(count) / numPolys));
+      }
+
+      if (::CellHasNonFiniteScalar(inScalars, this->Component, npts, pts))
+      {
+        continue;
       }
 
       // Create a new polygon that includes all the points including the

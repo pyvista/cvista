@@ -131,6 +131,7 @@ XdmfValuesXML::Write(XdmfArray *anArray, XdmfConstString /*HeavyDataSetName*/){
     }
     StringOutput << ends;
     XdmfString toReturn = StringOutput.str();
+    StringOutput.rdbuf()->freeze(0);
     return(this->Set("CDATA", toReturn));
 }
 

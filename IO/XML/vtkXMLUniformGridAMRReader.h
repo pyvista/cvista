@@ -3,8 +3,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /**
  * @class   vtkXMLUniformGridAMRReader
- * @brief   Reader for amr datasets (vtkOverlappingAMR
- * or vtkNonOverlappingAMR).
+ * @brief   Reader for amr datasets (vtkOverlappingAMR or vtkNonOverlappingAMR).
  *
  * vtkXMLUniformGridAMRReader reads the VTK XML data files for all types of amr
  * datasets including vtkOverlappingAMR, vtkNonOverlappingAMR and the legacy
@@ -22,17 +21,19 @@
 
 #include "vtkIOXMLModule.h"  // For export macro
 #include "vtkSmartPointer.h" // needed for vtkSmartPointer.
-#include "vtkXMLCompositeDataReader.h"
+#include "vtkXMLPartitionedDataSetCollectionReader.h"
+
+#include <map> // std::map
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkOverlappingAMR;
 class vtkUniformGridAMR;
 
-class VTKIOXML_EXPORT vtkXMLUniformGridAMRReader : public vtkXMLCompositeDataReader
+class VTKIOXML_EXPORT vtkXMLUniformGridAMRReader : public vtkXMLPartitionedDataSetCollectionReader
 {
 public:
   static vtkXMLUniformGridAMRReader* New();
-  vtkTypeMacro(vtkXMLUniformGridAMRReader, vtkXMLCompositeDataReader);
+  vtkTypeMacro(vtkXMLUniformGridAMRReader, vtkXMLPartitionedDataSetCollectionReader);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
   ///@{
@@ -53,6 +54,9 @@ protected:
   vtkXMLUniformGridAMRReader();
   ~vtkXMLUniformGridAMRReader() override;
 
+  // Get the name of the data set being read.
+  const char* GetDataSetName() override;
+
   /**
    * This method is used by CanReadFile() to check if the reader can read an XML
    * with the primary element with the given name. Default implementation
@@ -69,13 +73,23 @@ protected:
    */
   int ReadVTKFile(vtkXMLDataElement* eVTKFile) override;
 
+  const char* GetXMLPartitionsName() override { return "Block"; }
+
+  const char* GetXMLPartitionIndexName() override { return "level"; }
+
   /**
-   * Read the meta-data from the AMR from the file. Note that since
-   * ReadPrimaryElement() is only called when the filename changes, we are
-   * technically not supporting time-varying AMR datasets in this format right
-   * now.
+   * Read the meta-data from the AMR from the file.
    */
-  int ReadPrimaryElement(vtkXMLDataElement* ePrimary) override;
+  void CreateMetaData(vtkXMLDataElement* ePrimary) override;
+
+  /**
+   * Synchronize the data array selection of the reader for the file specified in the XML element.
+   */
+  void SyncCompositeDataArraySelections(vtkCompositeDataSet* composite, vtkXMLDataElement* element,
+    const std::string& filePath) override
+  {
+    this->Superclass::SyncCompositeDataArraySelections(composite, element, filePath);
+  }
 
   /**
    * Overridden to create an output data object based on the type in the file.
@@ -86,32 +100,39 @@ protected:
     vtkInformationVector* outputVector) override;
 
   /**
-   * Overridden to put vtkOverlappingAMR in the pipeline if
-   * available/applicable.
+   * Given the composite id, this method tells if the block should be read
    */
-  int RequestInformation(vtkInformation* request, vtkInformationVector** inputVector,
-    vtkInformationVector* outputVector) override;
+  bool IsBlockSelected(unsigned int compositeIndex) override;
 
-  // Get the name of the data set being read.
-  const char* GetDataSetName() override;
+  /**
+   * Given the data object class, return whether it is allowed.
+   */
+  bool CanReadDataObject(vtkDataObject* dataObject) override;
 
-  // Read the XML element for the subtree of a the composite dataset.
+  // Read the vtkDataSet (a leaf) in the composite dataset.
+  vtkDataObject* ReadDataObject(vtkXMLDataElement* xmlElem, const char* filePath) override;
+
+  // Read the XML element for the subtree of a composite dataset.
   // dataSetIndex is used to rank the leaf nodes in an inorder traversal.
   void ReadComposite(vtkXMLDataElement* element, vtkCompositeDataSet* composite,
     const char* filePath, unsigned int& dataSetIndex) override;
-
-  // Read the vtkDataSet (a leaf) in the composite dataset.
-  vtkDataSet* ReadDataset(vtkXMLDataElement* xmlElem, const char* filePath) override;
-
-  vtkSmartPointer<vtkOverlappingAMR> Metadata;
-  unsigned int MaximumLevelsToReadByDefault = 0;
 
 private:
   vtkXMLUniformGridAMRReader(const vtkXMLUniformGridAMRReader&) = delete;
   void operator=(const vtkXMLUniformGridAMRReader&) = delete;
 
-  void SynchronizeDataArraySelectionRecursively(
-    vtkXMLDataElement* element, const std::string& filePath);
+  bool HasBlockRequests = true;
+  unsigned int MaximumLevelsToReadByDefault = 0;
+  std::map<unsigned int, unsigned int> CompositeIdToLevel;
+
+  // Hide Selection functionality since, AMR only support levels
+  vtkDataAssembly* GetAssembly() override { return nullptr; }
+  int GetAssemblyTag() VTK_FUTURE_CONST override { return 0; }
+  bool AddSelector(const char* vtkNotUsed(selector)) override { return false; }
+  void ClearSelectors() override {}
+  void SetSelector(const char* vtkNotUsed(selector)) override {}
+  int GetNumberOfSelectors() const override { return 0; }
+  const char* GetSelector(int vtkNotUsed(index)) const override { return nullptr; }
 
   char* OutputDataType = nullptr;
   vtkSetStringMacro(OutputDataType);

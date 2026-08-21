@@ -26,7 +26,7 @@
 #include "vtkRenderer.h"
 #include "vtkSphereSource.h"
 #include "vtkTransform.h"
-#include "vtkTransformPolyDataFilter.h"
+#include "vtkTransformFilter.h"
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkOrientedGlyphContourRepresentation);
@@ -51,7 +51,7 @@ vtkOrientedGlyphContourRepresentation::vtkOrientedGlyphContourRepresentation()
   this->FocalPoint->SetNumberOfPoints(1);
   this->FocalPoint->SetPoint(0, 0.0, 0.0, 0.0);
 
-  vtkDoubleArray* normals = vtkDoubleArray::New();
+  vtkNew<vtkDoubleArray> normals;
   normals->SetNumberOfComponents(3);
   normals->SetNumberOfTuples(100);
   normals->SetNumberOfTuples(1);
@@ -64,7 +64,7 @@ vtkOrientedGlyphContourRepresentation::vtkOrientedGlyphContourRepresentation()
   this->ActiveFocalPoint->SetNumberOfPoints(1);
   this->ActiveFocalPoint->SetPoint(0, 0.0, 0.0, 0.0);
 
-  vtkDoubleArray* activeNormals = vtkDoubleArray::New();
+  vtkNew<vtkDoubleArray> activeNormals;
   activeNormals->SetNumberOfComponents(3);
   activeNormals->SetNumberOfTuples(100);
   activeNormals->SetNumberOfTuples(1);
@@ -73,12 +73,10 @@ vtkOrientedGlyphContourRepresentation::vtkOrientedGlyphContourRepresentation()
   this->FocalData = vtkPolyData::New();
   this->FocalData->SetPoints(this->FocalPoint);
   this->FocalData->GetPointData()->SetNormals(normals);
-  normals->Delete();
 
   this->ActiveFocalData = vtkPolyData::New();
   this->ActiveFocalData->SetPoints(this->ActiveFocalPoint);
   this->ActiveFocalData->GetPointData()->SetNormals(activeNormals);
-  activeNormals->Delete();
 
   this->Glypher = vtkGlyph3D::New();
   this->Glypher->SetInputData(this->FocalData);
@@ -98,38 +96,33 @@ vtkOrientedGlyphContourRepresentation::vtkOrientedGlyphContourRepresentation()
 
   // The transformation of the cursor will be done via vtkGlyph3D
   // By default a vtkCursor2D will be used to define the cursor shape
-  vtkCursor2D* cursor2D = vtkCursor2D::New();
+  vtkNew<vtkCursor2D> cursor2D;
   cursor2D->AllOff();
   cursor2D->PointOn();
   cursor2D->Update();
   this->SetCursorShape(cursor2D->GetOutput());
-  cursor2D->Delete();
 
-  vtkCylinderSource* cylinder = vtkCylinderSource::New();
+  vtkNew<vtkCylinderSource> cylinder;
   cylinder->SetResolution(64);
   cylinder->SetRadius(0.5);
   cylinder->SetHeight(0.0);
   cylinder->CappingOff();
   cylinder->SetCenter(0, 0, 0);
 
-  vtkCleanPolyData* clean = vtkCleanPolyData::New();
+  vtkNew<vtkCleanPolyData> clean;
   clean->PointMergingOn();
   clean->CreateDefaultLocator();
   clean->SetInputConnection(cylinder->GetOutputPort());
 
-  vtkTransform* t = vtkTransform::New();
+  vtkNew<vtkTransform> t;
   t->RotateZ(90.0);
 
-  vtkTransformPolyDataFilter* tpd = vtkTransformPolyDataFilter::New();
+  vtkNew<vtkTransformFilter> tpd;
   tpd->SetInputConnection(clean->GetOutputPort());
   tpd->SetTransform(t);
-  clean->Delete();
-  cylinder->Delete();
 
   tpd->Update();
-  this->SetActiveCursorShape(tpd->GetOutput());
-  tpd->Delete();
-  t->Delete();
+  this->SetActiveCursorShape(tpd->GetPolyDataOutput());
 
   this->Glypher->SetSourceData(this->CursorShape);
   this->ActiveGlypher->SetSourceData(this->ActiveCursorShape);
@@ -583,8 +576,8 @@ void vtkOrientedGlyphContourRepresentation::CreateDefaultProperties()
 //------------------------------------------------------------------------------
 void vtkOrientedGlyphContourRepresentation::BuildLines()
 {
-  vtkPoints* points = vtkPoints::New();
-  vtkCellArray* lines = vtkCellArray::New();
+  vtkNew<vtkPoints> points;
+  vtkNew<vtkCellArray> lines;
 
   int i, j;
   vtkIdType index = 0;
@@ -642,9 +635,6 @@ void vtkOrientedGlyphContourRepresentation::BuildLines()
 
   this->Lines->SetPoints(points);
   this->Lines->SetLines(lines);
-
-  points->Delete();
-  lines->Delete();
 }
 
 //------------------------------------------------------------------------------
@@ -735,12 +725,10 @@ void vtkOrientedGlyphContourRepresentation::BuildRepresentation()
   if (this->ShowSelectedNodes && this->SelectedNodesGlypher)
   {
     this->SelectedNodesGlypher->SetScaleFactor(distance * this->HandleSize);
-    this->FocalPoint->Reset();
-    this->FocalPoint->SetNumberOfPoints(0);
-    this->FocalData->GetPointData()->GetNormals()->SetNumberOfTuples(0);
-    this->SelectedNodesPoints->Reset();
-    this->SelectedNodesPoints->SetNumberOfPoints(0);
-    this->SelectedNodesData->GetPointData()->GetNormals()->SetNumberOfTuples(0);
+    this->FocalPoint->Initialize();
+    this->FocalData->GetPointData()->GetNormals()->Initialize();
+    this->SelectedNodesPoints->Initialize();
+    this->SelectedNodesData->GetPointData()->GetNormals()->Initialize();
     for (i = 0; i < numPoints; i++)
     {
       if (i != this->ActiveNode)
@@ -960,12 +948,11 @@ double* vtkOrientedGlyphContourRepresentation::GetBounds()
 //------------------------------------------------------------------------------
 void vtkOrientedGlyphContourRepresentation::CreateSelectedNodesRepresentation()
 {
-  vtkSphereSource* sphere = vtkSphereSource::New();
+  vtkNew<vtkSphereSource> sphere;
   sphere->SetThetaResolution(12);
   sphere->SetRadius(0.3);
   this->SelectedNodesCursorShape = sphere->GetOutput();
   this->SelectedNodesCursorShape->Register(this);
-  sphere->Delete();
 
   // Represent the position of the cursor
   this->SelectedNodesPoints = vtkPoints::New();
@@ -973,7 +960,7 @@ void vtkOrientedGlyphContourRepresentation::CreateSelectedNodesRepresentation()
   // this->SelectedNodesPoints->SetNumberOfPoints(1);
   // this->SelectedNodesPoints->SetPoint(0, 0.0, 0.0, 0.0);
 
-  vtkDoubleArray* normals = vtkDoubleArray::New();
+  vtkNew<vtkDoubleArray> normals;
   normals->SetNumberOfComponents(3);
   normals->SetNumberOfTuples(100);
   normals->SetNumberOfTuples(1);
@@ -983,7 +970,6 @@ void vtkOrientedGlyphContourRepresentation::CreateSelectedNodesRepresentation()
   this->SelectedNodesData = vtkPolyData::New();
   this->SelectedNodesData->SetPoints(this->SelectedNodesPoints);
   this->SelectedNodesData->GetPointData()->SetNormals(normals);
-  normals->Delete();
 
   this->SelectedNodesGlypher = vtkGlyph3D::New();
   this->SelectedNodesGlypher->SetInputData(this->SelectedNodesData);
@@ -1000,7 +986,7 @@ void vtkOrientedGlyphContourRepresentation::CreateSelectedNodesRepresentation()
   vtkPolyDataMapper::SetResolveCoincidentTopologyToPolygonOffset();
   this->SelectedNodesMapper->ScalarVisibilityOff();
 
-  vtkProperty* selProperty = vtkProperty::New();
+  vtkNew<vtkProperty> selProperty;
   selProperty->SetColor(0.0, 1.0, 0.0);
   selProperty->SetLineWidth(0.5);
   selProperty->SetPointSize(3);
@@ -1008,7 +994,6 @@ void vtkOrientedGlyphContourRepresentation::CreateSelectedNodesRepresentation()
   this->SelectedNodesActor = vtkActor::New();
   this->SelectedNodesActor->SetMapper(this->SelectedNodesMapper);
   this->SelectedNodesActor->SetProperty(selProperty);
-  selProperty->Delete();
 }
 
 //------------------------------------------------------------------------------

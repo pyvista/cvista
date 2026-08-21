@@ -91,14 +91,14 @@ public:
    * This is so ids are unified between vtkCell and vtkPoints, and so vtkCell ids
    * can be used as inputs in algorithms such as vtkPolygon::ComputeNormal.
    */
-  const vtkIdType* GetEdgeArray(vtkIdType edgeId);
+  static const vtkIdType* GetEdgeArray(vtkIdType edgeId);
 
 protected:
   vtkQuad();
-  ~vtkQuad() override;
+  ~vtkQuad() override = default;
 
-  vtkLine* Line;
-  vtkTriangle* Triangle;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkTriangle> Triangle;
 
 private:
   vtkQuad(const vtkQuad&) = delete;

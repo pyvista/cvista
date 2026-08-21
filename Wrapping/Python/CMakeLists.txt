@@ -95,9 +95,16 @@ foreach (_vtk_python_module IN LISTS vtk_python_wrapped_modules)
   string(APPEND _vtk_python_external_imports
     "from cvista.${_vtk_python_library_name} import *\n")
   list(APPEND _cvista_index_modules "${_vtk_python_library_name}")
-  if (TARGET "${_vtk_python_library_name}Python")
-    list(APPEND _cvista_index_module_targets "${_vtk_python_library_name}Python")
-  endif ()
+  # DEPEND on each wrapper's built .so. 9.7 renamed the wrapper target from
+  # ${name}Python to Py${name}Python (see vtkModuleWrapPython.cmake); the old name
+  # here made the former `if (TARGET "${name}Python")` never match, so DEPENDS was
+  # empty and generate_index (which imports every module) RACED the final .so links
+  # (observed: "No module named 'cvista.vtkCommonCore'" while vtkCommonCore.abi3.so
+  # was still linking). These targets are created by module wrapping that runs AFTER
+  # this directory, so a $<TARGET_FILE:...> genex — evaluated at generate time, when
+  # every wrapped module's Py${name}Python target exists — is the correct hook.
+  list(APPEND _cvista_index_module_targets
+    "$<TARGET_FILE:Py${_vtk_python_library_name}Python>")
 endforeach ()
 
 set(_vtk_python_files)
@@ -140,10 +147,24 @@ set(python_files
   cvista/gtk/GtkVTKRenderWindowInteractor.py
   cvista/gtk/__init__.py
   cvista/numpy_interface/__init__.py
+  cvista/numpy_interface/_vtk_array_mixin.py
   cvista/numpy_interface/algorithms.py
+  cvista/numpy_interface/array_overrides.py
   cvista/numpy_interface/dataset_adapter.py
   cvista/numpy_interface/internal_algorithms.py
   cvista/numpy_interface/numpy_algorithms.py
+  cvista/numpy_interface/utils.py
+  cvista/numpy_interface/vtk_affine_array.py
+  cvista/numpy_interface/vtk_aos_array.py
+  cvista/numpy_interface/vtk_composite_array.py
+  cvista/numpy_interface/vtk_constant_array.py
+  cvista/numpy_interface/vtk_implicit_array.py
+  cvista/numpy_interface/vtk_indexed_array.py
+  cvista/numpy_interface/vtk_none_array.py
+  cvista/numpy_interface/vtk_partitioned_array.py
+  cvista/numpy_interface/vtk_soa_array.py
+  cvista/numpy_interface/vtk_strided_array.py
+  cvista/numpy_interface/vtk_structured_point_array.py
   cvista/qt/QVTKRenderWindowInteractor.py
   cvista/qt/__init__.py
   cvista/test/BlackBox.py
@@ -159,8 +180,10 @@ set(python_files
   cvista/tk/vtkTkRenderWindowInteractor.py
   cvista/util/__init__.py
   cvista/util/colors.py
+  cvista/util/data_array_selection.py
   cvista/util/data_model.py
   cvista/util/execution_model.py
+  cvista/util/functions.py
   cvista/util/keys.py
   cvista/util/misc.py
   cvista/util/numpy_support.py
@@ -175,6 +198,7 @@ set(python_files
   cvista/wx/__init__.py
   cvista/wx/wxVTKRenderWindow.py
   cvista/wx/wxVTKRenderWindowInteractor.py)
+
 
 foreach (python_file IN LISTS python_files)
   # add submodules that don't begin with "_" to _cvista_all

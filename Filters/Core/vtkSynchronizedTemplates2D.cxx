@@ -86,7 +86,7 @@ struct vtkContourImageFunctor
     // The only problem with using the update extent is that one or two
     // sources enlarge the update extent.  This behavior is slated to be
     // eliminated.
-    int* ext = input->GetExtent();
+    const int* ext = input->GetExtent();
     int axis0, axis1;
     int min0, max0, dim0;
     int min1, max1;
@@ -400,7 +400,7 @@ int vtkSynchronizedTemplates2D::RequestData(vtkInformation* vtkNotUsed(request),
 
   vtkDebugMacro(<< "Executing 2D structured contour");
 
-  int* inExt = input->GetExtent();
+  const int* inExt = input->GetExtent();
   inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT(), ext);
   for (int i = 0; i < 3; i++)
   {
@@ -447,7 +447,7 @@ int vtkSynchronizedTemplates2D::RequestData(vtkInformation* vtkNotUsed(request),
     estimatedSize = 1024;
   }
   newPts = vtkPoints::New();
-  newPts->Allocate(estimatedSize, estimatedSize);
+  newPts->Reserve(estimatedSize);
   newLines = vtkCellArray::New();
   newLines->AllocateEstimate(estimatedSize, 2);
 
@@ -460,7 +460,7 @@ int vtkSynchronizedTemplates2D::RequestData(vtkInformation* vtkNotUsed(request),
     newScalars = inScalars->NewInstance();
     newScalars->SetNumberOfComponents(inScalars->GetNumberOfComponents());
     newScalars->SetName(inScalars->GetName());
-    newScalars->Allocate(5000, 25000);
+    newScalars->ReserveValues(5000);
   }
 
   vtkIdType incs[3];

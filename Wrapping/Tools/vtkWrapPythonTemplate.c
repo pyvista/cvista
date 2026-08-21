@@ -7,6 +7,7 @@
 #include "vtkWrapPythonType.h"
 
 #include "vtkParseExtras.h"
+#include "vtkParseHierarchy.h"
 #include "vtkWrap.h"
 #include "vtkWrapText.h"
 
@@ -246,13 +247,21 @@ int vtkWrapPython_WrapTemplatedClass(
       types = NULL;
 
       /* only do these classes directly */
-      if (strcmp(entry->Name, "vtkArrayIteratorTemplate") == 0 ||
+      if (strcmp(entry->Name, "vtkArrayIteratorTemplate") == 0 || // VTK_DEPRECATED_IN_9_7_0
         strcmp(entry->Name, "vtkDenseArray") == 0 || strcmp(entry->Name, "vtkSparseArray") == 0)
       {
         types = vtkParse_GetArrayTypes();
       }
-      else if (strcmp(entry->Name, "vtkSOADataArrayTemplate") == 0 ||
-        strcmp(entry->Name, "vtkScaledSOADataArrayTemplate") == 0)
+      else if (strcmp(entry->Name, "vtkAOSDataArrayTemplate") == 0 ||
+        strcmp(entry->Name, "vtkSOADataArrayTemplate") == 0 ||
+        strcmp(entry->Name, "vtkScaledSOADataArrayTemplate") == 0 || // VTK_DEPRECATED_IN_9_7_0
+        strcmp(entry->Name, "vtkBuffer") == 0 || strcmp(entry->Name, "vtkAffineArray") == 0 ||
+        strcmp(entry->Name, "vtkCompositeArray") == 0 ||
+        strcmp(entry->Name, "vtkConstantArray") == 0 ||
+        strcmp(entry->Name, "vtkIndexedArray") == 0 ||
+        strcmp(entry->Name, "vtkStdFunctionArray") == 0 || // VTK_DEPRECATED_IN_9_7_0
+        strcmp(entry->Name, "vtkStridedArray") == 0 ||
+        strcmp(entry->Name, "vtkStructuredPointArray") == 0)
       {
         types = vtkParse_GetTemplateMacroTypes();
       }
@@ -301,6 +310,17 @@ int vtkWrapPython_WrapTemplatedClass(
 
         if (name_with_args)
         {
+          /* fully resolve any typedefs prior to instantiation */
+          const char* newname = vtkParseHierarchy_ExpandTypedefsInTemplateArgs(
+            hinfo, name_with_args, file_info->Strings, NULL);
+          if (strcmp(newname, name_with_args) != 0)
+          {
+            cp = (char*)malloc(strlen(newname) + 1);
+            strcpy(cp, newname);
+            free((char*)name_with_args);
+            name_with_args = cp;
+          }
+
           /* append to the list of instantiations if not present yet */
           for (k = 0; k < ninstantiations; k++)
           {

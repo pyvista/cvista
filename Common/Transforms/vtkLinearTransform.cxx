@@ -273,11 +273,13 @@ void vtkLinearTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPts)
   // operate directly on the memory to avoid GetPoint()/SetPoint() calls.
   vtkDataArray* inArray = inPts->GetData();
   vtkDataArray* outArray = outPts->GetData();
-  outArray->WriteVoidPointer(3 * m, 3 * n);
+  outArray->SetNumberOfTuples(m + n);
 
   // cvista: run the (pre-sized, per-tuple-independent => bit-exact under any thread
-  // count) transform under the default-threading policy.
-  cvista::RunSafeFilterParallel(
+  // count) transform under the default-threading policy. Pass n so small transforms
+  // (e.g. glyphing a small source onto many points -- thousands of tiny calls) skip
+  // the per-call LocalScope, which For() would render a no-op below THRESHOLD anyway.
+  cvista::RunSafeFilterParallel(n,
     [&]()
     {
       vtkLinearTransformPointsWorker worker;
@@ -315,9 +317,9 @@ void vtkLinearTransform::TransformNormals(vtkDataArray* inNms, vtkDataArray* out
   vtkMatrix4x4::Transpose(*matrix, *matrix);
 
   // operate directly on the memory to avoid GetTuple()/SetPoint() calls.
-  outNms->WriteVoidPointer(3 * m, 3 * n);
+  outNms->SetNumberOfTuples(m + n);
 
-  cvista::RunSafeFilterParallel(
+  cvista::RunSafeFilterParallel(n,
     [&]()
     {
       vtkLinearTransformNormalsWorker worker;
@@ -353,9 +355,9 @@ void vtkLinearTransform::TransformVectors(vtkDataArray* inVrs, vtkDataArray* out
   this->Update();
 
   // operate directly on the memory to avoid GetTuple()/SetTuple() calls.
-  outVrs->WriteVoidPointer(3 * m, 3 * n);
+  outVrs->SetNumberOfTuples(m + n);
 
-  cvista::RunSafeFilterParallel(
+  cvista::RunSafeFilterParallel(n,
     [&]()
     {
       vtkLinearTransformVectorsWorker worker;

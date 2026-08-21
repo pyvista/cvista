@@ -18,7 +18,6 @@
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkCompositeDataSet;
-class vtkHierarchicalBoxDataSet;
 class vtkMultiBlockDataSet;
 class vtkMultiPieceDataSet;
 class vtkNonOverlappingAMR;
@@ -62,8 +61,6 @@ protected:
 
   bool ReadCompositeData(vtkMultiPieceDataSet*);
   bool ReadCompositeData(vtkMultiBlockDataSet*);
-  VTK_DEPRECATED_IN_9_5_0("Please use `vtkOverlappingAMR` version instead.")
-  bool ReadCompositeData(vtkHierarchicalBoxDataSet*);
   bool ReadCompositeData(vtkOverlappingAMR*);
   bool ReadCompositeData(vtkPartitionedDataSet*);
   bool ReadCompositeData(vtkPartitionedDataSetCollection*);

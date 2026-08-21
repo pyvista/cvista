@@ -51,6 +51,18 @@ public:
 
   ///@{
   /**
+   * Set/Get if we want to use implicit array when appending the datasets. Using implicit array
+   * improve the execution time of the filter and reduce the memory consumption of the output.
+   * However, accessing arrays can be slower.
+   * Default to false
+   */
+  vtkGetMacro(UseImplicitArray, bool);
+  vtkSetMacro(UseImplicitArray, bool);
+  vtkBooleanMacro(UseImplicitArray, bool);
+  ///@}
+
+  ///@{
+  /**
    * Get/Set if the filter should merge coincidental points
    * Note: The filter will only merge points if the ghost cell array doesn't exist
    * Defaults to Off
@@ -104,6 +116,17 @@ public:
   vtkGetMacro(OutputPointsPrecision, int);
   ///@}
 
+  /**
+   * Find the arrays that exist in each input dataset, and concatenate them in the output.
+   *
+   * Supports only PointData and CellData.
+   * If useImplicit is true, the output is filled with vtkImplicitArray to reuse
+   * the input memory.
+   * Otherwise, new allocations are made.
+   */
+  static void AppendArrays(const std::vector<vtkDataSet*>& datasets, int attributesType,
+    vtkDataSet* output, vtkIdType totalNumberOfElements, bool useImplicit);
+
 protected:
   vtkAppendFilter();
   ~vtkAppendFilter() override;
@@ -133,11 +156,9 @@ private:
   void operator=(const vtkAppendFilter&) = delete;
 
   // Get all input data sets that have points, cells, or both.
-  // Caller must delete the returned vtkDataSetCollection.
-  std::vector<vtkSmartPointer<vtkDataSet>> GetNonEmptyInputs(vtkInformationVector** inputVector);
+  static std::vector<vtkDataSet*> GetNonEmptyInputs(vtkInformationVector** inputVector);
 
-  void AppendArrays(int attributesType, vtkInformationVector** inputVector,
-    vtkUnstructuredGrid* output, vtkIdType totalNumberOfElements);
+  bool UseImplicitArray = false;
 };
 
 VTK_ABI_NAMESPACE_END

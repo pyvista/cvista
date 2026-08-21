@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 // SPDX-License-Identifier: BSD-3-Clause
 
-// VTK_DEPRECATED_IN_9_5_0()
-#define VTK_DEPRECATION_LEVEL 0
-
 #include "vtkGenericDataObjectWriter.h"
 
 #include "vtkCompositeDataSet.h"
@@ -48,7 +45,7 @@ vtkGenericDataObjectWriter::vtkGenericDataObjectWriter() = default;
 
 vtkGenericDataObjectWriter::~vtkGenericDataObjectWriter() = default;
 
-void vtkGenericDataObjectWriter::WriteData()
+bool vtkGenericDataObjectWriter::WriteDataAndReturn()
 {
   vtkDebugMacro(<< "Writing vtk data object ...");
 
@@ -59,36 +56,29 @@ void vtkGenericDataObjectWriter::WriteData()
   {
     case VTK_COMPOSITE_DATA_SET:
       vtkErrorMacro(<< "Cannot write composite data set");
-      return;
+      return false;
     case VTK_CELL_GRID:
       writer = CreateWriter<vtkLegacyCellGridWriter>(input);
       break;
     case VTK_DATA_OBJECT:
       vtkErrorMacro(<< "Cannot write data object");
-      return;
+      return false;
     case VTK_DATA_SET:
       vtkErrorMacro(<< "Cannot write data set");
-      return;
+      return false;
     case VTK_GENERIC_DATA_SET:
       vtkErrorMacro(<< "Cannot write generic data set");
-      return;
+      return false;
     case VTK_DIRECTED_GRAPH:
     case VTK_UNDIRECTED_GRAPH:
     case VTK_MOLECULE:
       writer = CreateWriter<vtkGraphWriter>(input);
       break;
-    case VTK_HIERARCHICAL_DATA_SET:
-      vtkErrorMacro(<< "Cannot write hierarchical data set");
-      return;
-    case VTK_HYPER_OCTREE:
-      vtkErrorMacro(<< "Cannot write hyper octree");
-      return;
     case VTK_IMAGE_DATA:
     case VTK_UNIFORM_GRID:
       writer = CreateWriter<vtkStructuredPointsWriter>(input);
       break;
     case VTK_MULTIBLOCK_DATA_SET:
-    case VTK_HIERARCHICAL_BOX_DATA_SET:
     case VTK_MULTIPIECE_DATA_SET:
     case VTK_OVERLAPPING_AMR:
     case VTK_NON_OVERLAPPING_AMR:
@@ -96,15 +86,12 @@ void vtkGenericDataObjectWriter::WriteData()
     case VTK_PARTITIONED_DATA_SET_COLLECTION:
       writer = CreateWriter<vtkCompositeDataWriter>(input);
       break;
-    case VTK_MULTIGROUP_DATA_SET:
-      vtkErrorMacro(<< "Cannot write multigroup data set");
-      return;
     case VTK_PIECEWISE_FUNCTION:
       vtkErrorMacro(<< "Cannot write piecewise function");
-      return;
+      return false;
     case VTK_POINT_SET:
       vtkErrorMacro(<< "Cannot write point set");
-      return;
+      return false;
     case VTK_POLY_DATA:
       writer = CreateWriter<vtkPolyDataWriter>(input);
       break;
@@ -126,9 +113,6 @@ void vtkGenericDataObjectWriter::WriteData()
     case VTK_TREE:
       writer = CreateWriter<vtkTreeWriter>(input);
       break;
-    case VTK_TEMPORAL_DATA_SET:
-      vtkErrorMacro(<< "Cannot write temporal data set");
-      return;
     case VTK_UNSTRUCTURED_GRID_BASE:
     case VTK_UNSTRUCTURED_GRID:
       writer = CreateWriter<vtkUnstructuredGridWriter>(input);
@@ -138,7 +122,7 @@ void vtkGenericDataObjectWriter::WriteData()
   if (!writer)
   {
     vtkErrorMacro(<< "null data object writer");
-    return;
+    return false;
   }
 
   writer->SetFileName(this->FileName);
@@ -154,7 +138,7 @@ void vtkGenericDataObjectWriter::WriteData()
   writer->SetFileVersion(this->FileVersion);
   writer->SetDebug(this->Debug);
   writer->SetWriteToOutputString(this->WriteToOutputString);
-  writer->Write();
+  bool ret = writer->Write();
   if (writer->GetErrorCode() == vtkErrorCode::OutOfDiskSpaceError)
   {
     this->SetErrorCode(vtkErrorCode::OutOfDiskSpaceError);
@@ -166,6 +150,7 @@ void vtkGenericDataObjectWriter::WriteData()
     this->OutputString = writer->RegisterAndGetOutputString();
   }
   writer->Delete();
+  return ret;
 }
 
 int vtkGenericDataObjectWriter::FillInputPortInformation(int, vtkInformation* info)

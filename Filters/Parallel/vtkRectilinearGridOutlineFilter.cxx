@@ -36,8 +36,8 @@ int vtkRectilinearGridOutlineFilter::RequestData(vtkInformation* vtkNotUsed(requ
   vtkDataArray* xCoords = input->GetXCoordinates();
   vtkDataArray* yCoords = input->GetYCoordinates();
   vtkDataArray* zCoords = input->GetZCoordinates();
-  int* ext = input->GetExtent();
-  int* wholeExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
+  const int* ext = input->GetExtent();
+  const int* wholeExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
 
   if (xCoords == nullptr || yCoords == nullptr || zCoords == nullptr ||
     input->GetNumberOfCells() == 0)
@@ -85,7 +85,7 @@ int vtkRectilinearGridOutlineFilter::RequestData(vtkInformation* vtkNotUsed(requ
   {
     newPts->SetDataType(VTK_DOUBLE);
   }
-  newPts->Allocate(24);
+  newPts->Reserve(24);
   newLines = vtkCellArray::New();
   newLines->AllocateEstimate(12, 2);
 

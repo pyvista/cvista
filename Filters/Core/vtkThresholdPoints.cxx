@@ -230,7 +230,7 @@ int vtkThresholdPoints::RequestData(vtkInformation* vtkNotUsed(request),
     newPoints->SetDataType(VTK_DOUBLE);
   }
 
-  newPoints->Allocate(numPts);
+  newPoints->Reserve(numPts);
   pd = input->GetPointData();
   outPD = output->GetPointData();
   outPD->CopyAllocate(pd);
@@ -274,7 +274,7 @@ int vtkThresholdPoints::RequestData(vtkInformation* vtkNotUsed(request),
       outPD->CopyData(pd, ptId, pts[0]);
       verts->InsertNextCell(1, pts);
     } // satisfied thresholding
-  }   // for all points
+  } // for all points
 
   vtkDebugMacro(<< "Extracted " << output->GetNumberOfPoints() << " points.");
 

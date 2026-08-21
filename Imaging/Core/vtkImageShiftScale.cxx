@@ -6,6 +6,7 @@
 #include "vtkImageProgressIterator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
+#include "vtkMathUtilities.h"
 #include "vtkObjectFactory.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 
@@ -53,7 +54,7 @@ int vtkImageShiftScale::RequestInformation(
 // instantiate the proper input and output types.
 template <class IT, class OT>
 void vtkImageShiftScaleExecute(vtkImageShiftScale* self, vtkImageData* inData,
-  vtkImageData* outData, int outExt[6], int id, IT*, OT*)
+  vtkImageData* outData, VTK_FUTURE_CONST int outExt[6], int id, IT*, OT*)
 {
   // Create iterators for the input and output extents assigned to
   // this thread.
@@ -64,9 +65,7 @@ void vtkImageShiftScaleExecute(vtkImageShiftScale* self, vtkImageData* inData,
   double shift = self->GetShift();
   double scale = self->GetScale();
 
-  // Clamp pixel values within the range of the output type.
-  double typeMin = outData->GetScalarTypeMin();
-  double typeMax = outData->GetScalarTypeMax();
+  // Clamp pixel values to the range of the output type.
   int clamp = self->GetClampOverflow();
 
   // Loop through output pixels.
@@ -81,9 +80,7 @@ void vtkImageShiftScaleExecute(vtkImageShiftScale* self, vtkImageData* inData,
       {
         // Pixel operation
         double val = (static_cast<double>(*inSI) + shift) * scale;
-        val = std::min(val, typeMax);
-        val = std::max(val, typeMin);
-        *outSI = static_cast<OT>(val);
+        *outSI = vtkMathUtilities::SafeCastFromDouble<OT>(val);
         ++outSI;
         ++inSI;
       }
@@ -108,8 +105,8 @@ void vtkImageShiftScaleExecute(vtkImageShiftScale* self, vtkImageData* inData,
 
 //------------------------------------------------------------------------------
 template <class T>
-void vtkImageShiftScaleExecute1(
-  vtkImageShiftScale* self, vtkImageData* inData, vtkImageData* outData, int outExt[6], int id, T*)
+void vtkImageShiftScaleExecute1(vtkImageShiftScale* self, vtkImageData* inData,
+  vtkImageData* outData, VTK_FUTURE_CONST int outExt[6], int id, T*)
 {
   switch (outData->GetScalarType())
   {
@@ -127,8 +124,8 @@ void vtkImageShiftScaleExecute1(
 // It just executes a switch statement to call the correct function for
 // the datas data types.
 void vtkImageShiftScale::ThreadedRequestData(vtkInformation*, vtkInformationVector**,
-  vtkInformationVector*, vtkImageData*** inData, vtkImageData** outData, int outExt[6],
-  int threadId)
+  vtkInformationVector*, vtkImageData*** inData, vtkImageData** outData,
+  VTK_FUTURE_CONST int outExt[6], int threadId)
 {
   vtkImageData* input = inData[0][0];
   vtkImageData* output = outData[0];

@@ -238,7 +238,7 @@ public:
    * This method crops the data object (if necessary) so that the extent
    * matches the update extent.
    */
-  virtual void Crop(const int* updateExtent);
+  virtual void Crop(const int updateExtent[6]);
 
   /**
    * Possible values for the FIELD_ASSOCIATION information entry.
@@ -352,9 +352,16 @@ public:
 
   /**
    * Given an integer association type, this static method returns a string type
-   * for the attribute (i.e. associationType = 0: returns "Points").
+   * for the association (i.e. associationType = 0: returns
+   * "vtkDataObject::FIELD_ASSOCIATION_POINTS").
    */
   static const char* GetAssociationTypeAsString(int associationType);
+
+  /**
+   * Given an integer attribute type, this static method returns a string type
+   * for the attribute (i.e. attributeType = 0: returns "vtkDataObject::POINT").
+   */
+  static const char* GetAttributeTypeAsString(int attributeType);
 
   /**
    * Given a string association name, this static method returns an integer association type
@@ -363,68 +370,68 @@ public:
   static int GetAssociationTypeFromString(const char* associationName);
 
   /**
-   * \ingroup InformationKeys
+   * Information keys to describe the content of this vtkDataObject.
+   * @ingroup InformationKeys
+   */
+  ///@{
+  /**
+   * Data type as string. Usually used in algorithm context to specify valid inputs and output.
    */
   static vtkInformationStringKey* DATA_TYPE_NAME();
   /**
-   * \ingroup InformationKeys
+   * Store a vtkDataObject pointer. Used in vtkAlgorithm to retrieve inputs and output.
    */
   static vtkInformationDataObjectKey* DATA_OBJECT();
+
   /**
-   * \ingroup InformationKeys
+   * Represent what extent means for this data. VTK defines the following:
+   * - vtkDataObject::VTK_PIECES_EXTENT=0
+   * - vtkDataObject::VTK_3D_EXTENT=1
+   * - vtkDataObject::VTK_TIME_EXTENT=2
    */
   static vtkInformationIntegerKey* DATA_EXTENT_TYPE();
-  /**
-   * \ingroup InformationKeys
-   */
+
   static vtkInformationIntegerPointerKey* DATA_EXTENT();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerVectorKey* ALL_PIECES_EXTENT();
-  /**
-   * \ingroup InformationKeys
-   */
+  static vtkInformationIntegerVectorKey* PIECE_EXTENT();
   static vtkInformationIntegerKey* DATA_PIECE_NUMBER();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* DATA_NUMBER_OF_PIECES();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* DATA_NUMBER_OF_GHOST_LEVELS();
   /**
-   * \ingroup InformationKeys
+   * Contains the time value for which the data was generated.
    */
   static vtkInformationDoubleKey* DATA_TIME_STEP();
   /**
-   * \ingroup InformationKeys
+   * 3D Coordinates of the origin of this data.
+   * Mostly used for structured data with implicit geometry
    */
+  static vtkInformationDoubleVectorKey* ORIGIN();
+  /**
+   * Spacing between two neighbors points in each direction. Useful for structured data.
+   */
+  static vtkInformationDoubleVectorKey* SPACING();
+  /**
+   * 3x3 matrix to describe the data orientation.
+   */
+  static vtkInformationDoubleVectorKey* DIRECTION();
+  /**
+   * 6 values to describe the min/max coordinates of the data for each axis.
+   */
+  static vtkInformationDoubleVectorKey* BOUNDING_BOX();
+  ///@}
+
+  /**
+   * Information keys to manipulate associated attributes arrays.
+   * @ingroup InformationKeys
+   */
+  ///@{
   static vtkInformationInformationVectorKey* POINT_DATA_VECTOR();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationInformationVectorKey* CELL_DATA_VECTOR();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationInformationVectorKey* VERTEX_DATA_VECTOR();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationInformationVectorKey* EDGE_DATA_VECTOR();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* FIELD_ARRAY_TYPE();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* FIELD_ASSOCIATION();
   /**
-   * \ingroup InformationKeys
-   *
    * If present, this key specifies an actual or virtual component
    * of the array. Virtual components are functions of tuples that
    * evaluate to a single number – such as L₁ or L₂ norms.
@@ -433,58 +440,24 @@ public:
    * well as non-negative integers.
    */
   static vtkInformationIntegerKey* FIELD_ATTRIBUTE_COMPONENT();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* FIELD_ATTRIBUTE_TYPE();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* FIELD_ACTIVE_ATTRIBUTE();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* FIELD_NUMBER_OF_COMPONENTS();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationIntegerKey* FIELD_NUMBER_OF_TUPLES();
   /**
-   * \ingroup InformationKeys
+   * Unused in VTK
    */
   static vtkInformationIntegerKey* FIELD_OPERATION();
   /**
-   * \ingroup InformationKeys
+   * Unused in VTK
    */
   static vtkInformationDoubleVectorKey* FIELD_RANGE();
-  /**
-   * \ingroup InformationKeys
-   */
-  static vtkInformationIntegerVectorKey* PIECE_EXTENT();
-  /**
-   * \ingroup InformationKeys
-   */
   static vtkInformationStringKey* FIELD_NAME();
-  /**
-   * \ingroup InformationKeys
-   */
-  static vtkInformationDoubleVectorKey* ORIGIN();
-  /**
-   * \ingroup InformationKeys
-   */
-  static vtkInformationDoubleVectorKey* SPACING();
-  /**
-   * \ingroup InformationKeys
-   */
-  static vtkInformationDoubleVectorKey* DIRECTION();
-  /**
-   * \ingroup InformationKeys
-   */
-  static vtkInformationDoubleVectorKey* BOUNDING_BOX();
+  ///@}
 
-  // Key used to put SIL information in the output information by readers.
   /**
-   * \ingroup InformationKeys
+   * @ingroup InformationKeys
+   * Key used to put SIL information in the output information by readers.
    */
   static vtkInformationDataObjectKey* SIL();
 

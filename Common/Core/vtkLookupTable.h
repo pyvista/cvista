@@ -26,8 +26,8 @@
  * should be returned. The colors in the lookup \a Table are assigned
  * to annotated values by taking the modulus of their index in the list
  * of annotations. \a IndexedLookup changes the behavior of \a GetIndex,
- * which in turn changes the way \a MapScalarsThroughTable2 behaves;
- * when \a IndexedLookup is true, \a MapScalarsThroughTable2 will search for
+ * which in turn changes the way \a MapScalarsThroughTable behaves;
+ * when \a IndexedLookup is true, \a MapScalarsThroughTable will search for
  * scalar values in \a AnnotatedValues and use the resulting index to
  * determine the color. If a scalar value is not present in \a AnnotatedValues,
  * then \a NanColor will be used.
@@ -299,25 +299,29 @@ public:
    * Build() method or used SetNumberOfTableValues() prior to using this
    * method.
    */
-  virtual void SetTableValue(vtkIdType indx, const double rgba[4]);
+  VTK_MARSHALEXCLUDE(VTK_MARSHAL_EXCLUDE_REASON_IS_REDUNDANT)
+  virtual void SetTableValue(vtkIdType index, const double rgba[4]);
 
   /**
    * Directly load color into lookup table. Use [0,1] double values for color
    * component specification. Alpha defaults to 1 if unspecified.
    */
-  virtual void SetTableValue(vtkIdType indx, double r, double g, double b, double a = 1.0);
+  VTK_MARSHALEXCLUDE(VTK_MARSHAL_EXCLUDE_REASON_IS_REDUNDANT)
+  virtual void SetTableValue(vtkIdType index, double r, double g, double b, double a = 1.0);
 
   /**
    * Return an RGBA color value for the given index into the lookup table. Color
    * components are expressed as [0,1] double values.
    */
-  double* GetTableValue(vtkIdType indx) VTK_SIZEHINT(4);
+  VTK_MARSHALEXCLUDE(VTK_MARSHAL_EXCLUDE_REASON_IS_REDUNDANT)
+  double* GetTableValue(vtkIdType index) VTK_SIZEHINT(4);
 
   /**
    * Return an RGBA color value for the given index into the lookup table. Color
    * components are expressed as [0,1] double values.
    */
-  void GetTableValue(vtkIdType indx, double rgba[4]);
+  VTK_MARSHALEXCLUDE(VTK_MARSHAL_EXCLUDE_REASON_IS_REDUNDANT)
+  void GetTableValue(vtkIdType index, double rgba[4]);
 
   /**
    * Get pointer to color table data. Format is array of unsigned char
@@ -381,13 +385,16 @@ public:
   vtkGetObjectMacro(Table, vtkUnsignedCharArray);
   ///@}
 
+  ///@{
   /**
    * Map a set of scalars through the lookup table.
 
    * This member function is thread safe.
    */
-  void MapScalarsThroughTable2(void* input, unsigned char* output, int inputDataType,
-    int numberOfValues, int inputIncrement, int outputFormat) override;
+  void MapScalarsThroughTable(vtkAbstractArray* input, unsigned char* output, int numberOfTuples,
+    int numberOfComponents, int vectorComponent, int outputFormat) override;
+  using vtkScalarsToColors::MapScalarsThroughTable;
+  ///@}
 
   /**
    * Copy the contents from another LookupTable.

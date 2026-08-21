@@ -64,10 +64,15 @@ public:
   vtkGetMacro(PixelAspect, double);
   ///@}
 
+  ///@{
   /**
-   * Is the given file a HDR file?
+   * Return 1 if, after a quick check of file header, it looks like the provided file or stream
+   * can be read as a HDR file. Return 0 if it is sure it cannot be read. The stream version may
+   * move the stream cursor. This only check it starts with the magic "#?RADIANCE"
    */
   int CanReadFile(VTK_FILEPATH const char* fname) override;
+  int CanReadFile(vtkResourceStream* stream) override;
+  ///@}
 
   /**
    * Get the file extensions for this format.
@@ -154,6 +159,9 @@ private:
    * Return false if a reading error occurred, else true.
    */
   bool ReadLineRLE(vtkResourceStream* stream, unsigned char* lineBufferPtr);
+
+  // Internal ExecuteInformation() validation flag
+  bool Validated = false;
 };
 VTK_ABI_NAMESPACE_END
 #endif

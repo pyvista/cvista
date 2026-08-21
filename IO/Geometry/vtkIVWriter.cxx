@@ -16,7 +16,7 @@ VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkIVWriter);
 
 //------------------------------------------------------------------------------
-void vtkIVWriter::WriteData()
+bool vtkIVWriter::WriteDataAndReturn()
 {
   FILE* fp;
 
@@ -24,7 +24,7 @@ void vtkIVWriter::WriteData()
   if (this->FileName == nullptr)
   {
     vtkErrorMacro(<< "Please specify FileName to use");
-    return;
+    return false;
   }
 
   // try opening the files
@@ -32,7 +32,7 @@ void vtkIVWriter::WriteData()
   if (!fp)
   {
     vtkErrorMacro(<< "unable to open OpenInventor file: " << this->FileName);
-    return;
+    return false;
   }
 
   //
@@ -45,7 +45,9 @@ void vtkIVWriter::WriteData()
   if (fclose(fp))
   {
     vtkErrorMacro(<< this->FileName << " did not close successfully. Check disk space.");
+    return false;
   }
+  return true;
 }
 
 //------------------------------------------------------------------------------
@@ -55,7 +57,7 @@ void vtkIVWriter::WritePolyData(vtkPolyData* pd, FILE* fp)
   vtkIdType i;
   vtkCellArray* cells;
   vtkIdType npts = 0;
-  const vtkIdType* indx = nullptr;
+  const vtkIdType* index = nullptr;
   vtkUnsignedCharArray* colors = nullptr;
 
   points = pd->GetPoints();
@@ -129,13 +131,13 @@ void vtkIVWriter::WritePolyData(vtkPolyData* pd, FILE* fp)
     vtk::print(fp, "\tIndexedFaceSet {{\n");
     vtk::print(fp, "\t\tcoordIndex [\n");
     cells = pd->GetPolys();
-    for (cells->InitTraversal(); cells->GetNextCell(npts, indx);)
+    for (cells->InitTraversal(); cells->GetNextCell(npts, index);)
     {
       vtk::print(fp, "\t\t\t");
       for (i = 0; i < npts; i++)
       {
         // treating vtkIdType as int
-        vtk::print(fp, "{:d}, ", (int)indx[i]);
+        vtk::print(fp, "{:d}, ", (int)index[i]);
       }
       vtk::print(fp, "-1,\n");
     }
@@ -150,13 +152,13 @@ void vtkIVWriter::WritePolyData(vtkPolyData* pd, FILE* fp)
     vtk::print(fp, "\t\tcoordIndex  [\n");
 
     cells = pd->GetLines();
-    for (cells->InitTraversal(); cells->GetNextCell(npts, indx);)
+    for (cells->InitTraversal(); cells->GetNextCell(npts, index);)
     {
       vtk::print(fp, "\t\t\t");
       for (i = 0; i < npts; i++)
       {
         // treating vtkIdType as int
-        vtk::print(fp, "{:d}, ", (int)indx[i]);
+        vtk::print(fp, "{:d}, ", (int)index[i]);
       }
       vtk::print(fp, "-1,\n");
     }
@@ -170,13 +172,13 @@ void vtkIVWriter::WritePolyData(vtkPolyData* pd, FILE* fp)
     vtk::print(fp, "\tIndexdedPointSet {{\n");
     vtk::print(fp, "\t\tcoordIndex [");
     cells = pd->GetVerts();
-    for (cells->InitTraversal(); cells->GetNextCell(npts, indx);)
+    for (cells->InitTraversal(); cells->GetNextCell(npts, index);)
     {
       vtk::print(fp, "\t\t\t");
       for (i = 0; i < npts; i++)
       {
         // treating vtkIdType as int
-        vtk::print(fp, "{:d}, ", (int)indx[i]);
+        vtk::print(fp, "{:d}, ", (int)index[i]);
       }
       vtk::print(fp, "-1,\n");
     }
@@ -191,13 +193,13 @@ void vtkIVWriter::WritePolyData(vtkPolyData* pd, FILE* fp)
     vtk::print(fp, "\tIndexedTriangleStripSet {{\n");
     vtk::print(fp, "\t\tcoordIndex [\n");
     cells = pd->GetStrips();
-    for (cells->InitTraversal(); cells->GetNextCell(npts, indx);)
+    for (cells->InitTraversal(); cells->GetNextCell(npts, index);)
     {
       vtk::print(fp, "\t\t\t");
       for (i = 0; i < npts; i++)
       {
         // treating vtkIdType as int
-        vtk::print(fp, "{:d}, ", (int)indx[i]);
+        vtk::print(fp, "{:d}, ", (int)index[i]);
       }
       vtk::print(fp, "-1,\n");
     }

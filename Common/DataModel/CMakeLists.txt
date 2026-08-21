@@ -47,6 +47,7 @@ set(classes
   vtkCellGridCopyQuery
   vtkCellGridEvaluator
   vtkCellGridQuery
+  vtkCellGridSummaryInformationQuery
   vtkCellGridRangeQuery
   vtkCellGridResponders
   vtkCellGridSidesCache
@@ -108,7 +109,6 @@ set(classes
   vtkGraphInternals
   vtkHexagonalPrism
   vtkHexahedron
-  vtkHierarchicalBoxDataSet
   vtkHigherOrderCurve
   vtkHigherOrderHexahedron
   vtkHigherOrderInterpolation
@@ -151,6 +151,7 @@ set(classes
   vtkIncrementalPointLocator
   vtkInformationQuadratureSchemeDefinitionVectorKey
   vtkIterativeClosestPointTransform
+  vtkJumpAndWalkCellLocator
   vtkKdNode
   vtkKdTree
   vtkKdTreePointLocator
@@ -163,6 +164,7 @@ set(classes
   vtkLagrangeWedge
   vtkLine
   vtkLocator
+  vtkMarchingCellsContourCases
   vtkMarchingCubesPolygonCases
   vtkMarchingCubesTriangleCases
   vtkMarchingSquaresLineCases
@@ -201,6 +203,7 @@ set(classes
   vtkPointSetCellIterator
   vtkPointsProjectedHull
   vtkPolyData
+  vtkPolyDataMaterial
   vtkPolyDataCollection
   vtkPolyLine
   vtkPolyPlane
@@ -287,7 +290,8 @@ set(nowrap_classes
   vtkHyperTreeGridGeometryUnlimitedEntry
   vtkHyperTreeGridGeometryLevelEntry
   vtkHyperTreeGridGeometryUnlimitedLevelEntry
-  vtkHyperTreeGridLevelEntry)
+  vtkHyperTreeGridLevelEntry
+  vtkPolyhedronContour)
 
 set(headers
   vtkCellGridResponder.h
@@ -301,6 +305,7 @@ set(headers
   vtkHyperTreeGridTools.h
   vtkIntersectionCounter.h
   vtkLabelMapLookup.h
+  vtkLocatorInterface.h
   vtkRect.h
   vtkVector.h)
 
@@ -310,8 +315,8 @@ set(nowrap_headers
   vtkCompositeDataSetRange.h
   vtkDataObjectImplicitBackendInterface.h
   vtkDataObjectTreeRange.h
-  vtkLocatorInterface.h
   vtkPolyDataInternals.h
+  vtkMarchingCellsClipCases.h
   vtkStaticPointLocator2DPrivate.h
   vtkStaticPointLocatorPrivate.h)
 
@@ -370,3 +375,8 @@ vtk_module_add_module(VTK::CommonDataModel
   NOWRAP_HEADERS    ${nowrap_headers}
   PRIVATE_TEMPLATES ${private_templates})
 vtk_add_test_mangling(VTK::CommonDataModel)
+
+# Add precompiled header to improve build performance
+if(VTK_USE_PCH)
+  vtk_module_precompile_headers(VTK::CommonDataModel PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/vtkCommonDataModelPCH.h>")
+endif()

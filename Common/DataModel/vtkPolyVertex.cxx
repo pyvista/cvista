@@ -13,19 +13,25 @@
 #include "vtkVertex.h"
 #include <numeric> //std::iota
 
+namespace
+{
+//------------------------------------------------------------------------------
+[[maybe_unused]] constexpr const char* Topology = R"(
+   PolyVertex topology:
+
+      0   1   2   ...   n-1
+
+   (n points, no edges, no fixed arrangement)
+)";
+}
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkPolyVertex);
 
 //------------------------------------------------------------------------------
 vtkPolyVertex::vtkPolyVertex()
 {
-  this->Vertex = vtkVertex::New();
-}
-
-//------------------------------------------------------------------------------
-vtkPolyVertex::~vtkPolyVertex()
-{
-  this->Vertex->Delete();
+  this->Vertex = vtkSmartPointer<vtkVertex>::New();
 }
 
 //------------------------------------------------------------------------------
@@ -34,8 +40,6 @@ int vtkPolyVertex::EvaluatePosition(const double x[3], double closestPoint[3], i
 {
   int numPts = this->Points->GetNumberOfPoints();
   const double* X;
-  double dist2;
-  int i;
   pcoords[1] = pcoords[2] = -1.0;
 
   // Efficient point access
@@ -47,10 +51,11 @@ int vtkPolyVertex::EvaluatePosition(const double x[3], double closestPoint[3], i
   }
   const double* pts = pointsArray->GetPointer(0);
 
-  for (minDist2 = VTK_DOUBLE_MAX, i = 0; i < numPts; i++)
+  minDist2 = VTK_DOUBLE_MAX;
+  for (int i = 0; i < numPts; i++)
   {
     X = pts + 3 * i;
-    dist2 = vtkMath::Distance2BetweenPoints(X, x);
+    double dist2 = vtkMath::Distance2BetweenPoints(X, x);
     if (dist2 < minDist2)
     {
       if (closestPoint)
@@ -64,7 +69,7 @@ int vtkPolyVertex::EvaluatePosition(const double x[3], double closestPoint[3], i
     }
   }
 
-  for (i = 0; i < numPts; i++)
+  for (int i = 0; i < numPts; i++)
   {
     weights[i] = 0.0;
   }
@@ -114,10 +119,10 @@ void vtkPolyVertex::Contour(double value, vtkDataArray* cellScalars,
   vtkCellArray* vtkNotUsed(polys), vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd,
   vtkIdType cellId, vtkCellData* outCd)
 {
-  int i, numPts = this->Points->GetNumberOfPoints(), newCellId;
+  int numPts = this->Points->GetNumberOfPoints();
   vtkIdType pts[1];
 
-  for (i = 0; i < numPts; i++)
+  for (int i = 0; i < numPts; i++)
   {
     if (value == cellScalars->GetComponent(i, 0))
     {
@@ -126,7 +131,7 @@ void vtkPolyVertex::Contour(double value, vtkDataArray* cellScalars,
       {
         outPd->CopyData(inPd, this->PointIds->GetId(i), pts[0]);
       }
-      newCellId = verts->InsertNextCell(1, pts);
+      const vtkIdType newCellId = verts->InsertNextCell(1, pts);
       if (outCd)
       {
         outCd->CopyData(inCd, cellId, newCellId);
@@ -169,11 +174,9 @@ int vtkPolyVertex::TriangulateLocalIds(int vtkNotUsed(index), vtkIdList* ptIds)
 void vtkPolyVertex::Derivatives(int vtkNotUsed(subId), const double vtkNotUsed(pcoords)[3],
   const double* vtkNotUsed(values), int dim, double* derivs)
 {
-  int i, idx;
-
-  for (i = 0; i < dim; i++)
+  for (int i = 0; i < dim; i++)
   {
-    idx = i * dim;
+    const int idx = i * dim;
     derivs[idx] = 0.0;
     derivs[idx + 1] = 0.0;
     derivs[idx + 2] = 0.0;
@@ -185,13 +188,13 @@ void vtkPolyVertex::Clip(double value, vtkDataArray* cellScalars,
   vtkIncrementalPointLocator* locator, vtkCellArray* verts, vtkPointData* inPd, vtkPointData* outPd,
   vtkCellData* inCd, vtkIdType cellId, vtkCellData* outCd, int insideOut)
 {
-  double s, x[3];
-  int i, newCellId, numPts = this->Points->GetNumberOfPoints();
+  double x[3];
+  int numPts = this->Points->GetNumberOfPoints();
   vtkIdType pts[1];
 
-  for (i = 0; i < numPts; i++)
+  for (int i = 0; i < numPts; i++)
   {
-    s = cellScalars->GetComponent(i, 0);
+    double s = cellScalars->GetComponent(i, 0);
 
     if ((!insideOut && s > value) || (insideOut && s <= value))
     {
@@ -200,7 +203,7 @@ void vtkPolyVertex::Clip(double value, vtkDataArray* cellScalars,
       {
         outPd->CopyData(inPd, this->PointIds->GetId(i), pts[0]);
       }
-      newCellId = verts->InsertNextCell(1, pts);
+      const vtkIdType newCellId = verts->InsertNextCell(1, pts);
       outCd->CopyData(inCd, cellId, newCellId);
     }
   }

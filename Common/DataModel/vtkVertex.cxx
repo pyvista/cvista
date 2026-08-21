@@ -10,6 +10,20 @@
 #include "vtkPointData.h"
 #include "vtkPoints.h"
 
+namespace
+{
+//------------------------------------------------------------------------------
+[[maybe_unused]] constexpr const char* Topology = R"(
+   Vertex topology:
+
+      0
+
+   (single point, no edges)
+)";
+
+double ParametricCoords[3] = { 0.0, 0.0, 0.0 };
+}
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkVertex);
 
@@ -123,7 +137,6 @@ void vtkVertex::Contour(double value, vtkDataArray* cellScalars,
 int vtkVertex::IntersectWithLine(const double p1[3], const double p2[3], double tol, double& t,
   double x[3], double pcoords[3], int& subId)
 {
-  int i;
   double X[3], ray[3], rayFactor, projXYZ[3];
 
   subId = 0;
@@ -131,7 +144,7 @@ int vtkVertex::IntersectWithLine(const double p1[3], const double p2[3], double 
 
   this->Points->GetPoint(0, X);
 
-  for (i = 0; i < 3; i++)
+  for (int i = 0; i < 3; i++)
   {
     ray[i] = p2[i] - p1[i];
   }
@@ -146,10 +159,11 @@ int vtkVertex::IntersectWithLine(const double p1[3], const double p2[3], double 
 
   if (t >= 0.0 && t <= 1.0)
   {
+    int i;
     for (i = 0; i < 3; i++)
     {
       projXYZ[i] = p1[i] + t * ray[i];
-      if (fabs(X[i] - projXYZ[i]) > tol)
+      if (std::abs(X[i] - projXYZ[i]) > tol)
       {
         break;
       }
@@ -185,11 +199,9 @@ int vtkVertex::TriangulateLocalIds(int vtkNotUsed(index), vtkIdList* ptIds)
 void vtkVertex::Derivatives(int vtkNotUsed(subId), const double vtkNotUsed(pcoords)[3],
   const double* vtkNotUsed(values), int dim, double* derivs)
 {
-  int i, idx;
-
-  for (i = 0; i < dim; i++)
+  for (int i = 0; i < dim; i++)
   {
-    idx = i * dim;
+    int idx = i * dim;
     derivs[idx] = 0.0;
     derivs[idx + 1] = 0.0;
     derivs[idx + 2] = 0.0;
@@ -201,11 +213,10 @@ void vtkVertex::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPoin
   vtkCellArray* verts, vtkPointData* inPd, vtkPointData* outPd, vtkCellData* inCd, vtkIdType cellId,
   vtkCellData* outCd, int insideOut)
 {
-  double s, x[3];
-  int newCellId;
+  double x[3];
   vtkIdType pts[1];
 
-  s = cellScalars->GetComponent(0, 0);
+  double s = cellScalars->GetComponent(0, 0);
 
   if ((!insideOut && s >= value) || (insideOut && s < value))
   {
@@ -214,7 +225,7 @@ void vtkVertex::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPoin
     {
       outPd->CopyData(inPd, this->PointIds->GetId(0), pts[0]);
     }
-    newCellId = verts->InsertNextCell(1, pts);
+    int newCellId = verts->InsertNextCell(1, pts);
     outCd->CopyData(inCd, cellId, newCellId);
   }
 }
@@ -235,10 +246,9 @@ void vtkVertex::InterpolationDerivs(const double[3], double derivs[3])
 }
 
 //------------------------------------------------------------------------------
-static double vtkVertexCellPCoords[3] = { 0.0, 0.0, 0.0 };
 double* vtkVertex::GetParametricCoords()
 {
-  return vtkVertexCellPCoords;
+  return ParametricCoords;
 }
 
 //------------------------------------------------------------------------------
