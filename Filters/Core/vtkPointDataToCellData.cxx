@@ -339,7 +339,7 @@ struct PointDataToCellDataCategoricalWorker
     vtkPointDataToCellData* filter)
   {
     PointDataToCellDataCategoricalFunctor<ArrayType> pd2cd(input, inPD, outCD, scalars, filter);
-    cvista::RunSafeFilterParallel(
+    cvista::RunSafeFilterParallel(input->GetNumberOfCells(),
       [&]() { vtkSMPTools::For(0, input->GetNumberOfCells(), pd2cd); });
   }
 };
@@ -506,7 +506,7 @@ int vtkPointDataToCellData::RequestData(
   {
     // Thread the process
     PointDataToCellDataFunctor pd2cd(input, inPD, outCD, this);
-    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numCells, pd2cd); });
+    cvista::RunSafeFilterParallel(numCells, [&]() { vtkSMPTools::For(0, numCells, pd2cd); });
   }
   // Create a threaded fast path for categorical data.
   else
