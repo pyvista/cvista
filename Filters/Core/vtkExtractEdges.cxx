@@ -20,6 +20,8 @@
 #include "vtkStaticPointLocator.h"
 #include "vtkUnstructuredGrid.h"
 
+#include <type_traits> // for std::remove_pointer_t (cvista int32 edge-scratch dispatch)
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkExtractEdges);
 
@@ -44,11 +46,21 @@ namespace
 { // anonymous
 
 // Base class for extracting edges, preserving point numbering.
-template <typename TDataSet>
+//
+// cvista: TId is the integer type for the edge scratch (point ids in the edge
+// tuples AND the merge offsets). It is chosen at the call site from the input's
+// index range -- `int` (32-bit) when the input has fewer than VTK_INT_MAX points
+// and cells, else `vtkIdType`. This halves the dominant edge-vector footprint on
+// int32-representable inputs (cvista's default). The choice follows VTK's own
+// convention in vtkContour3DLinearGrid (LargeIds = numPts/numCells >= VTK_INT_MAX)
+// and is bit-exact: the tuple/offset VALUES are identical (they fit the narrow
+// type by construction), the sort order over (V0,V1) is unchanged, and the output
+// connectivity is built by widening the scratch ids back to vtkIdType.
+template <typename TDataSet, typename TId>
 struct ExtractEdges
 {
   // The data of the edge tuple is cell id
-  using EdgeTupleType = EdgeTuple<vtkIdType, vtkIdType>;
+  using EdgeTupleType = EdgeTuple<TId, TId>;
   using EdgesType = std::vector<EdgeTupleType>;
 
   TDataSet* Input;
@@ -210,9 +222,9 @@ struct ExtractEdges
 
     // Now sort the edges with an edge locator. This will gather all duplicate
     // edges together and indicate the number of unique edges.
-    vtkStaticEdgeLocatorTemplate<vtkIdType, vtkIdType> edgeLoc;
+    vtkStaticEdgeLocatorTemplate<TId, TId> edgeLoc;
     vtkIdType totalEdges = 0;
-    const vtkIdType* edgeOffsets =
+    const TId* edgeOffsets =
       edgeLoc.MergeEdges(static_cast<vtkIdType>(edges.size()), edges.data(), totalEdges);
 
     // Allocate output VTK structures and construct the output lines.
@@ -345,20 +357,36 @@ int vtkExtractEdges::RequestData(vtkInformation* vtkNotUsed(request),
   auto actualCD = (inCD->GetNumberOfArrays() > 0 ? inCD : nullptr);
 
   // Algorithm proper.
+  // cvista: pick the edge-scratch index type from the input's index range.
+  // int (32-bit) when point and cell counts fit int32 -- halving the edge-vector
+  // footprint on int32-representable inputs -- else vtkIdType. Same gate VTK uses
+  // for LargeIds in vtkContour3DLinearGrid; bit-exact (values/order unchanged).
+  const bool largeIds = (numPts >= VTK_INT_MAX || numCells >= VTK_INT_MAX);
+  auto runExtract = [&](auto* typedInput)
+  {
+    using DS = std::remove_pointer_t<decltype(typedInput)>;
+    if (largeIds)
+    {
+      ExtractEdges<DS, vtkIdType> extract(typedInput, output, actualCD, outCD);
+      vtkSMPTools::For(0, numCells, extract);
+    }
+    else
+    {
+      ExtractEdges<DS, int> extract(typedInput, output, actualCD, outCD);
+      vtkSMPTools::For(0, numCells, extract);
+    }
+  };
   if (auto inPolyData = vtkPolyData::SafeDownCast(input))
   {
-    ExtractEdges<vtkPolyData> extract(inPolyData, output, actualCD, outCD);
-    vtkSMPTools::For(0, numCells, extract);
+    runExtract(inPolyData);
   }
   else if (auto inUGrid = vtkUnstructuredGrid::SafeDownCast(input))
   {
-    ExtractEdges<vtkUnstructuredGrid> extract(inUGrid, output, actualCD, outCD);
-    vtkSMPTools::For(0, numCells, extract);
+    runExtract(inUGrid);
   }
   else
   {
-    ExtractEdges<vtkDataSet> extract(input, output, actualCD, outCD);
-    vtkSMPTools::For(0, numCells, extract);
+    runExtract(input);
   }
   this->UpdateProgress(0.5);
 
