@@ -39,7 +39,17 @@ def _ulp_distance(x, y):
 _POLY_TAGS = ("verts", "lines", "polys", "strips")
 
 
-def _cell_records(arrays):
+def _rot_min(cell):
+    """Minimal cyclic rotation of a connectivity tuple. Orientation-PRESERVING:
+    the three rotations of a CCW triangle (a,b,c)->(b,c,a)->(c,a,b) share a min,
+    but the flipped (a,c,b) does not -- so a winding flip still changes the key.
+    Used for cells whose within-cell start vertex is emission-order-dependent
+    (e.g. the EnableFast Delaunay2D Hilbert lane) but whose winding is sacred."""
+    n = len(cell)
+    return min(tuple(cell[i:] + cell[:i]) for i in range(n)) if n else cell
+
+
+def _cell_records(arrays, rot_canonical=False):
     """Reconstruct a per-cell canonical sort key list + the global cell order.
 
     Returns (keys, perm) where ``keys`` is the list of canonical per-cell keys in
@@ -48,6 +58,9 @@ def _cell_records(arrays):
     partition. Cells are keyed by (group_rank, connectivity-tuple) for polydata or
     (cell_type, connectivity-tuple) for unstructured grids -- connectivity is point
     IDs, which are directly comparable because points stay strictly identical.
+    With rot_canonical, each connectivity tuple is replaced by its minimal cyclic
+    rotation (orientation-preserving), so a differing within-cell START vertex is
+    tolerated while a winding flip is still caught.
     Returns None if the array set has no recognizable topology.
     """
     names = set(arrays.files) if hasattr(arrays, "files") else set(arrays)
@@ -65,6 +78,8 @@ def _cell_records(arrays):
         ctypes = np.asarray(arrays["celltypes"]).astype(np.int64) if "celltypes" in names else None
         for i in range(len(off) - 1):
             cell = tuple(conn[off[i]:off[i + 1]].tolist())
+            if rot_canonical:
+                cell = _rot_min(cell)
             rank = int(ctypes[i]) if ctypes is not None else 0
             keys.append((rank, len(cell), cell))
     else:
@@ -77,6 +92,8 @@ def _cell_records(arrays):
             any_topo = True
             for i in range(len(off) - 1):
                 cell = tuple(conn[off[i]:off[i + 1]].tolist())
+                if rot_canonical:
+                    cell = _rot_min(cell)
                 keys.append((rank, len(cell), cell))
         if not any_topo:
             return None
@@ -126,10 +143,11 @@ def _remap_conn(arrays, rank):
     return d
 
 
-def _compare_cells(a, b, names, per, ok):
+def _compare_cells(a, b, names, per, ok, rot_canonical=False):
     """Compare cells as a multiset keyed by (group/celltype, connectivity) carrying
-    their cell-data. a/b may be NpzFile or plain dict (post point-remap)."""
-    ra, rb = _cell_records(a), _cell_records(b)
+    their cell-data. a/b may be NpzFile or plain dict (post point-remap).
+    rot_canonical keys each cell by its minimal cyclic rotation (see _cell_records)."""
+    ra, rb = _cell_records(a, rot_canonical), _cell_records(b, rot_canonical)
     if ra is None or rb is None:
         per["__cells__"] = {"equal": False, "reason": "no topology to canonicalize"}
         return False
@@ -267,7 +285,8 @@ def _compare_points_only(a, b, names):
     return bool(ok), per
 
 
-def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0, points_only=False):
+def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0, points_only=False,
+                           cell_rotation_relaxed=False):
     """Order-invariant mesh equality. cells are always compared as a multiset
     carrying their cell-data. Points + point-data are STRICT unless relax_points,
     in which case points are canonicalized by (coords, point-data) and connectivity
@@ -295,7 +314,7 @@ def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0, points_
                 eq = bool(x.shape == y.shape and x.dtype == y.dtype and np.array_equal(x, y))
                 per[name] = {"equal": eq, "mode": "strict", "dtype": str(x.dtype)}
                 ok &= eq
-        ok = _compare_cells(a, b, names, per, ok)
+        ok = _compare_cells(a, b, names, per, ok, rot_canonical=cell_rotation_relaxed)
         return bool(ok), per
     # relax_points: canonicalize points by (coords, point-data) on both sides.
     # lexsort's primary key is the coordinate columns, which are bit-identical
@@ -337,7 +356,8 @@ def _compare_order_relaxed(a, b, relax_points=False, point_data_tol=0.0, points_
             "max_pointdata_abs_diff": worst, "tol": point_data_tol}
         ok &= pts_eq
     # compare cells on point-remapped connectivity.
-    ok = _compare_cells(_remap_conn(a, ranka), _remap_conn(b, rankb), names, per, ok)
+    ok = _compare_cells(_remap_conn(a, ranka), _remap_conn(b, rankb), names, per, ok,
+                        rot_canonical=cell_rotation_relaxed)
     return bool(ok), per
 
 
@@ -398,7 +418,7 @@ def _compare_corrects_stock(a, b, input_dtype):
 
 def compare_case(stock_dir, cvista_dir, key, order_relaxed=False, points_relaxed=False,
                  point_data_tol=0.0, corrects_stock=False, input_dtype=None,
-                 points_only=False):
+                 points_only=False, cell_rotation_relaxed=False):
     """Return (ok: bool, detail: dict) for a single case key."""
     sp = os.path.join(stock_dir, key + ".npz")
     fp = os.path.join(cvista_dir, key + ".npz")
@@ -445,9 +465,10 @@ def compare_case(stock_dir, cvista_dir, key, order_relaxed=False, points_relaxed
         # point_data_tol (opt-in) tolerates denormal-scale interpolated-data noise.
         ok, per = _compare_order_relaxed(
             a, b, relax_points=points_relaxed, point_data_tol=point_data_tol,
-            points_only=points_only)
+            points_only=points_only, cell_rotation_relaxed=cell_rotation_relaxed)
         return ok, {"arrays": per, "order_relaxed": True, "points_relaxed": points_relaxed,
-                    "point_data_tol": point_data_tol, "points_only": points_only}
+                    "point_data_tol": point_data_tol, "points_only": points_only,
+                    "cell_rotation_relaxed": cell_rotation_relaxed}
     per_array = {}
     ok = True
     for name in sorted(names_a):
@@ -539,10 +560,15 @@ def compare_all(stock_dir, cvista_dir):
         # triangulation may differ on planar-quad diagonals, so the cell multiset
         # is checked by COUNT only (see _compare_cell_count_only).
         points_only = bool(cs.get("points_only") or cf.get("points_only"))
+        # Within-cell start-vertex negotiable, winding sacred (EnableFast Delaunay2D
+        # Hilbert lane): keys each cell by its minimal cyclic rotation.
+        cell_rotation_relaxed = bool(
+            cs.get("cell_rotation_relaxed") or cf.get("cell_rotation_relaxed"))
         ok, detail = compare_case(
             stock_dir, cvista_dir, key, order_relaxed=order_relaxed, points_relaxed=points_relaxed,
             point_data_tol=point_data_tol, corrects_stock=corrects_stock,
-            input_dtype=cs.get("dtype"), points_only=points_only)
+            input_dtype=cs.get("dtype"), points_only=points_only,
+            cell_rotation_relaxed=cell_rotation_relaxed)
         cases[key] = {"ok": ok, "detail": detail, "group": cs.get("group"),
                       "order_relaxed": order_relaxed or points_relaxed,
                       "corrects_stock": corrects_stock}

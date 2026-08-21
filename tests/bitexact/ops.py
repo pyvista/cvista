@@ -6000,6 +6000,52 @@ def op_delaunay2d(dtype, size):
     return f.GetOutput()
 
 
+def op_delaunay2d_fast(dtype, size):
+    # vtkDelaunay2D over a general-position planar point set with
+    # cvista.EnableFast()/CVISTA_FAST set: the incremental Watson insertion is
+    # driven in Hilbert-curve order (upstream VTK 9.7's UseHilbertSorter, forced
+    # on by the EnableFast lane) instead of natural point order. Spatially-local
+    # insertion shortens the containing-triangle walk (up to ~40x upstream). The
+    # output point set passes through unchanged (positions sacred, same order),
+    # and general-position input has a UNIQUE Delaunay triangulation, so the
+    # triangle multiset is identical to stock. Reordered insertion leaves upstream
+    # UseHilbertSorter with inconsistent triangle winding; cvista's fast lane
+    # normalizes each triangle back to CCW (see vtkDelaunay2D.cxx), so winding
+    # matches stock's default and only the triangle EMISSION order and within-cell
+    # START vertex differ -> compared ORDER-RELAXED + cell-rotation-relaxed (cells
+    # keyed by minimal cyclic rotation: winding-preserving, so a missed flip still
+    # fails). Stock VTK ignores CVISTA_FAST and runs the natural-order insertion.
+    #
+    # ENGAGEMENT CHECK: the relaxed gate also passes if cvista silently ran the
+    # natural-order path (identical order), so prove the Hilbert sort engaged. On
+    # the cvista backend, run once WITHOUT fast mode and once WITH it and assert
+    # the triangle connectivity order differs; a silent fallback leaves it equal.
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+
+    def _tris():
+        f = vtkDelaunay2D()
+        f.SetInputData(make_planar_points_general(size, dtype))
+        f.Update()
+        return f.GetOutput()
+
+    def _conn(out):
+        return np.ascontiguousarray(vtk_to_numpy(out.GetPolys().GetConnectivityArray())).copy()
+
+    import vtkmodules as _vtkmodules
+
+    is_cvista = "cvista" in str(getattr(_vtkmodules, "__file__", "")).lower()
+    if is_cvista:
+        base_conn = _conn(_tris())  # natural-order insertion (fast off)
+    with fast_mode():
+        out = _tris()
+    if is_cvista and np.array_equal(base_conn, _conn(out)):
+        raise AssertionError(
+            "cvista Hilbert insertion did not engage under CVISTA_FAST (triangle "
+            "order unchanged) -- the relaxed gate would otherwise pass on the "
+            "natural-order fallback")
+    return out
+
+
 def make_points3d_general(k, dtype):
     """`k`^3 points in GENERAL position: an integer lattice plus a fixed rational
     per-axis perturbation so no five points are cospherical (unique tetrahedralization,
@@ -6815,6 +6861,7 @@ OPS = {
     "thresholdpoints": dict(fn=op_thresholdpoints, group="filter", dtypes=["float32", "float64"], sizes=[8, 12]),
     "pdconnectivity": dict(fn=op_pdconnectivity, group="filter", dtypes=["float32", "float64"], sizes=[3, 5]),
     "delaunay2d": dict(fn=op_delaunay2d, group="filter", dtypes=["float32", "float64"], sizes=[6, 10]),
+    "delaunay2d_fast": dict(fn=op_delaunay2d_fast, group="filter", dtypes=["float32", "float64"], sizes=[6, 10], order_relaxed=True, cell_rotation_relaxed=True),
     "delaunay3d": dict(fn=op_delaunay3d, group="filter", dtypes=["float32", "float64"], sizes=[4, 5]),
     # ===== end Wave 9 =====
     # === Wave 13: MED-tier topology conversions + append/procrustes ===

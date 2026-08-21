@@ -4,6 +4,7 @@
 #include "vtkDelaunay2D.h"
 
 #include "vtkAbstractTransform.h"
+#include "vtkCVISTASMPDefaults.h" // cvista: opt-in EnableFast lane (FastModeEnabled)
 #include "vtkCellArray.h"
 #include "vtkDoubleArray.h"
 #include "vtkHilbertCurveSorter.h"
@@ -949,8 +950,15 @@ int vtkDelaunay2D::RequestData(vtkInformation* vtkNotUsed(request),
   // successive insertions spatially local, which shortens the walk to
   // locate the containing triangle; the GCD pseudo-random traversal
   // improves numerics on structured inputs.
+  // cvista EnableFast lane: cvista.EnableFast() (env CVISTA_FAST) opts into the
+  // Hilbert-curve insertion sort (upstream VTK 9.7, up to ~40x on large point
+  // sets). It reorders point insertion, so the emitted triangle order differs
+  // from stock; the output point set and positions are unchanged and the
+  // Delaunay triangulation multiset is identical on general-position input.
+  // That is order-relaxed, not byte-exact, so it stays behind the opt-in flag
+  // like the other EnableFast filters.
   vtkSmartPointer<vtkIdList> hilbertOrder;
-  if (this->UseHilbertSorter)
+  if (this->UseHilbertSorter || cvista::FastModeEnabled())
   {
     vtkNew<vtkPolyData> sorterInput;
     sorterInput->SetPoints(srcPoints);
@@ -1058,15 +1066,41 @@ int vtkDelaunay2D::RequestData(vtkInformation* vtkNotUsed(request),
     connectivity->SetNumberOfValues(3 * numTris);
     vtkIdType* offsetsPtr = offsets->GetPointer(0);
     vtkIdType* connectivityPtr = connectivity->GetPointer(0);
+    // cvista EnableFast: reordered (Hilbert) insertion leaves the triangulation
+    // with inconsistent winding -- exactly as upstream VTK's own UseHilbertSorter
+    // and RandomPointInsertion do. Normalize each triangle to CCW in the
+    // projection plane so cvista's fast output keeps stock's consistent
+    // orientation (only cell emission order then differs). Gated on the fast lane
+    // alone, so the default path and a user's stock UseHilbertSorter stay
+    // byte-exact; a no-op there.
+    const bool fastWinding = cvista::FastModeEnabled();
+    const double* projPts = this->Points;
     vtkSMPTools::For(0, numTris,
       [&](vtkIdType begin, vtkIdType end)
       {
         for (vtkIdType triId = begin; triId < end; triId++)
         {
           offsetsPtr[triId] = 3 * triId;
-          connectivityPtr[3 * triId] = topo[triId].PointIds[0];
-          connectivityPtr[3 * triId + 1] = topo[triId].PointIds[1];
-          connectivityPtr[3 * triId + 2] = topo[triId].PointIds[2];
+          vtkIdType v0 = topo[triId].PointIds[0];
+          vtkIdType v1 = topo[triId].PointIds[1];
+          vtkIdType v2 = topo[triId].PointIds[2];
+          if (fastWinding)
+          {
+            const double* a = projPts + 3 * v0;
+            const double* b = projPts + 3 * v1;
+            const double* c = projPts + 3 * v2;
+            const double area2 =
+              (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+            if (area2 < 0.0)
+            {
+              const vtkIdType tmp = v1;
+              v1 = v2;
+              v2 = tmp;
+            }
+          }
+          connectivityPtr[3 * triId] = v0;
+          connectivityPtr[3 * triId + 1] = v1;
+          connectivityPtr[3 * triId + 2] = v2;
         }
       });
     offsetsPtr[numTris] = 3 * numTris;

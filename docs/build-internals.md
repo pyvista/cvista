@@ -324,6 +324,15 @@ filter below runs its stock byte-exact path. Two flavours feed this lane:
   handle exactly. *Filters:* `vtkDataSetSurfaceFilter` (UG boundary surface, `extract_surface`
   kernel), `vtkStaticCleanUnstructuredGrid` and `vtkCleanPolyData` (coincident-point merge,
   `clean` kernel).
+- **Upstream-native reordering** — an optional, faster ordering that upstream VTK 9.7 already
+  ships but leaves off by default, flipped on when fast mode is enabled. The output point set,
+  positions and cell multiset are unchanged; only emission order moves. *Filters:* `vtkDelaunay2D`
+  (`UseHilbertSorter`, Hilbert-curve insertion order — spatially-local insertion shortens the
+  point-location walk, up to ~40x upstream on large point sets). Reordered insertion leaves
+  upstream's own `UseHilbertSorter`/`RandomPointInsertion` output with inconsistent triangle
+  winding; cvista's fast lane normalizes each triangle back to CCW so the fast output keeps
+  stock's consistent orientation (verified `cell_rotation_relaxed`: cells keyed by minimal cyclic
+  rotation, which is winding-preserving, so a missed flip still fails the gate).
 
 **Validation — the order/points-relaxed gate.** A non-exact filter can't be checked at
 maxULP = 0, so `tests/bitexact/` carries relaxed comparison modes (per-op flags in the
@@ -336,6 +345,11 @@ manifest, see `tests/bitexact/compare.py`):
   both sides and remaps connectivity through that ranking, so surface/merge kernels that emit
   points in their own hash/thread order still compare equal. The point **set** and **values**
   remain sacred; only the order is relaxed.
+- `cell_rotation_relaxed` — additionally keys each cell by its **minimal cyclic rotation** before
+  the multiset compare, so a differing within-cell **start vertex** is negotiable. Cyclic
+  rotation is orientation-preserving, so a **winding flip still fails** — the cell *set* and each
+  cell's *winding* stay sacred. For `vtkDelaunay2D`'s Hilbert lane, whose reordered insertion
+  emits the same CCW triangles from a different leading vertex.
 
 Both still hold positions and values exact — only *order* is negotiable (the same contract as
 the fast PLY reader; see [Parity & validation](#parity--validation)). A passing relaxed test
