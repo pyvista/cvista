@@ -79,6 +79,12 @@ set(classes
 set (template_classes
   vtkTemporalAlgorithm)
 
+# Single exported instantiation of vtkTemporalAlgorithm<vtkPolyDataAlgorithm> so
+# consumers in other kits import it rather than each emitting a colliding copy
+# (LNK2005 under MSVC when modules are merged into shared kit DLLs).
+set (template_instantiation_sources
+  vtkTemporalAlgorithm.cxx)
+
 # Hand written (de)serialization routines
 set(serialization_helper_sources)
 if (VTK_WRAP_SERIALIZATION)
@@ -88,7 +94,7 @@ endif ()
 
 vtk_module_add_module(VTK::CommonExecutionModel
   CLASSES ${classes}
-  SOURCES ${serialization_helper_sources}
+  SOURCES ${serialization_helper_sources} ${template_instantiation_sources}
   TEMPLATE_CLASSES ${template_classes})
 vtk_add_test_mangling(VTK::CommonExecutionModel)
 
