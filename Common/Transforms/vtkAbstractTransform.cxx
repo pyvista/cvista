@@ -287,7 +287,7 @@ void vtkAbstractTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPts)
   // cvista: per-point-independent writes to a pre-sized output (InternalTransformPoint
   // is a read-only function of the post-Update transform state) => bit-exact under
   // any thread count; run under the default-threading policy.
-  cvista::RunSafeFilterParallel(
+  cvista::RunSafeFilterParallel(n,
     [&]()
     {
       vtkSMPTools::For(0, n,
@@ -364,7 +364,7 @@ void vtkAbstractTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vtkPo
   // cvista: per-point-independent writes to pre-sized outputs (InternalTransform-
   // Derivative is a read-only function of the post-Update transform state) =>
   // bit-exact under any thread count; run under the default-threading policy.
-  cvista::RunSafeFilterParallel([&]() {
+  cvista::RunSafeFilterParallel(n, [&]() {
   vtkSMPTools::For(0, n,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {

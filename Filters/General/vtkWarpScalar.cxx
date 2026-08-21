@@ -181,7 +181,7 @@ struct ScaleWorker
     // cvista: this For writes opts[ptId] = f(ipts[ptId]) into pre-sized output
     // slots, so it is bit-exact under any thread count -> opt into the cvista
     // default-on multithreading (capped at 4, overridable via VTK SMP APIs).
-    cvista::RunSafeFilterParallel(
+    cvista::RunSafeFilterParallel(numPts,
       [&]()
       {
         vtkSMPTools::For(0, numPts, vtkSMPTools::THRESHOLD,

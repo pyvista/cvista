@@ -111,7 +111,7 @@ struct Elevate
     // output array, so it is bit-exact under any thread count -> opt into the
     // cvista default-on multithreading (capped at 4, overridable via VTK SMP APIs).
     vtkElevationAlgorithm<PointArrayT> algo{ pointArray, filter, scalars, v, l2 };
-    cvista::RunSafeFilterParallel(
+    cvista::RunSafeFilterParallel(pointArray->GetNumberOfTuples(),
       [&]() { vtkSMPTools::For(0, pointArray->GetNumberOfTuples(), algo); });
   }
 };

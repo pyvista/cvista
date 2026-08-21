@@ -171,7 +171,7 @@ vtkSmartPointer<vtkFloatArray> vtkPolyDataNormals::GetCellNormals(vtkPolyData* d
   // (capped at 4, overridable via the VTK SMP APIs). One scope -> the global SMP
   // singleton is mutated once and all three For's inherit it.
   vtkSMPThreadLocalObject<vtkIdList> tlTempCellPointIds;
-  cvista::RunSafeFilterParallel(
+  cvista::RunSafeFilterParallel(numPolys,
     [&]()
     {
       // Set default value for vertices and lines cell normals
@@ -269,7 +269,7 @@ vtkSmartPointer<vtkFloatArray> vtkPolyDataNormals::GetPointNormals(
   // slot; each point's sum is over its own fixed cell list in a fixed order, so
   // the result is bit-exact under any thread count -> opt into the cvista
   // default-on multithreading (capped at 4, overridable via VTK SMP APIs).
-  cvista::RunSafeFilterParallel(
+  cvista::RunSafeFilterParallel(numPoints,
     [&]()
     {
       vtkSMPTools::For(0, numPoints,

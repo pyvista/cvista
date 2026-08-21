@@ -265,7 +265,7 @@ struct vtkThreshold::EvaluateCellsWorker
     // cvista: per-cell boolean predicate writes only its own pre-sized insideness slot,
     // with a serial deterministic Reduce() — thread-count-invariant, so byte-exact vs
     // stock. Default-on (bucket 1) under the thread-count-capped LocalScope.
-    cvista::RunSafeFilterParallel(
+    cvista::RunSafeFilterParallel(input->GetNumberOfCells(),
       [&]() { vtkSMPTools::For(0, input->GetNumberOfCells(), functor); });
   }
 };

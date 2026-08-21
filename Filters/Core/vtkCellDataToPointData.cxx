@@ -83,13 +83,13 @@ void FastUnstructuredDataACL(
   if (auto staticCellLinks = vtkStaticCellLinks::SafeDownCast(links))
   {
     UnstructuredDataCD2PD<vtkStaticCellLinks> cd2pd(numPts, cfl, pd, staticCellLinks);
-    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numPts, cd2pd); });
+    cvista::RunSafeFilterParallel(numPts, [&]() { vtkSMPTools::For(0, numPts, cd2pd); });
   }
   else // vtkCellLinks
   {
     auto cellLinks = vtkCellLinks::SafeDownCast(links);
     UnstructuredDataCD2PD<vtkCellLinks> cd2pd(numPts, cfl, pd, cellLinks);
-    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numPts, cd2pd); });
+    cvista::RunSafeFilterParallel(numPts, [&]() { vtkSMPTools::For(0, numPts, cd2pd); });
   }
 }
 
@@ -110,7 +110,7 @@ void FastUnstructuredDataSCLT(
     TCellLinks cellLinks;
     cellLinks.BuildLinks(input);
     UnstructuredDataCD2PD<TCellLinks> cd2pd(numberOfPoints, cfl, pd, &cellLinks);
-    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
+    cvista::RunSafeFilterParallel(numberOfPoints, [&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
   }
 #ifdef VTK_USE_64BIT_IDS
   else if (linksType == vtkAbstractCellLinks::STATIC_CELL_LINKS_UINT)
@@ -119,7 +119,7 @@ void FastUnstructuredDataSCLT(
     TCellLinks cellLinks;
     cellLinks.BuildLinks(input);
     UnstructuredDataCD2PD<TCellLinks> cd2pd(numberOfPoints, cfl, pd, &cellLinks);
-    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
+    cvista::RunSafeFilterParallel(numberOfPoints, [&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
   }
 #endif
   else
@@ -128,7 +128,7 @@ void FastUnstructuredDataSCLT(
     TCellLinks cellLinks;
     cellLinks.BuildLinks(input);
     UnstructuredDataCD2PD<TCellLinks> cd2pd(numberOfPoints, cfl, pd, &cellLinks);
-    cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
+    cvista::RunSafeFilterParallel(numberOfPoints, [&]() { vtkSMPTools::For(0, numberOfPoints, cd2pd); });
   }
 }
 
@@ -947,7 +947,7 @@ int vtkCellDataToPointData::InterpolatePointData(vtkDataSet* input, vtkDataSet* 
   interp.UseStructuredFastPath = useStructuredFastPath;
   interp.StructuredDims = structuredDims;
 
-  cvista::RunSafeFilterParallel([&]() { vtkSMPTools::For(0, numberOfPoints, interp); });
+  cvista::RunSafeFilterParallel(numberOfPoints, [&]() { vtkSMPTools::For(0, numberOfPoints, interp); });
 
   return 1;
 }
