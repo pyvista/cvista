@@ -19,6 +19,20 @@ These are Bucket-1 (byte-identical) perf micro-opts. Taking 9.7's version is par
                                           Found by the drop-detector audit (census PropArrayStorage 4->0); 9.7 did
                                           NOT add it. DEFERRED (perf-only). Re-apply onto 9.7's vtkRenderer.
 
+## Re-audit 2026-08-21 (independent drop-detection re-run) — items the original ledger missed
+# Re-ran cvista delta = diff(v9.6.2 -> main) vs refork/vtk-9.7.0-trim. All 218 added files
+# still present; 305/306 modified carry the change; vtkSurfaceNets3D correctness fix confirmed
+# present (zero-init re-applied). Surfaced 5 flagged files NOT in the lists above — all
+# parity-safe (Bucket-1 / build-only), none correctness/parity drops, so release-safe; logged
+# here for an accurate record and post-release re-apply:
+- Filters/Core/vtkThresholdPoints.cxx        — UseFixedSizeDefaultStorage(1) (skip offsets array; byte-identical)
+- Filters/General/vtkImageMarchingCubes.cxx  — UseFixedSizeDefaultStorage(3) (byte-identical)
+- Filters/General/vtkVertexGlyphFilter.cxx   — UseFixedSizeDefaultStorage(1) (byte-identical)
+- ThirdParty/xdmf2/.../XdmfObject.h          — <strstream>-> <sstream> portability fix; stock 9.7 still
+                                               uses <strstream> (builds on the current Linux/macOS/Windows
+                                               matrix, so build-safe now; reversion only loses future-proofing)
+- ThirdParty/xdmf2/.../XdmfValuesBinary.cxx  — rdbuf()->str() -> .str() (same <sstream> migration)
+
 # ------------------------------------------------------------------------------
 # Drop-detector audit (structural verification of the re-fork, layer 1+2)
 # ------------------------------------------------------------------------------
