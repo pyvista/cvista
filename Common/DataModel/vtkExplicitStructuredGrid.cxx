@@ -8,10 +8,8 @@
 #include "vtkCellData.h"
 #include "vtkCellLinks.h"
 #include "vtkDataSetAttributes.h"
-#include "vtkEmptyCell.h"
 #include "vtkGarbageCollector.h"
 #include "vtkGenericCell.h"
-#include "vtkHexahedron.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkNew.h"
@@ -233,19 +231,19 @@ void vtkExplicitStructuredGrid::GetCellPoints(
 
 //------------------------------------------------------------------------------
 void vtkExplicitStructuredGrid::GetCellNeighbors(
-  vtkIdType cellId, vtkIdType neighbors[6], int* wholeExtent)
+  vtkIdType cellId, vtkIdType neighbors[6], VTK_FUTURE_CONST int wholeExtent[6])
 {
   int ci, cj, ck;
   this->ComputeCellStructuredCoords(cellId, ci, cj, ck, true);
-  int* extent = wholeExtent;
+  int* extent = nullptr;
   if (!wholeExtent)
   {
-    // If the whole extent have not been defined, use own extent
+    // If the whole extent has not been defined, use own extent
     extent = new int[6];
     this->GetExtent(extent);
   }
   int dims[3];
-  vtkStructuredData::GetDimensionsFromExtent(extent, dims);
+  vtkStructuredData::GetDimensionsFromExtent(wholeExtent ? wholeExtent : extent, dims);
   dims[0]--;
   dims[1]--;
   dims[2]--;
@@ -323,14 +321,14 @@ struct GetCellNeighborsImpl : public vtkCellArray::DispatchUtilities
                 break;
               }
             } // for all points in current cell
-          }   // if not guaranteed match
-        }     // for all input points
+          } // if not guaranteed match
+        } // for all input points
         if (match)
         {
           cellIds->InsertNextId(minCellId);
         }
       } // if not the reference cell
-    }   // for each cell in minimum linked list
+    } // for each cell in minimum linked list
   }
 };
 } // end anonymous namespace
@@ -509,7 +507,7 @@ void vtkExplicitStructuredGrid::SetExtent(int x0, int x1, int y0, int y1, int z0
 }
 
 //------------------------------------------------------------------------------
-void vtkExplicitStructuredGrid::SetExtent(int extent[6])
+void vtkExplicitStructuredGrid::SetExtent(VTK_FUTURE_CONST int extent[6])
 {
   this->SetExtent(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
 }
@@ -757,14 +755,14 @@ bool vtkExplicitStructuredGrid::HasAnyGhostCells()
 }
 
 //------------------------------------------------------------------------------
-void vtkExplicitStructuredGrid::Crop(const int* updateExtent)
+void vtkExplicitStructuredGrid::Crop(const int updateExtent[6])
 {
   this->Crop(this, updateExtent, false);
 }
 
 //------------------------------------------------------------------------------
 void vtkExplicitStructuredGrid::Crop(
-  vtkExplicitStructuredGrid* input, const int* updateExtent, bool generateOriginalCellIds)
+  vtkExplicitStructuredGrid* input, const int updateExtent[6], bool generateOriginalCellIds)
 {
   // The old extent
   int oldExtent[6];
@@ -815,7 +813,7 @@ void vtkExplicitStructuredGrid::Crop(
       originalCellIds->SetNumberOfComponents(1);
       this->GetCellData()->AddArray(originalCellIds.GetPointer());
       vtkIdType inSize = this->GetNumberOfCells();
-      originalCellIds->Allocate(inSize);
+      originalCellIds->ReserveValues(inSize);
       for (vtkIdType i = 0; i < inSize; i++)
       {
         originalCellIds->InsertValue(i, i);
@@ -859,8 +857,7 @@ void vtkExplicitStructuredGrid::Crop(
     if (generateOriginalCellIds)
     {
       originalCellIds->SetName("vtkOriginalCellIds");
-      originalCellIds->SetNumberOfComponents(1);
-      originalCellIds->Allocate(outSize);
+      originalCellIds->ReserveValues(outSize);
     }
 
     // Browse input data and copy cell attributes to output

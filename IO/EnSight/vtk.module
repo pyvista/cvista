@@ -12,9 +12,9 @@ DEPENDS
   VTK::CommonExecutionModel
 PRIVATE_DEPENDS
   VTK::FiltersGeneral
+  VTK::CommonCache
   VTK::CommonCore
   VTK::CommonDataModel
-  VTK::FiltersTemporal
   VTK::ParallelCore
 OPTIONAL_DEPENDS
   VTK::ParallelMPI

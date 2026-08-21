@@ -33,6 +33,7 @@
 #include "vtkPointData.h"
 #include "vtkPointSet.h"
 #include "vtkRectilinearGrid.h"
+#include "vtkResourceStream.h"
 #include "vtkShortArray.h"
 #include "vtkStringArray.h"
 #include "vtkStringScanner.h"
@@ -59,10 +60,186 @@
 // This function is also defined in Infovis/vtkDelimitedTextReader.cxx,
 // so it would be nice to put this in a common file.
 VTK_ABI_NAMESPACE_BEGIN
+
+namespace
+{
+
+// Heavily adapted from:
+// https://stackoverflow.com/questions/11420263/is-it-possible-to-read-infinity-or-nan-values-using-input-streams
+// Note that we do not accept "nan(…)" where "…" is a sequence of any characters. This is
+// allowed by the specification but since we must preserve the character sequence for putback()
+// if there is no terminating parenthesis and no limit is placed on the sequence length, we choose
+// not to accept it as part of the VTK format.
+template <typename Number>
+void parse_on_fail(std::istream& stream, Number& xx, bool neg)
+{
+  static const char* allowed[] = { "", "infinity", "nan" };
+  const char* aa = allowed[0];
+  int ll = 0;
+  char putback_buffer[10]; // enough space for "-infinity" plus 1 character beyond
+  char* cc = putback_buffer;
+  if (neg)
+  {
+    *cc++ = '-';
+  }
+  stream.clear();
+  stream.get(*cc);
+  if (!stream.good())
+  {
+    return;
+  }
+  switch (std::tolower(*cc))
+  {
+    case 'i':
+      ll = 1;
+      aa = allowed[ll];
+      break;
+    case 'n':
+      ll = 2;
+      aa = allowed[ll];
+      break;
+  }
+  while (*aa && std::tolower(*cc) == *aa)
+  {
+    if (aa - allowed[ll] == 2)
+    {
+      break;
+    }
+    ++aa;
+    stream.get(*++cc);
+    if (!stream.good())
+    {
+      break;
+    }
+  }
+  // If we matched the first 3 characters, we may be done:
+  bool ok = true;
+  if (stream.good() && std::tolower(*cc) == *aa)
+  {
+    int pp = stream.peek();
+    switch (ll)
+    {
+      case 1:
+      {
+        if (std::isspace(pp) || pp == std::istream::traits_type::eof())
+        {
+          // A space or EOF beyond "inf" means we have matched "inf":
+          xx = std::numeric_limits<Number>::infinity();
+        }
+        else
+        {
+          // We need to consume "inity" (modulo capitalization) if it is present.
+          while (*aa && std::tolower(*cc) == *aa)
+          {
+            if (aa - allowed[ll] == 7)
+            {
+              break;
+            }
+            ++aa;
+            stream.get(*++cc);
+            if (!stream.good())
+            {
+              break;
+            }
+          }
+          if (stream.good() && std::tolower(*cc) == *aa)
+          {
+            pp = stream.peek();
+            if (std::isspace(pp) || pp == std::istream::traits_type::eof())
+            {
+              // A space or EOF means we have matched "infinity":
+              xx = std::numeric_limits<Number>::infinity();
+            }
+            else
+            {
+              ok = false;
+            }
+          }
+          else
+          {
+            ok = false;
+            if (stream.good())
+            {
+              stream.putback(*cc);
+              --cc;
+            }
+          }
+        }
+      }
+      break;
+      case 2:
+        if (std::isspace(pp) || pp == std::istream::traits_type::eof())
+        {
+          // A space or EOF beyond "nan" means we have matched "nan":
+          xx = std::numeric_limits<Number>::quiet_NaN();
+        }
+        else
+        {
+          ok = false;
+        }
+        break;
+    }
+    if (ok)
+    {
+      if (neg)
+      {
+        xx = -xx;
+      }
+      return;
+    }
+  }
+  else if (!stream.good())
+  {
+    if (!stream.fail())
+    {
+      return;
+    }
+    stream.clear();
+    --cc;
+  }
+  // Failure to match means we must put back the characters we read
+  // and set the failure bit.
+  do
+  {
+    stream.putback(*cc);
+  } while (cc-- != putback_buffer);
+  stream.setstate(std::ios_base::failbit);
+}
+
+// Adapted from:
+// https://stackoverflow.com/questions/11420263/is-it-possible-to-read-infinity-or-nan-values-using-input-streams
+template <typename Number>
+void read_stream_fp(std::istream& stream, Number& xx)
+{
+  bool neg = false;
+  char cc;
+  if (!stream.good())
+  {
+    return;
+  }
+  while (isspace(cc = stream.peek()))
+  {
+    stream.get();
+  }
+  if (cc == '-')
+  {
+    neg = true;
+  }
+  stream >> xx;
+  if (!stream.fail())
+  {
+    return;
+  }
+  parse_on_fail<Number>(stream, xx, neg);
+}
+
+} // anonmyous namespace
+
 static int my_getline(istream& in, std::string& output, char delim = '\n');
 
 vtkStandardNewMacro(vtkDataReader);
 
+vtkCxxSetSmartPointerMacro(vtkDataReader, Stream, vtkResourceStream);
 vtkCxxSetObjectMacro(vtkDataReader, InputArray, vtkCharArray);
 
 //------------------------------------------------------------------------------
@@ -140,6 +317,12 @@ vtkDataReader::~vtkDataReader()
   delete this->IS;
 }
 
+//----------------------------------------------------------------------------
+vtkResourceStream* vtkDataReader::GetStream()
+{
+  return this->Stream;
+}
+
 //------------------------------------------------------------------------------
 void vtkDataReader::SetFileName(const char* fname)
 {
@@ -169,7 +352,7 @@ const char* vtkDataReader::GetFileName() const
 //------------------------------------------------------------------------------
 int vtkDataReader::ReadTimeDependentMetaData(int timestep, vtkInformation* metadata)
 {
-  if (this->ReadFromInputString)
+  if (this->ReadFromInputString || this->ReadFromInputStream)
   {
     return this->ReadMetaDataSimple(std::string(), metadata);
   }
@@ -188,7 +371,7 @@ int vtkDataReader::ReadMesh(
     return 1;
   }
 
-  if (this->ReadFromInputString)
+  if (this->ReadFromInputString || this->ReadFromInputStream)
   {
     return this->ReadMeshSimple(std::string(), output);
   }
@@ -414,7 +597,7 @@ int vtkDataReader::Read(unsigned long long* result)
 //------------------------------------------------------------------------------
 int vtkDataReader::Read(float* result)
 {
-  *this->IS >> *result;
+  read_stream_fp(*this->IS, *result);
   if (this->IS->fail())
   {
     return 0;
@@ -425,7 +608,7 @@ int vtkDataReader::Read(float* result)
 //------------------------------------------------------------------------------
 int vtkDataReader::Read(double* result)
 {
-  *this->IS >> *result;
+  read_stream_fp(*this->IS, *result);
   if (this->IS->fail())
   {
     return 0;
@@ -468,7 +651,20 @@ int vtkDataReader::OpenVTKFile(const char* fname)
   {
     this->CloseVTKFile();
   }
-  if (this->ReadFromInputString)
+
+  if (this->ReadFromInputStream)
+  {
+    if (this->Stream)
+    {
+      // Use provided resource stream.
+      vtkDebugMacro(<< "Reading from resource stream");
+      this->Stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+      this->Streambuf = this->Stream->ToStreambuf();
+      this->IS = new std::istream(this->Streambuf.get());
+      return 1;
+    }
+  }
+  else if (this->ReadFromInputString)
   {
     if (this->InputArray)
     {
@@ -531,7 +727,7 @@ int vtkDataReader::OpenVTKFile(const char* fname)
 
 //------------------------------------------------------------------------------
 // Read the header of a vtk data file. Returns 0 if error.
-int vtkDataReader::ReadHeader(const char* fname)
+int vtkDataReader::ReadHeader(const char* fname, bool quiet)
 {
   if (!fname && this->GetNumberOfFileNames() > 0)
   {
@@ -539,38 +735,46 @@ int vtkDataReader::ReadHeader(const char* fname)
   }
   char line[256];
 
-  vtkDebugMacro(<< "Reading vtk file header");
   //
   // read header
   //
   if (!this->ReadLine(line))
   {
-    vtkErrorMacro(<< "Premature EOF reading first line! "
-                  << " for file: " << (fname ? fname : "(Null FileName)"));
+    if (!quiet)
+    {
+      vtkErrorMacro(<< "Premature EOF reading first line! "
+                    << " for file: " << (fname ? fname : "(Null FileName)"));
+    }
     this->SetErrorCode(vtkErrorCode::PrematureEndOfFileError);
     return 0;
   }
   constexpr int VERSION_PREFIX_LENGTH = 22;
   if (strncmp("# vtk DataFile Version", line, VERSION_PREFIX_LENGTH) != 0)
   {
-    vtkErrorMacro(<< "Unrecognized file type: " << line
-                  << " for file: " << (fname ? fname : "(Null FileName)"));
-
+    if (!quiet)
+    {
+      vtkErrorMacro(<< "Unrecognized file type: " << line
+                    << " for file: " << (fname ? fname : "(Null FileName)"));
+    }
     this->SetErrorCode(vtkErrorCode::UnrecognizedFileTypeError);
     return 0;
   }
   auto result = vtk::scan<int, int>(std::string_view(line + VERSION_PREFIX_LENGTH), "{:d}.{:d}");
   if (!result)
   {
-    vtkWarningMacro(<< "Cannot read file version: " << line
-                    << " for file: " << (fname ? fname : "(Null FileName)"));
+    if (!quiet)
+    {
+      vtkWarningMacro(<< "Cannot read file version: " << line
+                      << " for file: " << (fname ? fname : "(Null FileName)"));
+    }
     this->FileMajorVersion = 0;
     this->FileMinorVersion = 0;
   }
   std::tie(this->FileMajorVersion, this->FileMinorVersion) = result->values();
-  if (this->FileMajorVersion > vtkLegacyReaderMajorVersion ||
-    (this->FileMajorVersion == vtkLegacyReaderMajorVersion &&
-      this->FileMinorVersion > vtkLegacyReaderMinorVersion))
+  if ((this->FileMajorVersion > vtkLegacyReaderMajorVersion ||
+        (this->FileMajorVersion == vtkLegacyReaderMajorVersion &&
+          this->FileMinorVersion > vtkLegacyReaderMinorVersion)) &&
+    !quiet)
   {
     // newer file than the reader version
     vtkWarningMacro(<< "Reading file version: " << this->FileMajorVersion << "."
@@ -585,8 +789,12 @@ int vtkDataReader::ReadHeader(const char* fname)
   //
   if (!this->ReadLine(line))
   {
-    vtkErrorMacro(<< "Premature EOF reading title! "
-                  << " for file: " << (fname ? fname : "(Null FileName)"));
+    if (!quiet)
+    {
+
+      vtkErrorMacro(<< "Premature EOF reading title! "
+                    << " for file: " << (fname ? fname : "(Null FileName)"));
+    }
     this->SetErrorCode(vtkErrorCode::PrematureEndOfFileError);
     return 0;
   }
@@ -594,14 +802,17 @@ int vtkDataReader::ReadHeader(const char* fname)
   this->Header = new char[strlen(line) + 1];
   strcpy(this->Header, line);
 
-  vtkDebugMacro(<< "Reading vtk file entitled: " << line);
   //
   // read type
   //
   if (!this->ReadString(line))
   {
-    vtkErrorMacro(<< "Premature EOF reading file type!"
-                  << " for file: " << (fname ? fname : "(Null FileName)"));
+    if (!quiet)
+    {
+
+      vtkErrorMacro(<< "Premature EOF reading file type!"
+                    << " for file: " << (fname ? fname : "(Null FileName)"));
+    }
     this->SetErrorCode(vtkErrorCode::PrematureEndOfFileError);
     return 0;
   }
@@ -616,8 +827,11 @@ int vtkDataReader::ReadHeader(const char* fname)
   }
   else
   {
-    vtkErrorMacro(<< "Unrecognized file type: " << line
-                  << " for file: " << (fname ? fname : "(Null FileName)"));
+    if (!quiet)
+    {
+      vtkErrorMacro(<< "Unrecognized file type: " << line
+                    << " for file: " << (fname ? fname : "(Null FileName)"));
+    }
     this->FileType = 0;
     this->SetErrorCode(vtkErrorCode::UnrecognizedFileTypeError);
     return 0;
@@ -625,9 +839,8 @@ int vtkDataReader::ReadHeader(const char* fname)
 
   // if this is a binary file we need to make sure that we opened it
   // as a binary file.
-  if (this->FileType == VTK_BINARY && this->ReadFromInputString == 0)
+  if (this->FileType == VTK_BINARY && this->ReadFromInputString == 0 && !this->ReadFromInputStream)
   {
-    vtkDebugMacro(<< "Opening vtk file as binary");
     delete this->IS;
     this->IS = nullptr;
 #ifdef _WIN32
@@ -637,7 +850,10 @@ int vtkDataReader::ReadHeader(const char* fname)
 #endif
     if (this->IS->fail())
     {
-      vtkErrorMacro(<< "Unable to open file: " << fname);
+      if (!quiet)
+      {
+        vtkErrorMacro(<< "Unable to open file: " << fname);
+      }
       delete this->IS;
       this->IS = nullptr;
       this->SetErrorCode(vtkErrorCode::CannotOpenFileError);
@@ -1524,8 +1740,9 @@ int vtkReadASCIIData(vtkDataReader* self, T* data, vtkIdType numTuples, vtkIdTyp
     {
       if (!self->Read(data++))
       {
-        vtkGenericWarningMacro(<< "Error reading ascii data. Possible mismatch of "
-                                  "datasize with declaration.");
+        vtkErrorWithObjectMacro(self,
+          "Error reading ascii data. Possible mismatch of "
+          "datasize with declaration.");
         return 0;
       }
     }
@@ -1797,7 +2014,12 @@ vtkAbstractArray* vtkDataReader::ReadArray(
     }
     else
     {
-      vtkReadASCIIData(this, ptr, numTuples, numComp);
+      if (!vtkReadASCIIData(this, ptr, numTuples, numComp))
+      {
+        array->Delete();
+        free(type);
+        return nullptr;
+      }
     }
   }
 
@@ -1813,7 +2035,12 @@ vtkAbstractArray* vtkDataReader::ReadArray(
     }
     else
     {
-      vtkReadASCIIData(this, ptr, numTuples, numComp);
+      if (!vtkReadASCIIData(this, ptr, numTuples, numComp))
+      {
+        array->Delete();
+        free(type);
+        return nullptr;
+      }
     }
   }
 
@@ -3715,6 +3942,18 @@ void vtkDataReader::PrintSelf(ostream& os, vtkIndent indent)
     os << indent << "Header: (None)\n";
   }
 
+  os << indent << "ReadFromInputStream: " << (this->ReadFromInputStream ? "On\n" : "Off\n");
+  if (this->Stream)
+  {
+    os << indent << "Stream: "
+       << "\n";
+    this->Stream->PrintSelf(os, indent.GetNextIndent());
+  }
+  else
+  {
+    os << indent << "Stream: (none)\n";
+  }
+
   os << indent << "ReadFromInputString: " << (this->ReadFromInputString ? "On\n" : "Off\n");
   if (this->InputString)
   {
@@ -3906,5 +4145,16 @@ void vtkDataReader::SetScalarLut(const char* lut)
       *cp1++ = *cp2++;
     } while (--n);
   }
+}
+
+//----------------------------------------------------------------------------
+vtkMTimeType vtkDataReader::GetMTime()
+{
+  auto mtime = this->Superclass::GetMTime();
+  if (this->Stream)
+  {
+    mtime = std::max(mtime, this->Stream->GetMTime());
+  }
+  return mtime;
 }
 VTK_ABI_NAMESPACE_END

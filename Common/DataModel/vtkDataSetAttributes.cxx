@@ -3,11 +3,12 @@
 #include "vtkDataSetAttributes.h"
 
 #include "vtkArrayDispatch.h"
-#include "vtkArrayIteratorIncludes.h"
+#include "vtkBitArray.h"
 #include "vtkDataArrayRange.h"
 #include "vtkObjectFactory.h"
 #include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
+#include "vtkStringArray.h"
 #include "vtkStructuredExtent.h"
 #include "vtkUnsignedCharArray.h"
 
@@ -495,74 +496,35 @@ struct CopyStructuredDataWorker
 
 //------------------------------------------------------------------------------
 // Handle vtkAbstractArrays that aren't vtkDataArrays.
-template <class iterT>
-void vtkDataSetAttributesCopyValues(iterT* destIter, const int* outExt, vtkIdType outIncs[3],
-  iterT* srcIter, const int* inExt, vtkIdType inIncs[3])
+struct vtkDataSetAttributesCopyValues
 {
-  int data_type_size = srcIter->GetArray()->GetDataTypeSize();
-  vtkIdType rowLength = outIncs[1];
-  unsigned char* inPtr;
-  unsigned char* outPtr;
-  unsigned char* inZPtr;
-  unsigned char* outZPtr;
-
-  // Get the starting input pointer.
-  inZPtr = static_cast<unsigned char*>(srcIter->GetArray()->GetVoidPointer(0));
-  // Shift to the start of the subextent.
-  inZPtr += (outExt[0] - inExt[0]) * inIncs[0] * data_type_size +
-    (outExt[2] - inExt[2]) * inIncs[1] * data_type_size +
-    (outExt[4] - inExt[4]) * inIncs[2] * data_type_size;
-
-  // Get output pointer.
-  outZPtr = static_cast<unsigned char*>(destIter->GetArray()->GetVoidPointer(0));
-
-  // Loop over z axis.
-  for (int zIdx = outExt[4]; zIdx <= outExt[5]; ++zIdx)
+  template <class TArrayIn, class TArrayOut>
+  void operator()(TArrayIn srcArray, TArrayOut* destArray, const int* outExt, vtkIdType outIncs[3],
+    const int* inExt, vtkIdType inIncs[3])
   {
-    inPtr = inZPtr;
-    outPtr = outZPtr;
-    for (int yIdx = outExt[2]; yIdx <= outExt[3]; ++yIdx)
+    auto srcIter = vtk::DataArrayValueRange(srcArray).begin();
+    auto destIter = vtk::DataArrayValueRange(destArray).begin();
+    vtkIdType inZIndex = (outExt[0] - inExt[0]) * inIncs[0] + (outExt[2] - inExt[2]) * inIncs[1] +
+      (outExt[4] - inExt[4]) * inIncs[2];
+
+    vtkIdType outZIndex = 0;
+    vtkIdType rowLength = outIncs[1];
+
+    for (int zIdx = outExt[4]; zIdx <= outExt[5]; ++zIdx)
     {
-      memcpy(outPtr, inPtr, rowLength * data_type_size);
-      inPtr += inIncs[1] * data_type_size;
-      outPtr += outIncs[1] * data_type_size;
-    }
-    inZPtr += inIncs[2] * data_type_size;
-    outZPtr += outIncs[2] * data_type_size;
-  }
-}
-
-//------------------------------------------------------------------------------
-// Specialize for vtkStringArray.
-template <>
-void vtkDataSetAttributesCopyValues(vtkArrayIteratorTemplate<vtkStdString>* destIter,
-  const int* outExt, vtkIdType outIncs[3], vtkArrayIteratorTemplate<vtkStdString>* srcIter,
-  const int* inExt, vtkIdType inIncs[3])
-{
-  vtkIdType inZIndex = (outExt[0] - inExt[0]) * inIncs[0] + (outExt[2] - inExt[2]) * inIncs[1] +
-    (outExt[4] - inExt[4]) * inIncs[2];
-
-  vtkIdType outZIndex = 0;
-  vtkIdType rowLength = outIncs[1];
-
-  for (int zIdx = outExt[4]; zIdx <= outExt[5]; ++zIdx)
-  {
-    vtkIdType inIndex = inZIndex;
-    vtkIdType outIndex = outZIndex;
-    for (int yIdx = outExt[2]; yIdx <= outExt[3]; ++yIdx)
-    {
-      for (int xIdx = 0; xIdx < rowLength; ++xIdx)
+      vtkIdType inIndex = inZIndex;
+      vtkIdType outIndex = outZIndex;
+      for (int yIdx = outExt[2]; yIdx <= outExt[3]; ++yIdx)
       {
-        destIter->GetValue(outIndex + xIdx) = srcIter->GetValue(inIndex + xIdx);
+        std::copy_n(srcIter + inIndex, rowLength, destIter + outIndex);
+        inIndex += inIncs[1];
+        outIndex += outIncs[1];
       }
-      inIndex += inIncs[1];
-      outIndex += outIncs[1];
+      inZIndex += inIncs[2];
+      outZIndex += outIncs[2];
     }
-    inZIndex += inIncs[2];
-    outZIndex += outIncs[2];
   }
-}
-
+};
 } // end anon namespace
 
 //------------------------------------------------------------------------------
@@ -624,15 +586,17 @@ void vtkDataSetAttributes::CopyStructuredData(
     vtkDataArray* outDA = vtkArrayDownCast<vtkDataArray>(outArray);
     if (!inDA || !outDA) // String array, etc
     {
-      vtkArrayIterator* srcIter = inArray->NewIterator();
-      vtkArrayIterator* destIter = outArray->NewIterator();
-      switch (inArray->GetDataType())
+      vtkStringArray* inStringArray = vtkArrayDownCast<vtkStringArray>(inArray);
+      vtkStringArray* outStringArray = vtkArrayDownCast<vtkStringArray>(outArray);
+      if (inStringArray && outStringArray)
       {
-        vtkArrayIteratorTemplateMacro(vtkDataSetAttributesCopyValues(static_cast<VTK_TT*>(destIter),
-          outExt, outIncs, static_cast<VTK_TT*>(srcIter), inExt, inIncs));
+        vtkDataSetAttributesCopyValues worker;
+        worker(inStringArray, outStringArray, outExt, outIncs, inExt, inIncs);
       }
-      srcIter->Delete();
-      destIter->Delete();
+      else
+      {
+        vtkErrorMacro("CopyStructuredData only supports vtkDataArray and vtkStringArray");
+      }
     }
     else
     {
@@ -657,7 +621,7 @@ void vtkDataSetAttributes::SetupForCopy(vtkDataSetAttributes* pd)
 // If sze=0, then use the input DataSetAttributes to create (i.e., find
 // initial size of) new objects; otherwise use the sze variable.
 void vtkDataSetAttributes::InternalCopyAllocate(vtkDataSetAttributes* pd, int ctype, vtkIdType sze,
-  vtkIdType ext, int shallowCopyArrays, bool createNewArrays)
+  vtkIdType vtkNotUsed(ext), int shallowCopyArrays, bool createNewArrays)
 {
   // Create various point data depending upon input
   //
@@ -710,11 +674,11 @@ void vtkDataSetAttributes::InternalCopyAllocate(vtkDataSetAttributes* pd, int ct
         }
         if (sze > 0)
         {
-          newAA->Allocate(sze * aa->GetNumberOfComponents(), ext);
+          newAA->ReserveTuples(sze);
         }
         else
         {
-          newAA->Allocate(aa->GetNumberOfTuples());
+          newAA->ReserveTuples(aa->GetNumberOfTuples());
         }
         vtkDataArray* newDA = vtkArrayDownCast<vtkDataArray>(newAA);
         if (newDA)
@@ -745,7 +709,7 @@ void vtkDataSetAttributes::InternalCopyAllocate(vtkDataSetAttributes* pd, int ct
     for (const auto& i : this->RequiredArrays)
     {
       aa = pd->GetAbstractArray(i);
-      aa->Resize(sze);
+      aa->ReserveTuples(sze);
       this->TargetIndices[i] = i;
     }
   }
@@ -842,7 +806,7 @@ struct CopyDataExplicitToImplicitWorker
   void operator()(vtkIdType startId, vtkIdType endId)
   {
     auto& sourceIds = this->TLSourceIds.Local();
-    sourceIds->SetArray(this->SourceIds->GetPointer(startId), endId - startId, false /* save */);
+    sourceIds->SetList(this->SourceIds->GetPointer(startId), endId - startId, true /* save */);
     for (const int i : this->RequiredArrays)
     {
       vtkAbstractArray* target = this->Dest->GetAbstractArray(this->TargetIndices[i]);
@@ -880,9 +844,9 @@ struct CopyDataExplicitToExplicitWorker
   void operator()(vtkIdType startId, vtkIdType endId)
   {
     auto& sourceIds = this->TLSourceIds.Local();
-    sourceIds->SetArray(this->SourceIds->GetPointer(startId), endId - startId, false /* save */);
+    sourceIds->SetList(this->SourceIds->GetPointer(startId), endId - startId, true /* save */);
     auto& destIds = this->TLDestinationIds.Local();
-    destIds->SetArray(this->DestIds->GetPointer(startId), endId - startId, false /* save */);
+    destIds->SetList(this->DestIds->GetPointer(startId), endId - startId, true /* save */);
 
     for (const int i : this->RequiredArrays)
     {
@@ -939,9 +903,9 @@ void vtkDataSetAttributes::CopyData(
     {
       // This ensures thread safetiness in `InsertTuples` calls that will be performed in parallel.
       vtkAbstractArray* array = this->GetAbstractArray(this->TargetIndices[i]);
-      if (numberOfTuples > array->GetSize() / array->GetNumberOfComponents())
+      if (numberOfTuples > array->GetCapacity() / array->GetNumberOfComponents())
       {
-        array->Resize(numberOfTuples); // this preserves already existing data
+        array->ReserveTuples(numberOfTuples); // this preserves already existing data
       }
       if (numberOfTuples > array->GetNumberOfTuples())
       {
@@ -978,9 +942,9 @@ void vtkDataSetAttributes::CopyData(
     {
       // This ensures thread safetiness in `InsertTuples` calls that will be performed in parallel.
       vtkAbstractArray* array = this->GetAbstractArray(this->TargetIndices[i]);
-      if (numberOfTuples > array->GetSize() / array->GetNumberOfComponents())
+      if (numberOfTuples > array->GetCapacity() / array->GetNumberOfComponents())
       {
-        array->Resize(numberOfTuples); // this preserves already existing data
+        array->ReserveTuples(numberOfTuples); // this preserves already existing data
       }
       if (numberOfTuples > array->GetNumberOfTuples())
       {
@@ -1016,9 +980,9 @@ void vtkDataSetAttributes::CopyData(
     {
       // This ensures thread safetiness in `InsertTuples` calls that will be performed in parallel.
       vtkAbstractArray* array = this->GetAbstractArray(this->TargetIndices[i]);
-      if (numberOfTuples > array->GetSize() / array->GetNumberOfComponents())
+      if (numberOfTuples > array->GetCapacity() / array->GetNumberOfComponents())
       {
-        array->Resize(numberOfTuples); // this preserves already existing data
+        array->ReserveTuples(numberOfTuples); // this preserves already existing data
       }
       if (numberOfTuples > array->GetNumberOfTuples())
       {

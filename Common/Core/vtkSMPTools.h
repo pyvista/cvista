@@ -24,6 +24,7 @@
 #include "SMP/Common/vtkSMPToolsAPI.h"
 #include "vtkSMPThreadLocal.h" // For Initialized
 
+#include <cmath>       // For std::ceil
 #include <functional>  // For std::function
 #include <type_traits> // For std:::enable_if
 
@@ -659,7 +660,123 @@ public:
     auto& SMPToolsAPI = vtk::detail::smp::vtkSMPToolsAPI::GetInstance();
     SMPToolsAPI.Sort(begin, end, comp);
   }
-};
+
+  /**
+   * A convenience method for computing the exclusive scan / prefix sum. The
+   * scan is performed in-place on the container contents ranging from
+   * [begin,end). The initial value of the resulting scan is specified by
+   * init. If the input data size is small (i.e., as compared to
+   * vtkSMPTools::Threshold), the scan will be performed sequentially. Note
+   * that ValueType must support the += and operator= methods. The method
+   * returns the N+1 element sum, which is useful for creating offsets array
+   * such as those found in VTK. Note that ValueType should be a POD type,
+   * and can be zero initialized with {} (either 0-initialized if a built-in
+   * type, or default constructed to 0 with the default constructur).
+   */
+  template <typename RandomAccessIterator, typename ValueType>
+  static ValueType ExclusiveScan(
+    RandomAccessIterator begin, RandomAccessIterator end, ValueType init);
+}; // vtkSMPTools
+
+//------------------------------------------------------------------------------
+// This templated method is defined here in vtkSMPTools.h, rather than in the
+// backend implementation classes, because it leverages high-level
+// vtkSMPTools methods (e.g., vtkSMPTools::For()) -- i.e., scan is not yet
+// implemented in the backend classes. This may change as methods such as
+// std::exclusive_scan become stable, and universally support parallel
+// implementations. Further, this implementation has the benefit that it
+// performs the scan operation in-place, not all backends (at this time)
+// efficiently support in-place scans. (TODO: currently GCC does not perform
+// in-place scan correctly [this is a known bug, fixed in GCC versions 14.3
+// and 13.4 see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=108236].
+// Eventually, the sequential loops that follow below should be replaced with
+// std::exclusive_scan().)
+template <typename RandomAccessIterator, typename ValueType>
+ValueType vtkSMPTools::ExclusiveScan(
+  RandomAccessIterator begin, RandomAccessIterator end, ValueType init)
+{
+  // Compute the number of elements in the container.
+  typename std::iterator_traits<RandomAccessIterator>::difference_type num =
+    std::distance(begin, end);
+
+  // Capture the last value before it is overwritten. It will be used to compute
+  // the return value.
+  ValueType retVal = *(end - 1);
+
+  // It's best to perform a sequential scan for "smallish" data.
+  if (vtkSMPTools::THRESHOLD > num)
+  {
+    ValueType val, sum = init;
+    for (auto iter = begin; iter != end; ++iter)
+    {
+      val = *iter;
+      *iter = sum;
+      sum += val;
+    }
+  }
+
+  // Otherwise, threaded computation
+  else
+  {
+    // Perform the parallel scan using two vtkSMPTools::For() passes. The
+    // first for loop sums values across batches of elements. Then a
+    // subsequent sequential summation across the resulting batches
+    // determines the initial, offset sum for each batch. Finally the second
+    // vtkSMPTools::For loop updates the sums across all batches. These
+    // operations are performed in-place. The number of batches is set to
+    // a small multiple of the number of threads. Empirically, a multiple
+    // of 2-4 times the number of threads works well.
+    int numBatches = 4 * vtkSMPTools::GetEstimatedNumberOfThreads();
+    std::vector<ValueType> batchOffsets(numBatches);
+    int batchSize = static_cast<int>(std::ceil(static_cast<double>(num) / numBatches));
+
+    // First pass: sum across batches.
+    vtkSMPTools::For(0, numBatches,
+      [&](int batchId, vtkIdType endBatchId)
+      {
+        auto beginBatch = begin + (batchId * batchSize);
+        auto endBatch = begin + (endBatchId * batchSize);
+        endBatch = (endBatch > end ? end : endBatch);
+
+        ValueType val, sum{}; // sum initialized to 0 (built-in type); or default constructed
+        for (auto iter = beginBatch; iter < endBatch; ++iter)
+        {
+          val = *iter;
+          *iter = sum;
+          sum += val;
+        }
+        batchOffsets[batchId] = sum;
+      }); // end lambda
+
+    // Perform a sequential, in-place prefix sum across each batch to create
+    // the batch offsets. The initial value of the scan, init, is added in
+    // here.
+    ValueType val, count = init;
+    for (int batchNum = 0; batchNum < numBatches; ++batchNum)
+    {
+      val = batchOffsets[batchNum];
+      batchOffsets[batchNum] = count;
+      count += val;
+    }
+
+    // Now add batch offsets to all entries to produce the prefix sum.
+    vtkSMPTools::For(0, numBatches,
+      [&](int batchId, vtkIdType endBatchId)
+      {
+        auto beginBatch = begin + (batchId * batchSize);
+        auto endBatch = begin + (endBatchId * batchSize);
+        endBatch = (endBatch > end ? end : endBatch);
+
+        ValueType offset = batchOffsets[batchId];
+        for (auto iter = beginBatch; iter < endBatch; ++iter)
+        {
+          *iter += offset;
+        }
+      }); // end lambda
+  } // threaded scan
+
+  return (retVal += *(end - 1));
+} // ExclusiveScan()
 
 VTK_ABI_NAMESPACE_END
 #endif

@@ -60,7 +60,6 @@
 #define vtkAbstractArray_h
 
 #include "vtkCommonCoreModule.h" // For export macro
-#include "vtkIdList.h"           // For InsertTuples
 #include "vtkObject.h"
 #include "vtkVariant.h"       // for variant arguments
 #include "vtkWrappingHints.h" // For VTK_MARSHALAUTO
@@ -94,16 +93,41 @@ public:
    * Allocate memory for this array. Delete old storage only if necessary.
    * Note that ext is no longer used.
    * This method will reset MaxId to -1 and resize the array capacity such that
-   * this->Size >= numValues.
+   * this->Capacity >= numValues.
    * If numValues is 0, all memory will be freed.
    * Return 1 on success, 0 on failure.
    */
-  virtual vtkTypeBool Allocate(vtkIdType numValues, vtkIdType ext = 1000) = 0;
+  VTK_DEPRECATED_IN_9_7_0("Use ReserveValues/Tuples() to allocate or Initialize() to deallocate.")
+  virtual vtkTypeBool Allocate(vtkIdType numValues, vtkIdType ext = 1000);
+
+  /**
+   * Reserve the array to the requested number of tuples and preserve data.
+   *
+   * Increasing the array capacity may allocate extra memory beyond what was
+   * requested. MaxId will not be modified when increasing array size.
+   *
+   * Decreasing the array capacity is effectively a no-op.
+   *
+   * Returns 1 if resizing succeeded and 0 otherwise.
+   */
+  virtual vtkTypeBool ReserveTuples(vtkIdType numTuples) = 0;
+
+  /**
+   * Reserve the array to the requested number of values and preserve data.
+   *
+   * Increasing the array capacity may allocate extra memory beyond what was
+   * requested. MaxId will not be modified when increasing array size.
+   *
+   * Decreasing the array capacity is effectively a no-op.
+   *
+   * Returns 1 if resizing succeeded and 0 otherwise.
+   */
+  vtkTypeBool ReserveValues(vtkIdType numValues);
 
   /**
    * Release storage and reset array to initial state.
    */
-  virtual void Initialize() = 0;
+  virtual void Initialize();
 
   /**
    * Return the underlying data type. An integer indicating data type is
@@ -180,11 +204,12 @@ public:
   /**
    * Set the number of tuples (a component group) in the array. Note that
    * this may allocate space depending on the number of components.
-   * Also note that if allocation is performed no copy is performed so
-   * existing data will be lost (if data conservation is sought, one may
-   * use the Resize method instead).
+   * Preserves existing data.
    */
-  virtual void SetNumberOfTuples(vtkIdType numTuples) = 0;
+  virtual void SetNumberOfTuples(vtkIdType numTuples)
+  {
+    this->SetNumberOfValues(this->NumberOfComponents * numTuples);
+  }
 
   /**
    * Specify the number of values (tuples * components) for this object to
@@ -297,6 +322,13 @@ public:
   virtual void DeepCopy(vtkAbstractArray* da);
 
   /**
+   * This method will copy the data from the source array to this array.
+   * This is possible only if the data types are the same data type and array type.
+   * Otherwise, it will complain and change nothing if the array passed in is not the same.
+   */
+  virtual void ShallowCopy(vtkAbstractArray* src);
+
+  /**
    * Set the tuple at dstTupleIdx in this array to the interpolated tuple value,
    * given the ptIndices in the source array and associated interpolation
    * weights.
@@ -319,21 +351,22 @@ public:
 
   /**
    * Free any unnecessary memory.
-   * Description:
    * Resize object to just fit data requirement. Reclaims extra memory.
    */
   virtual void Squeeze() = 0;
 
   /**
    * Resize the array to the requested number of tuples and preserve data.
-   * Increasing the array size may allocate extra memory beyond what was
+   *
+   * Increasing the array capacity may allocate extra memory beyond what was
    * requested. MaxId will not be modified when increasing array size.
    * Decreasing the array size will trim memory to the requested size and
    * may update MaxId if the valid id range is truncated.
    * Requesting an array size of 0 will free all memory.
    * Returns 1 if resizing succeeded and 0 otherwise.
    */
-  virtual vtkTypeBool Resize(vtkIdType numTuples) = 0;
+  VTK_DEPRECATED_IN_9_7_0("Use ReserveTuples, Squeeze or Initialize")
+  virtual vtkTypeBool Resize(vtkIdType numTuples);
 
   ///@{
   /**
@@ -350,7 +383,7 @@ public:
    * Get the capacity of the array.  This returns the number of value slots
    * in the array's allocated storage.
    */
-  vtkIdType GetSize() const { return this->Size; }
+  vtkIdType GetCapacity() const { return this->Capacity; }
 
   /**
    * What is the maximum id currently in the array.
@@ -404,6 +437,7 @@ public:
    * by the user.  It is up to the user to allocate enough memory for
    * the void pointer.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use DeepCopy with an vtkAOSDataArrayTemplate array")
   virtual void ExportToVoidPointer(void* out_ptr);
 
   /**
@@ -459,8 +493,8 @@ public:
    * Subclasses must override this method and provide the right kind
    * of templated vtkArrayIteratorTemplate.
    */
-  VTK_NEWINSTANCE
-  virtual vtkArrayIterator* NewIterator() = 0;
+  VTK_DEPRECATED_IN_9_7_0("Use vtk::DataArrayValueRange, or the array directly")
+  VTK_NEWINSTANCE virtual vtkArrayIterator* NewIterator() = 0;
 
   /**
    * Returns the size of the data in DataTypeSize units. Thus, the
@@ -690,19 +724,16 @@ public:
     "Use vtkArrayTypes::VTK_AOS_DATA_ARRAY") = vtkArrayTypes::VTK_AOS_DATA_ARRAY;
   static constexpr int SoADataArrayTemplate VTK_DEPRECATED_IN_9_6_0(
     "Use vtkArrayTypes::VTK_SOA_DATA_ARRAY") = vtkArrayTypes::VTK_SOA_DATA_ARRAY;
-  static constexpr int TypedDataArray VTK_DEPRECATED_IN_9_5_0(
-    "TypedDataArray has been deprecated") = vtkArrayTypes::VTK_NUM_ARRAY_TYPES;
-  static constexpr int MappedDataArray VTK_DEPRECATED_IN_9_5_0(
-    "MappedDataArray has been deprecated") = vtkArrayTypes::VTK_NUM_ARRAY_TYPES + 1;
   static constexpr int ScaledSoADataArrayTemplate VTK_DEPRECATED_IN_9_6_0(
-    "Use vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY") = vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY;
+    "Use vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY") =
+    /*vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY*/ 7;
   static constexpr int ImplicitArray VTK_DEPRECATED_IN_9_6_0(
     "Use vtkArrayTypes::VTK_IMPLICIT_ARRAY") = vtkArrayTypes::VTK_IMPLICIT_ARRAY;
   static constexpr int DataArrayTemplate VTK_DEPRECATED_IN_9_6_0(
     "DataArrayTemplate has been deprecated") = vtkArrayTypes::VTK_AOS_DATA_ARRAY;
   static constexpr int ScaleSoADataArrayTemplate VTK_DEPRECATED_IN_9_6_0(
     "ScaleSoADataArrayTemplate has been renamed to ScaledSoADataArrayTemplate") =
-    vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY;
+    /*vtkArrayTypes::VTK_SCALED_SOA_DATA_ARRAY*/ 7;
 
   /**
    * Method for type-checking in FastDownCast implementations. See also
@@ -720,6 +751,12 @@ public:
     return vtkAbstractArray::GetArrayTypeAsString(this->GetArrayType());
   }
   ///@}
+
+  /**
+   * Deprecated method to get the array capacity, use GetCapacity() instead.
+   */
+  VTK_DEPRECATED_IN_9_7_0("Use GetCapacity() instead")
+  vtkIdType GetSize() const { return this->GetCapacity(); }
 
 protected:
   // Construct object with default tuple dimension (number of components) of 1.
@@ -746,7 +783,9 @@ protected:
    */
   virtual void UpdateDiscreteValueSet(double uncertainty, double minProminence);
 
-  vtkIdType Size;         // allocated size of data
+  vtkIdType& Size VTK_DEPRECATED_IN_9_7_0("Use Capacity instead");
+
+  vtkIdType Capacity;     // allocated capacity of the array
   vtkIdType MaxId;        // maximum index inserted thus far
   int NumberOfComponents; // the number of components per tuple
 

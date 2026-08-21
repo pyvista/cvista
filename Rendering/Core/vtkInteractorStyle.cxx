@@ -7,6 +7,7 @@
 #include "vtkAssemblyNode.h"
 #include "vtkAssemblyPath.h"
 #include "vtkCallbackCommand.h"
+#include "vtkCamera.h"
 #include "vtkCellPicker.h"
 #include "vtkCommand.h"
 #include "vtkEventForwarderCommand.h"
@@ -946,6 +947,9 @@ void vtkInteractorStyle::PrintSelf(ostream& os, vtkIndent indent)
   os << indent << "Pick Color: (" << this->PickColor[0] << ", " << this->PickColor[1] << ", "
      << this->PickColor[2] << ")\n";
 
+  os << indent << "CenterOfRotation: (" << this->CenterOfRotation[0] << ", "
+     << this->CenterOfRotation[1] << ", " << this->CenterOfRotation[2] << ")\n";
+
   os << indent << "CurrentRenderer: " << this->CurrentRenderer << "\n";
   if (this->PickedRenderer)
   {
@@ -992,6 +996,92 @@ void vtkInteractorStyle::DelegateTDxEvent(unsigned long event, void* calldata)
   {
     this->TDxStyle->ProcessEvent(this->CurrentRenderer, event, calldata);
   }
+}
+
+//-------------------------------------------------------------------------
+void vtkInteractorStyle::DollyToPosition(double fact, int* position, vtkRenderer* renderer)
+{
+  vtkCamera* cam = renderer->GetActiveCamera();
+  if (cam->GetParallelProjection())
+  {
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    // Zoom relatively to the cursor
+    int* aSize = renderer->GetRenderWindow()->GetSize();
+    int w = aSize[0];
+    int h = aSize[1];
+    x0 = w / 2;
+    y0 = h / 2;
+    x1 = position[0];
+    y1 = position[1];
+    vtkInteractorStyle::TranslateCamera(renderer, x0, y0, x1, y1);
+    cam->SetParallelScale(cam->GetParallelScale() / fact);
+    vtkInteractorStyle::TranslateCamera(renderer, x1, y1, x0, y0);
+  }
+  else
+  {
+    // Zoom relatively to the cursor position
+    double viewFocus[4], originalViewFocus[3], cameraPos[3], newCameraPos[3];
+    double newFocalPoint[4], norm[3];
+
+    // Move focal point to cursor position
+    cam->GetPosition(cameraPos);
+    cam->GetFocalPoint(viewFocus);
+    cam->GetFocalPoint(originalViewFocus);
+    cam->GetViewPlaneNormal(norm);
+
+    vtkInteractorObserver::ComputeWorldToDisplay(
+      renderer, viewFocus[0], viewFocus[1], viewFocus[2], viewFocus);
+
+    vtkInteractorObserver::ComputeDisplayToWorld(
+      renderer, double(position[0]), double(position[1]), viewFocus[2], newFocalPoint);
+
+    cam->SetFocalPoint(newFocalPoint);
+
+    // Move camera in/out along projection direction
+    cam->Dolly(fact);
+
+    // Find new focal point
+    cam->GetPosition(newCameraPos);
+
+    double newPoint[3];
+    newPoint[0] = originalViewFocus[0] + newCameraPos[0] - cameraPos[0];
+    newPoint[1] = originalViewFocus[1] + newCameraPos[1] - cameraPos[1];
+    newPoint[2] = originalViewFocus[2] + newCameraPos[2] - cameraPos[2];
+
+    cam->SetFocalPoint(newPoint);
+  }
+}
+
+//-------------------------------------------------------------------------
+void vtkInteractorStyle::TranslateCamera(
+  vtkRenderer* renderer, int toX, int toY, int fromX, int fromY)
+{
+  vtkCamera* cam = renderer->GetActiveCamera();
+  double viewFocus[4], focalDepth, viewPoint[3];
+  double newPickPoint[4], oldPickPoint[4], motionVector[3];
+  cam->GetFocalPoint(viewFocus);
+
+  vtkInteractorObserver::ComputeWorldToDisplay(
+    renderer, viewFocus[0], viewFocus[1], viewFocus[2], viewFocus);
+  focalDepth = viewFocus[2];
+
+  vtkInteractorObserver::ComputeDisplayToWorld(
+    renderer, double(toX), double(toY), focalDepth, newPickPoint);
+  vtkInteractorObserver::ComputeDisplayToWorld(
+    renderer, double(fromX), double(fromY), focalDepth, oldPickPoint);
+
+  // camera motion is reversed
+  motionVector[0] = oldPickPoint[0] - newPickPoint[0];
+  motionVector[1] = oldPickPoint[1] - newPickPoint[1];
+  motionVector[2] = oldPickPoint[2] - newPickPoint[2];
+
+  cam->GetFocalPoint(viewFocus);
+  cam->GetPosition(viewPoint);
+  cam->SetFocalPoint(
+    motionVector[0] + viewFocus[0], motionVector[1] + viewFocus[1], motionVector[2] + viewFocus[2]);
+
+  cam->SetPosition(
+    motionVector[0] + viewPoint[0], motionVector[1] + viewPoint[1], motionVector[2] + viewPoint[2]);
 }
 
 #define vtkISEventDataMacro(eventname)                                                             \

@@ -18,6 +18,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkOpenGLError.h"
 #include "vtkOpenGLGlyph3DHelper.h"
+#include "vtkOverrideAttribute.h"
 #include "vtkProperty.h"
 #include "vtkQuaternion.h"
 #include "vtkRenderWindow.h"
@@ -253,6 +254,14 @@ vtkOpenGLGlyph3DMapper::~vtkOpenGLGlyph3DMapper()
 }
 
 //------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLGlyph3DMapper::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
+}
+
+//------------------------------------------------------------------------------
 // Description:
 // Send mapper ivars to sub-mapper.
 // \pre mapper_exists: mapper!=0
@@ -419,7 +428,7 @@ void vtkOpenGLGlyph3DMapper::Render(vtkRenderer* ren, vtkActor* actor)
     vtkPolyData* defaultSource = vtkPolyData::New();
     defaultSource->AllocateEstimate(0, 0, 1, 2, 0, 0, 0, 0);
     vtkPoints* defaultPoints = vtkPoints::New();
-    defaultPoints->Allocate(6);
+    defaultPoints->Reserve(6);
     defaultPoints->InsertNextPoint(0., 0., 0.);
     defaultPoints->InsertNextPoint(1., 0., 0.);
     vtkIdType defaultPointIds[2];
@@ -1218,6 +1227,46 @@ void vtkOpenGLGlyph3DMapper::SetLODDistanceAndTargetReduction(
     this->LODs[index] = { vtkMath::Max(0.f, distance),
       vtkMath::ClampValue(targetReduction, 0.f, 1.f) };
   }
+}
+
+//------------------------------------------------------------------------------
+void vtkOpenGLGlyph3DMapper::SetLODDistance(vtkIdType index, float distance)
+{
+  if (index < static_cast<vtkIdType>(this->LODs.size()))
+  {
+    this->LODs[index].first = vtkMath::Max(0.f, distance);
+  }
+}
+
+//------------------------------------------------------------------------------
+void vtkOpenGLGlyph3DMapper::SetLODTargetReduction(vtkIdType index, float targetReduction)
+{
+  if (index < static_cast<vtkIdType>(this->LODs.size()))
+  {
+    this->LODs[index].second = vtkMath::ClampValue(targetReduction, 0.f, 1.f);
+  }
+}
+
+//------------------------------------------------------------------------------
+float vtkOpenGLGlyph3DMapper::GetLODDistance(vtkIdType index)
+{
+  if (index < 0 || index >= static_cast<vtkIdType>(this->LODs.size()))
+  {
+    vtkWarningMacro(<< "LOD distance index out of bounds.");
+    return 0;
+  }
+  return this->LODs[index].first;
+}
+
+//------------------------------------------------------------------------------
+float vtkOpenGLGlyph3DMapper::GetLODTargetReduction(vtkIdType index)
+{
+  if (index < 0 || index >= static_cast<vtkIdType>(this->LODs.size()))
+  {
+    vtkWarningMacro(<< "LOD target reduction index out of bounds.");
+    return 0;
+  }
+  return this->LODs[index].second;
 }
 
 //------------------------------------------------------------------------------

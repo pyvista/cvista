@@ -2,6 +2,7 @@
 to VTK datasets. See examples at bottom.
 """
 
+import sys
 from contextlib import suppress
 from cvista.vtkCommonCore import vtkPoints, vtkAbstractArray, vtkDataArray
 from cvista.vtkCommonDataModel import (
@@ -68,13 +69,32 @@ NUMPY_AVAILABLE = False
 
 with suppress(ImportError):
     import numpy
-    from cvista.numpy_interface import dataset_adapter as dsa
+    from cvista.util import numpy_support
+    from cvista.numpy_interface.utils import NoneArray
+    from cvista.numpy_interface.vtk_partitioned_array import (
+        VTKPartitionedArray,
+        VTKPartitionedPoints,
+    )
 
     NUMPY_AVAILABLE = True
 
 
 class FieldDataBase(object):
-    def __init__(self):
+    """Python-friendly interface for vtkFieldData and its subclasses.
+
+    Provides dict-like access to arrays by name or index, with
+    automatic metadata (``dataset``, ``association``) propagation.
+    Arrays retrieved via ``[]`` or ``get_array()`` are returned with
+    their owning dataset and association already set.
+
+    This class is the base for ``FieldData``, ``DataSetAttributes``,
+    ``PointData``, and ``CellData`` overrides.
+    """
+    def __init__(self, *args):
+        # SWIG pointer reconstruction: tp_new already returned the
+        # existing object; skip init to avoid clobbering state.
+        if args and isinstance(args[0], str):
+            return
         self.association = None
         self.dataset = None
 
@@ -87,7 +107,7 @@ class FieldDataBase(object):
         return self.set_array(name, value)
 
     def get_array(self, idx):
-        "Given an index or name, returns a VTKArray."
+        "Given an index or name, returns a VTK array with metadata set."
         if isinstance(idx, int) and idx >= self.GetNumberOfArrays():
             raise IndexError("array index out of range")
         vtkarray = super().GetArray(idx)
@@ -99,10 +119,14 @@ class FieldDataBase(object):
             vtkarray = self.GetAbstractArray(idx)
             if vtkarray:
                 return vtkarray
-            return dsa.NoneArray
-        array = dsa.vtkDataArrayToVTKArray(vtkarray, self.dataset)
-        array.Association = self.association
-        return array
+            return NoneArray
+        # All standard VTK data arrays have mixin overrides applied
+        # (VTKAOSArray, VTKSOAArray, VTKConstantArray) so they
+        # are already numpy-compatible.  Just set metadata and return.
+        if hasattr(vtkarray, '_set_dataset'):
+            vtkarray._set_dataset(self.dataset)
+            vtkarray._association = self.association
+        return vtkarray
 
     def __contains__(self, aname):
         """Returns true if the container contains arrays
@@ -148,8 +172,26 @@ class FieldDataBase(object):
                 self.AddArray(narray)
             return
 
-        if narray is dsa.NoneArray:
+        if narray is NoneArray:
             # if NoneArray, nothing to do.
+            return
+
+        # VTK data arrays with mixin (VTKAOSArray, VTKSOAArray,
+        # VTKConstantArray, VTKAffineArray): shallow copy to avoid
+        # mutating the original array's name/dataset/association.
+        if isinstance(narray, vtkDataArray) and hasattr(narray, '_set_dataset'):
+            arr = narray.NewInstance()
+            # NewInstance() on implicit arrays (vtkConstantArray,
+            # vtkAffineArray) returns the wrong C++ type.  Fall back
+            # to creating a new Python-level instance of the correct
+            # override class so that the mixin is preserved.
+            if not isinstance(arr, type(narray)):
+                arr = type(narray).__new__(type(narray))
+            arr.ShallowCopy(narray)
+            arr.SetName(name)
+            arr._set_dataset(self.dataset)
+            arr._association = self.association
+            self.AddArray(arr)
             return
 
         if self.association == vtkDataObject.POINT:
@@ -207,15 +249,10 @@ class FieldDataBase(object):
         if len(shape) == 3:
             narray = narray.reshape(shape[0], shape[1] * shape[2])
 
-        # this handle the case when an input array is directly appended on the
-        # output. We want to make sure that the array added to the output is not
-        # referring to the input dataset.
-        copy = dsa.VTKArray(narray)
-        try:
-            copy.VTKObject = narray.VTKObject
-        except AttributeError:
-            pass
-        arr = dsa.numpyTovtkDataArray(copy, name)
+        # Convert numpy array to a VTK AOS array.  With the mixin override
+        # the result is already a VTKAOSArray.
+        arr = numpy_support.numpy_to_vtk(narray)
+        arr.SetName(name)
         self.AddArray(arr)
 
     def __eq__(self, other: object) -> bool:
@@ -248,6 +285,79 @@ class FieldDataBase(object):
 
     def __len__(self):
         return self.GetNumberOfArrays()
+
+    def to_pandas(self):
+        """Convert to a :class:`pandas.DataFrame`.
+
+        Single-component arrays become columns directly.
+        Multi-component arrays are split into columns named
+        ``name_0``, ``name_1``, etc.
+        """
+        pd = sys.modules.get("pandas", None)
+        if pd is None:
+            raise RuntimeError("You must import pandas before calling to_pandas().")
+
+        data = {}
+        for name, arr in self.items():
+            if not isinstance(arr, vtkDataArray):
+                continue
+            np_arr = numpy.asarray(arr)
+            ncomp = arr.GetNumberOfComponents()
+            if ncomp == 1 or np_arr.ndim == 1:
+                data[name] = np_arr.ravel()
+            else:
+                for j in range(ncomp):
+                    data[f"{name}_{j}"] = np_arr[:, j]
+        return pd.DataFrame(data)
+
+    def from_pandas(self, df):
+        """Populate from a :class:`pandas.DataFrame`.
+
+        Each column becomes a single-component array.
+        Existing arrays are removed first.
+        """
+        if "pandas" not in sys.modules:
+            raise RuntimeError("You must import pandas before calling from_pandas().")
+
+        self.Initialize()
+        for name in df.columns:
+            self.set_array(str(name), df[name].to_numpy())
+
+    def to_xarray(self):
+        """Convert to an :class:`xarray.Dataset`.
+
+        Single-component arrays get dimension ``("index",)``.
+        Multi-component arrays get dimensions
+        ``("index", "component")``.
+        """
+        xr = sys.modules.get("xarray", None)
+        if xr is None:
+            raise RuntimeError("You must import xarray before calling to_xarray().")
+
+        data_vars = {}
+        for name, arr in self.items():
+            if not isinstance(arr, vtkDataArray):
+                continue
+            np_arr = numpy.asarray(arr)
+            ncomp = arr.GetNumberOfComponents()
+            if ncomp == 1 or np_arr.ndim == 1:
+                data_vars[name] = ("index", np_arr.ravel())
+            else:
+                data_vars[name] = (("index", "component"), np_arr)
+        return xr.Dataset(data_vars)
+
+    def from_xarray(self, ds):
+        """Populate from an :class:`xarray.Dataset`.
+
+        Each variable becomes an array.
+        Existing arrays are removed first.
+        """
+        if "xarray" not in sys.modules:
+            raise RuntimeError("You must import xarray before calling from_xarray().")
+
+        self.Initialize()
+        for name in ds.data_vars:
+            self.set_array(str(name), ds[name].values)
 
 @vtkFieldData.override
 class FieldData(FieldDataBase, vtkFieldData):
@@ -329,10 +439,10 @@ class CompositeDataSetAttributes(object):
     union of DataSetAttributes associated with all leaf nodes."""
 
     def __init__(self, dataset, association):
-        self.DataSet = dataset
-        self.Association = association
-        self.ArrayNames = []
-        self.Arrays = {}
+        self.dataset = dataset
+        self.association = association
+        self.array_names = []
+        self.arrays = {}
 
         # build the set of arrays available in the composite dataset. Since
         # composite datasets can have partial arrays, we need to iterate over
@@ -342,13 +452,13 @@ class CompositeDataSetAttributes(object):
     def __determine_arraynames(self):
         array_set = set()
         array_list = []
-        for dataset in self.DataSet:
-            dsa = dataset.GetAttributesAsFieldData(self.Association)
+        for dataset in self.dataset:
+            dsa = dataset.GetAttributesAsFieldData(self.association)
             for array_name in dsa.keys():
                 if array_name not in array_set:
                     array_set.add(array_name)
                     array_list.append(array_name)
-        self.ArrayNames = array_list
+        self.array_names = array_list
 
     def modified(self):
         """Rescans the contained dataset to update the
@@ -358,11 +468,11 @@ class CompositeDataSetAttributes(object):
     def __contains__(self, aname):
         """Returns true if the container contains arrays
         with the given name, false otherwise"""
-        return aname in self.ArrayNames
+        return aname in self.array_names
 
     def keys(self):
         """Returns the names of the arrays as a tuple."""
-        return tuple(self.ArrayNames)
+        return tuple(self.array_names)
 
     def values(self):
         """Returns all the arrays as a tuple."""
@@ -392,57 +502,79 @@ class CompositeDataSetAttributes(object):
             # don't know how to handle composite dataset attribute when numpy not around
             raise NotImplementedError("Only available with numpy")
 
-        if narray is dsa.NoneArray:
+        if narray is NoneArray:
             # if NoneArray, nothing to do.
             return
 
         added = False
-        if not isinstance(narray, dsa.VTKCompositeDataArray):  # Scalar input
-            for ds in self.DataSet:
-                ds.GetAttributesAsFieldData(self.Association).set_array(name, narray)
+        if not isinstance(narray, VTKPartitionedArray):  # Scalar input
+            for ds in self.dataset:
+                ds.GetAttributesAsFieldData(self.association).set_array(name, narray)
                 added = True
             if added:
-                self.ArrayNames.append(name)
+                self.array_names.append(name)
                 # don't add the narray since it's a scalar. GetArray() will create a
-                # VTKCompositeArray on-demand.
+                # VTKPartitionedArray on-demand.
         else:
-            for ds, array in zip(self.DataSet, narray.Arrays):
+            for ds, array in zip(self.dataset, narray.arrays):
                 if array is not None:
-                    ds.GetAttributesAsFieldData(self.Association).set_array(name, array)
+                    ds.GetAttributesAsFieldData(self.association).set_array(name, array)
                     added = True
             if added:
-                self.ArrayNames.append(name)
-                self.Arrays[name] = weakref.ref(narray)
+                self.array_names.append(name)
+                self.arrays[name] = weakref.ref(narray)
 
     def get_array(self, idx):
-        """Given a name, returns a VTKCompositeArray."""
+        """Given a name, returns a VTKPartitionedArray."""
         arrayname = idx
 
         if not NUMPY_AVAILABLE:
             # don't know how to handle composite dataset attribute when numpy not around
             raise NotImplementedError("Only available with numpy")
 
-        if arrayname not in self.ArrayNames:
-            return dsa.NoneArray
-        if arrayname not in self.Arrays or self.Arrays[arrayname]() is None:
-            array = dsa.VTKCompositeDataArray(
-                dataset=self.DataSet, name=arrayname, association=self.Association
+        if arrayname not in self.array_names:
+            return NoneArray
+        if arrayname not in self.arrays or self.arrays[arrayname]() is None:
+            array = VTKPartitionedArray(
+                dataset=self.dataset, name=arrayname, association=self.association
             )
-            self.Arrays[arrayname] = weakref.ref(array)
+            self.arrays[arrayname] = weakref.ref(array)
         else:
-            array = self.Arrays[arrayname]()
+            array = self.arrays[arrayname]()
         return array
 
     def __iter__(self):
         """Iterators on keys"""
-        return iter(self.ArrayNames)
+        return iter(self.array_names)
 
     def __len__(self):
-        return len(self.ArrayNames)
+        return len(self.array_names)
 
-# class DataSet(DataObjectBase):
 class DataSet(object):
-    def __init__(self, **kwargs) -> None:
+    """Python-friendly interface for VTK dataset types.
+
+    Adds ``point_data``, ``cell_data``, and ``field_data`` properties
+    that return ``DataSetAttributes`` instances with dict-like access
+    to arrays.  Arrays retrieved from these properties carry metadata
+    (``dataset``, ``association``) automatically.
+
+    This is the base class for ``PointSet``, ``ImageData``,
+    ``RectilinearGrid``, and their subclasses.
+
+    Examples
+    --------
+    ::
+
+        pd = vtk.vtkPolyData()
+        # ... populate pd ...
+        velocity = pd.point_data["velocity"]    # VTKAOSArray
+        pd.cell_data["pressure"] = numpy_array  # set from numpy
+    """
+    def __init__(self, *args, **kwargs) -> None:
+        # SWIG pointer reconstruction: tp_new already returned the
+        # existing object; skip init to avoid clobbering state.
+        if args and isinstance(args[0], str):
+            return
         self._numpy_attrs = []
 
     @property
@@ -452,12 +584,36 @@ class DataSet(object):
         pd.association = self.POINT
         return pd
 
+    @point_data.setter
+    def point_data(self, arrays):
+        """Set point arrays from a dict of ``{name: array}``.
+
+        Each value can be a numpy array or a VTK data array.
+        Existing point arrays are removed first.
+        """
+        pd = self.point_data
+        pd.Initialize()
+        for name, arr in arrays.items():
+            pd.set_array(name, arr)
+
     @property
     def cell_data(self):
         cd = super().GetCellData()
         cd.dataset = self
         cd.association = self.CELL
         return cd
+
+    @cell_data.setter
+    def cell_data(self, arrays):
+        """Set cell arrays from a dict of ``{name: array}``.
+
+        Each value can be a numpy array or a VTK data array.
+        Existing cell arrays are removed first.
+        """
+        cd = self.cell_data
+        cd.Initialize()
+        for name, arr in arrays.items():
+            cd.set_array(name, arr)
 
     @property
     def field_data(self):
@@ -466,6 +622,38 @@ class DataSet(object):
             fd.dataset = self
             fd.association = self.FIELD
         return fd
+
+    @field_data.setter
+    def field_data(self, arrays):
+        """Set field arrays from a dict of ``{name: array}``.
+
+        Each value can be a numpy array or a VTK data array.
+        Existing field arrays are removed first.
+        """
+        fd = self.field_data
+        fd.Initialize()
+        for name, arr in arrays.items():
+            fd.set_array(name, arr)
+
+    @property
+    def points(self):
+        """Returns the ``vtkPoints`` owning the coordinate array.
+
+        The underlying data array (``points.data``) is annotated with
+        ``dataset``/``association`` metadata so it can be passed to
+        algorithms that expect numpy-interface arrays.
+        """
+        pts = super().GetPoints()
+        if pts is not None:
+            d = pts.GetData()
+            if d is not None and hasattr(d, '_set_dataset'):
+                d._set_dataset(self)
+                d._association = vtkDataObject.POINT
+        return pts
+
+    @points.setter
+    def points(self, pts):
+        self.SetPoints(pts)
 
     def __eq__(self, other: object) -> bool:
         """Test equivalency between data objects."""
@@ -503,161 +691,87 @@ class DataSet(object):
 
 
 class PointSet(DataSet):
-    def __init__(self, **kwargs) -> None:
-        DataSet.__init__(self, **kwargs)
-        self._numpy_attrs.append("points")
+    """DataSet subclass for point-containing datasets.
 
-    @property
-    def points(self):
-        pts = self.GetPoints()
+    Uses the auto-generated ``points`` wrapper property, which returns
+    a ``vtkPoints`` object.  The numpy-indexable coordinate array is
+    available as ``dataset.points.data``.  Build a ``vtkPoints`` from
+    array-like data with the ``vtkPoints(data=...)`` constructor.
+    """
+    def __init__(self, *args, **kwargs) -> None:
+        DataSet.__init__(self, *args, **kwargs)
 
+    def __eq__(self, other: object) -> bool:
+        if not super().__eq__(other):
+            return False
         if not NUMPY_AVAILABLE:
-            return pts
-
-        if not pts or not pts.GetData():
-            return None
-        return dsa.vtkDataArrayToVTKArray(pts.GetData())
-
-    @points.setter
-    def points(self, points):
-        if isinstance(points, vtkPoints):
-            self.SetPoints(points)
-            return
-
-        if not NUMPY_AVAILABLE:
-            raise ValueError("Expect vtkPoints")
-
-        pts = dsa.numpyTovtkDataArray(points, "points")
-        vtkpts = vtkPoints()
-        vtkpts.SetData(pts)
-        self.SetPoints(vtkpts)
+            return True
+        self_pts = self.points
+        other_pts = other.points
+        if (self_pts is None) != (other_pts is None):
+            return False
+        if self_pts is None:
+            return True
+        return numpy.array_equal(self_pts.data, other_pts.data)
 
 
 @vtkUnstructuredGrid.override
 class UnstructuredGrid(PointSet, vtkUnstructuredGrid):
-    def __init__(self, **kwargs):
-        PointSet.__init__(self, **kwargs)
+    """Python-friendly ``vtkUnstructuredGrid`` with a writable ``cells``.
+
+    Assignment takes a ``(cell_type, vtkCellArray)`` tuple where
+    ``cell_type`` is either an ``int`` (uniform) or a
+    ``vtkUnsignedCharArray`` (per-cell types).
+    """
+    def __init__(self, *args, **kwargs):
+        PointSet.__init__(self, *args, **kwargs)
         vtkUnstructuredGrid.__init__(self, **kwargs)
 
     @property
     def cells(self):
-        ca = self.GetCells()
-        conn_vtk = ca.GetConnectivityArray()
-        offsets_vtk = ca.GetOffsetsArray()
-        ct_vtk = self.GetCellTypes()
-
-        if not NUMPY_AVAILABLE:
-            return {
-                "connectivity": conn_vtk,
-                "offsets": offsets_vtk,
-                "cell_types": ct_vtk,
-            }
-
-        conn = dsa.vtkDataArrayToVTKArray(conn_vtk)
-        offsets = dsa.vtkDataArrayToVTKArray(offsets_vtk)
-        ct = dsa.vtkDataArrayToVTKArray(ct_vtk)
-        return {"connectivity": conn, "offsets": offsets, "cell_types": ct}
+        return self.GetCells()
 
     @cells.setter
-    def cells(self, cells):
-        ca = vtkCellArray()
-
-        if not NUMPY_AVAILABLE:
-            ca.SetData(cells["offsets"], cells["connectivity"])
-            self.SetCells(cells["cell_types"], ca)
-            return
-
-        conn_vtk = dsa.numpyTovtkDataArray(cells["connectivity"])
-        offsets_vtk = dsa.numpyTovtkDataArray(cells["offsets"])
-        cell_types_vtk = dsa.numpyTovtkDataArray(cells["cell_types"])
-        ca.SetData(offsets_vtk, conn_vtk)
-        self.SetCells(cell_types_vtk, ca)
+    def cells(self, value):
+        cell_type, ca = value
+        self.SetCells(cell_type, ca)
 
 
 @vtkImageData.override
 class ImageData(DataSet, vtkImageData):
-    def __init__(self, **kwargs):
-        DataSet.__init__(self, **kwargs)
+    """Python-friendly ``vtkImageData`` with numpy access.
+
+    Adds ``point_data``, ``cell_data``, and ``field_data`` properties
+    for dict-like array access.
+    """
+    def __init__(self, *args, **kwargs):
+        DataSet.__init__(self, *args, **kwargs)
         vtkImageData.__init__(self, **kwargs)
 
 
 @vtkPolyData.override
 class PolyData(PointSet, vtkPolyData):
-    def __init__(self, **kwargs) -> None:
-        PointSet.__init__(self, **kwargs)
+    """Python-friendly ``vtkPolyData`` with numpy access.
+
+    Adds ``point_data``, ``cell_data``, and ``points`` properties.
+    """
+    def __init__(self, *args, **kwargs) -> None:
+        PointSet.__init__(self, *args, **kwargs)
         vtkPolyData.__init__(self, **kwargs)
-        self._numpy_attrs.extend(["verts", "lines", "strips", "polys"])
-
-    @property
-    def verts_arrays(self):
-        ca = self.GetVerts()
-        conn_vtk = ca.GetConnectivityArray()
-        offsets_vtk = ca.GetOffsetsArray()
-
-        if not NUMPY_AVAILABLE:
-            return {
-                "connectivity": conn_vtk,
-                "offsets": offsets_vtk,
-            }
-
-        conn = dsa.vtkDataArrayToVTKArray(conn_vtk)
-        offsets = dsa.vtkDataArrayToVTKArray(offsets_vtk)
-        return {"connectivity": conn, "offsets": offsets}
-
-    @property
-    def lines_arrays(self):
-        ca = self.GetLines()
-        conn_vtk = ca.GetConnectivityArray()
-        offsets_vtk = ca.GetOffsetsArray()
-
-        if not NUMPY_AVAILABLE:
-            return {
-                "connectivity": conn_vtk,
-                "offsets": offsets_vtk,
-            }
-
-        conn = dsa.vtkDataArrayToVTKArray(conn_vtk)
-        offsets = dsa.vtkDataArrayToVTKArray(offsets_vtk)
-        return {"connectivity": conn, "offsets": offsets}
-
-    @property
-    def strips_arrays(self):
-        ca = self.GetStrips()
-        conn_vtk = ca.GetConnectivityArray()
-        offsets_vtk = ca.GetOffsetsArray()
-
-        if not NUMPY_AVAILABLE:
-            return {
-                "connectivity": conn_vtk,
-                "offsets": offsets_vtk,
-            }
-
-        conn = dsa.vtkDataArrayToVTKArray(conn_vtk)
-        offsets = dsa.vtkDataArrayToVTKArray(offsets_vtk)
-        return {"connectivity": conn, "offsets": offsets}
-
-    @property
-    def polys_arrays(self):
-        ca = self.GetPolys()
-        conn_vtk = ca.GetConnectivityArray()
-        offsets_vtk = ca.GetOffsetsArray()
-
-        if not NUMPY_AVAILABLE:
-            return {
-                "connectivity": conn_vtk,
-                "offsets": offsets_vtk,
-            }
-
-        conn = dsa.vtkDataArrayToVTKArray(conn_vtk)
-        offsets = dsa.vtkDataArrayToVTKArray(offsets_vtk)
-        return {"connectivity": conn, "offsets": offsets}
 
 
 @vtkRectilinearGrid.override
 class RectilinearGrid(DataSet, vtkRectilinearGrid):
-    def __init__(self, **kwargs) -> None:
-        DataSet.__init__(self, **kwargs)
+    """Python-friendly ``vtkRectilinearGrid`` with numpy access.
+
+    Adds ``x_coordinates``, ``y_coordinates``, and ``z_coordinates``
+    properties that can be get/set with numpy arrays or VTK arrays.
+    """
+    def __init__(self, *args, **kwargs) -> None:
+        DataSet.__init__(self, *args, **kwargs)
         vtkRectilinearGrid.__init__(self, **kwargs)
+        if args and isinstance(args[0], str):
+            return
         self._numpy_attrs.extend(["x_coordinates", "y_coordinates", "z_coordinates"])
 
     @property
@@ -669,7 +783,7 @@ class RectilinearGrid(DataSet, vtkRectilinearGrid):
 
         if not pts:
             return None
-        return dsa.vtkDataArrayToVTKArray(pts)
+        return pts
 
     @x_coordinates.setter
     def x_coordinates(self, points):
@@ -680,7 +794,8 @@ class RectilinearGrid(DataSet, vtkRectilinearGrid):
         if not NUMPY_AVAILABLE:
             raise ValueError("Expect vtkDataArray")
 
-        pts = dsa.numpyTovtkDataArray(points, "x_coords")
+        pts = numpy_support.numpy_to_vtk(points)
+        pts.SetName("x_coords")
         self.SetXCoordinates(pts)
 
     @property
@@ -692,7 +807,7 @@ class RectilinearGrid(DataSet, vtkRectilinearGrid):
 
         if not pts:
             return None
-        return dsa.vtkDataArrayToVTKArray(pts)
+        return pts
 
     @y_coordinates.setter
     def y_coordinates(self, points):
@@ -703,7 +818,8 @@ class RectilinearGrid(DataSet, vtkRectilinearGrid):
         if not NUMPY_AVAILABLE:
             raise ValueError("Expect vtkDataArray")
 
-        pts = dsa.numpyTovtkDataArray(points, "y_coords")
+        pts = numpy_support.numpy_to_vtk(points)
+        pts.SetName("y_coords")
         self.SetYCoordinates(pts)
 
     @property
@@ -715,7 +831,7 @@ class RectilinearGrid(DataSet, vtkRectilinearGrid):
 
         if not pts:
             return None
-        return dsa.vtkDataArrayToVTKArray(pts)
+        return pts
 
     @z_coordinates.setter
     def z_coordinates(self, points):
@@ -726,7 +842,8 @@ class RectilinearGrid(DataSet, vtkRectilinearGrid):
         if not NUMPY_AVAILABLE:
             raise ValueError("Expect vtkDataArray")
 
-        pts = dsa.numpyTovtkDataArray(points, "z_coords")
+        pts = numpy_support.numpy_to_vtk(points)
+        pts.SetName("z_coords")
         self.SetZCoordinates(pts)
 
 
@@ -765,11 +882,23 @@ class CompositeDataIterator(object):
 
 
 class CompositeDataSetBase(object):
-    """A wrapper for vtkCompositeData and subclasses that makes it easier
-    to access Point/Cell/Field data as VTKCompositeDataArrays. It also
-    provides a Python type iterator."""
+    """Python-friendly interface for composite VTK datasets.
 
-    def __init__(self, **kwargs):
+    Provides ``point_data``, ``cell_data``, ``field_data``, and
+    ``points`` properties that return ``CompositeDataSetAttributes``
+    or ``VTKPartitionedArray`` instances spanning all leaf datasets.
+    Iteration yields the non-empty leaf ``vtkDataObject`` instances.
+
+    This is the base class for ``vtkMultiBlockDataSet``,
+    ``vtkPartitionedDataSet``, ``vtkPartitionedDataSetCollection``,
+    and ``vtkOverlappingAMR`` overrides.
+    """
+
+    def __init__(self, *args, **kwargs):
+        # SWIG pointer reconstruction: tp_new already returned the
+        # existing object; skip init to avoid clobbering state.
+        if args and isinstance(args[0], str):
+            return
         self._PointData = None
         self._CellData = None
         self._FieldData = None
@@ -810,7 +939,7 @@ class CompositeDataSetBase(object):
 
     @property
     def points(self):
-        "Returns the points as a VTKCompositeDataArray instance."
+        "Returns the points as a VTKPartitionedPoints instance."
         if not NUMPY_AVAILABLE:
             # don't know how to handle composite dataset when numpy not around
             raise NotImplementedError("Only available with numpy")
@@ -819,18 +948,14 @@ class CompositeDataSetBase(object):
             pts = []
             for ds in self:
                 try:
-                    _pts = ds.Points
+                    _pts = ds.points
                 except AttributeError:
                     _pts = None
-
-                if _pts is None:
-                    pts.append(dsa.NoneArray)
-                else:
-                    pts.append(_pts)
-            if len(pts) == 0 or all([a is dsa.NoneArray for a in pts]):
-                cpts = dsa.NoneArray
+                pts.append(_pts)
+            if len(pts) == 0 or all(p is None for p in pts):
+                cpts = NoneArray
             else:
-                cpts = dsa.VTKCompositeDataArray(pts, dataset=self)
+                cpts = VTKPartitionedPoints(pts)
             self._Points = weakref.ref(cpts)
         return self._Points()
 
@@ -855,8 +980,14 @@ class MultiBlockDataSet(CompositeDataSetBase, vtkMultiBlockDataSet):
 
 @vtkStructuredGrid.override
 class StructuredGrid(PointSet, vtkStructuredGrid):
-    def __init__(self, **kwargs):
-        PointSet.__init__(self, **kwargs)
+    """Python-friendly ``vtkStructuredGrid`` with numpy access.
+
+    Adds ``x_coordinates``, ``y_coordinates``, and ``z_coordinates``
+    read-only properties that extract coordinate components from the
+    point array and reshape them to the grid dimensions.
+    """
+    def __init__(self, *args, **kwargs):
+        PointSet.__init__(self, *args, **kwargs)
         vtkStructuredGrid.__init__(self, **kwargs)
 
     @property
@@ -866,7 +997,7 @@ class StructuredGrid(PointSet, vtkStructuredGrid):
 
         dims = [0,0,0]
         self.GetDimensions(dims)
-        return self.points[:, 0].reshape(dims, order="F")
+        return self.points.data[:, 0].reshape(dims, order="F")
 
     @property
     def y_coordinates(self):
@@ -875,7 +1006,7 @@ class StructuredGrid(PointSet, vtkStructuredGrid):
 
         dims = [0,0,0]
         self.GetDimensions(dims)
-        return self.points[:, 1].reshape(dims, order="F")
+        return self.points.data[:, 1].reshape(dims, order="F")
 
     @property
     def z_coordinates(self):
@@ -883,7 +1014,101 @@ class StructuredGrid(PointSet, vtkStructuredGrid):
             raise NotImplementedError("Only available with numpy")
         dims = [0,0,0]
         self.GetDimensions(dims)
-        return self.points[:, 2].reshape(dims, order="F")
+        return self.points.data[:, 2].reshape(dims, order="F")
+
+
+@vtkCellArray.override
+class CellArray(vtkCellArray):
+    """Python-friendly ``vtkCellArray`` with a convenient constructor.
+
+    Accepts ``offsets`` and ``connectivity`` as keyword arguments::
+
+        ca = vtkCellArray(offsets=[0, 3, 6], connectivity=[0, 1, 2, 3, 4, 5])
+
+    Both can be numpy arrays, lists, or ``vtkDataArray`` objects.
+    """
+
+    def __init__(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            return
+        offsets = kwargs.pop("offsets", None)
+        connectivity = kwargs.pop("connectivity", None)
+        vtkCellArray.__init__(self, *args, **kwargs)
+        if (offsets is None) != (connectivity is None):
+            raise ValueError(
+                "offsets and connectivity must both be provided"
+            )
+        if offsets is not None:
+            self._set_data(offsets, connectivity)
+
+    def _set_data(self, offsets, connectivity):
+        if isinstance(offsets, vtkDataArray) and isinstance(connectivity, vtkDataArray):
+            self.SetData(offsets, connectivity)
+            return
+        if NUMPY_AVAILABLE:
+            import numpy as np
+            if not isinstance(offsets, vtkDataArray):
+                offsets = numpy_support.numpy_to_vtk(
+                    np.asarray(offsets, dtype=np.int64)
+                )
+            if not isinstance(connectivity, vtkDataArray):
+                connectivity = numpy_support.numpy_to_vtk(
+                    np.asarray(connectivity, dtype=np.int64)
+                )
+            self.SetData(offsets, connectivity)
+        else:
+            raise TypeError(
+                "numpy is required to convert array-like arguments"
+            )
+
+    def __repr__(self):
+        n = self.GetNumberOfCells()
+        return "vtkCellArray(%d cells)" % n
+
+
+@vtkPoints.override
+class Points(vtkPoints):
+    """Python-friendly ``vtkPoints`` with a convenient constructor.
+
+    Accepts point data via the ``data`` keyword argument — as a numpy
+    array, list of lists, or ``vtkDataArray``::
+
+        pts = vtkPoints(data=np.array([[0,0,0], [1,0,0]]))
+        pts = vtkPoints(data=[[0,0,0], [1,0,0]])
+        pts = vtkPoints(data=vtk_data_array)
+    """
+
+    def __init__(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            return
+        data = kwargs.pop("data", None)
+        vtkPoints.__init__(self, *args, **kwargs)
+        if data is not None:
+            self._set_data(data)
+
+    def _set_data(self, data):
+        if isinstance(data, vtkDataArray):
+            self.SetData(data)
+            return
+        if NUMPY_AVAILABLE:
+            import numpy as np
+            arr = np.asarray(data, dtype=np.float64)
+            if arr.ndim == 1:
+                if len(arr) % 3 != 0:
+                    raise ValueError(
+                        "1-D array length must be a multiple of 3"
+                    )
+                arr = arr.reshape(-1, 3)
+            vtk_arr = numpy_support.numpy_to_vtk(arr)
+            vtk_arr.SetName("points")
+            self.SetData(vtk_arr)
+        else:
+            for pt in data:
+                self.InsertNextPoint(*pt)
+
+    def __repr__(self):
+        n = self.GetNumberOfPoints()
+        return "vtkPoints(%d points)" % n
 
 
 # -----------------------------------------------------------------------------

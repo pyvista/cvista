@@ -81,7 +81,7 @@
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkCallbackCommand;
-class vtkDoubleArray;
+class vtkDataArray;
 class vtkImplicitFunction;
 class vtkPolyData;
 
@@ -159,19 +159,39 @@ public:
   vtkBooleanMacro(GenerateClipScalars, vtkTypeBool);
   ///@}
 
+  /**
+   * PointType enum can be used to flag point origin.
+   * Typically, those values are used in PointTypes array.
+   *
+   * @see GenerateClipPointTypes(), GetPointTypesArrayName()
+   */
+  enum PointTypes
+  {
+    InputPoint = 0,
+    EdgePoint = 1,
+    CentroidPoint = 2
+  };
+
   ///@{
   /**
-   * Set/Get whether to generate the class of output points.
-   * 0 -> input point
-   * 1 -> edge point
-   * 2 -> centroid point
-   *
+   * Set/Get whether to generate an array with the class of output points.
    * Default is false.
+   *
+   * If true, an array is created containing PointTypes values,
+   * and named according to GetPointTypesArrayName().
+   *
+   * @see GetPointTypesArrayName(), PointTypes.
    */
   vtkSetMacro(GenerateClipPointTypes, bool);
   vtkGetMacro(GenerateClipPointTypes, bool);
   vtkBooleanMacro(GenerateClipPointTypes, bool);
   ///@}
+
+  /**
+   * Return the array name used classify the points from their origin.
+   * @see SetGenerateClipPointTypes(), PointTypes
+   */
+  static const char* GetPointTypesArrayName() { return "vtkClipPointTypes"; }
 
   ///@{
   /**
@@ -252,8 +272,8 @@ private:
    * input scalar point data array or the result of evaluating an implicit function
    * (provided via SetClipFunction()). The clipping result is exported to outputUG.
    */
-  void ClipPolyData(vtkPolyData* inputGrid, vtkImplicitFunction* implicitFunction,
-    vtkDoubleArray* scalars, double isoValue, vtkUnstructuredGrid* outputUG);
+  void ClipPolyData(
+    vtkPolyData* inputGrid, vtkDataArray* scalars, double isoValue, vtkUnstructuredGrid* outputUG);
 
   /**
    * This function clips a DataSet based on a specified iso-value
@@ -262,15 +282,15 @@ private:
    * (provided via SetClipFunction()). The clipping result is exported to outputUG.
    */
   template <class TGrid>
-  void ClipTDataSet(TGrid* inputGrid, vtkImplicitFunction* implicitFunction,
-    vtkDoubleArray* scalars, double isoValue, vtkUnstructuredGrid* outputUG);
+  void ClipTDataSet(
+    TGrid* inputGrid, vtkDataArray* scalars, double isoValue, vtkUnstructuredGrid* outputUG);
 
   /**
    * This function handles the actual steps of the clipping operation.
    */
   template <typename TGrid, typename TInputIdType, bool InsideOut>
   vtkSmartPointer<vtkUnstructuredGrid> ClipTDataSet(
-    TGrid* input, vtkImplicitFunction* implicitFunction, vtkDoubleArray* scalars, double isoValue);
+    TGrid* input, vtkDataArray* scalars, double isoValue);
 
   /**
    * Register a callback function with the InternalProgressObserver.

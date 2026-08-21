@@ -314,11 +314,11 @@ void vtkIncrementalOctreePointLocator::GenerateRepresentation(int nodeLevel, vtk
   }
 
   // collect the vertices and quads of each node
-  thePoints->Allocate(8 * static_cast<int>(nodesList.size()));
+  thePoints->Reserve(8 * static_cast<int>(nodesList.size()));
   nodeQuads->AllocateEstimate(static_cast<vtkIdType>(nodesList.size()) * 6, 4);
   vtkNew<vtkIntArray> nodeIndexes;
   nodeIndexes->SetName("Index");
-  nodeIndexes->Allocate(nodesList.size() * 6);
+  nodeIndexes->ReserveValues(nodesList.size() * 6);
   vtkIdType cellIndex = 0;
   for (std::list<vtkIncrementalOctreeNode*>::iterator lit = nodesList.begin();
        lit != nodesList.end(); ++lit)
@@ -490,18 +490,19 @@ vtkIdType vtkIncrementalOctreePointLocator::FindClosestPointInSphere(const doubl
 //------------------------------------------------------------------------------
 void vtkIncrementalOctreePointLocator::BuildLocator()
 {
-  // don't rebuild if build time is newer than modified and dataset modified time
-  if (this->OctreeRootNode && this->BuildTime > this->MTime &&
-    this->BuildTime > this->DataSet->GetMTime())
+  // if a search structure already exists
+  if (this->OctreeRootNode)
   {
-    return;
-  }
-  // don't rebuild if UseExistingSearchStructure is ON and a search structure already exists
-  if (this->OctreeRootNode && this->UseExistingSearchStructure)
-  {
-    this->BuildTime.Modified();
-    vtkDebugMacro(<< "BuildLocator exited - UseExistingSearchStructure");
-    return;
+    // don't rebuild if UseExistingSearchStructure is ON
+    if (this->UseExistingSearchStructure)
+    {
+      return;
+    }
+    // don't rebuild if build time is newer than modified and dataset modified time
+    if (this->BuildTime > this->MTime && this->BuildTime > this->DataSet->GetMTime())
+    {
+      return;
+    }
   }
   this->BuildLocatorInternal();
 }

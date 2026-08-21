@@ -5,10 +5,14 @@
 #include "vtkTGAReader.h"
 
 #include "vtkDataArray.h"
+#include "vtkErrorCode.h"
+#include "vtkFileResourceStream.h"
 #include "vtkImageData.h"
 #include "vtkImageFlip.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+
+#include <cstring>
 
 #include <vtksys/FStream.hxx>
 
@@ -19,38 +23,122 @@ namespace
 {
 constexpr int HeaderSize = 18;
 
+// TGA 2.0 footer: the last 26 bytes of the file
+constexpr size_t FooterSize = 26;
+constexpr size_t FooterSignatureOffset = 8;
+constexpr char TGA2FooterSignature[] = "TRUEVISION-XFILE.";
+
 enum TGAFormat : unsigned char
 {
   Uncompressed_RGB = 2,
   RLE_RGB = 10
 };
+
+//------------------------------------------------------------------------------
+bool HasTGA2Footer(const char* footer)
+{
+  return std::memcmp(footer + ::FooterSignatureOffset, ::TGA2FooterSignature,
+           sizeof(::TGA2FooterSignature)) == 0;
+}
+
+//----------------------------------------------------------------------------
+bool HasMinimumUncompressedPayload(const char* header, size_t fileSize)
+{
+  if (header[2] != ::TGAFormat::Uncompressed_RGB)
+  {
+    return true;
+  }
+
+  unsigned char bitsPerPixel = static_cast<unsigned char>(header[16]);
+  unsigned short width = static_cast<unsigned short>(
+    static_cast<unsigned char>(header[12]) | (static_cast<unsigned char>(header[13]) << 8u));
+  unsigned short height = static_cast<unsigned short>(
+    static_cast<unsigned char>(header[14]) | (static_cast<unsigned char>(header[15]) << 8u));
+  size_t idLength = static_cast<unsigned char>(header[0]);
+  size_t minPayload =
+    static_cast<size_t>(width) * height * (static_cast<size_t>(bitsPerPixel) / 8u);
+  size_t minFileSize = static_cast<size_t>(::HeaderSize) + idLength + minPayload;
+  return fileSize >= minFileSize;
+}
+
+//----------------------------------------------------------------------------
+int ValidateHeader(const char* content, size_t contentSize)
+{
+  if (contentSize < static_cast<size_t>(::HeaderSize))
+  {
+    return 0;
+  }
+
+  // only uncompressed RGB and RLE encoded RGB formats are supported
+  if (content[2] != ::TGAFormat::RLE_RGB && content[2] != ::TGAFormat::Uncompressed_RGB)
+  {
+    return 0;
+  }
+
+  // only 24 and 32 bits per pixel are supported
+  unsigned char bitsPerPixel = static_cast<unsigned char>(content[16]);
+  if (bitsPerPixel != 24 && bitsPerPixel != 32)
+  {
+    return 0;
+  }
+
+  if (content[1] != 0)
+  {
+    return 0;
+  }
+
+  unsigned short width = static_cast<unsigned short>(
+    static_cast<unsigned char>(content[12]) | (static_cast<unsigned char>(content[13]) << 8u));
+  unsigned short height = static_cast<unsigned short>(
+    static_cast<unsigned char>(content[14]) | (static_cast<unsigned char>(content[15]) << 8u));
+  if (width == 0 || height == 0)
+  {
+    return 0;
+  }
+
+  if ((static_cast<unsigned char>(content[17]) & 0xC0u) != 0)
+  {
+    return 0;
+  }
+
+  return 1;
+}
 }
 
 //----------------------------------------------------------------------------
 void vtkTGAReader::ExecuteInformation()
 {
   char header[::HeaderSize];
+  size_t readSize = 0;
 
   if (this->GetStream())
   {
     vtkResourceStream* stream = this->GetStream();
-    stream->Read(header, ::HeaderSize);
     stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+    readSize = stream->Read(header, ::HeaderSize);
   }
   else if (this->GetMemoryBuffer())
   {
     // VTK_DEPRECATED_IN_9_6_0
     const char* memBuffer = static_cast<const char*>(this->GetMemoryBuffer());
-    std::copy(memBuffer, memBuffer + ::HeaderSize, header);
+    readSize = std::min(
+      static_cast<size_t>(::HeaderSize), static_cast<size_t>(this->GetMemoryBufferLength()));
+    std::copy(memBuffer, memBuffer + readSize, header);
   }
   else
   {
     this->ComputeInternalFileName(0);
     vtksys::ifstream file(this->InternalFileName, std::ios::binary);
-
     file.read(header, ::HeaderSize * sizeof(char));
-
+    readSize = file.gcount();
     file.close();
+  }
+
+  if (!::ValidateHeader(header, readSize))
+  {
+    vtkErrorMacro("TGAReader error reading file: Invalid header.");
+    this->SetErrorCode(vtkErrorCode::FileFormatError);
+    return;
   }
 
   // tmp char needed to avoid strict anti aliasing warning
@@ -108,6 +196,14 @@ void vtkTGAReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
     vtksys::ifstream imageFile(this->InternalFileName, std::ios::binary);
     content.assign(std::istreambuf_iterator<char>(imageFile), std::istreambuf_iterator<char>());
   }
+  const auto contentSize = content.size();
+
+  if (!::ValidateHeader(reinterpret_cast<const char*>(content.data()), contentSize))
+  {
+    vtkErrorMacro("TGAReader error reading file: Invalid header.");
+    this->SetErrorCode(vtkErrorCode::FileFormatError);
+    return;
+  }
 
   bool encoded = (content[2] == ::TGAFormat::RLE_RGB);
   vtkIdType nComponents = this->GetNumberOfScalarComponents();
@@ -145,6 +241,12 @@ void vtkTGAReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
         // RLE packet (clear highest bit and add 1)
         packet = (packet & 0x7f) + 1;
         unsigned char* dupBuffer = outPtr;
+        if ((index + nComponents - 1) >= contentSize)
+        {
+          vtkErrorMacro("TGAReader error reading file: Premature EOF while reading.");
+          this->SetErrorCode(vtkErrorCode::FileFormatError);
+          return;
+        }
         GetColor(index, outPtr);
         for (unsigned char i = 0; i < packet - 1; i++)
         {
@@ -159,6 +261,12 @@ void vtkTGAReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
       {
         // raw packet (add 1)
         packet += 1;
+        if ((index + (nComponents * packet) - 1) >= contentSize)
+        {
+          vtkErrorMacro("TGAReader error reading file: Premature EOF while reading.");
+          this->SetErrorCode(vtkErrorCode::FileFormatError);
+          return;
+        }
         for (unsigned char i = 0; i < packet; i++)
         {
           GetColor(index, outPtr);
@@ -167,6 +275,12 @@ void vtkTGAReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
     }
     else
     {
+      if ((index + nComponents - 1) >= contentSize)
+      {
+        vtkErrorMacro("TGAReader error reading file: Premature EOF while reading.");
+        this->SetErrorCode(vtkErrorCode::FileFormatError);
+        return;
+      }
       GetColor(index, outPtr);
     }
   }
@@ -184,24 +298,45 @@ void vtkTGAReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
 //----------------------------------------------------------------------------
 int vtkTGAReader::CanReadFile(const char* fname)
 {
-  vtksys::ifstream file(fname, std::ios::binary);
+  vtkNew<vtkFileResourceStream> stream;
+  if (!stream->Open(fname))
+  {
+    return 0;
+  }
+  return this->CanReadFile(stream);
+}
 
-  if (!file.is_open())
+//----------------------------------------------------------------------------
+int vtkTGAReader::CanReadFile(vtkResourceStream* stream)
+{
+  if (!stream)
   {
     return 0;
   }
 
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
   char header[::HeaderSize];
-  file.read(header, ::HeaderSize * sizeof(char));
-
-  // only uncompressed RGB and RLE encoded RGB formats are supported
-  if (header[2] != ::TGAFormat::RLE_RGB && header[2] != ::TGAFormat::Uncompressed_RGB)
+  auto readSize = stream->Read(header, ::HeaderSize);
+  if (!::ValidateHeader(header, readSize))
   {
-    vtkWarningMacro("Only RLE RGB and uncompressed RGB TGA files are supported");
     return 0;
   }
 
-  return 1;
+  stream->Seek(0, vtkResourceStream::SeekDirection::End);
+  auto fileSize = static_cast<size_t>(stream->Tell());
+
+  if (fileSize >= ::FooterSize)
+  {
+    stream->Seek(
+      static_cast<vtkTypeInt64>(fileSize - ::FooterSize), vtkResourceStream::SeekDirection::Begin);
+    char footer[::FooterSize];
+    if (stream->Read(footer, ::FooterSize) == ::FooterSize && ::HasTGA2Footer(footer))
+    {
+      return 1;
+    }
+  }
+
+  return ::HasMinimumUncompressedPayload(header, fileSize) ? 1 : 0;
 }
 
 //------------------------------------------------------------------------------

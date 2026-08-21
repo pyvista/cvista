@@ -181,16 +181,18 @@ public:
   void TransformPoints(vtkPoints* inPts, vtkPoints* outPts) override;
 
   /**
-   * Apply the transformation to a series of normals, and append the
-   * results to outNms.
+   * Compute the new normals, and append the results to outNms.
+   *
+   * Output array is normalized.
+   * @see TransformVectors
    */
-  virtual void TransformNormals(vtkDataArray* inNms, vtkDataArray* outNms);
+  void TransformNormals(vtkDataArray* inNms, vtkDataArray* outNms) override;
 
   /**
    * Apply the transformation to a series of vectors, and append the
    * results to outVrs.
    */
-  virtual void TransformVectors(vtkDataArray* inVrs, vtkDataArray* outVrs);
+  void TransformVectors(vtkDataArray* inVrs, vtkDataArray* outVrs) override;
 
   /**
    * Apply the transformation to a combination of points, normals

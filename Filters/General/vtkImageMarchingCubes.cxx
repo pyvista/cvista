@@ -10,11 +10,12 @@
 #include "vtkInformation.h"
 #include "vtkInformationExecutivePortKey.h"
 #include "vtkInformationVector.h"
-#include "vtkMarchingCubesTriangleCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
+
 #include <cmath>
 
 VTK_ABI_NAMESPACE_BEGIN
@@ -145,7 +146,7 @@ int vtkImageMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   estimatedSize = std::max<vtkIdType>(estimatedSize, 1024);
   vtkDebugMacro(<< "Estimated number of points/triangles: " << estimatedSize);
   this->Points = vtkPoints::New();
-  this->Points->Allocate(estimatedSize, estimatedSize / 2);
+  this->Points->Reserve(estimatedSize);
   this->Triangles = vtkCellArray::New();
   // Output is uniformly triangles; declare fixed-size storage up front so the
   // redundant offsets array is never materialized.
@@ -154,19 +155,19 @@ int vtkImageMarchingCubes::RequestData(vtkInformation* vtkNotUsed(request),
   if (this->ComputeScalars)
   {
     this->Scalars = vtkFloatArray::New();
-    this->Scalars->Allocate(estimatedSize, estimatedSize / 2);
+    this->Scalars->ReserveValues(estimatedSize);
   }
   if (this->ComputeNormals)
   {
     this->Normals = vtkFloatArray::New();
     this->Normals->SetNumberOfComponents(3);
-    this->Normals->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    this->Normals->ReserveTuples(estimatedSize);
   }
   if (this->ComputeGradients)
   {
     this->Gradients = vtkFloatArray::New();
     this->Gradients->SetNumberOfComponents(3);
-    this->Gradients->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    this->Gradients->ReserveTuples(estimatedSize);
   }
 
   // Initialize the internal point locator (edge table for one image of cubes).
@@ -298,7 +299,7 @@ void vtkImageMarchingCubesComputePointGradient(
 // This method interpolates vertices to make a new point.
 template <class T>
 int vtkImageMarchingCubesMakeNewPoint(vtkImageMarchingCubes* self, int idx0, int idx1, int idx2,
-  int inc0, int inc1, int inc2, T* ptr, int edge, int* imageExtent, double value)
+  int inc0, int inc1, int inc2, T* ptr, int edge, VTK_FUTURE_CONST int imageExtent[6], double value)
 {
   int edgeAxis = 0;
   T* ptrB = nullptr;
@@ -478,11 +479,8 @@ void vtkImageMarchingCubesHandleCube(vtkImageMarchingCubes* self, int cellX, int
   double value;
   int cubeIndex, ii;
   vtkIdType pointIds[3];
-  vtkMarchingCubesTriangleCases *triCase, *triCases;
 
   vtkInformation* inInfo = self->GetExecutive()->GetInputInformation(0, 0);
-
-  triCases = vtkMarchingCubesTriangleCases::GetCases();
 
   inData->GetIncrements(inc0, inc1, inc2);
   for (valueIdx = 0; valueIdx < numContours; ++valueIdx)
@@ -526,8 +524,7 @@ void vtkImageMarchingCubesHandleCube(vtkImageMarchingCubes* self, int cellX, int
     if (cubeIndex != 0 && cubeIndex != 255)
     {
       // Get edges.
-      triCase = triCases + cubeIndex;
-      int* edge = triCase->edges;
+      const int* edge = vtkMarchingCellsContourCases::GetHexahedronCase(cubeIndex);
       // loop over triangles
       while (*edge > -1)
       {
@@ -538,7 +535,8 @@ void vtkImageMarchingCubesHandleCube(vtkImageMarchingCubes* self, int cellX, int
           // If the point has not been created yet
           if (pointIds[ii] == -1)
           {
-            int* extent = inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
+            VTK_FUTURE_CONST int* extent =
+              inInfo->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT());
 
             pointIds[ii] = vtkImageMarchingCubesMakeNewPoint(
               self, cellX, cellY, cellZ, inc0, inc1, inc2, ptr, *edge, extent, value);

@@ -191,6 +191,7 @@ void vtkAppendCompositeDataLeaves::AppendUnstructuredGrids(vtkInformationVector*
   int numInputs, vtkCompositeDataIterator* iter, vtkCompositeDataSet* output)
 {
   vtkNew<vtkAppendFilter> appender;
+  appender->SetUseImplicitArray(this->UseImplicitArray);
   appender->SetContainerAlgorithm(this);
 
   for (int idx = i; idx < numInputs; ++idx)
@@ -215,6 +216,7 @@ void vtkAppendCompositeDataLeaves::AppendPolyData(vtkInformationVector* inputVec
   int numInputs, vtkCompositeDataIterator* iter, vtkCompositeDataSet* output)
 {
   vtkNew<vtkAppendPolyData> appender;
+  appender->SetUseImplicitArray(this->UseImplicitArray);
   appender->SetContainerAlgorithm(this);
 
   for (int idx = i; idx < numInputs; ++idx)

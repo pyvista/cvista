@@ -16,6 +16,7 @@
 #define vtkVariantArray_h
 
 #include "vtkAbstractArray.h"
+#include "vtkBuffer.h"           // For vtkBuffer
 #include "vtkCommonCoreModule.h" // For export macro
 #include "vtkVariant.h"          // For variant type
 #include "vtkWrappingHints.h"    // For VTK_MARSHALMANUAL
@@ -68,15 +69,16 @@ public:
   //
 
   /**
-   * Allocate memory for this array. Delete old storage only if necessary.
-   * Note that ext is no longer used.
+   * Reserve the array to the requested number of tuples and preserve data.
+   *
+   * Increasing the array capacity may allocate extra memory beyond what was
+   * requested. MaxId will not be modified when increasing array size.
+   *
+   * Decreasing the array capacity is effectively a no-op.
+   *
+   * Returns 1 if resizing succeeded and 0 otherwise.
    */
-  vtkTypeBool Allocate(vtkIdType sz, vtkIdType ext = 1000) override;
-
-  /**
-   * Release storage and reset array to initial state.
-   */
-  void Initialize() override;
+  vtkTypeBool ReserveTuples(vtkIdType numTuples) override;
 
   /**
    * Copy one component from \a src into a (potentially different) component
@@ -110,12 +112,6 @@ public:
    * sizeof(char).
    */
   int GetElementComponentSize() const override;
-
-  /**
-   * Set the number of tuples (a component group) in the array. Note that
-   * this may allocate space depending on the number of components.
-   */
-  void SetNumberOfTuples(vtkIdType number) override;
 
   /**
    * Set the tuple at the ith location using the jth tuple in the source array.
@@ -170,6 +166,13 @@ public:
   void DeepCopy(vtkAbstractArray* da) override;
 
   /**
+   * This method will copy the data from the source array to this array.
+   * This is possible only if the data types are the same data type and array type.
+   * Otherwise, it will complain and change nothing if the array passed in is not the same.
+   */
+  void ShallowCopy(vtkAbstractArray* src) override;
+
+  /**
    * Set the ith tuple in this array as the interpolated tuple value,
    * given the ptIndices in the source array and associated
    * interpolation weights.
@@ -192,16 +195,9 @@ public:
 
   /**
    * Free any unnecessary memory.
-   * Description:
    * Resize object to just fit data requirement. Reclaims extra memory.
    */
   void Squeeze() override;
-
-  /**
-   * Resize the array while conserving the data.  Returns 1 if
-   * resizing succeeded and 0 otherwise.
-   */
-  vtkTypeBool Resize(vtkIdType numTuples) override;
 
   ///@{
   /**
@@ -212,8 +208,14 @@ public:
    * The class uses the actual array provided; it does not copy the data
    * from the supplied array.
    */
-  void SetVoidArray(void* arr, vtkIdType size, int save) override;
-  void SetVoidArray(void* arr, vtkIdType size, int save, int deleteM) override;
+  void SetVoidArray(void* array, vtkIdType size, int save) override
+  {
+    this->SetArray(static_cast<ValueType*>(array), size, save);
+  }
+  void SetVoidArray(void* array, vtkIdType size, int save, int deleteMethod) override
+  {
+    this->SetArray(static_cast<ValueType*>(array), size, save, deleteMethod);
+  }
   ///@}
 
   /**
@@ -235,11 +237,40 @@ public:
    * Subclasses must override this method and provide the right
    * kind of templated vtkArrayIteratorTemplate.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use vtk::DataArrayValueRange, or the array directly")
   VTK_NEWINSTANCE vtkArrayIterator* NewIterator() override;
 
-  //
-  // Additional functions
-  //
+  /**
+   * Get component @a comp of the tuple at @a tupleIdx.
+   */
+  ValueType GetTypedComponent(vtkIdType tupleIdx, int comp) const
+    VTK_EXPECTS(0 <= tupleIdx && GetNumberOfComponents() * tupleIdx + comp < GetNumberOfValues())
+      VTK_EXPECTS(0 <= comp && comp < GetNumberOfComponents());
+
+  ///@{
+  /**
+   * Set component @a comp of the tuple at @a tupleIdx to @a value.
+   */
+  void SetTypedComponent(vtkIdType tupleIdx, int comp, ValueType value)
+    VTK_EXPECTS(0 <= tupleIdx && GetNumberOfComponents() * tupleIdx + comp < GetNumberOfValues())
+      VTK_EXPECTS(0 <= comp && comp < GetNumberOfComponents());
+  ///@}
+
+  ///@{
+  /**
+   * Copy the tuple at @a tupleIdx into @a tuple.
+   */
+  void GetTypedTuple(vtkIdType tupleIdx, ValueType* tuple) const
+    VTK_EXPECTS(0 <= tupleIdx && tupleIdx < GetNumberOfTuples());
+  ///@}
+
+  ///@{
+  /**
+   * Set this array's tuple at @a tupleIdx to the values in @a tuple.
+   */
+  void SetTypedTuple(vtkIdType tupleIdx, const ValueType* tuple)
+    VTK_EXPECTS(0 <= tupleIdx && tupleIdx < GetNumberOfTuples());
+  ///@}
 
   /**
    * Get the data at a particular index.
@@ -261,7 +292,12 @@ public:
   void InsertValue(vtkIdType id, ValueType value) VTK_EXPECTS(0 <= id);
 
   /**
-   * Insert a value into the array from a variant.
+   * Get a value in the array as a variant.
+   */
+  vtkVariant GetVariantValue(vtkIdType idx) override;
+
+  /**
+   * Set a value into the array from a variant.
    */
   void SetVariantValue(vtkIdType idx, ValueType value) override;
 
@@ -282,6 +318,17 @@ public:
   vtkVariant* GetPointer(vtkIdType id);
 
   /**
+   * Return the underlying buffer object. This can be used for zero-copy
+   * access to the array data, particularly useful for Python buffer protocol
+   * support.
+   */
+#ifdef __VTK_WRAP__
+  vtkAbstractBuffer* GetBuffer() { return this->Buffer; }
+#else
+  vtkBuffer<ValueType>* GetBuffer() { return this->Buffer; }
+#endif // __VTK_WRAP__
+
+  /**
    * Set the internal array used by this object.
    */
   void SetArray(ValueType* arr, vtkIdType size, int save, int deleteMethod = VTK_DATA_ARRAY_DELETE);
@@ -293,11 +340,6 @@ public:
    * cleans up or reallocates memory.
    **/
   void SetArrayFreeFunction(void (*callback)(void*)) override;
-
-  /**
-   * Return the number of values in the array.
-   */
-  vtkIdType GetNumberOfValues() const { return (this->MaxId + 1); }
 
   ///@{
   /**
@@ -322,6 +364,7 @@ public:
    * changed. Like DataChanged(), then is only necessary when you
    * modify the array contents without using the array's API.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use DataChanged() instead")
   virtual void DataElementChanged(vtkIdType id);
 
   /**
@@ -341,14 +384,27 @@ protected:
   // Construct object with default tuple dimension (number of components) of 1.
   vtkVariantArray();
 
-  // Pointer to data
+  /**
+   * Allocate space for numTuples. Old data is preserved. If numTuples == 0, all data is freed.
+   */
+  bool ReallocateTuples(vtkIdType numTuples);
 
-  ValueType* Array;
+  /**
+   * This method resizes the array if needed so that the given tuple index is valid/accessible.
+   */
+  bool EnsureAccessToTuple(vtkIdType tupleIdx);
 
-  // Function to resize data
-  ValueType* ResizeAndExtend(vtkIdType sz);
+  vtkBuffer<ValueType>* Buffer;
 
-  void (*DeleteFunction)(void*);
+  /**
+   * Function to resize data
+   */
+  VTK_DEPRECATED_IN_9_7_0("Use ReserveTuples")
+  ValueType* ResizeAndExtend(vtkIdType sz)
+  {
+    this->ReserveTuples(sz);
+    return this->Buffer->GetBuffer();
+  }
 
 private:
   vtkVariantArray(const vtkVariantArray&) = delete;

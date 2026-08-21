@@ -27,6 +27,7 @@
 #include "vtkOpenGLVertexArrayObject.h"
 #include "vtkOpenGLVertexBufferObjectCache.h"
 #include "vtkOpenGLVertexBufferObjectGroup.h"
+#include "vtkOverrideAttribute.h"
 #include "vtkPointData.h"
 #include "vtkPolyData.h"
 #include "vtkProperty.h"
@@ -88,6 +89,14 @@ vtkOpenGLPolyDataMapper2D::~vtkOpenGLPolyDataMapper2D()
   this->HaveCellScalars = false;
   this->VBOs->Delete();
   this->VBOs = nullptr;
+}
+
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLPolyDataMapper2D::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
 }
 
 //------------------------------------------------------------------------------
@@ -296,6 +305,18 @@ void vtkOpenGLPolyDataMapper2D::BuildShaders(std::string& VSSource, std::string&
       auto* ssrc = shaderSources[i.first.ShaderType];
       vtkShaderProgram::Substitute(
         *ssrc, i.first.OriginalValue, i.second.Replacement, i.second.ReplaceAll);
+    }
+  }
+  // This fix is the same as done in vtkOpenGLPolyDataMapper.cxx for wide lines and primitive ID bug
+  // on Apple's OpenGL over Metal implementation.
+  if (this->HaveWideLines(ren, actor))
+  {
+    if (auto oglRenderWindow = vtkOpenGLRenderWindow::SafeDownCast(ren->GetRenderWindow()))
+    {
+      if (oglRenderWindow->IsPrimIDBugPresent())
+      {
+        vtkShaderProgram::Substitute(FSSource, "gl_PrimitiveID", "gl_PrimitiveID / 2");
+      }
     }
   }
 }

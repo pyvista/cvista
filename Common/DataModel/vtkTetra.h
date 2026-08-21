@@ -110,6 +110,7 @@ public:
    * output triangle which may be repeated to generate multiple triangles. The
    * list of cases terminates with a -1 entry.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use vtkMarchingCellsContourCases::GetTetraCase instead.")
   static int* GetTriangleCases(int caseId);
 
   /**
@@ -240,10 +241,10 @@ public:
 
 protected:
   vtkTetra();
-  ~vtkTetra() override;
+  ~vtkTetra() override = default;
 
-  vtkLine* Line;
-  vtkTriangle* Triangle;
+  vtkSmartPointer<vtkLine> Line;
+  vtkSmartPointer<vtkTriangle> Triangle;
 
 private:
   vtkTetra(const vtkTetra&) = delete;

@@ -324,7 +324,7 @@ int vtkExtractSelectedFrustum::RequestData(vtkInformation* vtkNotUsed(request),
   numCells = input->GetNumberOfCells();
   pointMap = new vtkIdType[numPts]; // maps old point ids into new
   newCellPts = vtkIdList::New();
-  newCellPts->Allocate(VTK_CELL_SIZE);
+  newCellPts->Reserve(VTK_CELL_SIZE);
 
   vtkIdTypeArray* originalCellIds = nullptr;
   vtkIdTypeArray* originalPointIds = nullptr;
@@ -384,7 +384,7 @@ int vtkExtractSelectedFrustum::RequestData(vtkInformation* vtkNotUsed(request),
     {
       newPts->SetDataType(VTK_DOUBLE);
     }
-    newPts->Allocate(numPts / 4, numPts);
+    newPts->Reserve(numPts / 4);
     outputPD->SetCopyGlobalIds(1);
     outputPD->CopyFieldOff("vtkOriginalPointIds");
     outputPD->CopyAllocate(pd);

@@ -125,8 +125,8 @@ set(classes
   vtkTemporalStatistics
   vtkTessellatorFilter
   vtkTimeSourceExample
-  vtkTransformFilter
   vtkTransformPolyDataFilter
+  vtkTransformFilter
   vtkUncertaintyTubeFilter
   vtkVertexGlyphFilter
   vtkVolumeContourSpectrumFilter
@@ -159,3 +159,8 @@ vtk_module_add_module(VTK::FiltersGeneral
   NOWRAP_CLASSES ${no_wrap_classes}
   TEMPLATES ${templates})
 vtk_add_test_mangling(VTK::FiltersGeneral)
+
+# Add precompiled header to improve build performance
+if(VTK_USE_PCH)
+  vtk_module_precompile_headers(VTK::FiltersGeneral PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/vtkFiltersGeneralPCH.h>")
+endif()

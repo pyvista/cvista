@@ -20,7 +20,7 @@
  * (e.g., vtkProbeFilter) that require point coordinates as input.
  *
  * @sa
- * vtkAbstractTransform vtkTransformPolyDataFilter vtkActor
+ * vtkAbstractTransform vtkTransformFilter vtkActor
  */
 
 #ifndef vtkTransformFilter_h
@@ -31,6 +31,8 @@
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkAbstractTransform;
+class vtkDataSet;
+class vtkDataObjectMeshCache;
 
 class VTKFILTERSGENERAL_EXPORT vtkTransformFilter : public vtkPointSetAlgorithm
 {
@@ -84,14 +86,33 @@ protected:
   vtkTransformFilter();
   ~vtkTransformFilter() override;
 
+  /**
+   * Create a vtkPointSet or a vtkCompositeDataSet subclass, depending on the actual input data.
+   */
   int RequestDataObject(vtkInformation* request, vtkInformationVector** inputVector,
     vtkInformationVector* outputVector) override;
+
+  /**
+   * Apply the transform on the input data.
+   */
   int RequestData(vtkInformation*, vtkInformationVector**, vtkInformationVector*) override;
 
-  // Specifies that the filter only takes input dataset types of vtkPointSet, vtkImageData,
-  // and vtkRectilinearGrid.
+  /**
+   * Specifies that the filter only takes input dataset types of vtkPointSet, vtkImageData,
+   * and vtkRectilinearGrid. Also handles vtkCompositeDataSet where leaves are of the previous
+   * types.
+   */
   int FillInputPortInformation(int port, vtkInformation* info) override;
 
+  /**
+   * vtkTransformFilter returns a vtkPointSet or a vtkCompositeDataSet of vtkPointSet.
+   */
+  int FillOutputPortInformation(int port, vtkInformation* info) override;
+
+  /**
+   * Create a new floating point data array.
+   * Its precision (double or float) depends on OutputPointsPrecision.
+   */
   vtkDataArray* CreateNewDataArray(vtkDataArray* input = nullptr);
 
   vtkAbstractTransform* Transform;
@@ -101,6 +122,47 @@ protected:
 private:
   vtkTransformFilter(const vtkTransformFilter&) = delete;
   void operator=(const vtkTransformFilter&) = delete;
+
+  /**
+   * Check if output is of the correct concrete type for given input.
+   * If not, instantiate a new one.
+   * Return the correct output for given input.
+   */
+  vtkDataSet* CreateNewDataSetIfNeeded(vtkDataSet* input, vtkDataSet* output);
+
+  /**
+   * Request Data Utilities
+   */
+  ///@{
+  /**
+   * Execute the transform for the given input.
+   * Can be called in a loop for composite data.
+   */
+  bool ExecuteDataSet(vtkDataSet* input, vtkPointSet* output, bool useCachedGeometry);
+  /**
+   * Convert vtkImageData and vtkRectilinearGrid into a vtkPointSet.
+   */
+  vtkSmartPointer<vtkPointSet> ConvertInput(vtkDataSet* input);
+  /**
+   * Initialize output point set: allocate points with correct precision,
+   * and allocate data arrays.
+   */
+  void InitializeOutputPointSet(vtkPointSet* input, vtkPointSet* output);
+  /**
+   * Transform the point data, including points if preservePoints is false.
+   */
+  void TransformPointData(vtkPointSet* input, vtkPointSet* output, bool preservePoints);
+  /**
+   * Transform CellData arrays.
+   */
+  void TransformCellData(vtkPointSet* input, vtkPointSet* output);
+  /**
+   * Create a new data array with same name and same dimensions.
+   */
+  vtkDataArray* CreateFromArray(vtkDataArray* input);
+  ///@}
+
+  vtkNew<vtkDataObjectMeshCache> MeshCache;
 };
 
 VTK_ABI_NAMESPACE_END

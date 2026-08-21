@@ -215,4 +215,28 @@ protected:                                                                      
 public:
 
 #include "vtkTemporalAlgorithm.txx"
+
+// The vtkPolyDataAlgorithm specialization is instantiated and exported once, by
+// CommonExecutionModel (vtkTemporalAlgorithm.cxx), and imported everywhere else.
+// Without this, every translation unit that derives from
+// vtkTemporalAlgorithm<vtkPolyDataAlgorithm> (vtkParticleTracerBase in VTK::Parallel,
+// vtkTemporalPathLineFilter in VTK::Filters) emits its own weak copy of the
+// out-of-line virtuals. ELF folds those; MSVC does not, so when cvista merges those
+// modules into shared kit DLLs the two copies collide at link (LNK2005). The extern
+// template below suppresses the per-consumer emission.
+#if defined(VTK_USE_EXTERN_TEMPLATE) && !defined(__VTK_WRAP__) &&                                   \
+  !defined(__MINGW32__) && !defined(vtkTemporalAlgorithm_cxx)
+#include "vtkPolyDataAlgorithm.h" // for the exported instantiation's complete base
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4910) // extern and dllexport incompatible
+#endif
+VTK_ABI_NAMESPACE_BEGIN
+extern template class VTKCOMMONEXECUTIONMODEL_EXPORT vtkTemporalAlgorithm<vtkPolyDataAlgorithm>;
+VTK_ABI_NAMESPACE_END
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+#endif
+
 #endif

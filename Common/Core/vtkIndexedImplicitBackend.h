@@ -60,9 +60,11 @@ public:
    * Constructor
    * @param indexes list of indexes to use for indirection of the array
    * @param array base array of interest
+   * @param mapTuples decides if the indexes are mapping the tuples or the values
+   * WARNING: Mapping tuples only works with AOS and doesn't support SOA.
    */
-  vtkIndexedImplicitBackend(vtkIdList* indexes, vtkDataArray* array);
-  vtkIndexedImplicitBackend(vtkDataArray* indexes, vtkDataArray* array);
+  vtkIndexedImplicitBackend(vtkIdList* indexes, vtkDataArray* array, bool mapTuples = false);
+  vtkIndexedImplicitBackend(vtkDataArray* indexes, vtkDataArray* array, bool mapTuples = false);
   ///@}
   ~vtkIndexedImplicitBackend();
 
@@ -77,6 +79,21 @@ public:
    * Used to implement GetActualMemorySize on `vtkIndexedImplicitBackend`.
    */
   unsigned long getMemorySize() const;
+
+  /**
+   * Get the original base array used for value lookup.
+   */
+  vtkDataArray* GetBaseArray() const;
+
+  /**
+   * Get the original index array used for indirection.
+   */
+  vtkDataArray* GetIndexArray() const;
+
+  /**
+   * Get if the indexed array is mapping tuples or values.
+   */
+  bool GetMapTuples() const;
 
 private:
   struct Internals;

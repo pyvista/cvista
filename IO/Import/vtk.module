@@ -23,6 +23,7 @@ PRIVATE_DEPENDS
   VTK::FiltersGeneral
   VTK::FiltersHybrid
   VTK::FiltersSources
+  VTK::FiltersModeling
   VTK::ImagingCore
   VTK::IOImage
 TEST_DEPENDS

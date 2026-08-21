@@ -16,10 +16,12 @@
 #ifndef vtkBitArray_h
 #define vtkBitArray_h
 
+#include "vtkBuffer.h"           // For vtkBuffer
 #include "vtkCommonCoreModule.h" // For export macro
 #include "vtkDataArray.h"
 
 #include <cassert> // for assert
+#include <vector>  // for vector
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkBitArrayLookup;
@@ -51,25 +53,21 @@ public:
   static vtkBitArray* FastDownCast(vtkAbstractArray* source);
 
   /**
-   * Allocate memory for this array. Delete old storage only if necessary.
-   * Note that ext is no longer used.
+   * Reserve the array to the requested number of tuples and preserve data.
+   *
+   * Increasing the array capacity may allocate extra memory beyond what was
+   * requested. MaxId will not be modified when increasing array size.
+   *
+   * Decreasing the array capacity is effectively a no-op.
+   *
+   * Returns 1 if resizing succeeded and 0 otherwise.
    */
-  vtkTypeBool Allocate(vtkIdType sz, vtkIdType ext = 1000) override;
-
-  /**
-   * Release storage and reset array to initial state.
-   */
-  void Initialize() override;
+  vtkTypeBool ReserveTuples(vtkIdType numTuples) override;
 
   // satisfy vtkDataArray API
   int GetArrayType() const override { return vtkBitArray::ArrayTypeTag::value; }
   int GetDataType() const override { return vtkBitArray::DataTypeTag::value; }
   int GetDataTypeSize() const override { return 0; }
-
-  /**
-   * Set the number of n-tuples in the array.
-   */
-  void SetNumberOfTuples(vtkIdType number) override;
 
   /**
    * In addition to setting the number of values, this method also sets the
@@ -184,29 +182,58 @@ public:
    * NOT THREAD-SAFE
    */
   void RemoveTuple(vtkIdType id) override;
-  void RemoveFirstTuple() override;
-  void RemoveLastTuple() override;
   ///@}
 
+  ///@{
   /**
-   * Set the data component at the ith tuple and jth component location.
+   * Set/Get the data component at the ith tuple and jth component location.
    * Note that i is less then NumberOfTuples and j is less then
    * NumberOfComponents. Make sure enough memory has been allocated (use
    * SetNumberOfTuples() and  SetNumberOfComponents()).
    *
    * NOT THREAD-SAFE
    */
+  double GetComponent(vtkIdType tupleIdx, int compIdx) override;
   void SetComponent(vtkIdType i, int j, double c) override;
+  ///@}
 
   /**
-   * Free any unneeded memory.
+   * Free any unnecessary memory.
+   * Resize object to just fit data requirement. Reclaims extra memory.
    */
   void Squeeze() override;
 
   /**
-   * Resize the array while conserving the data.
+   * Get component @a comp of the tuple at @a tupleIdx.
    */
-  vtkTypeBool Resize(vtkIdType numTuples) override;
+  ValueType GetTypedComponent(vtkIdType tupleIdx, int comp) const
+    VTK_EXPECTS(0 <= tupleIdx && GetNumberOfComponents() * tupleIdx + comp < GetNumberOfValues())
+      VTK_EXPECTS(0 <= comp && comp < GetNumberOfComponents());
+
+  ///@{
+  /**
+   * Set component @a comp of the tuple at @a tupleIdx to @a value.
+   */
+  void SetTypedComponent(vtkIdType tupleIdx, int comp, ValueType value)
+    VTK_EXPECTS(0 <= tupleIdx && GetNumberOfComponents() * tupleIdx + comp < GetNumberOfValues())
+      VTK_EXPECTS(0 <= comp && comp < GetNumberOfComponents());
+  ///@}
+
+  ///@{
+  /**
+   * Copy the tuple at @a tupleIdx into @a tuple.
+   */
+  void GetTypedTuple(vtkIdType tupleIdx, ValueType* tuple) const
+    VTK_EXPECTS(0 <= tupleIdx && tupleIdx < GetNumberOfTuples());
+  ///@}
+
+  ///@{
+  /**
+   * Set this array's tuple at @a tupleIdx to the values in @a tuple.
+   */
+  void SetTypedTuple(vtkIdType tupleIdx, const ValueType* tuple)
+    VTK_EXPECTS(0 <= tupleIdx && tupleIdx < GetNumberOfTuples());
+  ///@}
 
   /**
    * Get the data at a particular index.
@@ -227,6 +254,11 @@ public:
    * NOT THREAD-SAFE
    */
   void InsertValue(vtkIdType id, int i);
+
+  /**
+   * Get a value in the array as a variant.
+   */
+  vtkVariant GetVariantValue(vtkIdType idx) override;
 
   /**
    * Set a value in the array from a variant.
@@ -255,7 +287,7 @@ public:
   /**
    * Direct manipulation of the underlying data.
    */
-  ValueType* GetPointer(vtkIdType id) { return this->Array + id / 8; }
+  ValueType* GetPointer(vtkIdType id) { return this->Buffer->GetBuffer() + id / 8; }
 
   /**
    * Get the address of a particular data index. Make sure data is allocated
@@ -264,6 +296,8 @@ public:
    */
   ValueType* WritePointer(vtkIdType id, vtkIdType number);
 
+  VTK_DEPRECATED_IN_9_7_0("Use vtkBitArray::WritePointer(valueIdx, numValues) or "
+                          "vtkAbstractArray::SetNumberOf[Values/Tuples]() instead")
   void* WriteVoidPointer(vtkIdType id, vtkIdType number) override
   {
     return this->WritePointer(id, number);
@@ -272,10 +306,29 @@ public:
   void* GetVoidPointer(vtkIdType id) override { return static_cast<void*>(this->GetPointer(id)); }
 
   /**
+   * Return the underlying buffer object. This can be used for zero-copy
+   * access to the array data, particularly useful for Python buffer protocol
+   * support.
+   */
+#ifdef __VTK_WRAP__
+  vtkAbstractBuffer* GetBuffer() { return this->Buffer; }
+#else
+  vtkBuffer<ValueType>* GetBuffer() { return this->Buffer; }
+#endif // __VTK_WRAP__
+
+  ///@{
+  /**
    * Deep copy of another bit array.
    */
   void DeepCopy(vtkDataArray* da) override;
   void DeepCopy(vtkAbstractArray* aa) override { this->Superclass::DeepCopy(aa); }
+  ///@}
+
+  /**
+   * Shallow copy of another bit array.
+   */
+  void ShallowCopy(vtkDataArray* da) override;
+  using vtkAbstractArray::ShallowCopy;
 
   ///@{
   /**
@@ -314,6 +367,7 @@ public:
   /**
    * Returns a new vtkBitArrayIterator instance.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use vtk::DataArrayValueRange, or the array directly")
   VTK_NEWINSTANCE vtkArrayIterator* NewIterator() override;
 
   ///@{
@@ -360,14 +414,26 @@ protected:
    */
   virtual void InitializeUnusedBitsInLastByte();
 
-  ValueType* Array; // pointer to data
-  ValueType* ResizeAndExtend(vtkIdType sz);
-  // function to resize data
+  /**
+   * Allocate space for numTuples. Old data is preserved. If numTuples == 0, all data is freed.
+   */
+  bool ReallocateTuples(vtkIdType numTuples);
 
-  int TupleSize; // used for data conversion
-  double* Tuple;
+  vtkBuffer<ValueType>* Buffer; // pointer to data
+  std::vector<double> LegacyTuple;
 
-  void (*DeleteFunction)(void*);
+  /**
+   * Function to resize data
+   */
+  VTK_DEPRECATED_IN_9_7_0("Use ReserveTuples")
+  ValueType* ResizeAndExtend(vtkIdType size)
+  {
+    if (!this->ReserveTuples(size / this->NumberOfComponents + 1))
+    {
+      return nullptr;
+    }
+    return this->Buffer->GetBuffer();
+  }
 
 private:
   // hide superclass' DeepCopy() from the user and the compiler
@@ -388,27 +454,32 @@ inline void vtkBitArray::SetValue(vtkIdType id, int value)
   const auto bitsetDiv = std::div(id, static_cast<vtkIdType>(8));
   const vtkIdType &bitsetId = bitsetDiv.quot, &bitId = bitsetDiv.rem;
   ValueType mask = 0x80 >> bitId; // NOLINT(clang-analyzer-core.BitwiseShift)
-  this->Array[bitsetId] = static_cast<ValueType>(
-    (value != 0) ? (this->Array[bitsetId] | mask) : (this->Array[bitsetId] & (~mask)));
+  this->Buffer->GetBuffer()[bitsetId] =
+    static_cast<ValueType>((value != 0) ? (this->Buffer->GetBuffer()[bitsetId] | mask)
+                                        : (this->Buffer->GetBuffer()[bitsetId] & (~mask)));
   this->DataChanged();
 }
 
-inline void vtkBitArray::InsertValue(vtkIdType id, int value)
+inline void vtkBitArray::InsertValue(vtkIdType valueIdx, int value)
 {
-  if (id >= this->Size)
+  if (valueIdx >= this->Capacity)
   {
-    if (!this->ResizeAndExtend(id + 1))
+    if (!this->ReserveTuples((valueIdx + 1) / this->NumberOfComponents + 1))
     {
       return;
     }
   }
-  this->SetValue(id, value);
-  if (id > this->MaxId)
+  this->SetValue(valueIdx, value);
+  if (valueIdx > this->MaxId)
   {
-    this->MaxId = id;
+    this->MaxId = valueIdx;
     this->InitializeUnusedBitsInLastByte();
   }
-  this->DataChanged();
+}
+
+inline vtkVariant vtkBitArray::GetVariantValue(vtkIdType id)
+{
+  return vtkVariant(this->GetValue(id));
 }
 
 inline void vtkBitArray::SetVariantValue(vtkIdType id, vtkVariant value)
@@ -424,13 +495,7 @@ inline void vtkBitArray::InsertVariantValue(vtkIdType id, vtkVariant value)
 inline vtkIdType vtkBitArray::InsertNextValue(int i)
 {
   this->InsertValue(this->MaxId + 1, i);
-  this->DataChanged();
   return this->MaxId;
-}
-
-inline void vtkBitArray::Squeeze()
-{
-  this->ResizeAndExtend(this->MaxId + 1);
 }
 VTK_ABI_NAMESPACE_END
 #endif

@@ -3,6 +3,12 @@
 #include "vtkTransformFilter.h"
 
 #include "vtkCellData.h"
+#include "vtkCompositeDataIterator.h"
+#include "vtkCompositeDataSet.h"
+#include "vtkDataObject.h"
+#include "vtkDataObjectAlgorithm.h"
+#include "vtkDataObjectMeshCache.h"
+#include "vtkDataObjectTypes.h"
 #include "vtkDoubleArray.h"
 #include "vtkFloatArray.h"
 #include "vtkImageData.h"
@@ -10,12 +16,14 @@
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
 #include "vtkLinearTransform.h"
+#include "vtkMeshCacheRunner.h"
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
 #include "vtkPointSet.h"
 #include "vtkRectilinearGrid.h"
 #include "vtkRectilinearGridToPointSet.h"
+#include "vtkSetGet.h"
 #include "vtkSmartPointer.h"
 #include "vtkStructuredGrid.h"
 
@@ -31,6 +39,10 @@ vtkTransformFilter::vtkTransformFilter()
   this->Transform = nullptr;
   this->OutputPointsPrecision = vtkAlgorithm::DEFAULT_PRECISION;
   this->TransformAllInputVectors = false;
+  this->MeshCache->SetConsumer(this);
+  this->MeshCache->ForwardAttribute(vtkDataObject::POINT);
+  this->MeshCache->ForwardAttribute(vtkDataObject::CELL);
+  this->MeshCache->PreservedInputAllAttributes();
 }
 
 //------------------------------------------------------------------------------
@@ -46,43 +58,64 @@ int vtkTransformFilter::FillInputPortInformation(int vtkNotUsed(port), vtkInform
   info->Append(vtkAlgorithm::INPUT_REQUIRED_DATA_TYPE(), "vtkPointSet");
   info->Append(vtkAlgorithm::INPUT_REQUIRED_DATA_TYPE(), "vtkImageData");
   info->Append(vtkAlgorithm::INPUT_REQUIRED_DATA_TYPE(), "vtkRectilinearGrid");
+  info->Append(vtkAlgorithm::INPUT_REQUIRED_DATA_TYPE(), "vtkCompositeDataSet");
   return 1;
 }
 
 //------------------------------------------------------------------------------
-int vtkTransformFilter::RequestDataObject(
-  vtkInformation* request, vtkInformationVector** inputVector, vtkInformationVector* outputVector)
+int vtkTransformFilter::FillOutputPortInformation(int vtkNotUsed(port), vtkInformation* info)
 {
-  vtkImageData* inImage = vtkImageData::GetData(inputVector[0]);
-  vtkRectilinearGrid* inRect = vtkRectilinearGrid::GetData(inputVector[0]);
-
-  if (inImage || inRect)
-  {
-    vtkStructuredGrid* output = vtkStructuredGrid::GetData(outputVector);
-    if (!output)
-    {
-      vtkNew<vtkStructuredGrid> newOutput;
-      outputVector->GetInformationObject(0)->Set(vtkDataObject::DATA_OBJECT(), newOutput);
-    }
-    return 1;
-  }
-  else
-  {
-    return this->Superclass::RequestDataObject(request, inputVector, outputVector);
-  }
+  info->Set(vtkDataObject::DATA_TYPE_NAME(), "vtkDataObject");
+  return 1;
 }
 
 //------------------------------------------------------------------------------
-int vtkTransformFilter::RequestData(vtkInformation* vtkNotUsed(request),
+int vtkTransformFilter::RequestDataObject(vtkInformation* vtkNotUsed(request),
   vtkInformationVector** inputVector, vtkInformationVector* outputVector)
 {
-  vtkSmartPointer<vtkPointSet> input = vtkPointSet::GetData(inputVector[0]);
-  vtkPointSet* output = vtkPointSet::GetData(outputVector);
+  auto input = vtkDataObject::GetData(inputVector[0]);
 
+  vtkDataObject* newOutput = nullptr;
+  if (input->IsA("vtkDataSet"))
+  {
+    auto current = vtkDataSet::GetData(outputVector);
+    auto inputDS = vtkDataSet::SafeDownCast(input);
+    auto outDS = this->CreateNewDataSetIfNeeded(inputDS, current);
+    if (outDS != current)
+    {
+      newOutput = outDS;
+    }
+  }
+  else if (input->IsA("vtkCompositeDataSet"))
+  {
+    auto output = vtkCompositeDataSet::GetData(outputVector);
+    if (!output || !output->IsA(input->GetClassName()))
+    {
+      newOutput = input->NewInstance();
+    }
+  }
+  else
+  {
+    vtkErrorMacro("Unsupported input type " << input->GetDataObjectType());
+    return 0;
+  }
+
+  if (newOutput)
+  {
+    outputVector->GetInformationObject(0)->Set(vtkDataObject::DATA_OBJECT(), newOutput);
+    newOutput->FastDelete();
+  }
+  return 1;
+}
+
+//------------------------------------------------------------------------------
+vtkSmartPointer<vtkPointSet> vtkTransformFilter::ConvertInput(vtkDataSet* inputDS)
+{
+  vtkSmartPointer<vtkPointSet> input = vtkPointSet::SafeDownCast(inputDS);
   if (!input)
   {
     // Try converting image data.
-    vtkImageData* inImage = vtkImageData::GetData(inputVector[0]);
+    vtkImageData* inImage = vtkImageData::SafeDownCast(inputDS);
     if (inImage)
     {
       vtkNew<vtkImageDataToPointSet> image2points;
@@ -96,7 +129,7 @@ int vtkTransformFilter::RequestData(vtkInformation* vtkNotUsed(request),
   if (!input)
   {
     // Try converting rectilinear grid.
-    vtkRectilinearGrid* inRect = vtkRectilinearGrid::GetData(inputVector[0]);
+    vtkRectilinearGrid* inRect = vtkRectilinearGrid::SafeDownCast(inputDS);
     if (inRect)
     {
       vtkNew<vtkRectilinearGridToPointSet> rect2points;
@@ -107,47 +140,17 @@ int vtkTransformFilter::RequestData(vtkInformation* vtkNotUsed(request),
     }
   }
 
-  if (!input)
-  {
-    vtkErrorMacro(<< "Invalid or missing input");
-    return 0;
-  }
+  return input;
+}
 
-  vtkPoints* inPts;
-  vtkDataArray *inVectors, *inCellVectors;
-  vtkDataArray *inNormals, *inCellNormals;
-  vtkIdType numPts, numCells;
-  vtkPointData *pd = input->GetPointData(), *outPD = output->GetPointData();
-  vtkCellData *cd = input->GetCellData(), *outCD = output->GetCellData();
-
-  vtkDebugMacro(<< "Executing transform filter");
-
-  // Check input
-  //
-  if (this->Transform == nullptr)
-  {
-    vtkErrorMacro(<< "No transform defined!");
-    return 1;
-  }
-
-  inPts = input->GetPoints();
-  inVectors = pd->GetVectors();
-  inNormals = pd->GetNormals();
-  inCellVectors = cd->GetVectors();
-  inCellNormals = cd->GetNormals();
-
-  if (!inPts)
-  {
-    return 1;
-  }
-
+//------------------------------------------------------------------------------
+void vtkTransformFilter::InitializeOutputPointSet(vtkPointSet* input, vtkPointSet* output)
+{
   // First, copy the input to the output as a starting point
-  output->CopyStructure(input);
-
-  numPts = inPts->GetNumberOfPoints();
-  numCells = input->GetNumberOfCells();
+  output->ShallowCopy(input);
 
   // Allocate transformed points
+  vtkPoints* inPts = input->GetPoints();
   vtkNew<vtkPoints> newPts;
   // Set the desired precision for the points in the output.
   if (this->OutputPointsPrecision == vtkAlgorithm::DEFAULT_PRECISION)
@@ -162,201 +165,269 @@ int vtkTransformFilter::RequestData(vtkInformation* vtkNotUsed(request),
   {
     newPts->SetDataType(VTK_DOUBLE);
   }
-  newPts->Allocate(numPts);
+  vtkIdType numPts = inPts->GetNumberOfPoints();
+  newPts->Reserve(numPts);
+  output->SetPoints(newPts);
 
+  vtkDataArray* inVectors;
+  vtkDataArray* inNormals;
+  vtkPointData* pd = input->GetPointData();
+  vtkPointData* outPD = output->GetPointData();
+
+  inVectors = pd->GetVectors();
+  inNormals = pd->GetNormals();
+
+  // always transform Vectors and Normals
   vtkSmartPointer<vtkDataArray> newVectors;
   if (inVectors)
   {
-    newVectors.TakeReference(this->CreateNewDataArray(inVectors));
-    newVectors->SetNumberOfComponents(3);
-    newVectors->Allocate(3 * numPts);
-    newVectors->SetName(inVectors->GetName());
+    newVectors.TakeReference(this->CreateFromArray(inVectors));
+    outPD->SetVectors(newVectors);
   }
   vtkSmartPointer<vtkDataArray> newNormals;
   if (inNormals)
   {
-    newNormals.TakeReference(this->CreateNewDataArray(inNormals));
-    newNormals->SetNumberOfComponents(3);
-    newNormals->Allocate(3 * numPts);
-    newNormals->SetName(inNormals->GetName());
+    newNormals.TakeReference(this->CreateFromArray(inNormals));
+    outPD->SetNormals(newNormals);
+  }
+}
+
+//------------------------------------------------------------------------------
+void vtkTransformFilter::TransformPointData(
+  vtkPointSet* input, vtkPointSet* output, bool preservePoints)
+{
+  auto inPts = input->GetPoints();
+  auto newPts = output->GetPoints();
+  auto pd = input->GetPointData();
+  auto outPD = output->GetPointData();
+
+  auto inVectors = pd->GetVectors();
+  auto inNormals = pd->GetNormals();
+
+  std::vector<vtkDataArray*> inAdditionalVectors;
+  std::vector<vtkDataArray*> outAdditionalVectors;
+  if (this->TransformAllInputVectors)
+  {
+    int nArrays = pd->GetNumberOfArrays();
+    for (int arrayIndex = 0; arrayIndex < nArrays; arrayIndex++)
+    {
+      auto inArray = pd->GetArray(arrayIndex);
+      if (!inArray || inArray->GetNumberOfComponents() != 3)
+      {
+        continue;
+      }
+
+      vtkSmartPointer<vtkDataArray> outArray;
+      outArray.TakeReference(this->CreateFromArray(inArray));
+      outPD->AddArray(outArray);
+
+      /**
+       * Here we identify the arrays to transform.
+       * The canonical way to apply the transform is to call
+       * vtkAbstractTransform::TransformPointsNormalsVectors that modifies the vtkPoints
+       * and the given arrays.
+       *
+       * When using Cache, we want to update only arrays, and not the Points.
+       * In that case, use the per-array API.
+       */
+      if (preservePoints)
+      {
+        if (inArray == inNormals)
+        {
+          this->Transform->TransformNormals(inArray, outArray);
+        }
+        else
+        {
+          this->Transform->TransformVectors(inArray, outArray);
+        }
+      }
+      else if (inArray != inVectors && inArray != inNormals)
+      {
+        inAdditionalVectors.push_back(inArray);
+        outAdditionalVectors.push_back(outPD->GetArray(inArray->GetName()));
+      }
+    }
   }
 
-  this->UpdateProgress(.2);
-  // Loop over all points, updating position
-  //
+  if (!preservePoints)
+  {
+    // Loop over all points, updating position
+    //
+    if (inVectors || inNormals || !inAdditionalVectors.empty())
+    {
+      auto newNormals = outPD->GetNormals();
+      auto newVectors = outPD->GetVectors();
+      this->Transform->TransformPointsNormalsVectors(inPts, newPts, inNormals, newNormals,
+        inVectors, newVectors, static_cast<int>(inAdditionalVectors.size()),
+        inAdditionalVectors.data(), outAdditionalVectors.data());
+    }
+    else
+    {
+      this->Transform->TransformPoints(inPts, newPts);
+    }
+  }
+}
 
-  int nArrays = pd->GetNumberOfArrays();
-  std::vector<vtkDataArray*> inVrsArr(nArrays, nullptr);
-  std::vector<vtkDataArray*> outVrsArr(nArrays, nullptr);
-  int nInputVectors = 0;
+//------------------------------------------------------------------------------
+void vtkTransformFilter::TransformCellData(vtkPointSet* input, vtkPointSet* output)
+{
+  vtkCellData* cd = input->GetCellData();
+  vtkCellData* outCD = output->GetCellData();
+  auto inCellVectors = cd->GetVectors();
+  auto inCellNormals = cd->GetNormals();
+
+  vtkSmartPointer<vtkDataArray> newCellVectors;
+  vtkSmartPointer<vtkDataArray> newCellNormals;
+  if (inCellVectors)
+  {
+
+    newCellVectors.TakeReference(this->CreateFromArray(inCellVectors));
+    outCD->AddArray(newCellVectors);
+    this->Transform->TransformVectors(inCellVectors, newCellVectors);
+  }
+
+  if (inCellNormals)
+  {
+    newCellNormals.TakeReference(this->CreateFromArray(inCellNormals));
+    outCD->AddArray(newCellNormals);
+    this->Transform->TransformNormals(inCellNormals, newCellNormals);
+  }
 
   if (this->TransformAllInputVectors)
   {
     vtkSmartPointer<vtkDataArray> tmpOutArray;
-    for (int i = 0; i < nArrays; i++)
-    {
-      if (this->CheckAbort())
-      {
-        break;
-      }
-      vtkDataArray* tmpArray = pd->GetArray(i);
-      if (tmpArray != inVectors && tmpArray != inNormals && tmpArray->GetNumberOfComponents() == 3)
-      {
-        inVrsArr[nInputVectors] = tmpArray;
-        tmpOutArray.TakeReference(this->CreateNewDataArray(tmpArray));
-        tmpOutArray->SetNumberOfComponents(3);
-        tmpOutArray->Allocate(3 * numPts);
-        tmpOutArray->SetName(tmpArray->GetName());
-        outVrsArr[nInputVectors] = tmpOutArray;
-        outPD->AddArray(tmpOutArray);
-        nInputVectors++;
-      }
-    }
-  }
-
-  if (inVectors || inNormals || nInputVectors > 0)
-  {
-    this->Transform->TransformPointsNormalsVectors(inPts, newPts, inNormals, newNormals, inVectors,
-      newVectors, nInputVectors, inVrsArr.data(), outVrsArr.data());
-  }
-  else
-  {
-    this->Transform->TransformPoints(inPts, newPts);
-  }
-
-  this->UpdateProgress(.6);
-
-  // Can only transform cell normals/vectors if the transform
-  // is linear.
-  vtkLinearTransform* lt = vtkLinearTransform::SafeDownCast(this->Transform);
-  vtkSmartPointer<vtkDataArray> newCellVectors;
-  vtkSmartPointer<vtkDataArray> newCellNormals;
-  if (lt)
-  {
-    if (inCellVectors)
-    {
-      newCellVectors.TakeReference(this->CreateNewDataArray(inCellVectors));
-      newCellVectors->SetNumberOfComponents(3);
-      newCellVectors->Allocate(3 * numCells);
-      newCellVectors->SetName(inCellVectors->GetName());
-      lt->TransformVectors(inCellVectors, newCellVectors);
-    }
-
-    if (this->TransformAllInputVectors)
-    {
-      vtkSmartPointer<vtkDataArray> tmpOutArray;
-      for (int i = 0; i < cd->GetNumberOfArrays(); i++)
-      {
-        if (this->CheckAbort())
-        {
-          break;
-        }
-        vtkDataArray* tmpArray = cd->GetArray(i);
-        if (tmpArray != inCellVectors && tmpArray != inCellNormals &&
-          tmpArray->GetNumberOfComponents() == 3)
-        {
-          tmpOutArray.TakeReference(this->CreateNewDataArray(tmpArray));
-          tmpOutArray->SetNumberOfComponents(3);
-          tmpOutArray->Allocate(3 * numCells);
-          tmpOutArray->SetName(tmpArray->GetName());
-          lt->TransformVectors(tmpArray, tmpOutArray);
-          outCD->AddArray(tmpOutArray);
-        }
-      }
-    }
-
-    if (inCellNormals)
-    {
-      newCellNormals.TakeReference(this->CreateNewDataArray(inCellNormals));
-      newCellNormals->SetNumberOfComponents(3);
-      newCellNormals->Allocate(3 * numCells);
-      newCellNormals->SetName(inCellNormals->GetName());
-      lt->TransformNormals(inCellNormals, newCellNormals);
-    }
-  }
-
-  this->UpdateProgress(.8);
-
-  // Update ourselves and release memory
-  //
-  output->SetPoints(newPts);
-
-  if (newNormals)
-  {
-    outPD->SetNormals(newNormals);
-    outPD->CopyNormalsOff();
-  }
-
-  if (newVectors)
-  {
-    outPD->SetVectors(newVectors);
-    outPD->CopyVectorsOff();
-  }
-
-  if (newCellNormals)
-  {
-    outCD->SetNormals(newCellNormals);
-    outCD->CopyNormalsOff();
-  }
-
-  if (newCellVectors)
-  {
-    outCD->SetVectors(newCellVectors);
-    outCD->CopyVectorsOff();
-  }
-
-  if (this->TransformAllInputVectors)
-  {
-    for (int i = 0; i < pd->GetNumberOfArrays(); i++)
-    {
-      if (this->CheckAbort())
-      {
-        break;
-      }
-      if (!outPD->GetArray(pd->GetAbstractArray(i)->GetName()))
-      {
-        outPD->AddArray(pd->GetAbstractArray(i));
-        int attributeType = pd->IsArrayAnAttribute(i);
-        if (attributeType >= 0 && attributeType != vtkDataSetAttributes::VECTORS &&
-          attributeType != vtkDataSetAttributes::NORMALS)
-        {
-          outPD->SetAttribute(pd->GetAbstractArray(i), attributeType);
-        }
-      }
-    }
     for (int i = 0; i < cd->GetNumberOfArrays(); i++)
     {
-      if (!outCD->GetArray(cd->GetAbstractArray(i)->GetName()))
+      if (this->CheckAbort())
       {
-        outCD->AddArray(cd->GetAbstractArray(i));
-        int attributeType = pd->IsArrayAnAttribute(i);
-        if (attributeType >= 0 && attributeType != vtkDataSetAttributes::VECTORS &&
-          attributeType != vtkDataSetAttributes::NORMALS)
-        {
-          outPD->SetAttribute(pd->GetAbstractArray(i), attributeType);
-        }
+        break;
+      }
+      vtkDataArray* tmpArray = cd->GetArray(i);
+      if (tmpArray != inCellVectors && tmpArray != inCellNormals &&
+        tmpArray->GetNumberOfComponents() == 3)
+      {
+        tmpOutArray.TakeReference(this->CreateFromArray(tmpArray));
+        this->Transform->TransformVectors(tmpArray, tmpOutArray);
+        outCD->AddArray(tmpOutArray);
       }
     }
-    // TODO does order matters ?
+  }
+}
+
+//------------------------------------------------------------------------------
+bool vtkTransformFilter::ExecuteDataSet(
+  vtkDataSet* inputDS, vtkPointSet* output, bool useCachedGeometry)
+{
+  vtkSmartPointer<vtkPointSet> input = vtkPointSet::SafeDownCast(inputDS);
+  if (!useCachedGeometry)
+  {
+    input = this->ConvertInput(inputDS);
+    if (!input)
+    {
+      vtkErrorMacro(<< "Invalid or missing input");
+      return false;
+    }
+
+    // Check input
+    //
+    if (this->Transform == nullptr)
+    {
+      vtkErrorMacro(<< "No transform defined!");
+      return true;
+    }
+
+    if (!input->GetPoints())
+    {
+      return true;
+    }
+
+    this->InitializeOutputPointSet(input, output);
+  }
+  this->UpdateProgress(.2);
+
+  bool isLinear = vtkLinearTransform::SafeDownCast(this->Transform) != nullptr;
+  useCachedGeometry = useCachedGeometry && isLinear;
+  this->TransformPointData(input, output, useCachedGeometry);
+  this->UpdateProgress(.6);
+  this->TransformCellData(input, output);
+  this->UpdateProgress(1.);
+
+  return true;
+}
+
+//------------------------------------------------------------------------------
+int vtkTransformFilter::RequestData(vtkInformation* vtkNotUsed(request),
+  vtkInformationVector** inputVector, vtkInformationVector* outputVector)
+{
+  vtkDataObject* inputDataObj = vtkDataObject::GetData(inputVector[0]);
+  vtkDataObject* outputDataObj = vtkDataObject::GetData(outputVector);
+
+  vtkMeshCacheRunner utils{ this->MeshCache, inputDataObj, outputDataObj, false };
+
+  if (inputDataObj->IsA("vtkCompositeDataSet") && outputDataObj->IsA("vtkCompositeDataSet"))
+  {
+    vtkCompositeDataSet* inputComposite = vtkCompositeDataSet::SafeDownCast(inputDataObj);
+    vtkCompositeDataSet* outComposite = vtkCompositeDataSet::SafeDownCast(outputDataObj);
+
+    if (!utils.GetCacheLoaded())
+    {
+      outComposite->CopyStructure(inputComposite);
+    }
+
+    vtkSmartPointer<vtkCompositeDataIterator> inputIter;
+    inputIter.TakeReference(inputComposite->NewIterator());
+    inputIter->SkipEmptyNodesOn();
+
+    vtkSmartPointer<vtkCompositeDataIterator> outIter;
+    outIter.TakeReference(outComposite->NewIterator());
+    outIter->SkipEmptyNodesOn();
+    outIter->InitTraversal();
+
+    vtkIdType numBlocks = 0;
+    // a quick iteration to get the total number of blocks to iterate over which
+    // is necessary to scale progress events.
+    for (inputIter->InitTraversal(); !inputIter->IsDoneWithTraversal(); inputIter->GoToNextItem())
+    {
+      ++numBlocks;
+    }
+    const double progressScale = 1.0 / numBlocks;
+    vtkIdType blockIndex = 0;
+
+    for (inputIter->InitTraversal(); !inputIter->IsDoneWithTraversal(); inputIter->GoToNextItem())
+    {
+      this->SetProgressShiftScale(progressScale * blockIndex, progressScale);
+      auto inputDataSet = vtkDataSet::SafeDownCast(inputIter->GetCurrentDataObject());
+      auto outDataSet = vtkDataSet::SafeDownCast(outIter->GetCurrentDataObject());
+      // create output
+      auto outPointSet =
+        vtkPointSet::SafeDownCast(this->CreateNewDataSetIfNeeded(inputDataSet, outDataSet));
+      assert(outPointSet);
+      this->ExecuteDataSet(inputDataSet, outPointSet, utils.GetCacheLoaded());
+
+      if (outPointSet != outDataSet && !utils.GetCacheLoaded())
+      {
+        outComposite->SetDataSet(inputIter, outPointSet);
+        outPointSet->FastDelete();
+      }
+
+      outIter->GoToNextItem();
+      blockIndex++;
+    }
   }
   else
   {
-    outPD->PassData(pd);
-    outCD->PassData(cd);
+    vtkDataSet* realInput = vtkDataSet::GetData(inputVector[0]);
+    vtkPointSet* output = vtkPointSet::GetData(outputVector);
+    this->SetProgressShiftScale(0, 1);
+    if (!this->ExecuteDataSet(realInput, output, utils.GetCacheLoaded()))
+    {
+      return 0;
+    }
   }
 
-  // Process field data if any
-  vtkFieldData* inFD = input->GetFieldData();
-  if (inFD)
-  {
-    vtkFieldData* outFD = output->GetFieldData();
-    if (!outFD)
-    {
-      vtkNew<vtkFieldData> newFD;
-      output->SetFieldData(newFD);
-    }
-    output->GetFieldData()->PassData(inFD);
-  }
+  utils.UpdateCache();
+
+  this->UpdateProgress(1.);
 
   return 1;
 }
@@ -392,6 +463,42 @@ vtkDataArray* vtkTransformFilter::CreateNewDataArray(vtkDataArray* input)
     default:
       return vtkFloatArray::New();
   }
+}
+
+//------------------------------------------------------------------------------
+vtkDataArray* vtkTransformFilter::CreateFromArray(vtkDataArray* input)
+{
+  auto output = this->CreateNewDataArray(input);
+  output->SetName(input->GetName());
+  output->SetNumberOfComponents(input->GetNumberOfComponents());
+  output->ReserveTuples(input->GetNumberOfTuples());
+  return output;
+}
+
+//------------------------------------------------------------------------------
+vtkDataSet* vtkTransformFilter::CreateNewDataSetIfNeeded(vtkDataSet* input, vtkDataSet* current)
+{
+  vtkDataSet* validOutput = current;
+  vtkImageData* inImage = vtkImageData::SafeDownCast(input);
+  vtkRectilinearGrid* inRect = vtkRectilinearGrid::SafeDownCast(input);
+  if (inImage || inRect)
+  {
+    vtkStructuredGrid* output = vtkStructuredGrid::SafeDownCast(current);
+    if (!output)
+    {
+      validOutput = vtkStructuredGrid::New();
+    }
+  }
+  else
+  {
+    vtkPointSet* output = vtkPointSet::SafeDownCast(current);
+    if (!output || !output->IsA(input->GetClassName()))
+    {
+      validOutput = input->NewInstance();
+    }
+  }
+
+  return validOutput;
 }
 
 //------------------------------------------------------------------------------

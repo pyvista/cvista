@@ -132,8 +132,6 @@ public:
    * THE DATASET IS NOT MODIFIED
    */
   void GetDistinctCellTypes(vtkCellTypes* types) override;
-  VTK_DEPRECATED_IN_9_6_0("Use GetDistinctCellTypes(vtkCellTypes* types) instead.")
-  void GetCellTypes(vtkCellTypes* types) override { this->GetDistinctCellTypes(types); }
   ///@}
 
   /**
@@ -205,6 +203,7 @@ public:
    * with the same index. To get an array of only the distinct cell types in
    * the dataset, use GetDistinctCellTypes().
    */
+  using vtkDataSet::GetCellTypes;
   vtkDataArray* GetCellTypes() { return this->Types; }
   VTK_DEPRECATED_IN_9_6_0("Use GetCellTypes() instead")
   vtkUnsignedCharArray* GetCellTypesArray();
@@ -281,8 +280,7 @@ public:
   void SetCells(vtkDataArray* cellTypes, vtkCellArray* cells);
   void SetPolyhedralCells(
     vtkDataArray* cellTypes, vtkCellArray* cells, vtkCellArray* faceLocations, vtkCellArray* faces);
-  // VTK_DEPRECATED_IN_9_6_0
-  VTK_DEPRECATED_IN_9_5_0("This function is deprecated, use SetPolyhedralCells")
+  VTK_DEPRECATED_IN_9_6_0("This function is deprecated, use SetPolyhedralCells")
   void SetCells(vtkUnsignedCharArray* cellTypes, vtkCellArray* cells, vtkIdTypeArray* faceLocations,
     vtkIdTypeArray* faces);
   ///@}

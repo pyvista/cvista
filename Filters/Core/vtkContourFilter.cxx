@@ -157,7 +157,7 @@ int vtkContourFilter::RequestUpdateExtent(
   if (vtkImageData::SafeDownCast(input) && sType != VTK_BIT && !vtkUniformGrid::SafeDownCast(input))
   {
     int dim = 3;
-    int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    const int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     if (uExt[0] == uExt[1])
     {
       --dim;
@@ -202,7 +202,7 @@ int vtkContourFilter::RequestUpdateExtent(
   // handle 3D RGrids
   if (vtkRectilinearGrid::SafeDownCast(input) && sType != VTK_BIT)
   {
-    int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    const int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     // if 3D
     if (uExt[0] < uExt[1] && uExt[2] < uExt[3] && uExt[4] < uExt[5])
     {
@@ -216,7 +216,7 @@ int vtkContourFilter::RequestUpdateExtent(
   // handle 3D SGrids
   if (vtkStructuredGrid::SafeDownCast(input) && sType != VTK_BIT)
   {
-    int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    const int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     // if 3D
     if (uExt[0] < uExt[1] && uExt[2] < uExt[3] && uExt[4] < uExt[5])
     {
@@ -269,7 +269,7 @@ int vtkContourFilter::RequestData(
   if (vtkImageData::SafeDownCast(input) && sType != VTK_BIT && (!uG || uG->GetDataDimension() == 3))
   {
     int dim = 3;
-    int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    const int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     if (uExt[0] == uExt[1])
     {
       --dim;
@@ -342,11 +342,6 @@ int vtkContourFilter::RequestData(
         this->SynchronizedTemplates3D->SetInputArrayToProcess(0, this->GetInputArrayInformation(0));
         retVal = this->SynchronizedTemplates3D->ProcessRequest(request, inputVector, outputVector);
       }
-      output = vtkPolyData::GetData(outputVector);
-      if (output->GetCellGhostArray())
-      {
-        output->RemoveGhostCells();
-      }
       return retVal;
     }
   } // if image data
@@ -354,7 +349,7 @@ int vtkContourFilter::RequestData(
   // handle 3D RGrids
   if (vtkRectilinearGrid::SafeDownCast(input) && sType != VTK_BIT)
   {
-    int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    const int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     // if 3D
     if (uExt[0] < uExt[1] && uExt[2] < uExt[3] && uExt[4] < uExt[5])
     {
@@ -375,7 +370,7 @@ int vtkContourFilter::RequestData(
   // handle 3D SGrids
   if (vtkStructuredGrid::SafeDownCast(input) && sType != VTK_BIT)
   {
-    int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
+    const int* uExt = inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT());
     // if 3D
     if (uExt[0] < uExt[1] && uExt[2] < uExt[3] && uExt[4] < uExt[5])
     {
@@ -396,7 +391,7 @@ int vtkContourFilter::RequestData(
   if (auto ugridBase = vtkUnstructuredGridBase::SafeDownCast(input))
   {
     auto ugrid = vtkUnstructuredGrid::SafeDownCast(ugridBase);
-    if (ugrid && this->GenerateTriangles && sType != VTK_BIT &&
+    if (ugrid && sType != VTK_BIT &&
       vtkContour3DLinearGrid::CanFullyProcessDataObject(ugrid, inScalars->GetName()))
     {
       this->Contour3DLinearGrid->SetNumberOfContours(numContours);
@@ -405,11 +400,18 @@ int vtkContourFilter::RequestData(
       this->Contour3DLinearGrid->SetComputeNormals(this->ComputeNormals);
       this->Contour3DLinearGrid->SetComputeScalars(this->ComputeScalars);
       this->Contour3DLinearGrid->SetOutputPointsPrecision(this->OutputPointsPrecision);
+      this->Contour3DLinearGrid->SetGenerateTriangles(this->GenerateTriangles);
       this->Contour3DLinearGrid->SetUseScalarTree(this->UseScalarTree);
-      this->ContourGrid->SetScalarTree(this->ScalarTree);
+      if (this->UseScalarTree) // special treatment to reuse it
+      {
+        if (this->ScalarTree == nullptr)
+        {
+          this->ScalarTree = vtkSpanSpace::New();
+        }
+        this->ScalarTree->SetDataSet(input);
+        this->Contour3DLinearGrid->SetScalarTree(this->ScalarTree);
+      }
 
-      bool mergePoints = !this->GetLocator()->IsA("vtkNonMergingPointLocator");
-      this->Contour3DLinearGrid->SetMergePoints(mergePoints);
       this->Contour3DLinearGrid->SetInputArrayToProcess(0, this->GetInputArrayInformation(0));
       return this->Contour3DLinearGrid->ProcessRequest(request, inputVector, outputVector);
     }
@@ -510,7 +512,7 @@ int vtkContourFilter::RequestData(
     {
       newPts->SetDataType(VTK_DOUBLE);
     }
-    newPts->Allocate(estimatedSize, estimatedSize);
+    newPts->Reserve(estimatedSize);
     newVerts = vtkCellArray::New();
     newVerts->AllocateEstimate(estimatedSize, 1);
     newLines = vtkCellArray::New();
@@ -519,7 +521,7 @@ int vtkContourFilter::RequestData(
     newPolys->AllocateEstimate(estimatedSize, 4);
     cellScalars = inScalars->NewInstance();
     cellScalars->SetNumberOfComponents(inScalars->GetNumberOfComponents());
-    cellScalars->Allocate(cellScalars->GetNumberOfComponents() * VTK_CELL_SIZE);
+    cellScalars->ReserveTuples(VTK_CELL_SIZE);
 
     // locator used to merge potentially duplicate points
     this->Locator->InitPointInsertion(newPts, input->GetBounds(), input->GetNumberOfPoints());
@@ -534,7 +536,7 @@ int vtkContourFilter::RequestData(
     outCd->CopyAllocate(inCd, estimatedSize, estimatedSize);
 
     vtkContourHelper helper(this->Locator, newVerts, newLines, newPolys, inPD, inCd, outPd, outCd,
-      estimatedSize, this->GenerateTriangles != 0);
+      this->GenerateTriangles != 0);
     // If enabled, build a scalar tree to accelerate search
     //
     if (!this->UseScalarTree)
@@ -590,9 +592,9 @@ int vtkContourFilter::RequestData(
           {
             helper.Contour(cell, values[i], cellScalars, cellId);
           } // for all contour values
-        }   // for all cells
-      }     // for all dimensions
-    }       // if using scalar tree
+        } // for all cells
+      } // for all dimensions
+    } // if using scalar tree
     else
     {
       if (this->ScalarTree == nullptr)
@@ -628,8 +630,8 @@ int vtkContourFilter::RequestData(
           progressCounter++;
           helper.Contour(cell, values[i], cellScalars, cellId);
         } // for all cells
-      }   // for all contour values
-    }     // using scalar tree
+      } // for all contour values
+    } // using scalar tree
 
     vtkDebugMacro(<< "Created: " << newPts->GetNumberOfPoints() << " points, "
                   << newVerts->GetNumberOfCells() << " verts, " << newLines->GetNumberOfCells()

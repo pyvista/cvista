@@ -607,7 +607,7 @@ void vtkXMLUnstructuredDataWriter::WriteCellsInline(const char* name, vtkCellIte
   this->ConvertCells(cellIter, numCells, cellSizeEstimate);
 
   vtkNew<vtkUnsignedCharArray> types;
-  types->Allocate(numCells);
+  types->ReserveValues(numCells);
   vtkIdType nPolyhedra(0);
   for (cellIter->InitTraversal(); !cellIter->IsDoneWithTraversal(); cellIter->GoToNextCell())
   {
@@ -804,7 +804,7 @@ void vtkXMLUnstructuredDataWriter::WriteCellsAppended(const char* name, vtkCellI
   this->ConvertCells(cellIter, numCells, 3);
 
   vtkNew<vtkUnsignedCharArray> types;
-  types->Allocate(numCells);
+  types->ReserveValues(numCells);
   vtkIdType nPolyhedra(0);
   for (cellIter->InitTraversal(); !cellIter->IsDoneWithTraversal(); cellIter->GoToNextCell())
   {
@@ -842,7 +842,7 @@ void vtkXMLUnstructuredDataWriter::WriteCellsAppendedData(vtkCellIterator* cellI
   this->ConvertCells(cellIter, numCells, cellSizeEstimate);
 
   vtkNew<vtkUnsignedCharArray> types;
-  types->Allocate(this->CellOffsets->GetNumberOfTuples() + 1);
+  types->ReserveValues(this->CellOffsets->GetNumberOfTuples() + 1);
   int nPolyhedra(0);
   for (cellIter->InitTraversal(); !cellIter->IsDoneWithTraversal(); cellIter->GoToNextCell())
   {
@@ -945,8 +945,8 @@ void vtkXMLUnstructuredDataWriter::ConvertCells(
   conn->SetName("connectivity");
   offsets->SetName("offsets");
 
-  conn->Allocate(numCells * cellSizeEstimate);
-  offsets->Allocate(numCells);
+  conn->ReserveValues(numCells * cellSizeEstimate);
+  offsets->ReserveValues(numCells);
 
   // Offsets array skips the leading 0 and includes the connectivity array size
   // at the end.
@@ -979,13 +979,13 @@ struct ConvertCellsVisitor : public vtkCellArray::DispatchUtilities
   vtkSmartPointer<vtkDataArray> Connectivity;
 
   template <class OffsetsT, class ConnectivityT>
-  void operator()(OffsetsT* offsetsIn, ConnectivityT* connIn)
+  void operator()(OffsetsT* offsetsIn, ConnectivityT* connectivityIn)
   {
     using ValueType = GetAPIType<OffsetsT>;
     // Shallow copy will let us change the name of the array to what the
     // writer expects without actually copying the array data:
-    this->Connectivity.TakeReference(connIn->NewInstance());
-    this->Connectivity->ShallowCopy(connIn);
+    this->Connectivity.TakeReference(connectivityIn->NewInstance());
+    this->Connectivity->ShallowCopy(connectivityIn);
     this->Connectivity->SetName("connectivity");
 
     // The file format for offsets always skips the first offset, because

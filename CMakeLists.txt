@@ -38,6 +38,9 @@ set(VTK_VERSION
     "${VTK_MAJOR_VERSION}.${VTK_MINOR_VERSION}.${VTK_BUILD_VERSION}")
 determine_version("${CMAKE_CURRENT_SOURCE_DIR}" "${GIT_EXECUTABLE}" "VTK")
 
+option(VTK_USE_PCH "Use precompiled headers to speed up compilation" ON)
+mark_as_advanced(VTK_USE_PCH)
+
 option(VTK_IOS_BUILD "Build vtk.framework for iOS" OFF)
 mark_as_advanced(VTK_IOS_BUILD)
 if (VTK_IOS_BUILD)
@@ -109,6 +112,7 @@ include(vtkWrapSettings)
 include(vtkCrossCompiling)
 include(vtkObjectFactory)
 include(vtkOpenGLOptions)
+include(vtkModuleThirdParty)
 
 option(VTK_RELOCATABLE_INSTALL "Do not embed hard-coded paths into the install" ON)
 mark_as_advanced(VTK_RELOCATABLE_INSTALL)
@@ -154,11 +158,20 @@ file(READ "${vtk_cmake_dir}/vtkRequireLargeFilesSupport.cxx"
 check_cxx_source_runs("${VTK_REQUIRE_LARGE_FILE_SUPPORT_FILE}"
   VTK_REQUIRE_LARGE_FILE_SUPPORT)
 
-#-----------------------------------------------------------------------------
-# Provide compatibility options.
-option(VTK_LEGACY_REMOVE "Remove all legacy code completely." ON)
-option(VTK_LEGACY_SILENT "Silence all legacy code messages." OFF)
-mark_as_advanced(VTK_LEGACY_REMOVE VTK_LEGACY_SILENT)
+if (DEFINED VTK_LEGACY_REMOVE)
+  message(DEPRECATION
+    "The `VTK_LEGACY_REMOVE` option is inert as of VTK 9.7 "
+    "and no longer needs to be specified. Removing from the "
+    "cache.")
+  unset(VTK_LEGACY_REMOVE CACHE)
+endif ()
+
+if (DEFINED VTK_LEGACY_SILENT)
+  message(DEPRECATION
+    "The `VTK_LEGACY_SILENT` option is inert as of VTK 9.7 "
+    "and has no effect. Removing from the cache.")
+  unset(VTK_LEGACY_SILENT CACHE)
+endif ()
 
 include(CheckTypeSize)
 
@@ -820,11 +833,9 @@ if (VTK_BUILD_TESTING)
       add_library(vtkWebAssemblyTestLinkOptions INTERFACE)
       add_library(VTK::vtkWebAssemblyTestLinkOptions ALIAS vtkWebAssemblyTestLinkOptions)
       target_link_options(vtkWebAssemblyTestLinkOptions INTERFACE
-        "-sSINGLE_FILE=1"
-        # For stack trace to show human-readable function names
-        "--profiling-funcs"
-        # we need emscripten to emit code that handles exit code and atexit(s)
-        "-sEXIT_RUNTIME=1"
+        # Keep Debug builds debuggable without shipping giant in-wasm DWARF sections.
+        "$<$<CONFIG:Debug>:-gseparate-dwarf>"
+        "$<$<CONFIG:RelWithDebInfo>:-gseparate-dwarf>"
         # ENV holds the environment variables accessible by C getenv
         "-sEXPORTED_RUNTIME_METHODS=['ENV']"
         # tests dynamically allocate memory, can easily go over the preset limit.

@@ -4,7 +4,6 @@
 #include "vtkJavaScriptDataWriter.h"
 
 #include "vtkAlgorithm.h"
-#include "vtkArrayIteratorIncludes.h"
 #include "vtkCellData.h"
 #include "vtkDataArray.h"
 #include "vtkErrorCode.h"
@@ -92,7 +91,7 @@ bool vtkJavaScriptDataWriter::OpenFile()
 }
 
 //------------------------------------------------------------------------------
-void vtkJavaScriptDataWriter::WriteData()
+bool vtkJavaScriptDataWriter::WriteDataAndReturn()
 {
   vtkTable* input_table = vtkTable::SafeDownCast(this->GetInput());
 
@@ -100,7 +99,7 @@ void vtkJavaScriptDataWriter::WriteData()
   if (!input_table)
   {
     vtkErrorMacro(<< "vtkJavaScriptDataWriter can only write vtkTable.");
-    return;
+    return false;
   }
 
   // Check for filename
@@ -116,6 +115,7 @@ void vtkJavaScriptDataWriter::WriteData()
   {
     this->WriteTable(input_table, this->OutputStream);
   }
+  return true;
 }
 
 //------------------------------------------------------------------------------

@@ -1,23 +1,36 @@
 set(classes
+  vtkCameraManipulator
   vtkInteractorStyleDrawPolygon
   vtkInteractorStyleFlight
   vtkInteractorStyleImage
   vtkInteractorStyleJoystickActor
   vtkInteractorStyleJoystickCamera
+  vtkInteractorStyleManipulator
   vtkInteractorStyleMultiTouchCamera
   vtkInteractorStyleRubberBand2D
   vtkInteractorStyleRubberBand3D
   vtkInteractorStyleRubberBandPick
   vtkInteractorStyleRubberBandZoom
+  vtkInteractorStyleSwitch
   vtkInteractorStyleTerrain
   vtkInteractorStyleTrackball
   vtkInteractorStyleTrackballActor
   vtkInteractorStyleTrackballCamera
   vtkInteractorStyleUnicam
   vtkInteractorStyleUser
-
-  vtkInteractorStyleSwitch
-  vtkParallelCoordinatesInteractorStyle)
+  vtkJoystickFly
+  vtkJoystickFlyIn
+  vtkJoystickFlyOut
+  vtkParallelCoordinatesInteractorStyle
+  vtkTableTopRotate
+  vtkTrackballEnvironmentRotate
+  vtkTrackballMoveActor
+  vtkTrackballMultiRotate
+  vtkTrackballPan
+  vtkTrackballRoll
+  vtkTrackballRotate
+  vtkTrackballZoom
+  vtkTrackballZoomToMouse)
 
 if (ANDROID OR APPLE_IOS)
   set(style_override "vtkInteractorStyleMultiTouchCamera")

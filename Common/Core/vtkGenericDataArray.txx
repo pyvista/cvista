@@ -5,12 +5,20 @@
 
 #include "vtkGenericDataArray.h"
 
+#include "vtkBuffer.h"
 #include "vtkIdList.h"
 #include "vtkMath.h"
 #include "vtkVariantCast.h"
 
 VTK_ABI_NAMESPACE_BEGIN
 #ifndef __VTK_WRAP__
+//-----------------------------------------------------------------------------
+template <class DerivedT, class ValueTypeT, int ArrayType>
+struct vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::vtkInternals
+{
+  vtkSmartPointer<vtkBuffer<ValueType>> Cache;
+};
+
 //-----------------------------------------------------------------------------
 template <class DerivedT, class ValueTypeT, int ArrayType>
 DerivedT* vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::FastDownCast(
@@ -253,9 +261,10 @@ void* vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::WriteVoidPointer(vtk
 //-----------------------------------------------------------------------------
 template <class DerivedT, class ValueTypeT, int ArrayType>
 typename vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::ValueType*
-vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::WritePointer(vtkIdType id, vtkIdType number)
+vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::WritePointer(
+  vtkIdType vtkNotUsed(id), vtkIdType vtkNotUsed(number))
 {
-  return static_cast<ValueType*>(this->WriteVoidPointer(id, number));
+  return nullptr;
 }
 
 //-----------------------------------------------------------------------------
@@ -303,10 +312,33 @@ bool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::HasStandardMemoryLayo
 
 //-----------------------------------------------------------------------------
 template <class DerivedT, class ValueTypeT, int ArrayType>
-void* vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::GetVoidPointer(vtkIdType)
+void* vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::GetVoidPointer(vtkIdType idx)
 {
-  vtkErrorMacro("GetVoidPointer is not supported by this class.");
-  return nullptr;
+  if (!this->Internals->Cache)
+  {
+    const char* silence = getenv("VTK_SILENCE_GET_VOID_POINTER_WARNINGS");
+    if (!silence)
+    {
+      vtkWarningMacro(<< "GetVoidPointer called. This is very expensive for "
+                         "non-array-of-structs subclasses, as the scalar array "
+                         "must be generated for each call. Using the "
+                         "vtkGenericDataArray API with vtkArrayDispatch are "
+                         "preferred. Define the environment variable "
+                         "VTK_SILENCE_GET_VOID_POINTER_WARNINGS to silence "
+                         "this warning. Additionally, for the vtkScaledSOADataArrayTemplate "
+                         "class we also set Scale to 1 since we've scaled how "
+                         "we're storing the data in memory now. ");
+    }
+    const vtkIdType numValues = this->GetNumberOfValues();
+    this->Internals->Cache = vtkSmartPointer<vtkBuffer<ValueType>>::New();
+    this->Internals->Cache->Reallocate(numValues);
+    auto array = static_cast<DerivedT*>(this);
+    for (vtkIdType i = 0; i < numValues; ++i)
+    {
+      this->Internals->Cache->GetBuffer()[i] = array->GetValue(i);
+    }
+  }
+  return this->Internals->Cache->GetBuffer() + idx;
 }
 
 //-----------------------------------------------------------------------------
@@ -314,7 +346,7 @@ template <class DerivedT, class ValueTypeT, int ArrayType>
 typename vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::ValueType*
 vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::GetPointer(vtkIdType id)
 {
-  return static_cast<ValueType*>(this->GetVoidPointer(id));
+  return static_cast<ValueType*>(this->GetVoidPointer(id)); // NOLINT(bugprone-unsafe-functions)
 }
 
 //-----------------------------------------------------------------------------
@@ -409,46 +441,10 @@ void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::InsertVariantValue(
 
 //-----------------------------------------------------------------------------
 template <class DerivedT, class ValueTypeT, int ArrayType>
-vtkTypeBool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::Allocate(
-  vtkIdType size, vtkIdType vtkNotUsed(ext))
-{
-  // Allocator must update this->MaxId properly.
-  this->MaxId = -1;
-  if (size > this->Size || size == 0)
-  {
-    this->Size = 0;
-
-    // let's keep the size an integral multiple of the number of components.
-    size = size < 0 ? 0 : size;
-    int numComps = this->GetNumberOfComponents() > 0 ? this->GetNumberOfComponents() : 1;
-    double ceilNum = ceil(static_cast<double>(size) / static_cast<double>(numComps));
-    vtkIdType numTuples = static_cast<vtkIdType>(ceilNum);
-    // NOTE: if numTuples is 0, AllocateTuples is expected to release the
-    // memory.
-    if (this->AllocateTuples(numTuples) == false)
-    {
-      vtkErrorMacro(
-        "Unable to allocate " << size << " elements of size " << sizeof(ValueType) << " bytes. ");
-#if !defined VTK_DONT_THROW_BAD_ALLOC
-      // We can throw something that has universal meaning
-      throw std::bad_alloc();
-#else
-      // We indicate that alloc failed by return
-      return 0;
-#endif
-    }
-    this->Size = numTuples * numComps;
-  }
-  this->DataChanged();
-  return 1;
-}
-
-//-----------------------------------------------------------------------------
-template <class DerivedT, class ValueTypeT, int ArrayType>
-vtkTypeBool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::Resize(vtkIdType numTuples)
+vtkTypeBool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::ReserveTuples(vtkIdType numTuples)
 {
   int numComps = this->GetNumberOfComponents();
-  vtkIdType curNumTuples = this->Size / (numComps > 0 ? numComps : 1);
+  vtkIdType curNumTuples = this->Capacity / (numComps > 0 ? numComps : 1);
   if (numTuples > curNumTuples)
   {
     // Requested size is bigger than current size.  Allocate enough
@@ -456,15 +452,9 @@ vtkTypeBool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::Resize(vtkIdTy
     // currently allocated memory.
     numTuples = curNumTuples + numTuples;
   }
-  else if (numTuples == curNumTuples)
-  {
-    return 1;
-  }
   else
   {
-    // Requested size is smaller than current size.  Squeeze the
-    // memory.
-    this->DataChanged();
+    return 1;
   }
 
   assert(numTuples >= 0);
@@ -486,13 +476,7 @@ vtkTypeBool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::Resize(vtkIdTy
   }
 
   // Allocation was successful. Save it.
-  this->Size = numTuples * numComps;
-
-  // Update MaxId if we truncated:
-  if ((this->Size - 1) < this->MaxId)
-  {
-    this->MaxId = (this->Size - 1);
-  }
+  this->Capacity = numTuples * numComps;
 
   return 1;
 }
@@ -507,28 +491,30 @@ void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::SetNumberOfComponents
 
 //-----------------------------------------------------------------------------
 template <class DerivedT, class ValueTypeT, int ArrayType>
-void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::SetNumberOfTuples(vtkIdType number)
-{
-  vtkIdType newSize = number * this->NumberOfComponents;
-  if (this->Allocate(newSize, 0))
-  {
-    this->MaxId = newSize - 1;
-  }
-}
-
-//-----------------------------------------------------------------------------
-template <class DerivedT, class ValueTypeT, int ArrayType>
-void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::Initialize()
-{
-  this->Resize(0);
-  this->DataChanged();
-}
-
-//-----------------------------------------------------------------------------
-template <class DerivedT, class ValueTypeT, int ArrayType>
 void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::Squeeze()
 {
-  this->Resize(this->GetNumberOfTuples());
+  if (this->GetCapacity() > this->GetNumberOfValues())
+  {
+    vtkIdType numTuples = this->GetNumberOfTuples();
+    int numComps = this->GetNumberOfComponents() > 0 ? this->GetNumberOfComponents() : 1;
+    if (!this->ReallocateTuples(this->GetNumberOfTuples()))
+    {
+      vtkErrorMacro("Unable to allocate " << numTuples * numComps << " elements of size "
+                                          << sizeof(ValueType) << " bytes. ");
+#if !defined NDEBUG
+      // We're debugging, crash here preserving the stack
+      abort();
+#elif !defined VTK_DONT_THROW_BAD_ALLOC
+      // We can throw something that has universal meaning
+      throw std::bad_alloc();
+#else
+      // We indicate that malloc failed by return
+      return;
+#endif
+    }
+    this->Capacity = this->GetNumberOfValues();
+  }
+  this->Internals->Cache = nullptr;
 }
 
 //-----------------------------------------------------------------------------
@@ -616,18 +602,21 @@ void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::InsertTuples(
   }
 
   vtkIdType newSize = (maxDstTupleId + 1) * this->NumberOfComponents;
-  if (this->Size < newSize)
+  if (this->Capacity < newSize)
   {
-    if (!this->Resize(maxDstTupleId + 1))
+    if (!this->ReserveTuples(maxDstTupleId + 1))
     {
-      vtkErrorMacro("Resize failed.");
+      vtkErrorMacro("ReserveTuples failed.");
       return;
     }
   }
 
-  // parenthesis around std::max prevent MSVC macro replacement when
-  // inlined:
-  this->MaxId = (std::max)(this->MaxId, newSize - 1);
+  // Update the MaxId only if actually larger.
+  // NB: for thread safety, don't use std::max here because it would write unconditionally.
+  if (newSize - 1 > this->MaxId) // NOLINT(readability-use-std-min-max)
+  {
+    this->MaxId = newSize - 1;
+  }
 
   vtkIdType numTuples = srcIds->GetNumberOfIds();
   for (vtkIdType t = 0; t < numTuples; ++t)
@@ -688,18 +677,21 @@ void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::InsertTuplesStartingA
   }
 
   vtkIdType newSize = (maxDstTupleId + 1) * this->NumberOfComponents;
-  if (this->Size < newSize)
+  if (this->Capacity < newSize)
   {
-    if (!this->Resize(maxDstTupleId + 1))
+    if (!this->ReserveTuples(maxDstTupleId + 1))
     {
-      vtkErrorMacro("Resize failed.");
+      vtkErrorMacro("ReserveTuples failed.");
       return;
     }
   }
 
-  // parenthesis around std::max prevent MSVC macro replacement when
-  // inlined:
-  this->MaxId = (std::max)(this->MaxId, newSize - 1);
+  // Update the MaxId only if actually larger.
+  // NB: for thread safety, don't use std::max here because it would write unconditionally.
+  if (newSize - 1 > this->MaxId) // NOLINT(readability-use-std-min-max)
+  {
+    this->MaxId = newSize - 1;
+  }
 
   vtkIdType numTuples = srcIds->GetNumberOfIds();
   for (vtkIdType t = 0; t < numTuples; ++t)
@@ -883,7 +875,7 @@ template <class DerivedT, class ValueTypeT, int ArrayType>
 vtkIdType vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::InsertNextValue(ValueType value)
 {
   vtkIdType nextValueIdx = this->MaxId + 1;
-  if (nextValueIdx >= this->Size)
+  if (nextValueIdx >= this->Capacity)
   {
     vtkIdType tuple = nextValueIdx / this->NumberOfComponents;
     this->EnsureAccessToTuple(tuple);
@@ -893,7 +885,7 @@ vtkIdType vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::InsertNextValue(
     this->MaxId = nextValueIdx;
   }
 
-  // Extending array without needing to reallocate:
+  // Extending array without needing to ReserveTuples:
   if (this->MaxId < nextValueIdx)
   {
     this->MaxId = nextValueIdx;
@@ -1035,6 +1027,7 @@ void vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::FillComponent(int com
 //-----------------------------------------------------------------------------
 template <class DerivedT, class ValueTypeT, int ArrayType>
 vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::vtkGenericDataArray()
+  : Internals(new vtkInternals())
 {
   // Initialize internal data structures:
   this->Lookup.SetArray(this);
@@ -1057,9 +1050,9 @@ bool vtkGenericDataArray<DerivedT, ValueTypeT, ArrayType>::EnsureAccessToTuple(v
   vtkIdType expectedMaxId = minSize - 1;
   if (this->MaxId < expectedMaxId)
   {
-    if (this->Size < minSize)
+    if (this->Capacity < minSize)
     {
-      if (!this->Resize(tupleIdx + 1))
+      if (!this->ReserveTuples(tupleIdx + 1))
       {
         return false;
       }

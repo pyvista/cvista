@@ -7,7 +7,6 @@
 #include <vtkAlgorithm.h>
 #include <vtkCamera.h>
 #include <vtkCellData.h>
-#include <vtkCollectionIterator.h>
 #include <vtkCompositeDataDisplayAttributes.h>
 #include <vtkCompositeDataIterator.h>
 #include <vtkCompositeDataSet.h>
@@ -319,7 +318,7 @@ void SetColorAndOpacity(
     {
       for (auto& colorProperty : colorProperties)
       {
-        property["properties"][colorProperty.c_str()][i] = atts->GetBlockColor(block)[i];
+        property["properties"][colorProperty][i] = atts->GetBlockColor(block)[i];
       }
     }
   }

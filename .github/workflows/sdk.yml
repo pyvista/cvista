@@ -80,7 +80,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     # Heavy per-OS VTK compile; cap below the 360-min default to protect paid runners.
-    timeout-minutes: 90
+    # Windows gets 180: it has no ccache (MSVC) so every run is cold, and with
+    # CVISTA_WRAP_UNITY defaulted OFF on the 9.7 base (per-class Python wrappers, ~2x
+    # the wrapper-compile work) the cold MSVC build overran the old 90-min cap at ~79%.
+    # The ccache'd Linux/macOS legs finish well under 90. Revisit when the wrapper-unity
+    # lever is re-hardened (cvista-config/refork/07).
+    timeout-minutes: ${{ matrix.os == 'windows' && 180 || 90 }}
     strategy:
       fail-fast: false
       matrix:

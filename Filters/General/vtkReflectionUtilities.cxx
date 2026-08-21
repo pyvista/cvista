@@ -532,7 +532,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
   const vtkIdType connSize = reader.GetConnectivitySize();
   if (copyInput)
   {
-    outPoints->Allocate(2 * numPts);
+    outPoints->Reserve(2 * numPts);
     if (connSize >= 0)
     {
       output->AllocateExact(numCells * 2, connSize * 2);
@@ -544,7 +544,7 @@ void vtkReflectionUtilities::ProcessUnstructuredGrid(vtkDataSet* input, vtkUnstr
   }
   else
   {
-    outPoints->Allocate(numPts);
+    outPoints->Reserve(numPts);
     if (connSize >= 0)
     {
       output->AllocateExact(numCells, connSize);

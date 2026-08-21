@@ -335,6 +335,9 @@ public:
 
     // extension KHR_materials_unlit
     bool Unlit;
+
+    // extension KHR_materials_ior
+    double IOR;
   };
 
   /**
@@ -550,7 +553,8 @@ public:
    * @return `true` if internal model is correctly filled, `false` otherwise.
    */
   bool LoadModelMetaDataFromFile(VTK_FILEPATH const std::string& FileName);
-  bool LoadModelMetaDataFromStream(vtkResourceStream* stream, vtkURILoader* loader = nullptr);
+  bool LoadModelMetaDataFromStream(
+    vtkResourceStream* stream, vtkURILoader* loader = nullptr, bool quiet = false);
   ///@}
 
   /**
@@ -582,6 +586,11 @@ public:
    * Get the list of extensions that are used by the current model
    */
   const std::vector<std::string>& GetUsedExtensions();
+
+  /**
+   * Get if the current model contains binary data
+   */
+  bool GetIsBinary();
 
   /**
    * Concatenate the current node's local transform to its parent's global transform, storing
@@ -712,6 +721,7 @@ private:
 
   static const std::vector<std::string> SupportedExtensions;
   std::vector<std::string> UsedExtensions;
+  bool IsBinary = false;
   vtkTypeInt64 GLBStart = 0;
 
   /**

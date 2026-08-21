@@ -9,23 +9,34 @@
 #include "vtkIdList.h"
 #include "vtkIncrementalPointLocator.h"
 #include "vtkLine.h"
-#include "vtkMath.h"
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPoints.h"
+#include "vtkSMPThreadLocalObject.h"
 #include "vtkSMPTools.h"
 #include "vtkVector.h"
 
 #include <algorithm>
 
+namespace
+{
+//------------------------------------------------------------------------------
+[[maybe_unused]] constexpr const char* Topology = R"(
+   PolyLine topology:
+
+      0-----------1-----------2-----------...----------n-1
+)";
+}
+
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkPolyLine);
 
 //------------------------------------------------------------------------------
-vtkPolyLine::vtkPolyLine() = default;
-
-//------------------------------------------------------------------------------
-vtkPolyLine::~vtkPolyLine() = default;
+vtkPolyLine::vtkPolyLine()
+{
+  this->Line = vtkSmartPointer<vtkLine>::New();
+  this->LineScalars = vtkSmartPointer<vtkDoubleArray>::New();
+}
 
 //------------------------------------------------------------------------------
 int vtkPolyLine::GenerateSlidingNormals(vtkPoints* pts, vtkCellArray* lines, vtkDataArray* normals)
@@ -226,35 +237,34 @@ int vtkPolyLine::GenerateSlidingNormals(
   // Use threading to compute normals on each line independently.
   // If more than one polyline uses the same point, a data race
   // will occur.
+  vtkSMPThreadLocalObject<vtkIdList> tlTemplPtIds;
   if (threading)
   {
     vtkSMPTools::For(0, numLines,
       [&](vtkIdType lineId, vtkIdType endLineId)
       {
-        vtkSmartPointer<vtkCellArrayIterator> cellIter;
-        cellIter.TakeReference(lines->NewIterator());
         vtkIdType npts;
         const vtkIdType* linePts;
+        vtkIdList*& tempPtIds = tlTemplPtIds.Local();
 
         vtkVector3d normal(0.0, 0.0, 1.0); // arbitrary default value
         for (; lineId < endLineId; ++lineId)
         {
-          cellIter->GetCellAtId(lineId, npts, linePts);
+          lines->GetCellAtId(lineId, npts, linePts, tempPtIds);
           SlidingNormalsOnLine(pts, npts, linePts, normals, firstNormal, normal);
         }
       }); // lambda
   }
   else
   {
-    vtkSmartPointer<vtkCellArrayIterator> cellIter;
-    cellIter.TakeReference(lines->NewIterator());
     vtkIdType npts;
     const vtkIdType* linePts;
+    vtkIdList*& tempPtIds = tlTemplPtIds.Local();
 
     vtkVector3d normal(0.0, 0.0, 1.0); // arbitrary default value
     for (vtkIdType lineId = 0; lineId < numLines; ++lineId)
     {
-      cellIter->GetCellAtId(lineId, npts, linePts);
+      lines->GetCellAtId(lineId, npts, linePts, tempPtIds);
       SlidingNormalsOnLine(pts, npts, linePts, normals, firstNormal, normal);
     }
   } // not threaded
@@ -268,7 +278,7 @@ int vtkPolyLine::EvaluatePosition(const double x[3], double closestPoint[3], int
 {
   double closest[3];
   double pc[3], dist2;
-  int ignoreId, i, returnStatus, status;
+  int ignoreId;
   double lineWeights[2], closestWeights[2];
 
   // Efficient point access
@@ -282,14 +292,15 @@ int vtkPolyLine::EvaluatePosition(const double x[3], double closestPoint[3], int
 
   pcoords[1] = pcoords[2] = 0.0;
 
-  returnStatus = 0;
+  int returnStatus = 0;
   subId = -1;
   closestWeights[0] = closestWeights[1] = 0.0; // Shut up, compiler
-  for (minDist2 = VTK_DOUBLE_MAX, i = 0; i < this->Points->GetNumberOfPoints() - 1; i++)
+  minDist2 = VTK_DOUBLE_MAX;
+  for (int i = 0; i < this->Points->GetNumberOfPoints() - 1; i++)
   {
     this->Line->Points->SetPoint(0, pts + 3 * i);
     this->Line->Points->SetPoint(1, pts + 3 * (i + 1));
-    status = this->Line->EvaluatePosition(x, closest, ignoreId, pc, dist2, lineWeights);
+    int status = this->Line->EvaluatePosition(x, closest, ignoreId, pc, dist2, lineWeights);
     if (status != -1 && ((dist2 < minDist2) || ((dist2 == minDist2) && (returnStatus == 0))))
     {
       returnStatus = status;
@@ -377,9 +388,8 @@ void vtkPolyLine::Contour(double value, vtkDataArray* cellScalars,
   vtkCellData* outCd)
 {
   const vtkIdType numLines = this->Points->GetNumberOfPoints() - 1;
-  vtkNew<vtkDoubleArray> lineScalars;
-  lineScalars->SetNumberOfComponents(cellScalars->GetNumberOfComponents());
-  lineScalars->SetNumberOfTuples(2);
+  this->LineScalars->SetNumberOfComponents(cellScalars->GetNumberOfComponents());
+  this->LineScalars->SetNumberOfTuples(2);
 
   for (vtkIdType i = 0; i < numLines; i++)
   {
@@ -392,11 +402,11 @@ void vtkPolyLine::Contour(double value, vtkDataArray* cellScalars,
       this->Line->PointIds->SetId(1, this->PointIds->GetId(i + 1));
     }
 
-    lineScalars->SetTuple(0, cellScalars->GetTuple(i));
-    lineScalars->SetTuple(1, cellScalars->GetTuple(i + 1));
+    this->LineScalars->SetTuple(0, cellScalars->GetTuple(i));
+    this->LineScalars->SetTuple(1, cellScalars->GetTuple(i + 1));
 
     this->Line->Contour(
-      value, lineScalars, locator, verts, lines, polys, inPd, outPd, inCd, cellId, outCd);
+      value, this->LineScalars, locator, verts, lines, polys, inPd, outPd, inCd, cellId, outCd);
   }
 }
 
@@ -453,15 +463,15 @@ void vtkPolyLine::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPo
   vtkIdType cellId, vtkCellData* outCd, int insideOut)
 {
   const vtkIdType numLines = this->Points->GetNumberOfPoints() - 1;
-  vtkNew<vtkDoubleArray> lineScalars;
-  lineScalars->SetNumberOfTuples(2);
+  this->LineScalars->SetNumberOfComponents(cellScalars->GetNumberOfComponents());
+  this->LineScalars->SetNumberOfTuples(2);
   vtkNew<vtkCellArray> lines;
   // appendLines() below reads this scratch array through GetConnectivityAOSArray64()
   // under VTK_USE_64BIT_IDS, which returns nullptr (→ null deref) when the array is
   // 32-bit. A default-constructed vtkCellArray uses 32-bit storage under cvista's
   // int32 default, so force 64-bit storage here to match the id-width read path.
   lines->Use64BitStorage();
-  vtkIdType numberOfCurrentLines, numberOfPreviousLines = 0;
+  vtkIdType numberOfCurrentLines = 0, numberOfPreviousLines = 0;
 
   const auto appendLines = [&]()
   {
@@ -493,11 +503,11 @@ void vtkPolyLine::Clip(double value, vtkDataArray* cellScalars, vtkIncrementalPo
     this->Line->PointIds->SetId(0, this->PointIds->GetId(i));
     this->Line->PointIds->SetId(1, this->PointIds->GetId(i + 1));
 
-    lineScalars->SetComponent(0, 0, cellScalars->GetComponent(i, 0));
-    lineScalars->SetComponent(1, 0, cellScalars->GetComponent(i + 1, 0));
+    this->LineScalars->SetComponent(0, 0, cellScalars->GetComponent(i, 0));
+    this->LineScalars->SetComponent(1, 0, cellScalars->GetComponent(i + 1, 0));
 
     this->Line->Clip(
-      value, lineScalars, locator, lines, inPd, outPd, inCd, cellId, nullptr, insideOut);
+      value, this->LineScalars, locator, lines, inPd, outPd, inCd, cellId, nullptr, insideOut);
     // if the line is clipped, we need to add the number of lines
     numberOfCurrentLines = lines->GetNumberOfCells();
     if (numberOfCurrentLines != numberOfPreviousLines)
@@ -523,7 +533,7 @@ int vtkPolyLine::GetParametricCenter(double pcoords[3])
 {
   pcoords[0] = 0.5;
   pcoords[1] = pcoords[2] = 0.0;
-  return ((this->Points->GetNumberOfPoints() - 1) / 2);
+  return (this->Points->GetNumberOfPoints() - 1) / 2;
 }
 
 //------------------------------------------------------------------------------
@@ -533,5 +543,7 @@ void vtkPolyLine::PrintSelf(ostream& os, vtkIndent indent)
 
   os << indent << "Line:\n";
   this->Line->PrintSelf(os, indent.GetNextIndent());
+  os << indent << "LineScalars:\n";
+  this->LineScalars->PrintSelf(os, indent.GetNextIndent());
 }
 VTK_ABI_NAMESPACE_END

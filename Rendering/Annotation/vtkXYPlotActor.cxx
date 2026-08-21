@@ -1731,7 +1731,7 @@ void vtkXYPlotActor::ComputeDORange(double xrange[2], double yrange[2], double* 
       yrange[0] = std::min(y, yrange[0]);
       yrange[1] = std::max(y, yrange[1]);
     } // over all y values
-  }   // over all dataobjects
+  } // over all dataobjects
 
   // determine the range
   switch (this->XValues)
@@ -1826,7 +1826,7 @@ void vtkXYPlotActor::CreatePlotData(
     pts = vtkPoints::New();
 
     lines->AllocateEstimate(10, 10);
-    pts->Allocate(10, 10);
+    pts->Reserve(10);
     this->PlotData[i]->SetPoints(pts);
     this->PlotData[i]->SetVerts(lines);
     this->PlotData[i]->SetLines(lines);
@@ -1941,7 +1941,7 @@ void vtkXYPlotActor::CreatePlotData(
         this->ClipPlotData(pos, pos2, this->PlotData[dsNum]);
       }
     } // loop over all input data sets
-  }   // if plotting datasets
+  } // if plotting datasets
 
   else // plot data from data objects
   {
@@ -2213,11 +2213,11 @@ void vtkXYPlotActor::PlaceAxes(vtkViewport* viewport, const int* size, int pos[2
   // In the meantime, let's try with the min and max
   std::string axisYLabelFormat =
     axisY->GetLabelFormat() ? vtk::to_std_format(axisY->GetLabelFormat()) : "";
-  VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(
-                               str1, sizeof(str1), axisYLabelFormat, axisY->GetAdjustedRange()[0]);
+  VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(str1, sizeof(str1),
+                               vtk::runtime(axisYLabelFormat), axisY->GetAdjustedRange()[0]);
                              *result.out = '\0', );
-  VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(
-                               str2, sizeof(str2), axisYLabelFormat, axisY->GetAdjustedRange()[1]);
+  VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(str2, sizeof(str2),
+                               vtk::runtime(axisYLabelFormat), axisY->GetAdjustedRange()[1]);
                              *result.out = '\0', );
   tprop->ShallowCopy(axisY->GetLabelTextProperty());
   textMapper->SetInput(strlen(str1) > strlen(str2) ? str1 : str2);
@@ -2228,8 +2228,8 @@ void vtkXYPlotActor::PlaceAxes(vtkViewport* viewport, const int* size, int pos[2
   // use the min for example
   std::string axisXLabelFormat =
     axisX->GetLabelFormat() ? vtk::to_std_format(axisX->GetLabelFormat()) : "";
-  VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(
-                               str1, sizeof(str1), axisXLabelFormat, axisX->GetAdjustedRange()[0]);
+  VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(str1, sizeof(str1),
+                               vtk::runtime(axisXLabelFormat), axisX->GetAdjustedRange()[0]);
                              *result.out = '\0', );
   tprop->ShallowCopy(axisX->GetLabelTextProperty());
   textMapper->SetInput(str1);
@@ -2491,7 +2491,7 @@ void vtkXYPlotActor::ClipPlotData(int* pos, int* pos2, vtkPolyData* pd)
   p2[1] = (double)pos2[1];
 
   newPoints = vtkPoints::New();
-  newPoints->Allocate(numPts);
+  newPoints->Reserve(numPts);
   newVerts = vtkCellArray::New();
   newVerts->AllocateCopy(lines);
   newLines = vtkCellArray::New();

@@ -50,6 +50,7 @@ class vtkUnsignedCharArray;
 
 #define VTK_TEXTURECOORDS_UV 0
 #define VTK_TEXTURECOORDS_TEXTUREUV 1
+#define VTK_TEXTURECOORDS_ST 2
 
 class VTKIOPLY_EXPORT vtkPLYWriter : public vtkWriter
 {
@@ -210,15 +211,18 @@ public:
   ///@{
   /**
    * Choose the name used for the texture coordinates.
-   * (u, v) or (texture_u, texture_v)
+   * (u, v) or (texture_u, texture_v) or (s, t).
+   *
+   * Defaults to (u, v).
    */
-  vtkSetClampMacro(TextureCoordinatesName, int, VTK_TEXTURECOORDS_UV, VTK_TEXTURECOORDS_TEXTUREUV);
+  vtkSetClampMacro(TextureCoordinatesName, int, VTK_TEXTURECOORDS_UV, VTK_TEXTURECOORDS_ST);
   vtkGetMacro(TextureCoordinatesName, int);
   void SetTextureCoordinatesNameToUV() { this->SetTextureCoordinatesName(VTK_TEXTURECOORDS_UV); }
   void SetTextureCoordinatesNameToTextureUV()
   {
     this->SetTextureCoordinatesName(VTK_TEXTURECOORDS_TEXTUREUV);
   }
+  void SetTextureCoordinatesNameToST() { this->SetTextureCoordinatesName(VTK_TEXTURECOORDS_ST); }
   ///@}
 
   /**
@@ -230,7 +234,7 @@ protected:
   vtkPLYWriter();
   ~vtkPLYWriter() override;
 
-  void WriteData() override;
+  bool WriteDataAndReturn() override;
   vtkSmartPointer<vtkUnsignedCharArray> GetColors(vtkIdType num, vtkDataSetAttributes* dsa);
   const float* GetTextureCoordinates(vtkIdType num, vtkDataSetAttributes* dsa);
   const float* GetNormals(vtkIdType num, vtkDataSetAttributes* dsa);

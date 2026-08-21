@@ -237,8 +237,9 @@ void vtkHomogeneousTransform::TransformPoints(vtkPoints* inPts, vtkPoints* outPt
   const HomogTransformAOSWriter outWriter(outPts->GetData());
 
   // cvista: per-point-independent writes to a pre-sized output => bit-exact under
-  // any thread count; run under the default-threading policy.
-  cvista::RunSafeFilterParallel(
+  // any thread count; run under the default-threading policy. Pass n so small
+  // transforms skip the per-call LocalScope (a no-op below THRESHOLD anyway).
+  cvista::RunSafeFilterParallel(n,
     [&]()
     {
       vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
@@ -316,8 +317,9 @@ void vtkHomogeneousTransform::TransformPointsNormalsVectors(vtkPoints* inPts, vt
   }
 
   // cvista: per-point-independent writes to pre-sized outputs => bit-exact under
-  // any thread count; run under the default-threading policy.
-  cvista::RunSafeFilterParallel([&]() {
+  // any thread count; run under the default-threading policy. Pass n so small
+  // transforms skip the per-call LocalScope (a no-op below THRESHOLD anyway).
+  cvista::RunSafeFilterParallel(n, [&]() {
   vtkSMPTools::For(0, n, vtkSMPTools::THRESHOLD,
     [&](vtkIdType ptId, vtkIdType endPtId)
     {

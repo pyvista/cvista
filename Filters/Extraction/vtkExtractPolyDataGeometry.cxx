@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkExtractPolyDataGeometry.h"
 
-#include "cvistaCellConnectivity.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
 #include "vtkFloatArray.h"
@@ -132,7 +131,7 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
     {
       newPts->SetDataType(VTK_DOUBLE);
     }
-    newPts->Allocate(numPts / 4, numPts);
+    newPts->Reserve(numPts / 4);
     pointMap = new vtkIdType[numPts]; // maps old point ids into new
     for (ptId = 0; ptId < numPts; ptId++)
     {
@@ -187,26 +186,8 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
   if (newVerts && !this->CheckAbort())
   {
     checkAbortInterval = std::min(inVerts->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
-    // Read point ids straight from native (int32) storage instead of widening
-    // each cell into the shared scratch list; the array-local loop index matches
-    // the view's indexing and this pass only reads. Fall back to classic
-    // traversal for any storage the reader cannot handle (cvistaCellConnectivity.h).
-    cvistaCellConnectivity conn(inVerts);
-    const vtkIdType numArrayCells = inVerts->GetNumberOfCells();
-    vtkIdType cbeg = 0;
-    inVerts->InitTraversal();
-    for (vtkIdType lc = 0; lc < numArrayCells; ++lc)
+    for (inVerts->InitTraversal(); inVerts->GetNextCell(npts, pts);)
     {
-      if (conn.IsValid())
-      {
-        cbeg = conn.CellBegin(lc);
-        npts = conn.CellSize(lc);
-      }
-      else
-      {
-        inVerts->GetNextCell(npts, pts);
-      }
-      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
@@ -214,7 +195,7 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
       progressCounter++;
       for (numIn = 0, i = 0; i < npts; i++)
       {
-        if (newScalars->GetValue(PID(i)) <= 0.0)
+        if (newScalars->GetValue(pts[i]) <= 0.0)
         {
           numIn++;
         }
@@ -223,24 +204,20 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
       {
         if (this->PassPoints)
         {
-          newVerts->InsertNextCell(npts);
-          for (i = 0; i < npts; i++)
-          {
-            newVerts->InsertCellPoint(PID(i));
-          }
+          newVerts->InsertNextCell(npts, pts);
         }
         else
         {
           newVerts->InsertNextCell(npts);
           for (i = 0; i < npts; i++)
           {
-            if (pointMap[PID(i)] < 0)
+            if (pointMap[pts[i]] < 0)
             {
-              ptId = this->InsertPointInMap(PID(i), inPts, newPts, pointMap);
+              ptId = this->InsertPointInMap(pts[i], inPts, newPts, pointMap);
             }
             else
             {
-              ptId = pointMap[PID(i)];
+              ptId = pointMap[pts[i]];
             }
             newVerts->InsertCellPoint(ptId);
           }
@@ -257,22 +234,8 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
   if (newLines && !this->CheckAbort())
   {
     checkAbortInterval = std::min(inLines->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
-    cvistaCellConnectivity conn(inLines);
-    const vtkIdType numArrayCells = inLines->GetNumberOfCells();
-    vtkIdType cbeg = 0;
-    inLines->InitTraversal();
-    for (vtkIdType lc = 0; lc < numArrayCells; ++lc)
+    for (inLines->InitTraversal(); inLines->GetNextCell(npts, pts);)
     {
-      if (conn.IsValid())
-      {
-        cbeg = conn.CellBegin(lc);
-        npts = conn.CellSize(lc);
-      }
-      else
-      {
-        inLines->GetNextCell(npts, pts);
-      }
-      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
@@ -280,7 +243,7 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
       progressCounter++;
       for (numIn = 0, i = 0; i < npts; i++)
       {
-        if (newScalars->GetValue(PID(i)) <= 0.0)
+        if (newScalars->GetValue(pts[i]) <= 0.0)
         {
           numIn++;
         }
@@ -289,24 +252,20 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
       {
         if (this->PassPoints)
         {
-          newLines->InsertNextCell(npts);
-          for (i = 0; i < npts; i++)
-          {
-            newLines->InsertCellPoint(PID(i));
-          }
+          newLines->InsertNextCell(npts, pts);
         }
         else
         {
           newLines->InsertNextCell(npts);
           for (i = 0; i < npts; i++)
           {
-            if (pointMap[PID(i)] < 0)
+            if (pointMap[pts[i]] < 0)
             {
-              ptId = this->InsertPointInMap(PID(i), inPts, newPts, pointMap);
+              ptId = this->InsertPointInMap(pts[i], inPts, newPts, pointMap);
             }
             else
             {
-              ptId = pointMap[PID(i)];
+              ptId = pointMap[pts[i]];
             }
             newLines->InsertCellPoint(ptId);
           }
@@ -323,29 +282,15 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
   if (newPolys && !this->CheckAbort())
   {
     checkAbortInterval = std::min(inPolys->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
-    cvistaCellConnectivity conn(inPolys);
-    const vtkIdType numArrayCells = inPolys->GetNumberOfCells();
-    vtkIdType cbeg = 0;
-    inPolys->InitTraversal();
-    for (vtkIdType lc = 0; lc < numArrayCells; ++lc)
+    for (inPolys->InitTraversal(); inPolys->GetNextCell(npts, pts);)
     {
-      if (conn.IsValid())
-      {
-        cbeg = conn.CellBegin(lc);
-        npts = conn.CellSize(lc);
-      }
-      else
-      {
-        inPolys->GetNextCell(npts, pts);
-      }
-      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
       }
       for (numIn = 0, i = 0; i < npts; i++)
       {
-        if (newScalars->GetValue(PID(i)) <= 0.0)
+        if (newScalars->GetValue(pts[i]) <= 0.0)
         {
           numIn++;
         }
@@ -354,24 +299,20 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
       {
         if (this->PassPoints)
         {
-          newPolys->InsertNextCell(npts);
-          for (i = 0; i < npts; i++)
-          {
-            newPolys->InsertCellPoint(PID(i));
-          }
+          newPolys->InsertNextCell(npts, pts);
         }
         else
         {
           newPolys->InsertNextCell(npts);
           for (i = 0; i < npts; i++)
           {
-            if (pointMap[PID(i)] < 0)
+            if (pointMap[pts[i]] < 0)
             {
-              ptId = this->InsertPointInMap(PID(i), inPts, newPts, pointMap);
+              ptId = this->InsertPointInMap(pts[i], inPts, newPts, pointMap);
             }
             else
             {
-              ptId = pointMap[PID(i)];
+              ptId = pointMap[pts[i]];
             }
             newPolys->InsertCellPoint(ptId);
           }
@@ -388,29 +329,15 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
   if (newStrips && !this->CheckAbort())
   {
     checkAbortInterval = std::min(inStrips->GetNumberOfCells() / 10 + 1, (vtkIdType)1000);
-    cvistaCellConnectivity conn(inStrips);
-    const vtkIdType numArrayCells = inStrips->GetNumberOfCells();
-    vtkIdType cbeg = 0;
-    inStrips->InitTraversal();
-    for (vtkIdType lc = 0; lc < numArrayCells; ++lc)
+    for (inStrips->InitTraversal(); inStrips->GetNextCell(npts, pts);)
     {
-      if (conn.IsValid())
-      {
-        cbeg = conn.CellBegin(lc);
-        npts = conn.CellSize(lc);
-      }
-      else
-      {
-        inStrips->GetNextCell(npts, pts);
-      }
-      auto PID = [&](vtkIdType k) -> vtkIdType { return conn.IsValid() ? conn[cbeg + k] : pts[k]; };
       if (progressCounter % checkAbortInterval == 0 && this->CheckAbort())
       {
         break;
       }
       for (numIn = 0, i = 0; i < npts; i++)
       {
-        if (newScalars->GetValue(PID(i)) <= 0.0)
+        if (newScalars->GetValue(pts[i]) <= 0.0)
         {
           numIn++;
         }
@@ -419,24 +346,20 @@ int vtkExtractPolyDataGeometry::RequestData(vtkInformation* vtkNotUsed(request),
       {
         if (this->PassPoints)
         {
-          newStrips->InsertNextCell(npts);
-          for (i = 0; i < npts; i++)
-          {
-            newStrips->InsertCellPoint(PID(i));
-          }
+          newStrips->InsertNextCell(npts, pts);
         }
         else
         {
           newStrips->InsertNextCell(npts);
           for (i = 0; i < npts; i++)
           {
-            if (pointMap[PID(i)] < 0)
+            if (pointMap[pts[i]] < 0)
             {
-              ptId = this->InsertPointInMap(PID(i), inPts, newPts, pointMap);
+              ptId = this->InsertPointInMap(pts[i], inPts, newPts, pointMap);
             }
             else
             {
-              ptId = pointMap[PID(i)];
+              ptId = pointMap[pts[i]];
             }
             newStrips->InsertCellPoint(ptId);
           }

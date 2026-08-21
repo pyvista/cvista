@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Hide VTK_DEPRECATED_IN_9_5_0() warnings.
-#define VTK_DEPRECATION_LEVEL 0
-
 // clang-format off
 // Includes vtkModuleNameSerDes.h.
 @_vtk_serdes_include_libraries_registrar_headers@
@@ -75,22 +72,30 @@ int PostCreateSession(vtkSession session, const char** error)
 }
 
 /**
- * This function configures the session to use WebAssembly-specific handlers
- * for serialization and deserialization. It removes the default
- * vtkOpenGLPolyDataMapper handler, as it is not used in the WebAssembly build.
- *
+ * Remove deserialization constructors for classes that are not suitable on the web platform.
  * @param session The vtkSession for which to set up WebAssembly handlers.
  */
-void PatchOpenGLDeserializer(vtkSession session)
+inline void RemovePlatformUnsuitableConstructors(vtkSession session)
 {
   if (auto* manager = static_cast<vtkObjectManager*>(vtkSessionGetManager(session)))
   {
+    // 1. Module: RenderingUI
+    // vtkGenericRenderWindowInteractor is compiled on every platform, so a state which names it
+    // would be constructed verbatim even though it does not integrate with the browser event loop.
+    // Dropping its exact-match constructor makes such states fall back to the constructor of the
+    // nearest superclass, vtkRenderWindowInteractor, whose object factory instantiates
+    // vtkWebAssemblyRenderWindowInteractor. This is the same path taken by states which name other
+    // platform-specific interactors, e.g. vtkCocoaRenderWindowInteractor or
+    // vtkWin32RenderWindowInteractor, as those classes are absent from web builds.
+    manager->GetDeserializer()->UnRegisterConstructor("vtkGenericRenderWindowInteractor");
+
+    // 2. Module: RenderingOpenGL2
+    // removes the default vtkOpenGLPolyDataMapper handler, as it is not used in the
+    // WebAssembly build.
 #if VTK_MODULE_ENABLE_VTK_RenderingOpenGL2
     // Remove the default vtkOpenGLPolyDataMapper[2D] constructors as they are not used in wasm
     manager->GetDeserializer()->UnRegisterConstructor("vtkOpenGLPolyDataMapper");
     manager->GetDeserializer()->UnRegisterConstructor("vtkOpenGLPolyDataMapper2D");
-#else
-    (void)manager;
 #endif
   }
 }
@@ -104,7 +109,6 @@ vtkStandaloneSession* makeStandaloneSession()
     vtkLogF(ERROR, "post create standalone session failed: %s", error);
     return nullptr;
   }
-  PatchOpenGLDeserializer(standaloneSession->Session);
   return standaloneSession;
 }
 
@@ -117,7 +121,7 @@ vtkRemoteSession* makeRemoteSession()
     vtkLogF(ERROR, "post create remote session failed: %s", error);
     return nullptr;
   }
-  PatchOpenGLDeserializer(remoteSession->Session);
+  RemovePlatformUnsuitableConstructors(remoteSession->Session);
   return remoteSession;
 }
 }
@@ -157,14 +161,24 @@ EMSCRIPTEN_BINDINGS(bindings)
     .function("invoke", &vtkStandaloneSession::Invoke)
 #endif
     .function("observe", &vtkStandaloneSession::Observe)
-    .function("unObserve", &vtkStandaloneSession::UnObserve);
+    .function("unObserve", &vtkStandaloneSession::UnObserve)
+    .function("unObserveAll", &vtkStandaloneSession::UnObserveAll)
+    .function("unObserveAllObjects", &vtkStandaloneSession::UnObserveAllObjects)
+    .function("getTotalBlobMemoryUsage", &vtkStandaloneSession::GetTotalBlobMemoryUsage)
+    .function(
+      "getTotalVTKDataObjectMemoryUsage", &vtkStandaloneSession::GetTotalVTKDataObjectMemoryUsage)
+    .function("printObjectToString", &vtkStandaloneSession::PrintObjectToString)
+    .function("printSceneManagerInformation", &vtkStandaloneSession::PrintSceneManagerInformation)
+    .function("setDeserializerLogVerbosity", &vtkStandaloneSession::SetDeserializerLogVerbosity)
+    .function("setInvokerLogVerbosity", &vtkStandaloneSession::SetInvokerLogVerbosity)
+    .function("setObjectManagerLogVerbosity", &vtkStandaloneSession::SetObjectManagerLogVerbosity)
+    .function("setSerializerLogVerbosity", &vtkStandaloneSession::SetSerializerLogVerbosity);
 
   /// Wrappings for the WebAssembly remoting session.
   class_<vtkRemoteSession>("vtkRemoteSession")
     .constructor(&makeRemoteSession, allow_raw_pointers())
     .function("registerState", &vtkRemoteSession::RegisterState)
     .function("unRegisterState", &vtkRemoteSession::UnRegisterState)
-    .function("getState", &vtkRemoteSession::GetState)
     .function("set", &vtkRemoteSession::Set)
     .function("get", &vtkRemoteSession::Get)
     .function("skipProperty", &vtkRemoteSession::SkipProperty)
@@ -192,6 +206,8 @@ EMSCRIPTEN_BINDINGS(bindings)
     .function("bindRenderWindow", &vtkRemoteSession::BindRenderWindow)
     .function("observe", &vtkRemoteSession::Observe)
     .function("unObserve", &vtkRemoteSession::UnObserve)
+    .function("unObserveAll", &vtkRemoteSession::UnObserveAll)
+    .function("unObserveAllObjects", &vtkRemoteSession::UnObserveAllObjects)
     .function("export", &vtkRemoteSession::Export)
     .function("import", &vtkRemoteSession::Import)
     .function("updateObjectsFromStates", &vtkRemoteSession::UpdateObjectsFromStates)
@@ -201,11 +217,14 @@ EMSCRIPTEN_BINDINGS(bindings)
     .function("getTotalBlobMemoryUsage", &vtkRemoteSession::GetTotalBlobMemoryUsage)
     .function(
       "getTotalVTKDataObjectMemoryUsage", &vtkRemoteSession::GetTotalVTKDataObjectMemoryUsage)
+    .function("printObjectToString", &vtkRemoteSession::PrintObjectToString)
     .function("printSceneManagerInformation", &vtkRemoteSession::PrintSceneManagerInformation)
     .function("setDeserializerLogVerbosity", &vtkRemoteSession::SetDeserializerLogVerbosity)
     .function("setInvokerLogVerbosity", &vtkRemoteSession::SetInvokerLogVerbosity)
     .function("setObjectManagerLogVerbosity", &vtkRemoteSession::SetObjectManagerLogVerbosity)
-    .function("setSerializerLogVerbosity", &vtkRemoteSession::SetSerializerLogVerbosity);
+    .function("setSerializerLogVerbosity", &vtkRemoteSession::SetSerializerLogVerbosity)
+    .function("startWebXR", &vtkRemoteSession::StartWebXR)
+    .function("stopWebXR", &vtkRemoteSession::StopWebXR);
 }
 
 VTK_ABI_NAMESPACE_END

@@ -43,6 +43,56 @@ const char* vtkXMLPartitionedDataSetReader::GetDataSetName()
 }
 
 //------------------------------------------------------------------------------
+void vtkXMLPartitionedDataSetReader::CreateMetaData(vtkXMLDataElement* ePrimary)
+{
+  auto pds = vtkSmartPointer<vtkPartitionedDataSet>::New();
+  const unsigned int numberOfPartitions =
+    vtkXMLCompositeDataReader::CountNestedElements(ePrimary, "DataSet");
+  pds->SetNumberOfPartitions(numberOfPartitions);
+  this->Metadata = pds;
+}
+
+//------------------------------------------------------------------------------
+void vtkXMLPartitionedDataSetReader::SyncCompositeDataArraySelections(
+  vtkCompositeDataSet* vtkNotUsed(metadata), vtkXMLDataElement* element,
+  const std::string& filePath)
+{
+  for (int cc = 0; cc < element->GetNumberOfNestedElements(); ++cc)
+  {
+    vtkXMLDataElement* childXML = element->GetNestedElement(cc);
+    if (!childXML || !childXML->GetName())
+    {
+      continue;
+    }
+    const char* tagName = childXML->GetName();
+
+    if (strcmp(tagName, "DataSet") == 0)
+    {
+      int index = 0;
+      if (!childXML->GetScalarAttribute("index", index))
+      {
+        vtkWarningMacro("Missing 'index' on '" << tagName << "' element in XML. Skipping");
+        continue;
+      }
+      if (index > 0)
+      {
+        // don't read array selections for partitioned dataset except the first one
+        // since that is not expected to change across datasets in a partitioned dataset.
+      }
+      else
+      {
+        this->SyncDataArraySelections(this, childXML, filePath);
+      }
+    }
+    else
+    {
+      vtkErrorMacro("Syntax error in file.");
+      return;
+    }
+  }
+}
+
+//------------------------------------------------------------------------------
 void vtkXMLPartitionedDataSetReader::ReadComposite(vtkXMLDataElement* element,
   vtkCompositeDataSet* composite, const char* filePath, unsigned int& dataSetIndex)
 {
@@ -53,25 +103,26 @@ void vtkXMLPartitionedDataSetReader::ReadComposite(vtkXMLDataElement* element,
     return;
   }
 
-  const unsigned int numberOfParitions =
-    vtkXMLCompositeDataReader::CountNestedElements(element, "Dataset");
-  unsigned int maxElems = element->GetNumberOfNestedElements();
-  for (unsigned int cc = 0; cc < maxElems; ++cc)
+  for (int cc = 0; cc < element->GetNumberOfNestedElements(); ++cc)
   {
     vtkXMLDataElement* childXML = element->GetNestedElement(cc);
     if (!childXML || !childXML->GetName())
     {
       continue;
     }
-
-    int index = pds->GetNumberOfPartitions();
+    const char* tagName = childXML->GetName();
 
     // child is a leaf node, read and insert.
-    const char* tagName = childXML->GetName();
     if (strcmp(tagName, "DataSet") == 0)
     {
+      int index = 0;
+      if (!childXML->GetScalarAttribute("index", index))
+      {
+        vtkWarningMacro("Missing 'index' on '" << tagName << "' element in XML. Skipping");
+        continue;
+      }
       vtkSmartPointer<vtkDataObject> childDS;
-      if (this->ShouldReadDataSet(dataSetIndex, index, numberOfParitions))
+      if (this->ShouldReadDataSet(dataSetIndex, index, pds->GetNumberOfPartitions()))
       {
         // Read
         childDS.TakeReference(this->ReadDataObject(childXML, filePath));

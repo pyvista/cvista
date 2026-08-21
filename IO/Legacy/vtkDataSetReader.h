@@ -9,6 +9,9 @@
  * output type of this class will vary depending upon the type of data
  * file. Convenience methods are provided to keep the data as a particular
  * type. (See text for format description details).
+ *
+ * This class supports reading streams.
+ *
  * The superclass of this class, vtkDataReader, provides many methods for
  * controlling the reading of the data file, see vtkDataReader for more
  * information.
@@ -46,6 +49,18 @@ public:
    */
   vtkDataSet* GetOutput();
   vtkDataSet* GetOutput(int idx);
+  ///@}
+
+  ///@{
+  /**
+   * Return true if, after a quick check of file header, it looks like the provided file or stream
+   * can be read. Return false if it is sure it cannot be read.
+   * The stream version may move the stream cursor.
+   * This only create a vtkDataSetReader and uses ReadHeader to ensure
+   * the file or stream contains a valid legacy header.
+   */
+  static bool CanReadFile(VTK_FILEPATH const char* filename);
+  static bool CanReadFile(vtkResourceStream* stream);
   ///@}
 
   ///@{

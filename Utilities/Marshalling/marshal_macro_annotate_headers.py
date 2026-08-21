@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # coding=utf8
 """
 Usage:
@@ -11,7 +12,6 @@ Tip: Run clang-format on all modified files before commit.
 """
 
 import argparse
-import json
 import os
 import pathlib
 import re
@@ -38,13 +38,11 @@ IGNORE_TXT = SCRIPT_DIR.joinpath("ignore.txt")
 headers = {IGNORE_TXT: set(), MARSHALAUTO_TXT: set(), MARSHALMANUAL_TXT: set()}
 module_dirs = set()
 
-"""
-Return the line number and re.Match of the text matches the regex.
-"""
-
 
 def find_matching_line(filename, regex_str):
-    result = []
+    """
+    Return the line number and re.Match of the text matching the regex.
+    """
     with open(filename, 'r', encoding='utf8') as f:
         for line_num, line in enumerate(f, start=1):
             match = re.search(regex_str, line)
@@ -54,13 +52,11 @@ def find_matching_line(filename, regex_str):
     return None
 
 
-"""
-Return true if line is made up of 3 or more words separated by forward slash '/'
-character. False otherwise.
-"""
-
-
 def is_valid_line(line, line_num, path):
+    """
+    Return true if line is made up of 3 or more words separated by forward slash '/'
+    character. False otherwise.
+    """
     if len(line.split("/")) != 3:
         print(
             f"ERROR: No. of components must be greater than 3 in {path}:{line_num}")
@@ -74,14 +70,12 @@ def is_valid_line(line, line_num, path):
         return True
 
 
-"""
-Return true if a header in a module is present in atleast one of
-VTK_MARSHALAUTO.txt (or) VTK_MARSHALMANUAL.txt (or) ignore.txt
-with the correct annotation, or lack of the macro when the header is in ignore.txt
-"""
-
-
 def get_status():
+    """
+    Return true if a header in a module is present in atleast one of
+    VTK_MARSHALAUTO.txt (or) VTK_MARSHALMANUAL.txt (or) ignore.txt
+    with the correct annotation, or lack of the macro when the header is in ignore.txt
+    """
     success = True
 
     # fail if any of the headers in `VTK_MARSHAL(AUTO|MANUAL).txt` don't have marshal macro
@@ -94,6 +88,7 @@ def get_status():
                 else:
                     parts = line.split('/')
                     module_dir = VTK_DIR.joinpath(*parts[0:-1])
+                    module_dirs.add(module_dir)
                     header = module_dir.joinpath(parts[-1])
                     headers[marshal_file].add(header)
                     existing_macro_line_match = find_matching_line(
@@ -136,13 +131,11 @@ def get_status():
     return success
 
 
-"""
-Adds VTK_MARSHAL(AUTO|MANUAL) macro to header files listed in `VTK_MARSHAL(AUTO|MANUAL).txt`
-Also adds a line that includes `vtkWrappingHints.h` if not already included.
-"""
-
-
 def update():
+    """
+    Add VTK_MARSHAL(AUTO|MANUAL) macro to header files listed in `VTK_MARSHAL(AUTO|MANUAL).txt`
+    Also adds a line that includes `vtkWrappingHints.h` if not already included.
+    """
     for marshal_file, macro_regex in zip([MARSHALAUTO_TXT, MARSHALMANUAL_TXT], MARSHAL_HINT_REGEXES):
         with open(marshal_file, 'r', encoding='utf8') as f:
             lines = f.read().splitlines()
@@ -160,6 +153,10 @@ def update():
                     header, macro_regex)
                 module_export_line_match = find_matching_line(
                     header, MODULE_EXPORT_REGEX)
+                if module_export_line_match is None:
+                    print(
+                        f"WARNING: {header} does not have an exported class. Skipping...")
+                    continue
                 has_exported_class = module_export_line_match is not None
                 if has_exported_class and existing_macro_line_match is not None:
                     continue
@@ -170,7 +167,7 @@ def update():
                         # Replaces the target strings in memory
                         new_lines = []
                         with open(header, 'r', encoding='utf8') as f:
-                            new_lines = f.readlines()
+                            new_lines.extend(f.readlines())
                             # Replaces "class VTK*_EXPORT ..." with "class VTK*_EXPORT VTK_MARSHAL(AUTO|MANUAL) ..."
                             export_line_num, export_text_match = module_export_line_match
                             export_line_text = new_lines[export_line_num - 1]
@@ -209,10 +206,14 @@ def update():
                 ignored_header, WRAPHINT_HEADER_REGEX)
             module_export_line_match = find_matching_line(
                 ignored_header, MODULE_EXPORT_REGEX)
+            if module_export_line_match is None:
+                print(
+                    f"INFO: {ignored_header} does not have an exported class. Skipping...")
+                continue
             has_exported_class = module_export_line_match is not None
             # Replaces "class VTK*_EXPORT VTK_MARSHAL(AUTO|MANUAL) ..." with "class VTK*_EXPORT ..."
             if has_exported_class and existing_macro_line_match is not None:
-                new_lines = f.readlines()
+                new_lines.extend(f.readlines())
                 export_line_num, export_text_match = module_export_line_match
                 export_line_text = new_lines[export_line_num - 1]
                 target = existing_macro_line_match[1].group()
@@ -221,7 +222,7 @@ def update():
             # Removes vtkWrappingHints.h below the include of the vtk*Module.h
             if has_exported_class and wrap_hint_header_line_match is not None:
                 if not len(new_lines):
-                    new_lines = f.read_lines()
+                    new_lines.extend(f.readlines())
                 wrappings_hints_line = new_lines[wrap_hint_header_line_match[0] - 1]
                 new_lines.remove(wrappings_hints_line)
         # Writes the final result to the file

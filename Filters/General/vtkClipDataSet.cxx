@@ -219,14 +219,14 @@ int vtkClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
   estimatedSize = estimatedSize / 1024 * 1024; // multiple of 1024
   estimatedSize = std::max<vtkIdType>(estimatedSize, 1024);
   cellScalars = vtkSmartPointer<vtkFloatArray>::New();
-  cellScalars->Allocate(VTK_CELL_SIZE);
+  cellScalars->ReserveValues(VTK_CELL_SIZE);
   vtkSmartPointer<vtkCellArray> conn[2];
   conn[0] = conn[1] = nullptr;
   conn[0] = vtkSmartPointer<vtkCellArray>::New();
   conn[0]->AllocateEstimate(estimatedSize, 1);
   conn[0]->InitTraversal();
   types[0] = vtkSmartPointer<vtkUnsignedCharArray>::New();
-  types[0]->Allocate(estimatedSize, estimatedSize / 2);
+  types[0]->ReserveValues(estimatedSize);
   if (this->GenerateClippedOutput)
   {
     numOutputs = 2;
@@ -234,7 +234,7 @@ int vtkClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
     conn[1]->AllocateEstimate(estimatedSize, 1);
     conn[1]->InitTraversal();
     types[1] = vtkSmartPointer<vtkUnsignedCharArray>::New();
-    types[1]->Allocate(estimatedSize, estimatedSize / 2);
+    types[1]->ReserveValues(estimatedSize);
   }
   newPoints = vtkSmartPointer<vtkPoints>::New();
 
@@ -260,7 +260,7 @@ int vtkClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
     newPoints->SetDataType(VTK_DOUBLE);
   }
 
-  newPoints->Allocate(numPts, numPts / 2);
+  newPoints->Reserve(numPts);
 
   // locator used to merge potentially duplicate points
   if (this->Locator == nullptr)
@@ -399,8 +399,19 @@ int vtkClipDataSet::RequestData(vtkInformation* vtkNotUsed(request),
           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
           return (nPts == 3 ? VTK_TRIANGLE : (nPts == 4 ? VTK_QUAD : VTK_POLYGON));
 
-        case 3: // tetrahedra or wedges are generated------------------
-          return (nPts == 4 ? VTK_TETRA : VTK_WEDGE);
+        case 3: // tetrahedra/pyramids/wedges/hexes------------------
+          switch (nPts)
+          {
+            case 4:
+              return VTK_TETRA;
+            case 5:
+              return VTK_PYRAMID;
+            case 6:
+              return VTK_WEDGE;
+            default:
+            case 8:
+              return VTK_HEXAHEDRON;
+          }
 
         default:
           vtkErrorWithObjectMacro(nullptr, "Dimension cannot be lower than 0 or higher than 3");

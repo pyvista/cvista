@@ -344,7 +344,7 @@ vtkIdType vtkGreedyTerrainDecimation::FindTriangle(double x[3], vtkIdType ptIds[
         minProj = dp;
       }
     } // outside this edge
-  }   // for each edge
+  } // for each edge
 
   if (inside) // all edges have tested positive
   {
@@ -414,7 +414,7 @@ void vtkGreedyTerrainDecimation::CheckEdge(
   this->GetPoint(p2, x2);
 
   neighbors = vtkIdList::New();
-  neighbors->Allocate(2);
+  neighbors->Reserve(2);
 
   this->Mesh->GetCellEdgeNeighbors(tri, p1, p2, neighbors);
   numNei = neighbors->GetNumberOfIds();
@@ -459,7 +459,7 @@ void vtkGreedyTerrainDecimation::CheckEdge(
       this->CheckEdge(ptId, x, p1, p3, nei, depth);
 
     } // in circle
-  }   // interior edge
+  } // interior edge
 
   neighbors->Delete();
 }
@@ -757,7 +757,7 @@ int vtkGreedyTerrainDecimation::RequestData(vtkInformation* vtkNotUsed(request),
 
   // Scratch data structures
   this->Neighbors = vtkIdList::New();
-  this->Neighbors->Allocate(2);
+  this->Neighbors->Reserve(2);
 
   // Top element of VTK's priority queue returns the minimum error value. Since we want the
   // maximum error, we use 1/error relationship to insert errors.
@@ -771,7 +771,7 @@ int vtkGreedyTerrainDecimation::RequestData(vtkInformation* vtkNotUsed(request),
 
   vtkPoints* newPts = vtkPoints::New();
   newPts->SetDataTypeToDouble();
-  newPts->Allocate(numPts);
+  newPts->Reserve(numPts);
   this->Points = static_cast<vtkDoubleArray*>(newPts->GetData());
 
   // initialize the normals
@@ -779,7 +779,7 @@ int vtkGreedyTerrainDecimation::RequestData(vtkInformation* vtkNotUsed(request),
   {
     this->Normals = vtkFloatArray::New();
     this->Normals->SetNumberOfComponents(3);
-    this->Normals->Allocate(numPts * 3);
+    this->Normals->ReserveTuples(numPts);
     this->Normals->SetName("Normals");
   }
 
@@ -797,7 +797,7 @@ int vtkGreedyTerrainDecimation::RequestData(vtkInformation* vtkNotUsed(request),
   // Begin the algorithm proper. The image is initially triangulated with two triangles whose
   // four vertices are located at the corners of the input image.
   //
-  newPts->Allocate(numPts);
+  newPts->Reserve(numPts);
 
   inputPtId = 0;
   newPts->InsertPoint(0, bounds[0], bounds[2],
@@ -1006,8 +1006,8 @@ void vtkGreedyTerrainDecimation::UpdateTriangle(
               maxInputPtId = inputPtId;
             }
           } // if vertex not inserted
-        }   // for this scanline
-      }     // for all scanlines in this triangle
+        } // for this scanline
+      } // for all scanlines in this triangle
 
       if (type == VTK_BOTTOM_TRIANGLE)
       {

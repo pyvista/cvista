@@ -545,6 +545,8 @@ function (_vtk_module_wrap_python_library name)
       DEPENDS_EXPLICIT_ONLY)
   endif ()
 
+  set(_vtk_python_target "Py${name}")
+
   cmake_policy(PUSH)
   if(POLICY CMP0116)
     cmake_policy(SET CMP0116 NEW) # DEPFILE argument is relative to CMAKE_CURRENT_BINARY_DIR
@@ -592,7 +594,10 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
         GENERATED 1)
 
     set(_vtk_python_header_set_install_args)
-    add_library("${name}" STATIC)
+    add_library("${_vtk_python_target}" STATIC)
+    set_property(TARGET "${_vtk_python_target}"
+      PROPERTY
+        OUTPUT_NAME "${name}")
     if (NOT _vtk_build_USE_FILE_SETS)
       if (_vtk_python_INSTALL_HEADERS)
         install(
@@ -605,41 +610,44 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
         FILE_SET vtk_module_python_header_files
         DESTINATION "${_vtk_python_HEADERS_DESTINATION}"
         COMPONENT   "${_vtk_python_headers_component}")
-      _vtk_module_add_file_set("${name}"
+      _vtk_module_add_file_set("${_vtk_python_target}"
         NAME vtk_module_python_header_files
         FILES "${_vtk_python_module_header_file}")
     endif ()
 
-    target_sources("${name}"
+    target_sources("${_vtk_python_target}"
       PRIVATE
         ${_vtk_python_library_sources})
-    _vtk_module_add_file_set("${name}"
+    _vtk_module_add_file_set("${_vtk_python_target}"
       NAME      vtk_module_python_headers
       BASE_DIRS "${CMAKE_CURRENT_BINARY_DIR}/${_vtk_python_HEADERS_DESTINATION}"
       FILES     "${_vtk_python_module_header_file}")
-    target_include_directories("${name}"
+    target_include_directories("${_vtk_python_target}"
       INTERFACE
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/${_vtk_python_HEADERS_DESTINATION}>")
-    target_link_libraries("${name}"
+    target_link_libraries("${_vtk_python_target}"
       PUBLIC
         VTK::Python)
 
     if (_vtk_python_UTILITY_TARGET)
-      target_link_libraries("${name}"
+      target_link_libraries("${_vtk_python_target}"
         PRIVATE
           "${_vtk_python_UTILITY_TARGET}")
     endif ()
 
-    set_property(TARGET "${name}"
+    set_property(TARGET "${_vtk_python_target}"
       PROPERTY
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${_vtk_python_STATIC_MODULE_DESTINATION}")
   else ()
-    add_library("${name}" MODULE)
-    target_sources("${name}"
+    add_library("${_vtk_python_target}" MODULE)
+    set_property(TARGET "${_vtk_python_target}"
+      PROPERTY
+        OUTPUT_NAME "${name}")
+    target_sources("${_vtk_python_target}"
       PRIVATE
         ${_vtk_python_library_sources})
     # Add a dummy file set to optimize dependencies. See CMP0154.
-    _vtk_module_add_file_set("${name}"
+    _vtk_module_add_file_set("${_vtk_python_target}"
       BASE_DIRS "${CMAKE_CURRENT_BINARY_DIR}"
       NAME      dummy)
     if (WIN32 AND NOT CYGWIN)
@@ -657,16 +665,16 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
         else ()
           set(_vtk_python_append_flag APPEND_STRING)
         endif ()
-        set_property(TARGET "${name}"
+        set_property(TARGET "${_vtk_python_target}"
           ${_vtk_python_append_flag}
           PROPERTY
             DEBUG_POSTFIX "_d")
       endif ()
-      set_property(TARGET "${name}"
+      set_property(TARGET "${_vtk_python_target}"
         PROPERTY
           SUFFIX ".pyd")
     endif ()
-    set_property(TARGET "${name}"
+    set_property(TARGET "${_vtk_python_target}"
       PROPERTY
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${_vtk_python_MODULE_DESTINATION}/${_vtk_python_package_path}")
     get_property(_vtk_python_is_multi_config GLOBAL
@@ -676,31 +684,31 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
       # will error about overlapping output paths.
       foreach (_vtk_python_config IN LISTS CMAKE_CONFIGURATION_TYPES)
         string(TOUPPER "${_vtk_python_config}" _vtk_python_config_upper)
-        set_property(TARGET "${name}"
+        set_property(TARGET "${_vtk_python_target}"
           PROPERTY
             "LIBRARY_OUTPUT_DIRECTORY_${_vtk_python_config_upper}" "${CMAKE_BINARY_DIR}/${_vtk_python_MODULE_DESTINATION}/${_vtk_python_package_path}")
       endforeach ()
     endif ()
 
     if (_vtk_python_UTILITY_TARGET)
-      target_link_libraries("${name}"
+      target_link_libraries("${_vtk_python_target}"
         PRIVATE
           "${_vtk_python_UTILITY_TARGET}")
     endif ()
 
-    set_target_properties("${name}"
+    set_target_properties("${_vtk_python_target}"
       PROPERTIES
         PREFIX ""
         OUTPUT_NAME "${_vtk_python_library_name}"
-        ARCHIVE_OUTPUT_NAME "${name}")
+        ARCHIVE_OUTPUT_NAME "${_vtk_python_target}")
   endif ()
 
   vtk_module_autoinit(
     MODULES ${ARGN}
-    TARGETS "${name}")
+    TARGETS "${_vtk_python_target}")
 
   # The wrapper code will expand PYTHON_PACKAGE as needed
-  target_compile_definitions("${name}"
+  target_compile_definitions("${_vtk_python_target}"
     PRIVATE
       "-DPYTHON_PACKAGE=\"${_vtk_python_PYTHON_PACKAGE}\"")
 
@@ -709,9 +717,10 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
   # CPython limited API so a single cp3x-abi3 wheel serves all newer CPython, and
   # names the module with the stable-ABI ".abi3.so" suffix (loaded by any
   # CPython >= the Py_LIMITED_API floor) instead of the version-specific
-  # ".cpython-3XX-<plat>.so".
+  # ".cpython-3XX-<plat>.so". (9.7 renamed the wrapper target to Py${name} =
+  # ${_vtk_python_target}, so abi3 properties are set on that target.)
   if (CVISTA_ABI3)
-    target_compile_definitions("${name}"
+    target_compile_definitions("${_vtk_python_target}"
       PRIVATE
         "Py_LIMITED_API=${CVISTA_ABI3_VERSION}")
     # Stable-ABI module filename: clear the version-specific SOABI postfix
@@ -725,11 +734,11 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
     foreach (_cvista_abi3_config IN LISTS _cvista_abi3_configs)
       string(TOUPPER "${_cvista_abi3_config}" _cvista_abi3_upper)
       if (_cvista_abi3_upper)
-        set_property(TARGET "${name}" PROPERTY "${_cvista_abi3_upper}_POSTFIX" "")
+        set_property(TARGET "${_vtk_python_target}" PROPERTY "${_cvista_abi3_upper}_POSTFIX" "")
       endif ()
     endforeach ()
     if (WIN32)
-      set_property(TARGET "${name}" PROPERTY SUFFIX ".pyd")
+      set_property(TARGET "${_vtk_python_target}" PROPERTY SUFFIX ".pyd")
       # NOTE: the abi3 (Py_LIMITED_API) Windows link fixes live in
       # Utilities/Python/CMakeLists.txt (one global fix for ALL Python-using
       # links, incl. the WrappingPythonCore module which is NOT a wrapper target
@@ -738,11 +747,11 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
       # and Python3::Module's import lib is retargeted to the stable-ABI stub
       # python3.lib so the .pyd depends on python3.dll, not python3XX.dll.
     else ()
-      set_property(TARGET "${name}" PROPERTY SUFFIX ".abi3.so")
+      set_property(TARGET "${_vtk_python_target}" PROPERTY SUFFIX ".abi3.so")
     endif ()
   endif ()
 
-  target_link_libraries("${name}"
+  target_link_libraries("${_vtk_python_target}"
     PRIVATE
       ${ARGN}
       VTK::WrappingPythonCore
@@ -760,7 +769,7 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
   endif ()
 
   install(
-    TARGETS             "${name}"
+    TARGETS             "${_vtk_python_target}"
     ${_vtk_python_export}
     COMPONENT           "${_vtk_python_wrap_component}"
     RUNTIME DESTINATION "${_vtk_python_MODULE_DESTINATION}/${_vtk_python_package_path}"
@@ -1097,6 +1106,7 @@ function (vtk_module_wrap_python)
   set(CMAKE_AUTORCC 0)
   set(CMAKE_AUTOUIC 0)
 
+  set(_vtk_python_all_modules_targets)
   set(_vtk_python_all_modules)
   set(_vtk_python_all_wrapped_modules)
   foreach (_vtk_python_module IN LISTS _vtk_python_sorted_modules_filtered)
@@ -1105,7 +1115,9 @@ function (vtk_module_wrap_python)
       VARIABLE  _vtk_python_library_name)
     _vtk_module_wrap_python_library("${_vtk_python_library_name}Python" "${_vtk_python_module}")
 
-    if (TARGET "${_vtk_python_library_name}Python")
+    if (TARGET "Py${_vtk_python_library_name}Python")
+      list(APPEND _vtk_python_all_modules_targets
+        "Py${_vtk_python_library_name}Python")
       list(APPEND _vtk_python_all_modules
         "${_vtk_python_library_name}Python")
       list(APPEND _vtk_python_all_wrapped_modules
@@ -1113,7 +1125,7 @@ function (vtk_module_wrap_python)
     endif ()
   endforeach ()
 
-  if (NOT _vtk_python_all_modules)
+  if (NOT _vtk_python_all_modules_targets)
     message(FATAL_ERROR
       "No modules given could be wrapped.")
   endif ()
@@ -1155,19 +1167,29 @@ function (vtk_module_wrap_python)
     set(_vtk_python_all_modules_include_file
       "${CMAKE_CURRENT_BINARY_DIR}/${_vtk_python_HEADERS_DESTINATION}/${_vtk_python_TARGET_NAME}.h")
     set(_vtk_python_all_modules_include_content
-      "#ifndef ${_vtk_python_TARGET_NAME}_h\n#define ${_vtk_python_TARGET_NAME}_h\n")
+      "#ifndef ${_vtk_python_TARGET_NAME}_h\n#define ${_vtk_python_TARGET_NAME}_h\n\n")
 
     if (_vtk_python_BUILD_STATIC)
+      string(APPEND _vtk_python_all_modules_include_content
+        "// Module initialization function headers.\n")
       foreach (_vtk_python_module IN LISTS _vtk_python_all_modules)
         string(APPEND _vtk_python_all_modules_include_content
           "#include \"${_vtk_python_module}.h\"\n")
       endforeach ()
+      string(APPEND _vtk_python_all_modules_include_content
+        "\n")
     endif ()
 
-    foreach (_vtk_python_depend IN LISTS _vtk_python_depends)
+    if (_vtk_python_depends)
       string(APPEND _vtk_python_all_modules_include_content
-        "#include \"${_vtk_python_depend}.h\"\n")
-    endforeach ()
+        "// Dependent bundles of Python modules.\n")
+      foreach (_vtk_python_depend IN LISTS _vtk_python_depends)
+        string(APPEND _vtk_python_all_modules_include_content
+          "#include \"${_vtk_python_depend}.h\"\n")
+      endforeach ()
+      string(APPEND _vtk_python_all_modules_include_content
+        "\n")
+    endif ()
 
     string(APPEND _vtk_python_all_modules_include_content
 "#define PY_APPEND_INIT(module) PyImport_AppendInittab(\"${_vtk_python_import_prefix}\" #module, PyInit_ ## module)
@@ -1193,7 +1215,7 @@ static void ${_vtk_python_TARGET_NAME}_load() {\n")
         _vtk_module_get_module_property("${_vtk_python_module}"
           PROPERTY  "library_name"
           VARIABLE  _vtk_python_library_name)
-        if (TARGET "${_vtk_python_library_name}Python")
+        if (TARGET "Py${_vtk_python_library_name}Python")
           string(APPEND _vtk_python_all_modules_include_content
             "  PY_APPEND_INIT_OR_IMPORT(${_vtk_python_library_name}, do_import);\n")
         endif ()
@@ -1221,13 +1243,13 @@ static void ${_vtk_python_TARGET_NAME}_load() {\n")
       # TODO: Install these targets.
       target_link_libraries("${_vtk_python_TARGET_NAME}"
         INTERFACE
-          ${_vtk_python_all_modules})
+          ${_vtk_python_all_modules_targets})
     endif ()
 
     if (_vtk_python_WRAP_TARGET)
       add_custom_target("${_vtk_python_WRAP_TARGET}"
         DEPENDS
-          ${_vtk_python_all_modules})
+          ${_vtk_python_all_modules_targets})
     endif ()
 
     if (_vtk_python_BUILD_STATIC)
@@ -1339,8 +1361,8 @@ static void ${_vtk_python_TARGET_NAME}_load() {\n")
         list(APPEND _vtk_python_pyi_files
           "${CMAKE_BINARY_DIR}/${_vtk_python_MODULE_DESTINATION}/${_vtk_python_package_dir}/${_vtk_python_library_name}.pyi")
         list(APPEND _vtk_python_modules "${_vtk_python_library_name}")
-        if (TARGET "${_vtk_python_library_name}Python")
-          list(APPEND _vtk_python_module_targets "${_vtk_python_library_name}Python")
+        if (TARGET "Py${_vtk_python_library_name}Python")
+          list(APPEND _vtk_python_module_targets "Py${_vtk_python_library_name}Python")
         endif ()
       endforeach ()
       list(APPEND _vtk_python_pyi_files
@@ -1523,7 +1545,7 @@ function (vtk_module_add_python_package name)
   cmake_policy(POP)
 
   get_property(_vtk_add_python_package_module GLOBAL
-    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
+    PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
   add_custom_target("${_vtk_add_python_package_module}-${_vtk_add_python_package_PACKAGE}" ALL
     DEPENDS
       ${_vtk_add_python_package_file_outputs})
@@ -1574,7 +1596,7 @@ function (vtk_module_add_python_module name)
   get_property(_vtk_add_python_module_depends GLOBAL
     PROPERTY "_vtk_module_${_vtk_build_module}_depends")
   get_property(_vtk_add_python_module_target_name GLOBAL
-    PROPERTY "_vtk_module_${_vtk_build_module}_target_name")
+    PROPERTY "_vtk_module_${_vtk_build_module}_library_name")
   add_library("${_vtk_add_python_module_target_name}" INTERFACE)
   target_link_libraries("${_vtk_add_python_module_target_name}"
     INTERFACE

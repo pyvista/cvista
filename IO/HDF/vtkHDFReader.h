@@ -12,11 +12,10 @@
  *
  * Serial and parallel reading are supported, with the possibility of piece selection.
  *
- * This reader provides an internal cache with the `UseCache` option,
- * improving read performance for temporal datasets when the geometry is constant between time
- * steps.
- *
- * For non-composite datasets, constant geometry does not change the MeshMTime between time steps.
+ * This reader uses an internal cache which avoid reading and modifying data when not needed, which
+ * increase reading performance for temporal datasets when the geometry is constant between time
+ * steps, with a constant MeshMTime. Please note this cache is not used when reading
+ * vtkOverlappingAMR and vtkHyperTreeGrid.
  *
  * Major version of the specification should be incremented when older readers can no
  * longer read files written for this reader. Minor versions are
@@ -32,6 +31,7 @@
 
 #include "vtkDataAssembly.h" // For vtkDataAssembly
 #include "vtkDataObjectAlgorithm.h"
+#include "vtkDeprecation.h"  // For VTK_DEPRECATED_IN_9_7_0 VTK_DEPRECATED_IN_9_6_0
 #include "vtkIOHDFModule.h"  // For export macro
 #include "vtkSmartPointer.h" // For vtkSmartPointer
 
@@ -45,7 +45,6 @@ class vtkCallbackCommand;
 class vtkCellData;
 class vtkCommand;
 class vtkDataArraySelection;
-class vtkDataObjectMeshCache;
 class vtkDataSet;
 class vtkDataSetAttributes;
 class vtkHyperTreeGrid;
@@ -58,7 +57,10 @@ class vtkPartitionedDataSet;
 class vtkPartitionedDataSetCollection;
 class vtkPointData;
 class vtkPolyData;
+class vtkRectilinearGrid;
 class vtkResourceStream;
+class vtkStructuredGrid;
+class vtkTable;
 class vtkUnstructuredGrid;
 
 namespace vtkHDFUtilities
@@ -93,14 +95,41 @@ public:
   vtkResourceStream* GetStream();
   ///@}
 
+  enum
+  {
+    Block,
+    Interleave
+  };
+
+  ///@{
   /**
-   * Test whether the file (type) with the given name can be read by this
-   * reader. If the file has a newer version than the reader, we still say
-   * we can read the file type and we fail later, when we try to read the file.
-   * This enables clients (ParaView) to distinguish between failures when we
-   * need to look for another reader and failures when we don't.
+   * Set the strategy for assigning files to parallel readers. The default is
+   * @a Block.
+   *
+   * Let @a X be the rank of a specific reader, and @a N be the number of
+   * reader, then:
+   * @arg @c Block Each processor is assigned a contiguous block of files,
+   *      [@a X * @a N, ( @a X + 1) * @a N ).
+   * @arg @c Interleave The files are interleaved across readers,
+   * @a i * @a N + @a X.
+   * @{
    */
-  virtual int CanReadFile(VTK_FILEPATH const char* name);
+  vtkSetClampMacro(PieceDistribution, int, Block, Interleave);
+  vtkGetMacro(PieceDistribution, int);
+  ///@}
+
+  /**
+   * Return true if, after a quick check of file header, it looks like the provided file or stream
+   * can be read. Return false if it is sure it cannot be read. The stream version may move the
+   * stream cursor. The filename version should be static but is not for backward compatibility
+   * reasons. It does not modify nor uses members. If the file has a newer version than the reader,
+   * this still returns true and the reader will fail on reading. This enables clients (ParaView) to
+   * distinguish between failures when we need to look for another reader and failures when we
+   * don't.
+   */
+  virtual vtkTypeBool CanReadFile(VTK_FILEPATH const char* name);
+  static bool CanReadFile(vtkResourceStream* stream);
+  ///@}
 
   ///@{
   /**
@@ -118,6 +147,7 @@ public:
   virtual vtkDataArraySelection* GetPointDataArraySelection();
   virtual vtkDataArraySelection* GetCellDataArraySelection();
   virtual vtkDataArraySelection* GetFieldDataArraySelection();
+  virtual vtkDataArraySelection* GetRowDataArraySelection();
   ///@}
 
   ///@{
@@ -156,46 +186,16 @@ public:
 
   ///@{
   /**
-   * Boolean property determining whether to use the internal cache or not (default is false).
-   *
-   * Internal cache is useful when reading temporal data to never re-read something that has
-   * already been cached.
-   *
-   * @note Incompatible with MergeParts as vtkAppendDataSet which is used internally doesn't
-   * support static mesh.
+   * Boolean property determining whether to use the internal cache or not (default is true).
    */
-  vtkGetMacro(UseCache, bool);
-  vtkSetMacro(UseCache, bool);
-  vtkBooleanMacro(UseCache, bool);
-  ///@}
-
-  ///@{
-  /**
-   *  /!\ Now deprecated due to its limitations regarding cache, please do not use!
-   * Settings this flag will have no effect.
-   * This option can be replaced by the vtkMergeBlocks filter.
-   *
-   * Boolean property determining whether to merge partitions when reading unstructured data.
-   *
-   * Merging partitions (true) allows the reader to return either `vtkUnstructuredGrid` or
-   * `vtkPolyData` directly while not merging (false) them returns a `vtkPartitionedDataSet`. It is
-   * advised to set this value to false when using the internal cache (UseCache == true) since the
-   * partitions are what are stored in the cache and merging them before outputting would
-   * effectively double the memory constraints.
-   *
-   * Default is false
-   *
-   * @note Incompatible with UseCache as vtkAppendDataSet which is used internally doesn't
-   * support static mesh.
-   */
-  VTK_DEPRECATED_IN_9_5_0("Use vtkMergeBlocks or vtkAppendDataSets instead.")
-  vtkGetMacro(MergeParts, bool);
-  VTK_DEPRECATED_IN_9_5_0("Use vtkMergeBlocks vtkAppendDataSets instead.")
-  vtkSetMacro(MergeParts, bool);
-  VTK_DEPRECATED_IN_9_5_0("Use vtkMergeBlocks vtkAppendDataSets instead.")
-  virtual void MergePartsOn();
-  VTK_DEPRECATED_IN_9_5_0("Use vtkMergeBlocks vtkAppendDataSets instead.")
-  virtual void MergePartsOff();
+  VTK_DEPRECATED_IN_9_7_0("Do not use, cache is on by default and should not be disabled.")
+  virtual bool GetUseCache();
+  VTK_DEPRECATED_IN_9_7_0("Do not use, cache is on by default and should not be disabled.")
+  virtual void SetUseCache(bool use);
+  VTK_DEPRECATED_IN_9_7_0("Do not use, cache is on by default and should not be disabled.")
+  virtual void UseCacheOn();
+  VTK_DEPRECATED_IN_9_7_0("Do not use, cache is on by default and should not be disabled.")
+  virtual void UseCacheOff();
   ///@}
 
   ///@{
@@ -213,7 +213,9 @@ public:
   /**
    * Get or Set the Original id name of an attribute (POINT, CELL, FIELD...)
    */
+  VTK_DEPRECATED_IN_9_7_0("Do not use, will be removed.")
   std::string GetAttributeOriginalIdName(vtkIdType attribute);
+  VTK_DEPRECATED_IN_9_7_0("Do not use, will be removed.")
   void SetAttributeOriginalIdName(vtkIdType attribute, const std::string& name);
   ///@}
 
@@ -238,6 +240,9 @@ protected:
    * Returns 1 if successful, 0 otherwise.
    */
   int Read(vtkInformation* outInfo, vtkImageData* data);
+  int Read(vtkInformation* outInfo, vtkRectilinearGrid* data);
+  int Read(vtkInformation* outInfo, vtkStructuredGrid* data);
+  int Read(vtkInformation* outInfo, vtkTable* data);
   int Read(vtkInformation* outInfo, vtkUnstructuredGrid* data, vtkPartitionedDataSet* pData);
   int Read(vtkInformation* outInfo, vtkPolyData* data, vtkPartitionedDataSet* pData);
   int Read(vtkInformation* outInfo, vtkHyperTreeGrid* data, vtkPartitionedDataSet* pData);
@@ -257,6 +262,7 @@ protected:
   /**
    * Read the field arrays from the file and add them to the dataset.
    */
+  VTK_DEPRECATED_IN_9_7_0("This method is deprecated, do not use")
   int AddFieldArrays(vtkDataObject* data);
 
   /**
@@ -300,9 +306,9 @@ protected:
 
   /**
    * The array selections.
-   * in the same order as vtkDataObject::AttributeTypes: POINT, CELL, FIELD
+   * Key is vtkDataObject::AttributeTypes: POINT, CELL, FIELD,...
    */
-  vtkDataArraySelection* DataArraySelection[3];
+  std::map<int, vtkDataArraySelection*> DataArraySelection;
 
   /**
    * The observer to modify this object when the array selections are
@@ -326,16 +332,9 @@ protected:
   std::array<double, 2> TimeRange;
   ///@}
 
-  /**
-   * /!\ Now deprecated, do not use
-   * Determine whether to merge the partitions (true) or return a vtkPartitionedDataSet (false)
-   */
-  // VTK_DEPRECATED_IN_9_5_0( )
-  bool MergeParts = false;
-
   unsigned int MaximumLevelsToReadByDefaultForAMR = 0;
 
-  bool UseCache = false;
+  bool UseCache = true;
   struct DataCache;
   std::shared_ptr<DataCache> Cache;
 
@@ -351,6 +350,21 @@ private:
    * following the type of 'data'.
    */
   bool ReadData(vtkInformation* outInfo, vtkDataObject* data);
+
+  /**
+   * Read structured data (image, rectilinear grid, structured grid) into the provided
+   * dataset and according to the provided dimensions.
+   * Return true on success, false otherwise
+   */
+  bool ReadStructuredData(
+    vtkDataSet* data, const int* WholeExtent, const std::vector<int>& updateExtent);
+
+  /**
+   * Read the actual data into the provided amr up to maxLevel
+   * Return true on success, false otherwise
+   */
+  bool ReadAMRData(vtkOverlappingAMR* data, unsigned int maxLevel,
+    const std::map<int, vtkDataArraySelection*>& dataArraySelection, bool isTemporalData);
 
   /**
    * Read 'pieceData' specified by 'filePiece' where
@@ -382,7 +396,17 @@ private:
   void SetHasTemporalData(bool useTemporalData);
 
   /**
-   * Generate the vtkDataAssembly used for vtkPartitionedDataSetCollection and store it in Assembly.
+   * Return the list of file block ids to read, using the selected PieceDistribution mode.
+   * pieceIdx: index of the piece to be retrieved by the reader
+   * numDatasets: total number of datasets (pieces) present in the file
+   * numPieces: total number of pieces to be read.
+   */
+  std::vector<int> GetPieceAssignmentForDistribution(
+    int pieceIdx, int numDatasets, int numPieces) const;
+
+  /**
+   * Generate the vtkDataAssembly used for vtkPartitionedDataSetCollection and store it in
+   * Assembly.
    */
   void GenerateAssembly();
 
@@ -399,25 +423,11 @@ private:
   bool RetrieveDataArraysFromAssembly();
 
   /**
-   * Helper function to add Ids in the attribute arrays of a dataset.
-   * Those ids are used in the DataObjectMeshCache to restore the
-   * corresponding attributes when copying the content of the cache.
-   * It returns a boolean indicating if the array was correctly added.
-   * Also returns false if the array already exists.
+   * Read the field arrays from the file and add them to the dataset.
    */
-  bool AddOriginalIds(vtkDataSetAttributes* attributes, vtkIdType size, const std::string& name);
+  bool ReadFieldArrays(vtkDataObject* data);
 
-  /**
-   * Removes the arrays for each partition from the object given in
-   * parameter containing the original ids use in the static mesh cache.
-   * It allows to avoid passing those arrays to subsequent pipeline
-   * elements.
-   */
-  void CleanOriginalIds(vtkPartitionedDataSet* output);
-
-  bool MeshGeometryChangedFromPreviousTimeStep = true;
-
-  vtkNew<vtkDataObjectMeshCache> MeshCache;
+  vtkSmartPointer<vtkDataObject> OutputCache;
 
   std::map<vtkIdType, std::string> AttributesOriginalIdName{
     { vtkDataObject::POINT, "__pointsOriginalIds__" },
@@ -426,6 +436,7 @@ private:
 
   bool HasTemporalData = false;
   std::string CompositeCachePath; // Identifier for the current composite piece
+  int PieceDistribution = Interleave;
 };
 
 VTK_ABI_NAMESPACE_END

@@ -330,7 +330,9 @@ int vtkAppendFilter::RequestData(vtkInformation* vtkNotUsed(request),
   }
 
   // append point data.
-  vtkAppendFilter::AppendArrays(vtkDataObject::POINT, inputVector, output, totalNumberOfPoints);
+  auto nonEmptyDatasets = vtkAppendFilter::GetNonEmptyInputs(inputVector);
+  vtkAppendFilter::AppendArrays(
+    nonEmptyDatasets, vtkDataObject::POINT, output, totalNumberOfPoints, this->UseImplicitArray);
   this->UpdateProgress(0.30);
   if (this->CheckAbort())
   {
@@ -633,7 +635,8 @@ int vtkAppendFilter::RequestData(vtkInformation* vtkNotUsed(request),
   // Since cells are not merged, this filter can easily pass all field arrays, including global ids.
   auto outputCD = output->GetCellData();
   outputCD->CopyAllOn(vtkDataSetAttributes::COPYTUPLE);
-  vtkAppendFilter::AppendArrays(vtkDataObject::CELL, inputVector, output, totalNumberOfCells);
+  vtkAppendFilter::AppendArrays(
+    nonEmptyDatasets, vtkDataObject::CELL, output, totalNumberOfCells, this->UseImplicitArray);
   this->UpdateProgress(1.00);
 
   // Release memory
@@ -643,10 +646,9 @@ int vtkAppendFilter::RequestData(vtkInformation* vtkNotUsed(request),
 }
 
 //------------------------------------------------------------------------------
-std::vector<vtkSmartPointer<vtkDataSet>> vtkAppendFilter::GetNonEmptyInputs(
-  vtkInformationVector** inputVector)
+std::vector<vtkDataSet*> vtkAppendFilter::GetNonEmptyInputs(vtkInformationVector** inputVector)
 {
-  std::vector<vtkSmartPointer<vtkDataSet>> collection;
+  std::vector<vtkDataSet*> collection;
   int numInputs = inputVector[0]->GetNumberOfInformationObjects();
   for (int inputIndex = 0; inputIndex < numInputs; ++inputIndex)
   {
@@ -662,7 +664,7 @@ std::vector<vtkSmartPointer<vtkDataSet>> vtkAppendFilter::GetNonEmptyInputs(
       {
         continue; // no input, just skip
       }
-      collection.emplace_back(dataSet);
+      collection.push_back(dataSet);
     }
   }
 
@@ -670,19 +672,19 @@ std::vector<vtkSmartPointer<vtkDataSet>> vtkAppendFilter::GetNonEmptyInputs(
 }
 
 //------------------------------------------------------------------------------
-void vtkAppendFilter::AppendArrays(int attributesType, vtkInformationVector** inputVector,
-  vtkUnstructuredGrid* output, vtkIdType totalNumberOfElements)
+void vtkAppendFilter::AppendArrays(const std::vector<vtkDataSet*>& datasets, int attributesType,
+  vtkDataSet* output, vtkIdType totalNumberOfElements, bool useImplicit)
 {
   // Check if attributesType is supported
   if (attributesType != vtkDataObject::POINT && attributesType != vtkDataObject::CELL)
   {
-    vtkErrorMacro(<< "Unhandled attributes type " << attributesType << ", must be either "
-                  << "vtkDataObject::POINT or vtkDataObject::CELL");
+    vtkErrorWithObjectMacro(nullptr, << "Unhandled attributes type " << attributesType
+                                     << ", must be either "
+                                     << "vtkDataObject::POINT or vtkDataObject::CELL");
     return;
   }
 
   vtkDataSetAttributes::FieldList fieldList;
-  auto datasets = this->GetNonEmptyInputs(inputVector);
   std::vector<vtkIdType> offsets;
   vtkIdType prevOffset = 0;
   for (const auto& dataset : datasets)
@@ -700,21 +702,35 @@ void vtkAppendFilter::AppendArrays(int attributesType, vtkInformationVector** in
   }
 
   vtkDataSetAttributes* outputData = output->GetAttributes(attributesType);
-  outputData->CopyAllocate(fieldList, totalNumberOfElements);
-  outputData->SetNumberOfTuples(totalNumberOfElements);
-  // copy arrays.
-  vtkSMPTools::For(0, static_cast<vtkIdType>(datasets.size()),
-    [&](vtkIdType begin, vtkIdType end)
+
+  if (useImplicit)
+  {
+    std::vector<vtkFieldData*> fieldsData;
+    fieldsData.reserve(datasets.size());
+    for (auto& dataset : datasets)
     {
-      for (vtkIdType idx = begin; idx < end; ++idx)
+      fieldsData.emplace_back(dataset->GetAttributes(attributesType));
+    }
+    fieldList.GenerateCompositeArray(fieldsData, outputData);
+  }
+  else
+  {
+    outputData->CopyAllocate(fieldList, totalNumberOfElements);
+    outputData->SetNumberOfTuples(totalNumberOfElements);
+    // copy arrays.
+    vtkSMPTools::For(0, static_cast<vtkIdType>(datasets.size()),
+      [&](vtkIdType begin, vtkIdType end)
       {
-        auto& dataSet = datasets[idx];
-        const auto& offset = offsets[idx];
-        auto inputData = dataSet->GetAttributes(attributesType);
-        const auto numberOfInputTuples = inputData->GetNumberOfTuples();
-        fieldList.CopyData(idx, inputData, 0, numberOfInputTuples, outputData, offset);
-      }
-    });
+        for (vtkIdType idx = begin; idx < end; ++idx)
+        {
+          auto& dataSet = datasets[idx];
+          const auto& offset = offsets[idx];
+          auto inputData = dataSet->GetAttributes(attributesType);
+          const auto numberOfInputTuples = inputData->GetNumberOfTuples();
+          fieldList.CopyData(idx, inputData, 0, numberOfInputTuples, outputData, offset);
+        }
+      });
+  }
 }
 
 //------------------------------------------------------------------------------

@@ -105,6 +105,7 @@ XdmfHDF::GetHDFVersion(void){
   } 
 
   toReturn = (XdmfConstString)Version.str();
+  Version.rdbuf()->freeze(0);
   return(toReturn);
 }
 //
@@ -776,6 +777,7 @@ XdmfHDF::DoOpen( XdmfConstString DataSetName, XdmfConstString access ) {
       this->File = H5Fopen(FullFileName.str(), flags, this->AccessPlist);
     }
 XdmfDebug("this->File = " << this->File);
+  FullFileName.rdbuf()->freeze(0);
   if( this->File < 0 ){
     XdmfDebug("Open failed, Checking for Create");
     if( AllowCreate ) {
@@ -806,12 +808,14 @@ XdmfDebug("this->File = " << this->File);
         H5F_ACC_TRUNC,
         this->CreatePlist,
         this->AccessPlist);
+      FullFileName.rdbuf()->freeze(0);
       if( this->File < 0 ){
         XdmfErrorMessage( "Cannot create " << this->GetFileName() );
         return( XDMF_FAIL );  
       }
     } else {
       XdmfErrorMessage( "Cannot open " << this->GetFileName() << " / " << FullFileName.str() );
+      FullFileName.rdbuf()->freeze(0);
       return( XDMF_FAIL );  
     }
   }
@@ -881,12 +885,14 @@ XdmfArray *CopyArray( XdmfArray *Source, XdmfArray *Target ) {
 Hdf.Open( str.str(), "rw" );
   if( Hdf.CreateDataset( str.str()) != XDMF_SUCCESS ){
     XdmfErrorMessage("Can't Create Temp Dataset " << str.str());
+    str.rdbuf()->freeze(0);
     if( NewArray ){
       delete NewArray;
     }
     Hdf.Close();
     return( NULL );
   }
+  str.rdbuf()->freeze(0);
   if( Hdf.Write( Source ) == XDMF_FAIL){
     XdmfErrorMessage("Can't Write Temp Dataset");
     if( NewArray ){

@@ -19,7 +19,16 @@
 #define VTK_BSPLINE_KERNEL_SIZE_MAX (VTK_IMAGE_BSPLINE_DEGREE_MAX + 1)
 #define VTK_BSPLINE_INT_INITIALIZER                                                                \
   {                                                                                                \
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,                                                                  \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
+    0,                                                                                             \
   }
 
 // kernel lookup table size must be 256*n where n is kernel half-width
@@ -244,17 +253,17 @@ void vtkBSplineInterpWeights(T* kernel, F* fX, F fx, int m)
 template <class F, class T>
 struct vtkImageBSplineInterpolate
 {
-  static void BSpline(vtkInterpolationInfo* info, const F point[3], F* outPtr);
+  static void BSpline(VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr);
 };
 
 //------------------------------------------------------------------------------
 template <class F, class T>
 void vtkImageBSplineInterpolate<F, T>::BSpline(
-  vtkInterpolationInfo* info, const F point[3], F* outPtr)
+  VTK_FUTURE_CONST vtkInterpolationInfo* info, const F point[3], F* outPtr)
 {
   const T* inPtr = static_cast<const T*>(info->Pointer);
-  int* inExt = info->Extent;
-  vtkIdType* inInc = info->Increments;
+  const int* inExt = info->Extent;
+  const vtkIdType* inInc = info->Increments;
   int numscalars = info->NumberOfComponents;
 
 #ifdef VTK_BSPLINE_USE_KERNEL_TABLE
@@ -432,7 +441,7 @@ void vtkImageBSplineInterpolate<F, T>::BSpline(
 // Get the interpolation function for the specified data types
 template <class F>
 void vtkImageBSplineInterpolatorGetInterpolationFunc(
-  void (**interpolate)(vtkInterpolationInfo*, const F[3], F*), int dataType,
+  void (**interpolate)(VTK_FUTURE_CONST vtkInterpolationInfo*, const F[3], F*), int dataType,
   int vtkNotUsed(interpolationMode))
 {
   switch (dataType)
@@ -741,7 +750,7 @@ void vtkImageBSplineInterpolatorPrecomputeWeights(const F newmat[16], const int 
 
 //------------------------------------------------------------------------------
 void vtkImageBSplineInterpolator::GetInterpolationFunc(
-  void (**func)(vtkInterpolationInfo*, const double[3], double*))
+  void (**func)(VTK_FUTURE_CONST vtkInterpolationInfo*, const double[3], double*))
 {
   vtkImageBSplineInterpolatorGetInterpolationFunc(
     func, this->InterpolationInfo->ScalarType, this->SplineDegree);
@@ -749,7 +758,7 @@ void vtkImageBSplineInterpolator::GetInterpolationFunc(
 
 //------------------------------------------------------------------------------
 void vtkImageBSplineInterpolator::GetInterpolationFunc(
-  void (**func)(vtkInterpolationInfo*, const float[3], float*))
+  void (**func)(VTK_FUTURE_CONST vtkInterpolationInfo*, const float[3], float*))
 {
   vtkImageBSplineInterpolatorGetInterpolationFunc(
     func, this->InterpolationInfo->ScalarType, this->SplineDegree);

@@ -12,6 +12,7 @@
 #define vtkPoints_h
 
 #include "vtkCommonCoreModule.h" // For export macro
+#include "vtkDeprecation.h"      // For VTK_DEPRECATED_IN_9_7_0
 #include "vtkObject.h"
 #include "vtkWrappingHints.h" // For VTK_MARSHALAUTO
 
@@ -33,6 +34,7 @@ public:
   /**
    * Allocate initial memory size. ext is no longer used.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use Reserve() to allocate or Initialize() to deallocate.")
   virtual vtkTypeBool Allocate(vtkIdType sz, vtkIdType ext = 1000);
 
   /**
@@ -78,7 +80,11 @@ public:
    * Return a void pointer. For image pipeline interface and other
    * special pointer manipulation.
    */
-  void* GetVoidPointer(const int id) { return this->Data->GetVoidPointer(id); }
+  VTK_DEPRECATED_IN_9_7_0("Use vtkArrayDispatch")
+  void* GetVoidPointer(const int id)
+  {
+    return this->Data->GetVoidPointer(id); // NOLINT(bugprone-unsafe-functions)
+  }
 
   /**
    * Reclaim any extra memory.
@@ -215,7 +221,18 @@ public:
    * resizing succeeded (including shrinking) and 0 (or throw std::bad_alloc
    * based on VTK_DONT_THROW_BAD_ALLOC configuration) otherwise.
    */
+  VTK_DEPRECATED_IN_9_7_0("Use Reserve, Squeeze or Initialize")
   vtkTypeBool Resize(vtkIdType numPoints);
+
+  /**
+   * Reserve the internal array to the requested number of points and preserve data.
+   *
+   * Increasing the array capacity may allocate extra memory beyond what was
+   * requested. MaxId will not be modified when increasing array size.
+   *
+   * Returns 1 if resizing succeeded and 0 otherwise.
+   */
+  vtkTypeBool Reserve(vtkIdType numPoints);
 
   /**
    * Given a list of pt ids, return an array of points.
@@ -278,13 +295,13 @@ inline void vtkPoints::SetNumberOfPoints(vtkIdType numPoints)
   }
 }
 
-inline vtkTypeBool vtkPoints::Resize(vtkIdType numPoints)
+inline vtkTypeBool vtkPoints::Reserve(vtkIdType numPoints)
 {
   if (numPoints != this->Data->GetNumberOfTuples())
   {
     this->Data->SetNumberOfComponents(3);
     this->Modified();
-    return this->Data->Resize(numPoints);
+    return this->Data->ReserveTuples(numPoints);
   }
   return 1;
 }

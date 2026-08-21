@@ -116,7 +116,7 @@ static void vtkGridSynchronizedTemplates3DInitializeOutput(int* ext, int precisi
     newPts->SetDataType(VTK_DOUBLE);
   }
 
-  newPts->Allocate(estimatedSize, estimatedSize);
+  newPts->Reserve(estimatedSize);
   newPolys = vtkCellArray::New();
   newPolys->AllocateEstimate(estimatedSize, 3);
   o->SetPoints(newPts);
@@ -140,18 +140,18 @@ static void vtkGridSynchronizedTemplates3DInitializeOutput(int* ext, int precisi
   if (normals)
   {
     normals->SetNumberOfComponents(3);
-    normals->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    normals->ReserveTuples(estimatedSize);
     normals->SetName("Normals");
   }
   if (gradients)
   {
     gradients->SetNumberOfComponents(3);
-    gradients->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    gradients->ReserveTuples(estimatedSize);
     gradients->SetName("Gradients");
   }
   if (scalars)
   {
-    scalars->Allocate(estimatedSize, estimatedSize / 2);
+    scalars->ReserveTuples(estimatedSize);
     scalars->SetName("Scalars");
   }
 
@@ -165,8 +165,8 @@ static void vtkGridSynchronizedTemplates3DInitializeOutput(int* ext, int precisi
 // Given a linear gradient assumption find gradient that minimizes
 // error squared for + and - (*3) neighbors).
 template <class TScalarIter, class TPointIter>
-void ComputeGridPointGradient(int i, int j, int k, int inExt[6], int incY, int incZ,
-  TScalarIter& sc, TPointIter& pt, double g[3])
+void ComputeGridPointGradient(int i, int j, int k, VTK_FUTURE_CONST int inExt[6], int incY,
+  int incZ, TScalarIter& sc, TPointIter& pt, double g[3])
 {
   double N[6][3];
   double NtN[3][3], NtNi[3][3];
@@ -403,7 +403,7 @@ struct ContourGridFunctor
     int* exExt, vtkStructuredGrid* input, vtkPolyData* output, vtkDataArray* inScalars,
     bool outputTriangles)
   {
-    int* inExt = input->GetExtent();
+    VTK_FUTURE_CONST int* inExt = input->GetExtent();
     int xdim = exExt[1] - exExt[0] + 1;
     int ydim = exExt[3] - exExt[2] + 1;
     double n0[3], n1[3]; // used in gradient macro
@@ -607,7 +607,7 @@ struct ContourGridFunctor
                   {
                     *isect2Ptr = *(isect2Ptr - yisectstep + 4);
                   }
-                  else if (k > ZMin && i<XMax&&*(isect1Ptr + 5)> - 1)
+                  else if (k > ZMin && i < XMax && *(isect1Ptr + 5) > -1)
                   {
                     *isect2Ptr = *(isect1Ptr + 5);
                   }
@@ -828,7 +828,7 @@ void vtkGridSynchronizedTemplates3D::ThreadedExecute(
   vtkStructuredGrid* input, vtkInformationVector** inputVector, vtkInformation* outInfo)
 {
   vtkInformation* inInfo = inputVector[0]->GetInformationObject(0);
-  int* inExt = input->GetExtent();
+  const int* inExt = input->GetExtent();
 
   int exExt[6];
   inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT(), exExt);
@@ -880,7 +880,7 @@ void vtkGridSynchronizedTemplates3D::ThreadedExecute(
   {
     vtkNew<vtkDoubleArray> image;
     image->SetNumberOfComponents(inScalars->GetNumberOfComponents());
-    image->Allocate(dataSize * image->GetNumberOfComponents());
+    image->ReserveTuples(dataSize);
     inScalars->GetTuples(0, dataSize, image);
     using Dispatcher = vtkArrayDispatch::DispatchByArray<vtkArrayDispatch::PointArrays>;
     ContourGridFunctor<vtk::detail::DynamicTupleSize> functor;

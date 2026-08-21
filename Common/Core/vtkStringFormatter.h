@@ -65,8 +65,8 @@ VTK_ABI_NAMESPACE_BEGIN
  */
 template <typename T,
   typename = std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>>
-VTK_ALWAYS_INLINE auto to_chars(char* first, char* last, const T& value, int base = 10)
-  -> std::to_chars_result
+VTK_ALWAYS_INLINE auto to_chars(
+  char* first, char* last, const T& value, int base = 10) -> std::to_chars_result
 {
   const std::size_t buffer_size = std::distance(first, last);
   if (buffer_size == 0)
@@ -98,8 +98,8 @@ VTK_ALWAYS_INLINE auto to_chars(char* first, char* last, const T& value, int bas
   return { result.out, std::errc{} }; // Success
 }
 template <typename T, typename = std::enable_if_t<std::is_floating_point_v<T>>>
-VTK_ALWAYS_INLINE auto to_chars(char* first, char* last, const T& value, std::chars_format format)
-  -> std::to_chars_result
+VTK_ALWAYS_INLINE auto to_chars(
+  char* first, char* last, const T& value, std::chars_format format) -> std::to_chars_result
 {
   const std::size_t buffer_size = std::distance(first, last);
   if (buffer_size == 0)
@@ -203,6 +203,16 @@ using fmt::to_string;
  * @note The standard library provides this function as of C++20, but we support up to C++17.
  */
 using fmt::formatted_size;
+
+/**
+ * Creates a runtime format string.
+ *
+ * **Example**:
+ *
+ *     // Check format string at runtime instead of compile-time.
+ *     vtk::print(vtk::runtime("{:d}"), "I am not a number");
+ */
+using fmt::runtime;
 
 /**
  * Given a format and a set of numbers/variables convert it to a string.

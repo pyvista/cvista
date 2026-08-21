@@ -186,7 +186,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkExodusIIWriter
   vtkExpandSelectedGraph
   vtkExplicitStructuredGridCrop
-  vtkExplicitStructuredGridSurfaceFilter
   vtkExprTkFunctionParser
   vtkExtentRCBPartitioner
   vtkExtractArray
@@ -273,7 +272,8 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkHyperTreeGridDepthLimiter
   vtkHyperTreeGridEvaluateCoarse
   vtkHyperTreeGridExtractGhostCells
-  vtkHyperTreeGridFeatureEdges
+  # vtkHyperTreeGridFeatureEdges: un-NOCOMPILE'd for the 9.7 re-fork — 9.7's new
+  # vtkFeatureEdgesDispatcher.cxx references its New(), so it can no longer be cut.
   vtkHyperTreeGridGenerateFields
   vtkHyperTreeGridGenerateFieldStrategy
   vtkHyperTreeGridGenerateGlobalIds
@@ -574,7 +574,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkRandomHyperTreeGridSource
   vtkRangeHandlesItem
   vtkRearrangeFields
-  vtkRecoverGeometryWireframe
   vtkRectilinearGridClip
   vtkRectilinearGridPartitioner
   vtkRecursiveDividingCubes
@@ -659,7 +658,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkTemporalDelimitedTextReader
   vtkTemporalFractal
   vtkTemporalInterpolator
-  vtkTemporalPathLineFilter
   vtkTemporalShiftScale
   vtkTemporalSmoothing
   vtkTemporalSnapToTimeStep
@@ -741,7 +739,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkXMLHierarchicalBoxDataWriter
   vtkXMLHierarchicalDataReader
   vtkXMLMultiGroupDataReader
-  vtkXMLPartitionedDataSetCollectionReader
   vtkXMLPartitionedDataSetCollectionWriter
   vtkXMLPDataSetWriter
   vtkXMLPHierarchicalBoxDataWriter

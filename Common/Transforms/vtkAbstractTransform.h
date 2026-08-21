@@ -20,7 +20,7 @@
  * @sa
  * vtkGeneralTransform vtkWarpTransform vtkHomogeneousTransform
  * vtkLinearTransform vtkIdentityTransform
- * vtkTransformPolyDataFilter vtkTransformFilter vtkImageReslice
+ * vtkTransformFilter vtkTransformFilter vtkImageReslice
  * vtkImplicitFunction
  */
 
@@ -213,6 +213,27 @@ public:
     vtkDataArray* inNms, vtkDataArray* outNms, vtkDataArray* inVrs, vtkDataArray* outVrs,
     int nOptionalVectors = 0, vtkDataArray** inVrsArr = nullptr,
     vtkDataArray** outVrsArr = nullptr);
+
+  /**
+   * Apply the transformation to the 3-components array.
+   * Append the result to outArray.
+   */
+  virtual void TransformVectors(vtkDataArray* inArray, vtkDataArray* outArray);
+
+  /**
+   * Apply the transformation to the normals.
+   * Append the result to outArray.
+   *
+   * This differs from TransformVectors to keep the correct semantic:
+   * in some cases (like non-uniform scaling), applying the same transform
+   * as for the geometry leads to vectors that are not the new normals.
+   * see
+   * https://www.scratchapixel.com/lessons/mathematics-physics-for-computer-graphics/geometry/transforming-normals.html
+   * for mathematical details.
+   *
+   * Output array is normalized.
+   */
+  virtual void TransformNormals(vtkDataArray* inArray, vtkDataArray* outArray);
 
   /**
    * Get the inverse of this transform.  If you modify this transform,

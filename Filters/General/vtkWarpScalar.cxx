@@ -550,7 +550,7 @@ void vtkWarpScalar::BuildSideWalls(vtkPointSet* output, int nInputPoints,
     if (val)
     {
       constexpr std::size_t nBitsvtkIdType = sizeof(vtkIdType) * CHAR_BIT;
-      std::bitset<nBitsvtkIdType> faceMask = *faceIter;
+      std::bitset<nBitsvtkIdType> faceMask = static_cast<vtkIdType>(*faceIter);
       vtkCell* bCell = output->GetCell(iCell);
       int nEdges = std::min(bCell->GetNumberOfEdges(), static_cast<int>(nBitsvtkIdType));
       for (int iEdge = 0; iEdge < nEdges; iEdge++)

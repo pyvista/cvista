@@ -6,12 +6,15 @@
 // marching cubes case table for generating polygon isosurfaces
 //
 #include "vtkCommonDataModelModule.h" // For export macro
+#include "vtkDeprecation.h"
 #include "vtkSystemIncludes.h"
 
 VTK_ABI_NAMESPACE_BEGIN
-struct VTKCOMMONDATAMODEL_EXPORT vtkMarchingCubesPolygonCases
+struct VTKCOMMONDATAMODEL_EXPORT VTK_DEPRECATED_IN_9_7_0(
+  "Use vtkMarchingCellsContourCases") vtkMarchingCubesPolygonCases
 {
   int edges[17];
+  VTK_DEPRECATED_IN_9_7_0("Use vtkMarchingCellsContourCases::GetHexahedronWithPolygonCase()")
   static vtkMarchingCubesPolygonCases* GetCases();
 };
 

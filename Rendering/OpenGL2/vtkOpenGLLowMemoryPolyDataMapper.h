@@ -18,6 +18,8 @@
 #include "vtkHardwareSelector.h"         // For ivar
 #include "vtkOpenGLShaderDeclaration.h"  // For ivar
 #include "vtkRenderingOpenGL2Module.h"   // For export macro
+#include "vtkShaderProgram.h"            // For vtkWeakPtr<vtkShaderProgram>
+#include "vtkWeakPtr.h"                  // For vtkWeakPtr
 #include "vtkWrappingHints.h"            // For VTK_MARSHALAUTO
 
 #include <array>   // for array
@@ -31,6 +33,8 @@ class vtkOpenGLLowMemoryCellTypeAgent;
 class vtkOpenGLLowMemoryVerticesAgent;
 class vtkOpenGLLowMemoryLinesAgent;
 class vtkOpenGLLowMemoryPolygonsAgent;
+class vtkOverrideAttribute;
+class vtkShaderProgram;
 
 class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLLowMemoryPolyDataMapper
   : public vtkPolyDataMapper
@@ -40,6 +44,8 @@ class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLLowMemoryPolyDataMappe
 {
 public:
   static vtkOpenGLLowMemoryPolyDataMapper* New();
+  VTK_NEWINSTANCE
+  static vtkOverrideAttribute* CreateOverrideAttributes();
   vtkTypeMacro(vtkOpenGLLowMemoryPolyDataMapper, vtkPolyDataMapper);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
@@ -54,6 +60,12 @@ public:
    * polydata.
    */
   MapperHashType GenerateHash(vtkPolyData* polydata) override;
+
+  /**
+   * Returns the maximum number of triangles renderable based on OpenGL limits.
+   * Returns the maximum buffer object size as the limit of triangles that can be rendered.
+   */
+  vtkIdType GetMaximumNumberOfTriangles(vtkRenderer* ren) override;
 
   vtkPolyData* CurrentInput = nullptr;
   void RenderPiece(vtkRenderer* renderer, vtkActor* actor) override;
@@ -77,6 +89,23 @@ public:
    * selection.
    */
   bool GetSupportsSelection() override { return true; }
+
+  ///@{
+  /**
+   * Hybrid surface/expansion dispatch switch (Phase 1 of the mapper merge).
+   *
+   * When enabled (the default), plain triangle-surface draws that need no
+   * per-primitive ids use indexed vertex-pulling (glDrawElementsInstanced),
+   * restoring the post-transform vertex cache. Draws that need a sequential
+   * corner walk -- surface-with-edges, wireframe, wide lines, vertex visibility,
+   * cell-sourced color/normal, and selection passes -- keep the non-indexed
+   * flat-stream expansion path. Disabling forces every draw onto the expansion
+   * path (the historical low-memory behavior).
+   */
+  vtkSetMacro(UseIndexedRendering, bool);
+  vtkGetMacro(UseIndexedRendering, bool);
+  vtkBooleanMacro(UseIndexedRendering, bool);
+  ///@}
 
   /// If you removed all mods, call this to go back to default setting.
   virtual void ResetModsToDefault();
@@ -287,6 +316,9 @@ protected:
     std::vector<CellGroupInformation> CellGroups;
   };
   std::array<PrimitiveInformation, 4> Primitives;
+
+  /// Hybrid surface/expansion dispatch switch. See the public accessors.
+  bool UseIndexedRendering = true;
   bool DrawingVertices = false;
   bool HasColors = false;
   bool HasTangents = false;
@@ -314,6 +346,63 @@ protected:
   bool UsesRotationMap = false;
   vtkTimeStamp PBRStateTimeStamp;
 
+  /**
+   * Decide whether a particular cell-group draw may use the indexed
+   * (glDrawElementsInstanced) fast path. Returns true only for plain
+   * triangle-surface draws that need no per-primitive ids; otherwise the caller
+   * must keep the non-indexed flat-stream expansion path. See UseIndexedRendering.
+   */
+  bool ShouldUseIndexedRendering(vtkRenderer* renderer, vtkActor* actor,
+    const CellGroupInformation& cellGroup, int numberOfPointsPerPrimitive,
+    int numberOfPseudoPrimitivesPerElement, bool inVertexVisibilityPass) const;
+
+  /// @name Cached uniform locations
+  /// Locations of the uniforms set every draw by SetShaderParameters and by the
+  /// cell-type agents. Resolved once per program link (keyed on the program
+  /// object + vtkShaderProgram::GetLinkCount) by UpdateUniformLocations(), then
+  /// reused to skip the per-draw std::map<const char*> lookups. A value of -1
+  /// means the uniform is absent (the location-based setters no-op on -1).
+  struct UniformLocations
+  {
+    // SetShaderParameters
+    int ViewportDimensions = -1;
+    int LineWidth = -1;
+    int RenderPointsAsSpheres = -1;
+    int RenderLinesAsTubes = -1;
+    int PointPicking = -1;
+    int VertexColor = -1;
+    int EdgeColor = -1;
+    int EdgeOpacity = -1;
+    int EdgeVisibility = -1;
+    int Wireframe = -1;
+    int EdgeWidth = -1;
+    int CameraParallel = -1;
+    int ZCalcR = -1;
+    int ZCalcS = -1;
+    int NumClipPlanes = -1;
+    int ClipPlanes = -1;
+    int MapperIndex = -1;
+    // cell-type agent
+    int CellType = -1;
+    int EnableLights = -1;
+    int VertexPass = -1;
+    int PrimitiveSize = -1;
+    int PointSize = -1;
+    int CellIdOffset = -1;
+    int VertexIdOffset = -1;
+    int EdgeValueBufferOffset = -1;
+    int PointIdOffset = -1;
+    int PrimitiveIdOffset = -1;
+    int UsesCellMap = -1;
+    int UsesEdgeValues = -1;
+    int UseIndexedPointId = -1;
+  } UniformLocs;
+  vtkWeakPtr<vtkShaderProgram> CachedLocProgram;
+  unsigned int CachedLocLinkCount = 0;
+  /// Resolve UniformLocs against the current ShaderProgram if it changed or was
+  /// relinked since the last call.
+  void UpdateUniformLocations();
+
 private:
   vtkOpenGLLowMemoryPolyDataMapper(const vtkOpenGLLowMemoryPolyDataMapper&) = delete;
   void operator=(const vtkOpenGLLowMemoryPolyDataMapper&) = delete;
@@ -325,5 +414,7 @@ private:
   vtkNew<vtkMatrix4x4> TempMatrix4;
 };
 
+#define vtkOpenGLLowMemoryPolyDataMapper_OVERRIDE_ATTRIBUTES                                       \
+  vtkOpenGLLowMemoryPolyDataMapper::CreateOverrideAttributes()
 VTK_ABI_NAMESPACE_END
 #endif // vtkOpenGLLowMemoryPolyDataMapper_h

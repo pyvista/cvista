@@ -205,6 +205,7 @@ for( i = 0 ; i < rank - 1 ; i++ ){
   }
 StringOutput << XDMF_64BIT_CAST Dimensions[i] << ends;
 this->SetShapeString(StringOutput.str());
+StringOutput.rdbuf()->freeze(0);
 return( this->ShapeString );
 }
 

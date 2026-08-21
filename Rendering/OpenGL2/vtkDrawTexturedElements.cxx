@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkDrawTexturedElements.h"
 
-#include "vtkCollectionIterator.h"
 #include "vtkColorSeries.h"
 #include "vtkDataArray.h"
 #include "vtkGLSLModifierBase.h"
@@ -11,6 +10,7 @@
 #include "vtkLookupTable.h"
 #include "vtkMapper.h"
 #include "vtkObjectFactory.h"
+#include "vtkOpenGLBufferObject.h"
 #include "vtkOpenGLError.h"
 #include "vtkOpenGLRenderPass.h"
 #include "vtkOpenGLRenderWindow.h"
@@ -30,7 +30,10 @@
 
 #include "vtk_glad.h"
 
+#include <cstdint>
 #include <iostream>
+#include <utility>
+#include <vector>
 
 // Uncomment to print shader/color info to std::cout
 // #define vtkDrawTexturedElements_DEBUG
@@ -47,6 +50,20 @@ struct vtkDrawTexturedElements::Internal
   // Turn off face culling (especially when HasTranslucentPolygonalGeometry()
   // returns true, since this will break depth peeling/OIT).
   std::unique_ptr<vtkOpenGLState::ScopedglEnableDisable> CullFaceSaver;
+
+  /// Indexed vertex-pulling state.
+  /// UseIndexBuffer records whether an element (index) buffer has been supplied
+  /// and is available to bind. IndexedDrawEnabled is the *per-draw* selector the
+  /// hybrid-dispatch mapper toggles before each DrawInstancedElementsImpl: only
+  /// when both are true does the draw issue glDrawElementsInstanced (otherwise it
+  /// falls back to the non-indexed glDrawArraysInstanced expansion path). Keeping
+  /// the two separate lets a single uploaded buffer serve some draws indexed and
+  /// others not, without re-uploading.
+  bool UseIndexBuffer = false;
+  bool IndexedDrawEnabled = false;
+  bool IndexBufferDirty = false;
+  std::vector<unsigned int> IndexData;
+  vtkSmartPointer<vtkOpenGLBufferObject> IndexBuffer;
 };
 
 vtkDrawTexturedElements::vtkDrawTexturedElements()
@@ -73,6 +90,9 @@ vtkDrawTexturedElements::~vtkDrawTexturedElements()
 
 vtkShader* vtkDrawTexturedElements::GetShader(vtkShader::Type shaderType)
 {
+  // Handing out a shader means the caller may mutate its source, so the cached
+  // program can no longer be trusted: force ReadyShaderProgram to rebuild it.
+  this->ShaderProgramBuilt = false;
   auto it = this->Shaders.find(shaderType);
   if (it == this->Shaders.end())
   {
@@ -81,6 +101,17 @@ vtkShader* vtkDrawTexturedElements::GetShader(vtkShader::Type shaderType)
     it = this->Shaders.insert(std::make_pair(shaderType, shader)).first;
   }
   return it->second;
+}
+
+void vtkDrawTexturedElements::BeginArrayRebuild()
+{
+  // Mark every bound texture so its source arrays are cleared (but GPU resources + layout
+  // records preserved) on the first Bind/Append of the upcoming rebuild cycle.
+  for (auto& entry : this->Arrays)
+  {
+    auto& textureBufferAdapter = entry.second;
+    textureBufferAdapter.SetPendingReset(true);
+  }
 }
 
 void vtkDrawTexturedElements::BindArrayToTexture(
@@ -96,12 +127,11 @@ void vtkDrawTexturedElements::BindArrayToTexture(
     this->Arrays[textureName] = vtkOpenGLArrayTextureBufferAdapter(array, asScalars);
     return;
   }
+  // Bind replaces the array list wholesale, so it already satisfies a pending reset.
+  it->second.SetPendingReset(false);
   it->second.Arrays = { array };
   // needs to be re-uploaded.
-  if (it->second.Buffer)
-  {
-    it->second.Buffer->FlagBufferAsDirty();
-  }
+  it->second.SetUploaded(false);
   it->second.ScalarComponents = asScalars;
 }
 
@@ -114,6 +144,67 @@ bool vtkDrawTexturedElements::UnbindArray(vtkStringToken textureName)
   }
   this->Arrays.erase(it);
   return true;
+}
+
+void vtkDrawTexturedElements::SetElementIndexBuffer(vtkDataArray* indices)
+{
+  // Replace semantics: discard any previously accumulated connectivity first.
+  this->P->IndexData.clear();
+  if (!indices)
+  {
+    this->ClearElementIndexBuffer();
+    return;
+  }
+  this->AppendElementIndexBuffer(indices);
+}
+
+void vtkDrawTexturedElements::AppendElementIndexBuffer(vtkDataArray* indices)
+{
+  if (!indices)
+  {
+    return;
+  }
+  // Append connectivity into a tightly-packed 32-bit unsigned buffer, concatenated
+  // in memory order so it matches the flattened connectivity the shader expects.
+  // Appending (rather than replacing) lets a composite/batched mapper build one
+  // element buffer across several per-block calls, exactly as the vertexIdBuffer
+  // texture is concatenated. Values stay local to each mesh; the shader applies
+  // pointIdOffset, just like the non-indexed vertexIdBuffer path.
+  const vtkIdType numTuples = indices->GetNumberOfTuples();
+  const int numComps = indices->GetNumberOfComponents();
+  this->P->IndexData.reserve(
+    this->P->IndexData.size() + static_cast<std::size_t>(numTuples) * numComps);
+  for (vtkIdType tupleId = 0; tupleId < numTuples; ++tupleId)
+  {
+    for (int comp = 0; comp < numComps; ++comp)
+    {
+      this->P->IndexData.push_back(static_cast<unsigned int>(indices->GetComponent(tupleId, comp)));
+    }
+  }
+  this->P->UseIndexBuffer = true;
+  // Default to drawing indexed when a buffer is supplied; the hybrid-dispatch
+  // mapper overrides this per-draw via SetIndexedDrawEnabled().
+  this->P->IndexedDrawEnabled = true;
+  this->P->IndexBufferDirty = true;
+}
+
+void vtkDrawTexturedElements::ClearElementIndexBuffer()
+{
+  this->P->IndexData.clear();
+  this->P->UseIndexBuffer = false;
+  this->P->IndexedDrawEnabled = false;
+  this->P->IndexBufferDirty = false;
+}
+
+bool vtkDrawTexturedElements::GetUsesIndexBuffer() const
+{
+  return this->P->UseIndexBuffer;
+}
+
+void vtkDrawTexturedElements::SetIndexedDrawEnabled(bool enabled)
+{
+  // Only meaningful when an index buffer is actually present.
+  this->P->IndexedDrawEnabled = enabled && this->P->UseIndexBuffer;
 }
 
 void vtkDrawTexturedElements::AppendArrayToTexture(
@@ -131,12 +222,16 @@ void vtkDrawTexturedElements::AppendArrayToTexture(
   }
   else
   {
+    // First append of a rebuild cycle: drop the previous block list but keep the uploaded
+    // texture/buffer and layout records so Upload() can diff against them.
+    if (it->second.GetPendingReset())
+    {
+      it->second.Arrays.clear();
+      it->second.SetPendingReset(false);
+    }
     it->second.Arrays.emplace_back(array);
     // needs to be re-uploaded.
-    if (it->second.Buffer)
-    {
-      it->second.Buffer->FlagBufferAsDirty();
-    }
+    it->second.SetUploaded(false);
   }
 }
 
@@ -201,16 +296,30 @@ void vtkDrawTexturedElements::ReadyShaderProgram(vtkRenderer* ren)
     vtkWarningWithObjectMacro(ren, "Renderer has no OpenGL render-window.");
     return;
   }
-  bool lastSyncGLSLVersionDisabled = !renderWindow->GetShaderCache()->GetSyncGLSLShaderVersion();
+  auto* shaderCache = renderWindow->GetShaderCache();
+  // Fast path: the shader sources have not changed since the program was last
+  // resolved, so skip the per-draw source substitution + MD5 hashing in the
+  // shader-source overload of ReadyShaderProgram and just (re)bind the cached
+  // program. This is the dominant cost in many-small-actors scenes, where this
+  // method is invoked once per actor per frame.
+  if (this->ShaderProgramBuilt && this->ShaderProgram != nullptr)
+  {
+    this->ShaderProgram = shaderCache->ReadyShaderProgram(this->ShaderProgram);
+    vtkOpenGLStaticCheckErrorMacro("Failed readying cached shader program");
+    return;
+  }
+  bool lastSyncGLSLVersionDisabled = !shaderCache->GetSyncGLSLShaderVersion();
   if (this->ElementType == AbstractPatches && lastSyncGLSLVersionDisabled)
   {
-    renderWindow->GetShaderCache()->SyncGLSLShaderVersionOn();
+    shaderCache->SyncGLSLShaderVersionOn();
   }
-  this->ShaderProgram = renderWindow->GetShaderCache()->ReadyShaderProgram(this->Shaders);
+  this->ShaderProgram = shaderCache->ReadyShaderProgram(this->Shaders);
   if (lastSyncGLSLVersionDisabled)
   {
-    renderWindow->GetShaderCache()->SyncGLSLShaderVersionOff();
+    shaderCache->SyncGLSLShaderVersionOff();
   }
+  // Remember the resolved program so subsequent draws take the fast path above.
+  this->ShaderProgramBuilt = (this->ShaderProgram != nullptr);
   vtkOpenGLStaticCheckErrorMacro("Failed readying shader program");
 }
 
@@ -219,7 +328,7 @@ void vtkDrawTexturedElements::ReportUnsupportedLineWidth(
 {
   const char* glVersion = (const char*)glGetString(GL_VERSION);
   vtkWarningWithObjectMacro(mapper, << "Line width (" << width
-                                    << ") is less than maximum line width (" << maxWidth
+                                    << ") is greater than maximum line width (" << maxWidth
                                     << ") supported by your OpenGL driver " << glVersion);
 }
 
@@ -350,6 +459,12 @@ void vtkDrawTexturedElements::PreDraw(vtkRenderer* ren, vtkActor* actor, vtkMapp
   // I. Upload data to texture objects as needed.
   for (auto& entry : this->Arrays)
   {
+    // A texture left marked from BeginArrayRebuild() was not repopulated this cycle (the
+    // attribute is no longer bound); skip it rather than upload/activate a stale array list.
+    if (entry.second.GetPendingReset())
+    {
+      continue;
+    }
 #ifdef vtkDrawTexturedElements_DEBUG
     std::cout << "Attempt to upload \"" << entry.first.Data() << "\"\n";
 #endif
@@ -358,6 +473,10 @@ void vtkDrawTexturedElements::PreDraw(vtkRenderer* ren, vtkActor* actor, vtkMapp
   // II. Activate each texture (bind it).
   for (const auto& entry : this->Arrays)
   {
+    if (entry.second.GetPendingReset())
+    {
+      continue;
+    }
     auto samplerName = entry.first.Data();
     if (!this->ShaderProgram->IsUniformUsed(samplerName.c_str()))
     {
@@ -375,11 +494,10 @@ void vtkDrawTexturedElements::PreDraw(vtkRenderer* ren, vtkActor* actor, vtkMapp
     vtkOpenGLStaticCheckErrorMacro("Failed trying to activate \"" << samplerName << "\".");
   }
   // set shader parameter for GLSL mods.
-  auto modsIter = vtk::TakeSmartPointer(this->GLSLMods->NewIterator());
   auto oglRen = static_cast<vtkOpenGLRenderer*>(ren);
-  for (modsIter->InitTraversal(); !modsIter->IsDoneWithTraversal(); modsIter->GoToNextItem())
+  for (vtkObject* obj : *(this->GLSLMods))
   {
-    auto mod = static_cast<vtkGLSLModifierBase*>(modsIter->GetCurrentObject());
+    auto mod = static_cast<vtkGLSLModifierBase*>(obj);
     mod->SetPrimitiveType(this->P->Primitive);
     mod->SetShaderParameters(oglRen, this->ShaderProgram, mapper, actor, this->VAO);
     vtkOpenGLStaticCheckErrorMacro("Failed after applying mod shader parameters");
@@ -403,6 +521,28 @@ void vtkDrawTexturedElements::PreDraw(vtkRenderer* ren, vtkActor* actor, vtkMapp
   // Bind the (null) VAO and the IBO
   this->VAO->Bind();
   vtkOpenGLStaticCheckErrorMacro("Failed after binding VAO.");
+
+  // if an index buffer was supplied, (re)upload and bind it so the
+  // GL_ELEMENT_ARRAY_BUFFER binding is captured in the currently-bound VAO state.
+  // DrawInstancedElementsImpl will then issue glDrawElementsInstanced.
+  if (this->P->UseIndexBuffer)
+  {
+    if (!this->P->IndexBuffer)
+    {
+      this->P->IndexBuffer = vtkSmartPointer<vtkOpenGLBufferObject>::New();
+    }
+    if (this->P->IndexBufferDirty)
+    {
+      this->P->IndexBuffer->Upload(
+        this->P->IndexData, vtkOpenGLBufferObject::ObjectType::ElementArrayBuffer);
+      this->P->IndexBufferDirty = false;
+    }
+    else
+    {
+      this->P->IndexBuffer->Bind();
+    }
+    vtkOpenGLStaticCheckErrorMacro("Failed after binding element index buffer.");
+  }
 }
 
 void vtkDrawTexturedElements::PostDraw(vtkRenderer* ren, vtkActor*, vtkMapper*)
@@ -419,12 +559,14 @@ void vtkDrawTexturedElements::PostDraw(vtkRenderer* ren, vtkActor*, vtkMapper*)
     return;
   }
 
-#if 1
   for (const auto& entry : this->Arrays)
   {
+    if (entry.second.GetPendingReset())
+    {
+      continue;
+    }
     entry.second.Texture->Deactivate();
   }
-#endif
   vtkOpenGLStaticCheckErrorMacro("Just after texture release");
 
   this->VAO->Release();
@@ -487,18 +629,50 @@ void vtkDrawTexturedElements::DrawInstancedElementsImpl(
   }
   auto instances = static_cast<GLsizei>(this->NumberOfInstances);
   vtkOpenGLStaticCheckErrorMacro("Just before draw instanced");
+  // Indexed vertex-pulling. With glDrawElements, gl_VertexID equals the fetched
+  // index value, so the post-transform vertex cache can reuse the vertex shader's
+  // output for vertices shared between primitives. FirstVertexId is the offset of
+  // this draw's slice into the (concatenated) element buffer; pass it as a byte
+  // offset so multi-cell-group meshes read the correct connectivity range.
+  const bool indexed = this->P->UseIndexBuffer && this->P->IndexedDrawEnabled;
+  const void* indexOffset = reinterpret_cast<const void*>(
+    static_cast<std::uintptr_t>(this->FirstVertexId) * sizeof(GLuint));
   // Render the element instances:
 #ifdef GL_ES_VERSION_3_0
   (void)ren;
-  glDrawArraysInstanced(this->P->Primitive, this->FirstVertexId, this->P->Count, instances);
-#else
-  if (GLAD_GL_VERSION_3_1)
+  if (indexed)
+  {
+    glDrawElementsInstanced(
+      this->P->Primitive, this->P->Count, GL_UNSIGNED_INT, indexOffset, instances);
+  }
+  else
   {
     glDrawArraysInstanced(this->P->Primitive, this->FirstVertexId, this->P->Count, instances);
   }
+#else
+  if (GLAD_GL_VERSION_3_1)
+  {
+    if (indexed)
+    {
+      glDrawElementsInstanced(
+        this->P->Primitive, this->P->Count, GL_UNSIGNED_INT, indexOffset, instances);
+    }
+    else
+    {
+      glDrawArraysInstanced(this->P->Primitive, this->FirstVertexId, this->P->Count, instances);
+    }
+  }
   else if (GLAD_GL_ARB_instanced_arrays)
   {
-    glDrawArraysInstancedARB(this->P->Primitive, this->FirstVertexId, this->P->Count, instances);
+    if (indexed)
+    {
+      glDrawElementsInstancedARB(
+        this->P->Primitive, this->P->Count, GL_UNSIGNED_INT, indexOffset, instances);
+    }
+    else
+    {
+      glDrawArraysInstancedARB(this->P->Primitive, this->FirstVertexId, this->P->Count, instances);
+    }
   }
   else
   {
@@ -525,6 +699,14 @@ void vtkDrawTexturedElements::ReleaseResources(vtkWindow* window)
   {
     entry.second.ReleaseGraphicsResources(window);
   }
+  if (this->P->IndexBuffer)
+  {
+    this->P->IndexBuffer->ReleaseGraphicsResources();
+    this->P->IndexBuffer = nullptr;
+    this->P->IndexBufferDirty = true;
+  }
+  this->ShaderProgram = nullptr;
+  this->ShaderProgramBuilt = false;
 }
 
 vtkShaderProgram* vtkDrawTexturedElements::GetShaderProgram()

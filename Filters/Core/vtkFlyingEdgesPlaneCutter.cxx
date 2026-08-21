@@ -13,7 +13,7 @@
 #include "vtkInformation.h"
 #include "vtkInformationIntegerVectorKey.h"
 #include "vtkInformationVector.h"
-#include "vtkMarchingCubesTriangleCases.h"
+#include "vtkMarchingCellsContourCases.h"
 #include "vtkMath.h"
 #include "vtkMathUtilities.h"
 #include "vtkObjectFactory.h"
@@ -396,7 +396,7 @@ struct vtkFlyingEdgesPlaneCutterAlgorithm
         {
           this->Algo->ProcessYZEdges(row, slice);
         } // for all rows in this slice
-      }   // for all slices in this batch
+      } // for all slices in this batch
     }
   };
   struct Pass4
@@ -438,7 +438,7 @@ struct vtkFlyingEdgesPlaneCutterAlgorithm
             this->Algo->GenerateOutput(rowPtr, row, slice);
             rowPtr += this->Algo->Inc1;
           } // for all rows in this slice
-        }   // if there are triangles
+        } // if there are triangles
         slicePtr += this->Algo->Inc2;
         eMD0 = eMD1;
         eMD1 = eMD0 + 6 * this->Algo->Dims[1];
@@ -488,7 +488,7 @@ struct vtkFlyingEdgesPlaneCutterAlgorithm
             this->Algo->InterpolateCellData(&this->CellArrays, row, slice);
             rowPtr += this->Algo->Inc1;
           } // for all rows in this slice
-        }   // if there are triangles (i.e., output cells)
+        } // if there are triangles (i.e., output cells)
         slicePtr += this->Algo->Inc2;
         eMD0 = eMD1;
         eMD1 = eMD0 + 6 * this->Algo->Dims[1];
@@ -535,10 +535,7 @@ vtkFlyingEdgesPlaneCutterAlgorithm<TArray>::vtkFlyingEdgesPlaneCutterAlgorithm()
   , NewNormals(nullptr)
 {
   int i, j, k, l, ii, eCase, index, numTris;
-  static const int vertMap[8] = { 0, 1, 3, 2, 4, 5, 7, 6 };
   static const int CASE_MASK[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
-  int* edge;
-  vtkMarchingCubesTriangleCases* triCase;
   unsigned char* edgeCase;
 
   // Initialize cases, increments, and edge intersection flags
@@ -573,15 +570,15 @@ vtkFlyingEdgesPlaneCutterAlgorithm<TArray>::vtkFlyingEdgesPlaneCutterAlgorithm()
           eCase = i | (j << 2) | (k << 4) | (l << 6);
           for (ii = 0, index = 0; ii < 8; ++ii)
           {
-            if (eCase & (1 << vertMap[ii])) // map into ancient MC table
+            if (eCase & (1 << ii)) // map into ancient MC table
             {
               index |= CASE_MASK[ii];
             }
           }
           // Now build case table
-          triCase = vtkMarchingCubesTriangleCases::GetCases() + index;
-          edge = triCase->edges;
-          for (numTris = 0, edge = triCase->edges; edge[0] > -1; edge += 3)
+          const int* edges = vtkMarchingCellsContourCases::GetVoxelCase(index);
+          numTris = 0;
+          for (const int* edge = edges; edge[0] > -1; edge += 3)
           { // count the number of triangles
             numTris++;
           }
@@ -589,7 +586,7 @@ vtkFlyingEdgesPlaneCutterAlgorithm<TArray>::vtkFlyingEdgesPlaneCutterAlgorithm()
           {
             edgeCase = this->EdgeCases[eCase];
             *edgeCase++ = numTris;
-            for (edge = triCase->edges; edge[0] > -1; edge += 3, edgeCase += 3)
+            for (const int* edge = edges; edge[0] > -1; edge += 3, edgeCase += 3)
             {
               // Build new case table.
               edgeCase[0] = this->EdgeMap[edge[0]];
@@ -598,9 +595,9 @@ vtkFlyingEdgesPlaneCutterAlgorithm<TArray>::vtkFlyingEdgesPlaneCutterAlgorithm()
             }
           }
         } // x-edges
-      }   // x+y-edges
-    }     // x+z-edges
-  }       // x+y+z-edges
+      } // x+y-edges
+    } // x+z-edges
+  } // x+y+z-edges
 
   // Okay now build the acceleration structure. This is used to generate
   // output points and triangles when processing a voxel x-row as well as to
@@ -1417,20 +1414,20 @@ void vtkFlyingEdgesPlaneCutterAlgorithm<TArray>::Contour(vtkFlyingEdgesPlaneCutt
   vtkIdType totalPts = numOutXPts + numOutYPts + numOutZPts;
   if (totalPts > 0)
   {
-    newPts->GetData()->WriteVoidPointer(0, 3 * totalPts);
+    newPts->GetData()->SetNumberOfTuples(totalPts);
     algo.NewPoints = vtkAOSDataArrayTemplate<float>::FastDownCast(newPts->GetData())->GetPointer(0);
     newTris->ResizeExact(numOutTris, 3 * numOutTris);
     algo.NewTris = newTris;
 
     if (newScalars)
     {
-      newScalars->WriteVoidPointer(0, totalPts);
+      newScalars->SetNumberOfValues(totalPts);
       algo.NewScalars = vtk::DataArrayValueRange<1>(TArray::FastDownCast(newScalars)).begin();
     }
 
     if (newNormals)
     {
-      newNormals->WriteVoidPointer(0, 3 * totalPts);
+      newNormals->SetNumberOfTuples(totalPts);
       algo.NewNormals = newNormals->GetPointer(0);
     }
 
@@ -1545,7 +1542,7 @@ int vtkFlyingEdgesPlaneCutter::RequestData(
   vtkDataArray* inScalars = this->GetInputArrayToProcess(0, inputVector);
 
   // Determine extent
-  int* inExt = input->GetExtent();
+  const int* inExt = input->GetExtent();
   int exExt[6];
   inInfo->Get(vtkStreamingDemandDrivenPipeline::UPDATE_EXTENT(), exExt);
   for (int i = 0; i < 3; i++)

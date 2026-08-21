@@ -12,6 +12,9 @@
  * graphics, UI, etc. See
  * https://emscripten.org/docs/api_reference/emscripten.h.html#c.emscripten_set_main_loop See
  * vtkRenderWindowInteractor::InteractorManagesTheEventLoop
+ *
+ * @note This class sets the default value of
+ * `vtkRenderWindowInteractor::TrackInteractorObserverInstances` to `true`
  */
 
 #ifndef vtkWebAssemblyRenderWindowInteractor_h
@@ -146,6 +149,8 @@ extern "C"
   void vtkDestroyTimer(int timerId, bool isOneShot);
   int* vtkGetParentElementBoundingRectSize(const char* selector);
   void vtkInitializeCanvasElement(const char* selector, bool applyStyle);
+  void vtkStartEventLoopSync(vtkEventProcessingFunc spinOnceAndGetDone,
+    vtkUnRegisterInteractorFunc unRegisterInteractor, void* arg);
   void vtkStartEventLoopAsync(vtkEventProcessingFunc spinOnceAndGetDone,
     vtkUnRegisterInteractorFunc unRegisterInteractor, void* arg);
 }

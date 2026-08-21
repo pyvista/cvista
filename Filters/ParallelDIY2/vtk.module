@@ -23,12 +23,12 @@ DEPENDS
 OPTIONAL_DEPENDS
   VTK::ParallelMPI
 PRIVATE_DEPENDS
+  VTK::CommonCache
   VTK::CommonCore
   VTK::CommonDataModel
   VTK::CommonExecutionModel
   VTK::ImagingCore
   VTK::ParallelCore
-  VTK::FiltersTemporal
 TEST_DEPENDS
   VTK::diy2
   VTK::FiltersGeometry

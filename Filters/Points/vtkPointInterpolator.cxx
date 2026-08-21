@@ -88,9 +88,9 @@ struct ProbePoints
   void Initialize()
   {
     vtkIdList*& pIds = this->PIds.Local();
-    pIds->Allocate(128); // allocate some memory
+    pIds->Reserve(128); // allocate some memory
     vtkDoubleArray*& weights = this->Weights.Local();
-    weights->Allocate(128);
+    weights->ReserveValues(128);
   }
 
   // When null point is encountered
@@ -137,7 +137,7 @@ struct ProbePoints
       {
         this->AssignNullPoint(x, pIds, weights, ptId);
       } // null point
-    }   // for all dataset points
+    } // for all dataset points
   }
 
   void Reduce() {}
@@ -201,8 +201,8 @@ struct ImageProbePoints : public ProbePoints
           } // null point
 
         } // over i
-      }   // over j
-    }     // over slices
+      } // over j
+    } // over slices
   }
 }; // ImageProbePoints
 

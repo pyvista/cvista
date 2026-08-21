@@ -31,8 +31,8 @@ vtkConnectivityFilter::vtkConnectivityFilter()
 {
   this->RegionSizes = vtkIdTypeArray::New();
 
-  this->CellScalars->Allocate(8);
-  this->NeighborCellPointIds->Allocate(8);
+  this->CellScalars->ReserveValues(8);
+  this->NeighborCellPointIds->Reserve(8);
 
   this->Seeds = vtkIdList::New();
   this->SpecifiedRegionIds = vtkIdList::New();
@@ -194,25 +194,25 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
     newPts->SetDataType(VTK_DOUBLE);
   }
 
-  newPts->Allocate(numPts);
+  newPts->Reserve(numPts);
 
   // Traverse all cells marking those visited.  Each new search
   // starts a new connected region. Connected region grows
   // using a connected wave propagation.
   //
   this->Wave = vtkIdList::New();
-  this->Wave->Allocate(numPts / 4 + 1, numPts);
+  this->Wave->Reserve(numPts / 4 + 1);
   this->Wave2 = vtkIdList::New();
-  this->Wave2->Allocate(numPts / 4 + 1, numPts);
+  this->Wave2->Reserve(numPts / 4 + 1);
 
   this->PointNumber = 0;
   this->RegionNumber = 0;
   maxCellsInRegion = 0;
 
   this->CellIds = vtkIdList::New();
-  this->CellIds->Allocate(8, VTK_CELL_SIZE);
+  this->CellIds->Reserve(8);
   this->PointIds = vtkIdList::New();
-  this->PointIds->Allocate(8, VTK_CELL_SIZE);
+  this->PointIds->Reserve(8);
 
   if (this->ExtractionMode != VTK_EXTRACT_POINT_SEEDED_REGIONS &&
     this->ExtractionMode != VTK_EXTRACT_CELL_SEEDED_REGIONS &&
@@ -518,7 +518,8 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
   vtkDataArray* outScalars = nullptr;
   if (this->ColorRegions && (outScalars = output->GetPointData()->GetScalars()))
   {
-    outScalars->Resize(output->GetNumberOfPoints());
+    outScalars->SetNumberOfTuples(output->GetNumberOfPoints());
+    outScalars->Squeeze();
   }
 
 #ifndef NDEBUG
@@ -617,9 +618,9 @@ void vtkConnectivityFilter::TraverseAndMark(vtkDataSet* input)
               this->Wave2->InsertNextId(cellId);
             }
           } // for all cells using this point
-        }   // for all points of this cell
-      }     // if cell not yet visited
-    }       // for all cells in this wave
+        } // for all points of this cell
+      } // if cell not yet visited
+    } // for all cells in this wave
 
     tmpWave = this->Wave;
     this->Wave = this->Wave2;

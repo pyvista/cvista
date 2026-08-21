@@ -75,7 +75,7 @@ static void vtkRectilinearSynchronizedTemplatesInitializeOutput(TArray* inScalar
     (int)pow((double)((ext[1] - ext[0] + 1) * (ext[3] - ext[2] + 1) * (ext[5] - ext[4] + 1)), .75);
   estimatedSize = std::max<long>(estimatedSize, 1024);
   newPts = vtkPoints::New();
-  newPts->Allocate(estimatedSize, estimatedSize);
+  newPts->Reserve(estimatedSize);
   newPolys = vtkCellArray::New();
   newPolys->AllocateEstimate(estimatedSize, 3);
 
@@ -94,13 +94,13 @@ static void vtkRectilinearSynchronizedTemplatesInitializeOutput(TArray* inScalar
   if (normals)
   {
     normals->SetNumberOfComponents(3);
-    normals->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
-    normals->SetName("Normals");
+    normals->ReserveTuples(estimatedSize);
+    normals->SetName("Gradients");
   }
   if (gradients)
   {
     gradients->SetNumberOfComponents(3);
-    gradients->Allocate(3 * estimatedSize, 3 * estimatedSize / 2);
+    gradients->ReserveTuples(estimatedSize);
     gradients->SetName("Gradients");
   }
   if (scalars)
@@ -122,8 +122,8 @@ static void vtkRectilinearSynchronizedTemplatesInitializeOutput(TArray* inScalar
 //------------------------------------------------------------------------------
 // Calculate the gradient using central difference.
 template <class TScalarIter>
-void vtkRSTComputePointGradient(int i, int j, int k, TScalarIter& s, int* inExt, int xInc, int yInc,
-  int zInc, double* spacing, double n[3])
+void vtkRSTComputePointGradient(int i, int j, int k, TScalarIter& s, VTK_FUTURE_CONST int* inExt,
+  int xInc, int yInc, int zInc, double* spacing, double n[3])
 {
   double sp, sm;
 
@@ -236,7 +236,7 @@ struct ContourRectilinearGridFunctor
     int* exExt, vtkRectilinearGrid* data, vtkPolyData* output, bool outputTriangles)
   {
     auto ptr = vtk::DataArrayValueRange(inScalars).begin() + index;
-    int* inExt = data->GetExtent();
+    VTK_FUTURE_CONST int* inExt = data->GetExtent();
     int xdim = exExt[1] - exExt[0] + 1;
     int ydim = exExt[3] - exExt[2] + 1;
     double* values = self->GetValues();
@@ -444,7 +444,7 @@ struct ContourRectilinearGridFunctor
                   {
                     *isect2Ptr = *(isect2Ptr - yisectstep + 4);
                   }
-                  else if (k > zMin && i<xMax&&*(isect1Ptr + 5)> - 1)
+                  else if (k > zMin && i < xMax && *(isect1Ptr + 5) > -1)
                   {
                     *isect2Ptr = *(isect1Ptr + 5);
                   }
@@ -700,7 +700,7 @@ int vtkRectilinearSynchronizedTemplates::RequestData(vtkInformation* vtkNotUsed(
     return 1;
   }
 
-  int* inExt = data->GetExtent();
+  VTK_FUTURE_CONST int* inExt = data->GetExtent();
   vtkIdType index = data->GetValueIndexForExtent(inScalars, inExt);
 
   int exExt[6];

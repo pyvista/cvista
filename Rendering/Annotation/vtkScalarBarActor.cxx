@@ -559,10 +559,13 @@ int vtkScalarBarActor::RenderOpaqueGeometry(vtkViewport* viewport)
     {
       renderedSomething += this->ScalarBarActor->RenderOpaqueGeometry(viewport);
     }
-    vtkScalarBarActorInternal::ActorVector::iterator ait;
-    for (ait = this->P->TextActors.begin(); ait != this->P->TextActors.end(); ++ait)
+    if (this->DrawTickLabels)
     {
-      renderedSomething += (*ait)->RenderOpaqueGeometry(viewport);
+      vtkScalarBarActorInternal::ActorVector::iterator ait;
+      for (ait = this->P->TextActors.begin(); ait != this->P->TextActors.end(); ++ait)
+      {
+        renderedSomething += (*ait)->RenderOpaqueGeometry(viewport);
+      }
     }
   }
   else
@@ -1356,8 +1359,9 @@ void vtkScalarBarActor::LayoutTicks()
     }
 
     std::string labelFormat = this->LabelFormat ? vtk::to_std_format(this->LabelFormat) : "";
-    VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(string, 512, labelFormat, val);
-                               *result.out = '\0', ); // null terminate the string
+    VTK_FORMAT_IF_ERROR_RETURN(
+      auto result = vtk::format_to_n(string, 512, vtk::runtime(labelFormat), val);
+      *result.out = '\0', ); // null terminate the string
     this->P->TextActors[i]->SetInput(string);
 
     // Shallow copy here so that the size of the label prop is not affected
@@ -2306,7 +2310,7 @@ int vtkScalarBarActor::PlaceAnnotationsVertically(double barX, double barY,
     this->P->AnnotationLabels[j]->GetSize(this->P->Viewport, tsz);                                 \
     hh = (tsz[1] + pad) / 2.; /* label half-height, incl. padding */                               \
     if (((dir) < 0 && ctr + hh > dnCum) || ((dir) > 0 && ctr - hh < upCum))                        \
-      ctr = (delt) + (dir)*hh;                                                                     \
+      ctr = (delt) + (dir) * hh;                                                                   \
     this->P->AnnotationLabels[j]->GetTextProperty()->SetJustification(                             \
       this->TextPosition == PrecedeScalarBar ? VTK_TEXT_LEFT : VTK_TEXT_RIGHT);                    \
     this->P->AnnotationLabels[j]->GetTextProperty()->SetVerticalJustificationToCentered();         \
@@ -2328,8 +2332,8 @@ int vtkScalarBarActor::PlaceAnnotationsVertically(double barX, double barY,
   vtkUnsignedCharArray* llcolors = vtkUnsignedCharArray::New();
   llcolors->SetName("Leader Line Colors");
   llcolors->SetNumberOfComponents(3);
-  llcolors->Allocate(numNotes);
-  lpts->Allocate(2 * numNotes);
+  llcolors->ReserveTuples(numNotes);
+  lpts->Reserve(2 * numNotes);
   llines->AllocateEstimate(numNotes, 2);
   this->P->AnnotationLeaders->Initialize();
   this->P->AnnotationLeaders->SetPoints(lpts);
@@ -2680,9 +2684,9 @@ int vtkScalarBarActor::PlaceAnnotationsHorizontally(
   vtkUnsignedCharArray* llcolors = vtkUnsignedCharArray::New();
   llcolors->SetName("Leader Line Color");
   llcolors->SetNumberOfComponents(3);
-  llcolors->Allocate(numNotes * numNotes);
+  llcolors->ReserveTuples(numNotes * numNotes);
   // TODO: Improve estimates, but we don't know how many breaks there will be:
-  lpts->Allocate(numNotes * numNotes);
+  lpts->Reserve(numNotes * numNotes);
   llines->AllocateEstimate(numNotes * numNotes, 2);
   this->P->AnnotationLeaders->Initialize();
   this->P->AnnotationLeaders->SetPoints(lpts);

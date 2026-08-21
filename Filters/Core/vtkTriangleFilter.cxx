@@ -225,7 +225,7 @@ int vtkTriangleFilter::RequestData(vtkInformation* vtkNotUsed(request),
       newPolys->AllocateCopy(inPolys);
 
       vtkNew<vtkIdList> ptIds;
-      ptIds->Allocate(VTK_CELL_SIZE);
+      ptIds->Reserve(VTK_CELL_SIZE);
       vtkIdType triPts[3];
       // It may be necessary to specify a custom tessellation
       // tolerance.
@@ -271,7 +271,7 @@ int vtkTriangleFilter::RequestData(vtkInformation* vtkNotUsed(request),
             newPolys->InsertNextCell(3, triPts);
             outCD->CopyData(inCD, inCellId, outCellId++);
           } // for each simplex
-        }   // triangulate polygon
+        } // triangulate polygon
       }
       output->SetPolys(newPolys);
     }

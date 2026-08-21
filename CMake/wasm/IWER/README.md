@@ -1,0 +1,1 @@
+This folder contains a build of the [Immersive Web Emulation Runtime from Meta](https://github.com/meta-quest/immersive-web-emulation-runtime) version 2.0.1. It is used to emulate a WebXR runtime in the VTK tests.

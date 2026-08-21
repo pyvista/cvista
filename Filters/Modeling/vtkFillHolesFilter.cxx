@@ -98,7 +98,7 @@ int vtkFillHolesFilter::RequestData(vtkInformation* vtkNotUsed(request),
   vtkIdType cellId, p1, p2, numNei, i, numCells = newPolys->GetNumberOfCells();
   vtkIdType progressInterval = numCells / 20 + 1;
   vtkIdList* neighbors = vtkIdList::New();
-  neighbors->Allocate(VTK_CELL_SIZE);
+  neighbors->Reserve(VTK_CELL_SIZE);
   for (cellId = 0, newPolys->InitTraversal(); newPolys->GetNextCell(npts, pts) && !abort; cellId++)
   {
     if (!(cellId % progressInterval)) // manage progress / early abort
@@ -205,9 +205,9 @@ int vtkFillHolesFilter::RequestData(vtkInformation* vtkNotUsed(request),
               newCells->InsertCellPoint(polygon->PointIds->GetId(neighbors->GetId(i + 2)));
             }
           } // if hole small enough
-        }   // if a valid loop
-      }     // if not yet visited a line
-    }       // for all lines
+        } // if a valid loop
+      } // if not yet visited a line
+    } // for all lines
     polygon->Delete();
     endId->Delete();
     delete[] visited;

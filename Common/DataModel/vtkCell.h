@@ -31,9 +31,10 @@
 #include "vtkCommonDataModelModule.h" // For export macro
 #include "vtkObject.h"
 
-#include "vtkBoundingBox.h" // Needed for IntersectWithCell
-#include "vtkCellType.h"    // Needed to define cell types
-#include "vtkIdList.h"      // Needed for inline methods
+#include "vtkBoundingBox.h"  // Needed for IntersectWithCell
+#include "vtkCellType.h"     // Needed to define cell types
+#include "vtkIdList.h"       // Needed for inline methods
+#include "vtkSmartPointer.h" // Needed for vtkSmartPointer
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkCellArray;

@@ -3,7 +3,9 @@
 #include "vtkLookupTable.h"
 
 #include "vtkAbstractArray.h"
+#include "vtkArrayDispatch.h"
 #include "vtkBitArray.h"
+#include "vtkDataArrayRange.h"
 #include "vtkMath.h"
 #include "vtkMathConfigure.h"
 #include "vtkObjectFactory.h"
@@ -24,14 +26,14 @@ vtkStandardNewMacro(vtkLookupTable);
 
 // Construct with range=(0,1); and hsv ranges set up for rainbow color table
 // (from red to blue).
-vtkLookupTable::vtkLookupTable(int sze, int ext)
+vtkLookupTable::vtkLookupTable(int sze, int vtkNotUsed(ext))
 {
   this->NumberOfColors = sze;
   this->Table = vtkUnsignedCharArray::New();
   this->Table->Register(this);
   this->Table->Delete();
   this->Table->SetNumberOfComponents(4);
-  this->Table->Allocate(4 * (sze + NUMBER_OF_SPECIAL_COLORS), 4 * ext);
+  this->Table->ReserveTuples(sze + NUMBER_OF_SPECIAL_COLORS);
 
   this->HueRange[0] = 0.0;
   this->HueRange[1] = 0.66667;
@@ -193,19 +195,19 @@ void vtkLookupTable::SetScale(int scale)
   {
     this->TableRange[0] = 1.0;
     this->TableRange[1] = 10.0;
-    vtkErrorMacro("Bad table range for log scale: [" << rmin << ", " << rmax
-                                                     << "], "
-                                                        "adjusting to [1, 10]");
+    vtkWarningMacro("Bad table range for log scale: [" << rmin << ", " << rmax
+                                                       << "], "
+                                                          "adjusting to [1, 10]");
     return;
   }
 }
 
 //------------------------------------------------------------------------------
 // Allocate a color table of specified size.
-int vtkLookupTable::Allocate(int sz, int ext)
+int vtkLookupTable::Allocate(int sz, int vtkNotUsed(ext))
 {
   this->NumberOfColors = sz;
-  int a = this->Table->Allocate(4 * (this->NumberOfColors + NUMBER_OF_SPECIAL_COLORS), 4 * ext);
+  int a = this->Table->ReserveValues(4 * (this->NumberOfColors + NUMBER_OF_SPECIAL_COLORS));
   this->Modified();
   return a;
 }
@@ -230,7 +232,7 @@ void vtkLookupTable::ForceBuild()
   }
 
   double rgba[4];
-  for (vtkIdType i = 0; i <= maxIndex; i++)
+  for (vtkIdType i = 0; i <= maxIndex; ++i)
   {
     double hue = this->HueRange[0] + i * hinc;
     double sat = this->SaturationRange[0] + i * sinc;
@@ -469,9 +471,9 @@ inline void vtkLookupTableLogRange(const double range[2], double logRange[2])
 double vtkApplyLogScaleMain(double v, const double range[2], const double logRange[2])
 {
   // is the range set for negative numbers?
-  if (range[0] < 0)
+  if (range[0] < 0.0)
   {
-    if (v < 0)
+    if (v < 0.0)
     {
       v = -log10(-v);
     }
@@ -486,7 +488,7 @@ double vtkApplyLogScaleMain(double v, const double range[2], const double logRan
   }
   else
   {
-    if (v > 0)
+    if (v > 0.0)
     {
       v = log10(v);
     }
@@ -664,7 +666,6 @@ vtkIdType vtkLookupTable::GetIndex(double v)
   //   First, check whether we have a number...
   if (vtkMath::IsNan(v))
   {
-    // For backwards compatibility
     return -1;
   }
 
@@ -796,42 +797,298 @@ namespace
 {
 
 //------------------------------------------------------------------------------
-template <class T>
-void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output, int length,
-  int inIncr, int outFormat, TableParameters& p)
+struct vtkLookupTableMapData
 {
-  int i = length;
-  const double* range = self->GetTableRange();
-  const unsigned char* cptr;
-
-  // Resize the internal table to hold the special colors at the
-  // end. When this function is called repeatedly with the same size
-  // lookup table, memory reallocation will be done only on the first
-  // call, if at all.
-
-  vtkUnsignedCharArray* lookupTable = self->GetTable();
-
-  const unsigned char* table = lookupTable->GetPointer(0);
-
-  double alpha = self->GetAlpha();
-  if (alpha >= 1.0) // no blending required
+  template <class TArray, class T = vtk::GetAPIType<TArray>>
+  void operator()(TArray* inputArray, vtkLookupTable* self, unsigned char* output, int length,
+    int inIncr, int vectorComponent, int outFormat, TableParameters& p)
   {
-    if (self->GetScale() == VTK_SCALE_LOG10)
-    {
-      double val;
-      double logRange[2];
-      vtkLookupTableLogRange(range, logRange);
-      vtkLookupShiftAndScale(logRange, p.NumColors, p.Shift, p.Scale);
-      p.Range[0] = logRange[0];
-      p.Range[1] = logRange[1];
+    auto input = vtk::DataArrayValueRange<vtk::detail::DynamicTupleSize, T>(inputArray).begin() +
+      vectorComponent;
+    int i = length;
+    const double* range = self->GetTableRange();
+    const unsigned char* cptr;
 
+    // Resize the internal table to hold the special colors at the
+    // end. When this function is called repeatedly with the same size
+    // lookup table, memory reallocation will be done only on the first
+    // call, if at all.
+
+    vtkUnsignedCharArray* lookupTable = self->GetTable();
+
+    const unsigned char* table = lookupTable->GetPointer(0);
+
+    double alpha = self->GetAlpha();
+    if (alpha >= 1.0) // no blending required
+    {
+      if (self->GetScale() == VTK_SCALE_LOG10)
+      {
+        double val;
+        double logRange[2];
+        vtkLookupTableLogRange(range, logRange);
+        vtkLookupShiftAndScale(logRange, p.NumColors, p.Shift, p.Scale);
+        p.Range[0] = logRange[0];
+        p.Range[1] = logRange[1];
+
+        if (outFormat == VTK_RGBA)
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            memcpy(output, cptr, 4);
+            input += inIncr;
+            output += 4;
+          }
+        }
+        else if (outFormat == VTK_RGB)
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            memcpy(output, cptr, 3);
+            input += inIncr;
+            output += 3;
+          }
+        }
+        else if (outFormat == VTK_LUMINANCE_ALPHA)
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            output[0] =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            output[1] = cptr[3];
+            input += inIncr;
+            output += 2;
+          }
+        }
+        else // outFormat == VTK_LUMINANCE
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            *output++ =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            input += inIncr;
+          }
+        }
+      } // if log scale
+
+      else // not log scale
+      {
+        vtkLookupShiftAndScale(range, p.NumColors, p.Shift, p.Scale);
+        p.Range[0] = range[0];
+        p.Range[1] = range[1];
+        if (outFormat == VTK_RGBA)
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            memcpy(output, cptr, 4);
+            input += inIncr;
+            output += 4;
+          }
+        }
+        else if (outFormat == VTK_RGB)
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            memcpy(output, cptr, 3);
+            input += inIncr;
+            output += 3;
+          }
+        }
+        else if (outFormat == VTK_LUMINANCE_ALPHA)
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            output[0] =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            output[1] = cptr[3];
+            input += inIncr;
+            output += 2;
+          }
+        }
+        else // outFormat == VTK_LUMINANCE
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            *output++ =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            input += inIncr;
+          }
+        }
+      } // if not log lookup
+    } // if blending not needed
+
+    else // blend with the specified alpha
+    {
+      if (self->GetScale() == VTK_SCALE_LOG10)
+      {
+        double val;
+        double logRange[2];
+        vtkLookupTableLogRange(range, logRange);
+        vtkLookupShiftAndScale(logRange, p.NumColors, p.Shift, p.Scale);
+        p.Range[0] = logRange[0];
+        p.Range[1] = logRange[1];
+
+        if (outFormat == VTK_RGBA)
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            output[0] = cptr[0];
+            output[1] = cptr[1];
+            output[2] = cptr[2];
+            output[3] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
+            input += inIncr;
+            output += 4;
+          }
+        }
+        else if (outFormat == VTK_RGB)
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            memcpy(output, cptr, 3);
+            input += inIncr;
+            output += 3;
+          }
+        }
+        else if (outFormat == VTK_LUMINANCE_ALPHA)
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            output[0] =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            output[1] = static_cast<unsigned char>(alpha * cptr[3] + 0.5);
+            input += inIncr;
+            output += 2;
+          }
+        }
+        else // outFormat == VTK_LUMINANCE
+        {
+          while (--i >= 0)
+          {
+            val = vtkApplyLogScale(*input, range, logRange);
+            vtkIdType idx = vtkLinearLookup(val, p);
+            cptr = table + 4 * idx;
+            *output++ =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            input += inIncr;
+          }
+        }
+      } // log scale with blending
+
+      else // no log scale with blending
+      {
+        vtkLookupShiftAndScale(range, p.NumColors, p.Shift, p.Scale);
+        p.Range[0] = range[0];
+        p.Range[1] = range[1];
+
+        if (outFormat == VTK_RGBA)
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            output[0] = cptr[0];
+            output[1] = cptr[1];
+            output[2] = cptr[2];
+            output[3] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
+            input += inIncr;
+            output += 4;
+          }
+        }
+        else if (outFormat == VTK_RGB)
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            memcpy(output, cptr, 3);
+            input += inIncr;
+            output += 3;
+          }
+        }
+        else if (outFormat == VTK_LUMINANCE_ALPHA)
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            output[0] =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            output[1] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
+            input += inIncr;
+            output += 2;
+          }
+        }
+        else // outFormat == VTK_LUMINANCE
+        {
+          while (--i >= 0)
+          {
+            vtkIdType idx = vtkLinearLookup(*input, p);
+            cptr = table + 4 * idx;
+            *output++ =
+              static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
+            input += inIncr;
+          }
+        }
+      } // no log scale
+    } // alpha blending
+  }
+};
+
+//------------------------------------------------------------------------------
+struct vtkLookupTableIndexedMapData
+{
+  template <class TArray, class T = vtk::GetAPIType<TArray>>
+  void operator()(TArray* inputArray, vtkLookupTable* self, unsigned char* output, int length,
+    int inIncr, int vectorComponent, int outFormat)
+  {
+    auto input = vtk::DataArrayValueRange<vtk::detail::DynamicTupleSize, T>(inputArray).begin() +
+      vectorComponent;
+    int i = length;
+    unsigned char* cptr;
+
+    unsigned char nanColor[4];
+    vtkLookupTable::GetColorAsUnsignedChars(self->GetNanColor(), nanColor);
+
+    vtkVariant vin;
+    double alpha = self->GetAlpha();
+    if (alpha >= 1.0) // no blending required
+    {
       if (outFormat == VTK_RGBA)
       {
         while (--i >= 0)
         {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
+
           memcpy(output, cptr, 4);
           input += inIncr;
           output += 4;
@@ -841,9 +1098,10 @@ void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output
       {
         while (--i >= 0)
         {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
+
           memcpy(output, cptr, 3);
           input += inIncr;
           output += 3;
@@ -853,9 +1111,9 @@ void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output
       {
         while (--i >= 0)
         {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
           output[0] =
             static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
           output[1] = cptr[3];
@@ -867,91 +1125,26 @@ void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output
       {
         while (--i >= 0)
         {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
           *output++ =
             static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
           input += inIncr;
         }
       }
-    } // if log scale
+    } // if blending not needed
 
-    else // not log scale
+    else // blend with the specified alpha
     {
-      vtkLookupShiftAndScale(range, p.NumColors, p.Shift, p.Scale);
-      p.Range[0] = range[0];
-      p.Range[1] = range[1];
       if (outFormat == VTK_RGBA)
       {
         while (--i >= 0)
         {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
-          memcpy(output, cptr, 4);
-          input += inIncr;
-          output += 4;
-        }
-      }
-      else if (outFormat == VTK_RGB)
-      {
-        while (--i >= 0)
-        {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
           memcpy(output, cptr, 3);
-          input += inIncr;
-          output += 3;
-        }
-      }
-      else if (outFormat == VTK_LUMINANCE_ALPHA)
-      {
-        while (--i >= 0)
-        {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
-          output[0] =
-            static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-          output[1] = cptr[3];
-          input += inIncr;
-          output += 2;
-        }
-      }
-      else // outFormat == VTK_LUMINANCE
-      {
-        while (--i >= 0)
-        {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
-          *output++ =
-            static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-          input += inIncr;
-        }
-      }
-    } // if not log lookup
-  }   // if blending not needed
-
-  else // blend with the specified alpha
-  {
-    if (self->GetScale() == VTK_SCALE_LOG10)
-    {
-      double val;
-      double logRange[2];
-      vtkLookupTableLogRange(range, logRange);
-      vtkLookupShiftAndScale(logRange, p.NumColors, p.Shift, p.Scale);
-      p.Range[0] = logRange[0];
-      p.Range[1] = logRange[1];
-
-      if (outFormat == VTK_RGBA)
-      {
-        while (--i >= 0)
-        {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
-          output[0] = cptr[0];
-          output[1] = cptr[1];
-          output[2] = cptr[2];
           output[3] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
           input += inIncr;
           output += 4;
@@ -961,9 +1154,9 @@ void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output
       {
         while (--i >= 0)
         {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
           memcpy(output, cptr, 3);
           input += inIncr;
           output += 3;
@@ -973,67 +1166,9 @@ void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output
       {
         while (--i >= 0)
         {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
-          output[0] =
-            static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-          output[1] = static_cast<unsigned char>(alpha * cptr[3] + 0.5);
-          input += inIncr;
-          output += 2;
-        }
-      }
-      else // outFormat == VTK_LUMINANCE
-      {
-        while (--i >= 0)
-        {
-          val = vtkApplyLogScale(*input, range, logRange);
-          vtkIdType idx = vtkLinearLookup(val, p);
-          cptr = table + 4 * idx;
-          *output++ =
-            static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-          input += inIncr;
-        }
-      }
-    } // log scale with blending
-
-    else // no log scale with blending
-    {
-      vtkLookupShiftAndScale(range, p.NumColors, p.Shift, p.Scale);
-      p.Range[0] = range[0];
-      p.Range[1] = range[1];
-
-      if (outFormat == VTK_RGBA)
-      {
-        while (--i >= 0)
-        {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
-          output[0] = cptr[0];
-          output[1] = cptr[1];
-          output[2] = cptr[2];
-          output[3] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
-          input += inIncr;
-          output += 4;
-        }
-      }
-      else if (outFormat == VTK_RGB)
-      {
-        while (--i >= 0)
-        {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
-          memcpy(output, cptr, 3);
-          input += inIncr;
-          output += 3;
-        }
-      }
-      else if (outFormat == VTK_LUMINANCE_ALPHA)
-      {
-        while (--i >= 0)
-        {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
           output[0] =
             static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
           output[1] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
@@ -1045,182 +1180,46 @@ void vtkLookupTableMapData(vtkLookupTable* self, T* input, unsigned char* output
       {
         while (--i >= 0)
         {
-          vtkIdType idx = vtkLinearLookup(*input, p);
-          cptr = table + 4 * idx;
+          vin = static_cast<T>(*input);
+          vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
+          cptr = idx < 0 ? nanColor : self->GetPointer(idx);
           *output++ =
             static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
           input += inIncr;
         }
       }
-    } // no log scale
-  }   // alpha blending
-}
-
-//------------------------------------------------------------------------------
-template <class T>
-void vtkLookupTableIndexedMapData(vtkLookupTable* self, const T* input, unsigned char* output,
-  int length, int inIncr, int outFormat)
-{
-  int i = length;
-  unsigned char* cptr;
-
-  unsigned char nanColor[4];
-  vtkLookupTable::GetColorAsUnsignedChars(self->GetNanColor(), nanColor);
-
-  vtkVariant vin;
-  double alpha = self->GetAlpha();
-  if (alpha >= 1.0) // no blending required
-  {
-    if (outFormat == VTK_RGBA)
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-
-        memcpy(output, cptr, 4);
-        input += inIncr;
-        output += 4;
-      }
-    }
-    else if (outFormat == VTK_RGB)
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-
-        memcpy(output, cptr, 3);
-        input += inIncr;
-        output += 3;
-      }
-    }
-    else if (outFormat == VTK_LUMINANCE_ALPHA)
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-        output[0] =
-          static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-        output[1] = cptr[3];
-        input += inIncr;
-        output += 2;
-      }
-    }
-    else // outFormat == VTK_LUMINANCE
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-        *output++ =
-          static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-        input += inIncr;
-      }
-    }
-  } // if blending not needed
-
-  else // blend with the specified alpha
-  {
-    if (outFormat == VTK_RGBA)
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-        memcpy(output, cptr, 3);
-        output[3] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
-        input += inIncr;
-        output += 4;
-      }
-    }
-    else if (outFormat == VTK_RGB)
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-        memcpy(output, cptr, 3);
-        input += inIncr;
-        output += 3;
-      }
-    }
-    else if (outFormat == VTK_LUMINANCE_ALPHA)
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-        output[0] =
-          static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-        output[1] = static_cast<unsigned char>(cptr[3] * alpha + 0.5);
-        input += inIncr;
-        output += 2;
-      }
-    }
-    else // outFormat == VTK_LUMINANCE
-    {
-      while (--i >= 0)
-      {
-        vin = *input;
-        vtkIdType idx = self->GetAnnotatedValueIndexInternal(vin);
-        cptr = idx < 0 ? nanColor : self->GetPointer(idx);
-        *output++ =
-          static_cast<unsigned char>(cptr[0] * 0.30 + cptr[1] * 0.59 + cptr[2] * 0.11 + 0.5);
-        input += inIncr;
-      }
-    }
-  } // alpha blending
-}
+    } // alpha blending
+  }
+};
 
 } // end anonymous namespace
 
 VTK_ABI_NAMESPACE_BEGIN
 //------------------------------------------------------------------------------
-void vtkLookupTable::MapScalarsThroughTable2(void* input, unsigned char* output, int inputDataType,
-  int numberOfValues, int inputIncrement, int outputFormat)
+void vtkLookupTable::MapScalarsThroughTable(vtkAbstractArray* input, unsigned char* outPtr,
+  int numberOfTuples, int numberOfComponents, int vectorComponent, int outputFormat)
 {
   if (this->IndexedLookup)
   {
-    switch (inputDataType)
+    using Arrays =
+      vtkTypeList::Append<vtkArrayDispatch::AllArrays, vtkStringArray, vtkBitArray>::Result;
+    vtkLookupTableIndexedMapData worker;
+    if (!vtkArrayDispatch::DispatchByArray<Arrays>::Execute(input, worker, this, outPtr,
+          numberOfTuples, numberOfComponents, vectorComponent, outputFormat))
     {
-      case VTK_BIT:
+      if (auto da = vtkDataArray::SafeDownCast(input))
       {
-        vtkIdType i, id;
-        vtkBitArray* bitArray = vtkBitArray::New();
-        bitArray->SetVoidArray(input, numberOfValues, 1);
-        vtkUnsignedCharArray* newInput = vtkUnsignedCharArray::New();
-        newInput->SetNumberOfValues(numberOfValues);
-        for (id = i = 0; i < numberOfValues; i++, id += inputIncrement)
+        switch (da->GetDataType())
         {
-          newInput->SetValue(i, bitArray->GetValue(id));
+          vtkTemplateMacro((worker.template operator()<vtkDataArray, VTK_TT>(
+            da, this, outPtr, numberOfTuples, numberOfComponents, vectorComponent, outputFormat)));
         }
-        vtkLookupTableIndexedMapData(
-          this, newInput->GetPointer(0), output, numberOfValues, inputIncrement, outputFormat);
-        newInput->Delete();
-        bitArray->Delete();
       }
-      break;
-
-        vtkTemplateMacro(vtkLookupTableIndexedMapData(
-          this, static_cast<VTK_TT*>(input), output, numberOfValues, inputIncrement, outputFormat));
-
-      case VTK_STRING:
-        vtkLookupTableIndexedMapData(this, static_cast<vtkStdString*>(input), output,
-          numberOfValues, inputIncrement, outputFormat);
-        break;
-
-      default:
-        vtkErrorMacro(<< "MapScalarsThroughTable2: Unknown input ScalarType");
-        return;
+      else
+      {
+        vtkErrorMacro(<< "MapScalarsThroughTable: Unknown input ScalarType "
+                      << input->GetDataTypeAsString());
+      }
     }
   }
   else
@@ -1228,31 +1227,24 @@ void vtkLookupTable::MapScalarsThroughTable2(void* input, unsigned char* output,
     TableParameters p;
     p.NumColors = this->GetNumberOfColors();
 
-    switch (inputDataType)
+    using Arrays = vtkTypeList::Append<vtkArrayDispatch::AllArrays, vtkBitArray>::Result;
+    vtkLookupTableMapData worker;
+    if (!vtkArrayDispatch::DispatchByArray<Arrays>::Execute(input, worker, this, outPtr,
+          numberOfTuples, numberOfComponents, vectorComponent, outputFormat, p))
     {
-      case VTK_BIT:
+      if (auto da = vtkDataArray::SafeDownCast(input))
       {
-        vtkIdType i, id;
-        vtkBitArray* bitArray = vtkBitArray::New();
-        bitArray->SetVoidArray(input, numberOfValues, 1);
-        vtkUnsignedCharArray* newInput = vtkUnsignedCharArray::New();
-        newInput->SetNumberOfValues(numberOfValues);
-        for (id = i = 0; i < numberOfValues; i++, id += inputIncrement)
+        switch (da->GetDataType())
         {
-          newInput->SetValue(i, bitArray->GetValue(id));
+          vtkTemplateMacro((worker.template operator()<vtkDataArray, VTK_TT>(da, this, outPtr,
+            numberOfTuples, numberOfComponents, vectorComponent, outputFormat, p)));
         }
-        vtkLookupTableMapData(
-          this, newInput->GetPointer(0), output, numberOfValues, inputIncrement, outputFormat, p);
-        newInput->Delete();
-        bitArray->Delete();
       }
-      break;
-
-        vtkTemplateMacro(vtkLookupTableMapData(this, static_cast<VTK_TT*>(input), output,
-          numberOfValues, inputIncrement, outputFormat, p));
-      default:
-        vtkErrorMacro(<< "MapScalarsThroughTable2: Unknown input ScalarType");
-        return;
+      else
+      {
+        vtkErrorMacro(<< "MapScalarsThroughTable: Unknown input ScalarType "
+                      << input->GetDataTypeAsString());
+      }
     }
   }
 }
@@ -1278,29 +1270,29 @@ void vtkLookupTable::SetNumberOfTableValues(vtkIdType number)
 // Directly load color into lookup table. Use [0,1] double values for color
 // component specification. Make sure that you've either used the
 // Build() method or used SetNumberOfTableValues() prior to using this method.
-void vtkLookupTable::SetTableValue(vtkIdType indx, const double rgba[4])
+void vtkLookupTable::SetTableValue(vtkIdType index, const double rgba[4])
 {
   // Check the index to make sure it is valid
-  if (indx < 0)
+  if (index < 0)
   {
-    vtkErrorMacro("Can't set the table value for negative index " << indx);
+    vtkErrorMacro("Can't set the table value for negative index " << index);
     return;
   }
-  if (indx >= this->NumberOfColors)
+  if (index >= this->NumberOfColors)
   {
     vtkErrorMacro(
-      "Index " << indx << " is greater than the number of colors " << this->NumberOfColors);
+      "Index " << index << " is greater than the number of colors " << this->NumberOfColors);
     return;
   }
 
-  unsigned char* _rgba = this->Table->WritePointer(4 * indx, 4);
+  unsigned char* _rgba = this->Table->WritePointer(4 * index, 4);
 
   _rgba[0] = static_cast<unsigned char>(rgba[0] * 255.0 + 0.5);
   _rgba[1] = static_cast<unsigned char>(rgba[1] * 255.0 + 0.5);
   _rgba[2] = static_cast<unsigned char>(rgba[2] * 255.0 + 0.5);
   _rgba[3] = static_cast<unsigned char>(rgba[3] * 255.0 + 0.5);
 
-  if (indx == 0 || indx == this->NumberOfColors - 1)
+  if (index == 0 || index == this->NumberOfColors - 1)
   {
     // This is needed due to the way the special colors are stored in
     // the internal table. If Above/BelowRangeColors are not used and
@@ -1318,21 +1310,21 @@ void vtkLookupTable::SetTableValue(vtkIdType indx, const double rgba[4])
 //------------------------------------------------------------------------------
 // Directly load color into lookup table. Use [0,1] double values for color
 // component specification.
-void vtkLookupTable::SetTableValue(vtkIdType indx, double r, double g, double b, double a)
+void vtkLookupTable::SetTableValue(vtkIdType index, double r, double g, double b, double a)
 {
   const double rgba[4] = { r, g, b, a };
-  this->SetTableValue(indx, rgba);
+  this->SetTableValue(index, rgba);
 }
 
 //------------------------------------------------------------------------------
 // Return an RGBA color value for the given index into the lookup Table. Color
 // components are expressed as [0,1] double values.
-void vtkLookupTable::GetTableValue(vtkIdType indx, double rgba[4])
+void vtkLookupTable::GetTableValue(vtkIdType index, double rgba[4])
 {
-  indx = std::max<vtkIdType>(indx, 0);
-  indx = std::min<vtkIdType>(indx, this->NumberOfColors - 1);
+  index = std::max<vtkIdType>(index, 0);
+  index = std::min<vtkIdType>(index, this->NumberOfColors - 1);
 
-  const unsigned char* _rgba = this->Table->GetPointer(indx * 4);
+  const unsigned char* _rgba = this->Table->GetPointer(index * 4);
 
   rgba[0] = _rgba[0] / 255.0;
   rgba[1] = _rgba[1] / 255.0;
@@ -1342,9 +1334,9 @@ void vtkLookupTable::GetTableValue(vtkIdType indx, double rgba[4])
 
 // Return an RGBA color value for the given index into the lookup table. Color
 // components are expressed as [0,1] double values.
-double* vtkLookupTable::GetTableValue(vtkIdType indx)
+double* vtkLookupTable::GetTableValue(vtkIdType index)
 {
-  this->GetTableValue(indx, this->RGBA);
+  this->GetTableValue(index, this->RGBA);
   return this->RGBA;
 }
 
@@ -1455,9 +1447,9 @@ void vtkLookupTable::GetIndexedColor(vtkIdType idx, double rgba[4])
 void vtkLookupTable::ResizeTableForSpecialColors()
 {
   vtkIdType neededColors = this->NumberOfColors + vtkLookupTable::NUMBER_OF_SPECIAL_COLORS;
-  if (this->Table->GetSize() < neededColors * this->Table->GetNumberOfComponents())
+  if (this->Table->GetCapacity() < neededColors * this->Table->GetNumberOfComponents())
   {
-    this->Table->Resize(neededColors);
+    this->Table->ReserveTuples(neededColors);
   }
 }
 VTK_ABI_NAMESPACE_END

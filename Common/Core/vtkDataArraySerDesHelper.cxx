@@ -77,14 +77,8 @@ struct ArrayTypeInfo
   std::function<vtkObjectBase*()> New;
   const std::type_info& TypeInfo;
 };
-#define TYPE_INFO_MACRO(className)                                                                 \
-  {                                                                                                \
-    #className, className::New, typeid(className)                                                  \
-  }
-#define TTYPE_INFO_MACRO(className)                                                                \
-  {                                                                                                \
-    #className, className::New, typeid(className)                                                  \
-  }
+#define TYPE_INFO_MACRO(className) { #className, className::New, typeid(className) }
+#define TTYPE_INFO_MACRO(className) { #className, className::New, typeid(className) }
 
 // clang-format off
 #define TEMPLATED_ARRAY_TYPES_INFO_MACRO(className)                                                \
@@ -102,22 +96,22 @@ struct ArrayTypeInfo
     TTYPE_INFO_MACRO(className<unsigned long long>),                                               \
     TTYPE_INFO_MACRO(className<unsigned short>)
 
-#define CONCRETE_ARRAY_TYPES_INFO_MACRO(type)                                                      \
-    TYPE_INFO_MACRO(type##TypeInt8Array),                                                          \
-    TYPE_INFO_MACRO(type##TypeInt16Array),                                                         \
-    TYPE_INFO_MACRO(type##TypeInt32Array),                                                         \
-    TYPE_INFO_MACRO(type##TypeInt64Array),                                                         \
-    TYPE_INFO_MACRO(type##TypeUInt8Array),                                                         \
-    TYPE_INFO_MACRO(type##TypeUInt16Array),                                                        \
-    TYPE_INFO_MACRO(type##TypeUInt32Array),                                                        \
-    TYPE_INFO_MACRO(type##TypeUInt64Array),                                                        \
-    TYPE_INFO_MACRO(type##TypeFloat32Array),                                                       \
-    TYPE_INFO_MACRO(type##TypeFloat64Array)
+#define CONCRETE_ARRAY_TYPES_INFO_MACRO(type)                                                       \
+    TYPE_INFO_MACRO(type## TypeInt8Array),                                                          \
+    TYPE_INFO_MACRO(type## TypeInt16Array),                                                         \
+    TYPE_INFO_MACRO(type## TypeInt32Array),                                                         \
+    TYPE_INFO_MACRO(type## TypeInt64Array),                                                         \
+    TYPE_INFO_MACRO(type## TypeUInt8Array),                                                         \
+    TYPE_INFO_MACRO(type## TypeUInt16Array),                                                        \
+    TYPE_INFO_MACRO(type## TypeUInt32Array),                                                        \
+    TYPE_INFO_MACRO(type## TypeUInt64Array),                                                        \
+    TYPE_INFO_MACRO(type## TypeFloat32Array),                                                       \
+    TYPE_INFO_MACRO(type## TypeFloat64Array)
 
 // The templated types should match those in the TEMPLATED_ARRAY_TYPES_INFO_MACRO.
 #define TEMPLATED_ARRAY_NAME_DEMANGLE_MACRO(className, ValueType, valueTypeName)                   \
   template <>                                                                                      \
-  const char* GetDemangledClassNameFor##className<ValueType>(const char* templateArrayClassName)   \
+  const char* GetDemangledClassNameFor## className<ValueType>(const char* templateArrayClassName)  \
   {                                                                                                \
     if (!strcmp(templateArrayClassName, #className))                                               \
     {                                                                                              \
@@ -129,7 +123,7 @@ struct ArrayTypeInfo
 
 #define TEMPLATED_ARRAY_NAMES_DEMANGLE_MACRO(className)                                            \
   template <typename ValueType>                                                                    \
-  const char* GetDemangledClassNameFor##className(const char* templateArrayClassName)              \
+  const char* GetDemangledClassNameFor## className(const char* templateArrayClassName)             \
   {                                                                                                \
     (void)templateArrayClassName;                                                                  \
     vtkLogF(ERROR, "Specialization missing for " #className "<ValueType>");                        \
@@ -206,7 +200,7 @@ typedef vtkTypeList::Create<
   vtkConstantArray<unsigned short>>
   ConstantArrays;
 
-typedef vtkTypeList::Append<vtkArrayDispatch::Arrays,
+typedef vtkTypeList::Append<vtkArrayDispatch::AOSArrays,
   vtkBitArray,
   AffineArrays,
   ConstantArrays>::Result
@@ -267,20 +261,20 @@ struct vtkDataArraySerializer
     {
       return;
     }
-    // demangle and record the actual templated class name
-    if (strstr(array->GetClassName(), "vtkImplicitArray"))
+    // demangle and record the actual templated class name prior to early outs
+    // to ensure the deserializer on the other end can create the correct type.
+    if (strstr(array->GetClassName(), "vtkAffineArray"))
     {
+      // demangle and record the actual templated class name
       state["ClassName"] = GetDemangledClassNameForvtkAffineArray<ValueT>("vtkAffineArray");
     }
-
-    auto backend = array->GetBackend();
-    if (backend == nullptr)
+    if (array->GetBackend() == nullptr)
     {
       vtkLogF(ERROR, "AffineArray backend is null");
       return;
     }
-    state["Slope"] = backend->Slope;
-    state["Intercept"] = backend->Intercept;
+    state["Slope"] = array->GetSlope();
+    state["Intercept"] = array->GetIntercept();
   }
 
   template <typename ValueT>
@@ -291,18 +285,19 @@ struct vtkDataArraySerializer
     {
       return;
     }
-    // demangle and record the actual templated class name
-    if (strstr(array->GetClassName(), "vtkImplicitArray"))
+    // demangle and record the actual templated class name prior to early outs
+    // to ensure the deserializer on the other end can create the correct type.
+    if (strstr(array->GetClassName(), "vtkConstantArray"))
     {
+      // demangle and record the actual templated class name
       state["ClassName"] = GetDemangledClassNameForvtkConstantArray<ValueT>("vtkConstantArray");
     }
-    auto backend = array->GetBackend();
-    if (backend == nullptr)
+    if (array->GetBackend() == nullptr)
     {
       vtkLogF(ERROR, "ConstantArray backend is null");
       return;
     }
-    state["Value"] = backend->Value;
+    state["Value"] = array->GetConstantValue();
   }
 
   template <typename ValueT>
@@ -343,14 +338,21 @@ struct vtkDataArraySerializer
     {
       return;
     }
-    else if (!array->GetNumberOfValues())
+    if (!array->GetNumberOfValues())
     {
       return;
     }
 
     auto blob = vtk::TakeSmartPointer(vtkTypeUInt8Array::New());
     vtkIdType arrSize = array->GetNumberOfValues() * array->GetDataTypeSize();
-    blob->SetArray(reinterpret_cast<vtkTypeUInt8*>(array->GetVoidPointer(0)), arrSize, 1);
+    // copy data into blob
+    blob->SetNumberOfValues(arrSize);
+    switch (array->GetDataType())
+    {
+      vtkTemplateMacro(
+        std::copy_n(vtk::DataArrayValueRange<vtk::detail::DynamicTupleSize, VTK_TT>(array).begin(),
+          array->GetNumberOfValues(), reinterpret_cast<VTK_TT*>(blob->GetPointer(0))));
+    }
     Serialize_Blob(blob, state, serializer);
 
     if (auto lt = array->GetLookupTable())
@@ -365,7 +367,7 @@ struct vtkDataArraySerializer
     {
       return;
     }
-    else if (!array->GetNumberOfValues())
+    if (!array->GetNumberOfValues())
     {
       return;
     }
@@ -387,70 +389,67 @@ struct vtkDataArrayDeserializer
 {
   template <typename ValueT>
   void operator()(vtkAffineArray<ValueT>* array, const nlohmann::json& state,
-    vtkDeserializer* vtkNotUsed(deserializer))
+    vtkDeserializer* vtkNotUsed(deserializer), bool& vtkNotUsed(success))
   {
     ValueT slope = state["Slope"].get<ValueT>();
     ValueT intercept = state["Intercept"].get<ValueT>();
-    array->SetBackend(std::make_shared<vtkAffineImplicitBackend<ValueT>>(slope, intercept));
+    array->ConstructBackend(slope, intercept);
   }
 
   template <typename ValueT>
   void operator()(vtkConstantArray<ValueT>* array, const nlohmann::json& state,
-    vtkDeserializer* vtkNotUsed(deserializer))
+    vtkDeserializer* vtkNotUsed(deserializer), bool& vtkNotUsed(success))
   {
     ValueT value = state["Value"].get<ValueT>();
-    array->SetBackend(std::make_shared<vtkConstantImplicitBackend<ValueT>>(value));
+    array->ConstructBackend(value);
   }
 
   template <typename ValueT>
   void operator()(vtkAOSDataArrayTemplate<ValueT>* array, const nlohmann::json& state,
-    vtkDeserializer* deserializer)
+    vtkDeserializer* deserializer, bool& success)
   {
     nlohmann::json blob;
     if (!Deserialize_Blob(blob, state, deserializer))
     {
+      success = false;
       return;
     }
     const auto& content = blob.get_binary();
-    const ValueT* c_ptr = reinterpret_cast<const ValueT*>(content.data());
-    auto src = const_cast<ValueT*>(c_ptr);
-    auto dst = array->GetPointer(0);
-    std::copy(src, src + array->GetNumberOfValues(), dst);
+    std::copy_n(reinterpret_cast<const ValueT*>(content.data()), array->GetNumberOfValues(),
+      array->GetPointer(0));
     VTK_DESERIALIZE_VTK_OBJECT_FROM_STATE(LookupTable, vtkLookupTable, state, array, deserializer);
   }
 
-  void operator()(vtkDataArray* array, const nlohmann::json& state, vtkDeserializer* deserializer)
+  void operator()(
+    vtkDataArray* array, const nlohmann::json& state, vtkDeserializer* deserializer, bool& success)
   {
     nlohmann::json blob;
     if (!Deserialize_Blob(blob, state, deserializer))
     {
+      success = false;
       return;
     }
     const auto& content = blob.get_binary();
-
     switch (array->GetDataType())
     {
-      vtkTemplateMacro(const VTK_TT* c_ptr = reinterpret_cast<const VTK_TT*>(content.data());
-                       auto src = const_cast<VTK_TT*>(c_ptr);
-                       auto dst = reinterpret_cast<VTK_TT*>(array->GetVoidPointer(0));
-                       std::copy(src, src + array->GetNumberOfValues(), dst));
+      vtkTemplateMacro(
+        std::copy_n(reinterpret_cast<const VTK_TT*>(content.data()), array->GetNumberOfValues(),
+          vtk::DataArrayValueRange<vtk::detail::DynamicTupleSize, VTK_TT>(array).begin()));
     }
-    // nifty memory savings below, unfortunately, doesn't work correctly when there are point
-    // scalars.
-    // array->SetVoidArray(const_cast<void*>(c_ptr), array->GetNumberOfValues(), 1);
     VTK_DESERIALIZE_VTK_OBJECT_FROM_STATE(LookupTable, vtkLookupTable, state, array, deserializer);
   }
 
-  void operator()(vtkBitArray* array, const nlohmann::json& state, vtkDeserializer* deserializer)
+  void operator()(
+    vtkBitArray* array, const nlohmann::json& state, vtkDeserializer* deserializer, bool& success)
   {
     nlohmann::json blob;
     if (!Deserialize_Blob(blob, state, deserializer))
     {
+      success = false;
       return;
     }
     const auto& content = blob.get_binary();
-    std::copy(content.data(), content.data() + ((array->GetNumberOfValues() + 7) / 8),
-      array->GetPointer(0));
+    std::copy_n(content.data(), (array->GetNumberOfValues() + 7) / 8, array->GetPointer(0));
     array->SetNumberOfValues(state["NumberOfBits"]);
     VTK_DESERIALIZE_VTK_OBJECT_FROM_STATE(LookupTable, vtkLookupTable, state, array, deserializer);
   }
@@ -471,7 +470,7 @@ static nlohmann::json Serialize_vtkDataArray(vtkObjectBase* object, vtkSerialize
     if (id > 0)
     {
       state = context->GetState(id);
-      if (!state.empty())
+      if (auto iter = state.find("MTime"); (iter != state.end() && !iter->is_null()))
       {
         const auto stateMTime = state.at("MTime").get<vtkMTimeType>();
         if (da->GetMTime() <= stateMTime)
@@ -514,28 +513,35 @@ static nlohmann::json Serialize_vtkDataArray(vtkObjectBase* object, vtkSerialize
   return state;
 }
 
-static void Deserialize_vtkDataArray(
+static bool Deserialize_vtkDataArray(
   const nlohmann::json& state, vtkObjectBase* object, vtkDeserializer* deserializer)
 {
-  if (object == nullptr)
+  auto* da = vtkDataArray::SafeDownCast(object);
+  if (!da)
   {
-    return;
+    vtkErrorWithObjectMacro(deserializer, << __func__ << ": object not a vtkDataArray");
+    return false;
   }
+  bool success = true;
   if (const auto superDeserializer = deserializer->GetHandler(typeid(vtkDataArray::Superclass)))
   {
-    superDeserializer(state, object, deserializer);
+    success &= superDeserializer(state, object, deserializer);
   }
-  auto* da = vtkDataArray::SafeDownCast(object);
+  if (!success)
+  {
+    return false;
+  }
   if (!da->GetNumberOfValues())
   {
-    return;
+    return success;
   }
   vtkDataArrayDeserializer deserializeWorker;
   using Dispatch = vtkArrayDispatch::DispatchByArray<DispatchTypeList>;
-  if (!Dispatch::Execute(da, deserializeWorker, state, deserializer))
+  if (!Dispatch::Execute(da, deserializeWorker, state, deserializer, success))
   {
-    deserializeWorker(da, state, deserializer);
+    deserializeWorker(da, state, deserializer, success);
   }
+  return success;
 }
 
 int RegisterHandlers_vtkDataArraySerDesHelper(void* ser, void* deser, void* invoker)

@@ -95,7 +95,7 @@ int vtkApproximatingSubdivisionFilter::RequestData(
     {
       outputPts->SetDataType(VTK_DOUBLE);
     }
-    outputPts->Allocate(numPts);
+    outputPts->Reserve(numPts);
 
     // Copy pointdata structure from input
     outputPD = vtkPointData::New();

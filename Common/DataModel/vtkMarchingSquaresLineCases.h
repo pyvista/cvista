@@ -6,12 +6,15 @@
 // Marching squares cases for generating isolines.
 //
 #include "vtkCommonDataModelModule.h" // For export macro
+#include "vtkDeprecation.h"
 #include "vtkSystemIncludes.h"
 
 VTK_ABI_NAMESPACE_BEGIN
-struct VTKCOMMONDATAMODEL_EXPORT vtkMarchingSquaresLineCases
+struct VTK_DEPRECATED_IN_9_7_0(
+  "Use vtkMarchingCellsContourCases") VTKCOMMONDATAMODEL_EXPORT vtkMarchingSquaresLineCases
 {
   int edges[5];
+  VTK_DEPRECATED_IN_9_7_0("Use vtkMarchingCellsContourCases::GetQuadCases()")
   static vtkMarchingSquaresLineCases* GetCases();
 };
 

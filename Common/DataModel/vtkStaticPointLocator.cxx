@@ -331,7 +331,11 @@ vtkIdType BucketList<TIds>::FindClosestPoint(const double x[3])
         {
           ptId = ids[j].PtId;
           this->DataSet->GetPoint(ptId, pt);
-          if ((dist2 = vtkMath::Distance2BetweenPoints(x, pt)) < minDist2)
+          dist2 = vtkMath::Distance2BetweenPoints(x, pt);
+          // Always accept the first candidate found: for a query far outside
+          // the locator bounds (e.g. VTK_DOUBLE_MAX) the squared distance
+          // overflows to infinity, which would never compare less than minDist2.
+          if (closest < 0 || dist2 < minDist2)
           {
             closest = ptId;
             minDist2 = dist2;
@@ -345,8 +349,11 @@ vtkIdType BucketList<TIds>::FindClosestPoint(const double x[3])
   // Because of the relative location of the points in the buckets, the
   // point found previously may not be the closest point. We have to
   // search those bucket neighbors that might also contain the point.
+  // Skip this refinement when minDist2 is not finite (degenerate query far
+  // outside the bounds): the closest point is already arbitrary and the
+  // search radius would be infinite.
   //
-  if (minDist2 > 0.0)
+  if (minDist2 > 0.0 && vtkMath::IsFinite(minDist2))
   {
     this->GetOverlappingBuckets(&buckets, x, ijk, sqrt(minDist2), 0);
     for (i = 0; i < buckets.GetNumberOfNeighbors(); i++)
@@ -367,9 +374,9 @@ vtkIdType BucketList<TIds>::FindClosestPoint(const double x[3])
             minDist2 = dist2;
           }
         } // for each point
-      }   // if points in bucket
-    }     // for each overlapping bucket
-  }       // if not identical point
+      } // if points in bucket
+    } // for each overlapping bucket
+  } // if not identical point
 
   return closest;
 }
@@ -505,9 +512,9 @@ vtkIdType BucketList<TIds>::FindClosestPointWithinRadius(
               refinedRadius2 = minDist2;
             }
           } // for each pt in bucket
-        }   // if ids
-      }     // if bucket is within the current best distance
-    }       // for each overlapping bucket
+        } // if ids
+      } // if bucket is within the current best distance
+    } // for each overlapping bucket
 
     // Don't want to check a smaller radius than we just checked so update
     // it appropriately
@@ -744,8 +751,8 @@ struct ShellIterator
             return (this->I + jOffset + kOffset);
           }
         } // over I
-      }   // over J
-    }     // over K
+      } // over J
+    } // over K
 
     i = j = k = (-1);
     return -1;
@@ -884,7 +891,7 @@ struct ShellIterator
           res.emplace_back(ptId, d2);
         }
       } // if potential candidate
-    }   // for all points in this bin
+    } // for all points in this bin
 
     return maxR2;
   }
@@ -917,7 +924,7 @@ struct ShellIterator
       {
         res.emplace_back(ptId, d2);
       } // if within shell footprint
-    }   // for all points in this bin
+    } // for all points in this bin
   }
 }; // ShellIterator
 
@@ -1026,8 +1033,8 @@ double BucketList<TIds>::FindNPointsInShell(int N, const double x[3], vtkDist2Tu
           siter.AddPoints(i, j, k, binIdx, level, minR2, maxR2, results);
         }
       } // i-footprint
-    }   // j-footprint
-  }     // k-footprint
+    } // j-footprint
+  } // k-footprint
 
   // Sort if requested
   if (sort)
@@ -1050,7 +1057,7 @@ void BucketList<TIds>::FindPointsWithinRadius(double R, const double x[3], vtkId
   double R2 = R * R;
   const vtkLocatorTuple<TIds>* ids;
   double xMin[3], xMax[3];
-  int i, j, k, ii, jOffset, kOffset, ijkMin[3], ijkMax[3];
+  int i, j, k, ii, jOffset, kOffset, ijkMin[3], ijkMax[3], xijk[3];
 
   // Determine the range of indices in each direction based on radius R
   xMin[0] = x[0] - R;
@@ -1061,6 +1068,7 @@ void BucketList<TIds>::FindPointsWithinRadius(double R, const double x[3], vtkId
   xMax[2] = x[2] + R;
 
   //  Find the footprint in the locator
+  this->GetBucketIndices(x, xijk);
   this->GetBucketIndices(xMin, ijkMin);
   this->GetBucketIndices(xMax, ijkMax);
 
@@ -1080,21 +1088,44 @@ void BucketList<TIds>::FindPointsWithinRadius(double R, const double x[3], vtkId
 
         if ((numIds = this->GetNumberOfIds(cno)) > 0)
         {
-          ids = this->GetIds(cno);
-          for (ii = 0; ii < numIds; ii++)
+          // Reject buckets entirely outside the sphere, but never reject the
+          // bucket that contains the query point (floating-point inconsistency
+          // between GetBucketIndices and Distance2ToBucket can make that bucket
+          // appear to have a small but nonzero distance from x).
+          const bool isXBucket = i == xijk[0] && j == xijk[1] && k == xijk[2];
+          const int nei[3] = { i, j, k };
+          if (!isXBucket && this->Distance2ToBucket(x, nei) > R2)
           {
-            ptId = ids[ii].PtId;
-            this->DataSet->GetPoint(ptId, pt);
-            dist2 = vtkMath::Distance2BetweenPoints(x, pt);
-            if (dist2 <= R2)
+            continue;
+          }
+
+          ids = this->GetIds(cno);
+
+          // Accept all points if the bucket is entirely inside the sphere
+          if (this->BucketInsideSphere(i, j, k, x, R2))
+          {
+            for (ii = 0; ii < numIds; ii++)
             {
-              result->InsertNextId(ptId);
+              result->InsertNextId(ids[ii].PtId);
             }
-          } // for all points in bucket
-        }   // if points in bucket
-      }     // i-footprint
-    }       // j-footprint
-  }         // k-footprint
+          }
+          else
+          {
+            for (ii = 0; ii < numIds; ii++)
+            {
+              ptId = ids[ii].PtId;
+              this->DataSet->GetPoint(ptId, pt);
+              dist2 = vtkMath::Distance2BetweenPoints(x, pt);
+              if (dist2 <= R2)
+              {
+                result->InsertNextId(ptId);
+              }
+            } // for all points in bucket
+          }
+        } // if points in bucket
+      } // i-footprint
+    } // j-footprint
+  } // k-footprint
 }
 
 //------------------------------------------------------------------------------
@@ -1202,12 +1233,12 @@ int BucketList<TIds>::IntersectWithLine(double a0[3], double a1[3], double tol, 
                     tMin = tHit;
                     bestPtId = pId;
                   } // point is within tolerance and closer
-                }   // over all points in bin
-              }     // if points in bin
-            }       // bucket not visited
-          }         // i bins
-        }           // j bins
-      }             // k bins
+                } // over all points in bin
+              } // if points in bin
+            } // bucket not visited
+          } // i bins
+        } // j bins
+      } // k bins
 
       // Make sure to evaluate exit footprint as well. Must evaluate entrance
       // and exit of current voxel.
@@ -1262,7 +1293,7 @@ int BucketList<TIds>::IntersectWithLine(double a0[3], double a1[3], double tol, 
       }
 
     } // for looking for valid intersected point
-  }   // if (vtkBox::IntersectBox(...))
+  } // if (vtkBox::IntersectBox(...))
 
   // If a point has been intersected, recover the information and return.
   // This information could be cached....
@@ -1464,7 +1495,7 @@ template <typename TIds>
 void BucketList<TIds>::GenerateRepresentation(int vtkNotUsed(level), vtkPolyData* pd)
 {
   vtkNew<vtkPoints> pts;
-  pts->Allocate(5000);
+  pts->Reserve(5000);
   vtkNew<vtkCellArray> polys;
   polys->AllocateEstimate(2048, 3);
   int ii, i, j, k, idx, offset[3], minusOffset[3], inside, sliceSize;
@@ -1539,9 +1570,9 @@ void BucketList<TIds>::GenerateRepresentation(int vtkNotUsed(level), vtkPolyData
           }
 
         } // over negative faces
-      }   // over i divisions
-    }     // over j divisions
-  }       // over k divisions
+      } // over i divisions
+    } // over j divisions
+  } // over k divisions
 
   pd->SetPoints(pts);
   pd->SetPolys(polys);
@@ -1594,22 +1625,19 @@ void vtkStaticPointLocator::FreeSearchStructure()
 //------------------------------------------------------------------------------
 void vtkStaticPointLocator::BuildLocator()
 {
-  // Short circuit mtime query process in tight loops
-  if (this->Static)
+  // if a search structure already exists
+  if (this->Buckets)
   {
-    return;
-  }
-  // don't rebuild if build time is newer than modified and dataset modified time
-  if (this->Buckets && this->BuildTime > this->MTime && this->BuildTime > this->DataSet->GetMTime())
-  {
-    return;
-  }
-  // don't rebuild if UseExistingSearchStructure is ON and a search structure already exists
-  if (this->Buckets && this->UseExistingSearchStructure)
-  {
-    this->BuildTime.Modified();
-    vtkDebugMacro(<< "BuildLocator exited - UseExistingSearchStructure");
-    return;
+    // don't rebuild if UseExistingSearchStructure is ON
+    if (this->UseExistingSearchStructure)
+    {
+      return;
+    }
+    // don't rebuild if build time is newer than modified and dataset modified time
+    if (this->BuildTime > this->MTime && this->BuildTime > this->DataSet->GetMTime())
+    {
+      return;
+    }
   }
   this->BuildLocatorInternal();
 }

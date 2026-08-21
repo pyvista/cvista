@@ -14,10 +14,12 @@ SPDX_COPYRIGHT_TEXT
   Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 DEPENDS
   VTK::FiltersCore
+  VTK::CommonCache # VTK_DEPRECATED_IN_9_7_0 vtkDataObjectMeshCache moved there
 PRIVATE_DEPENDS
   VTK::CommonCore
   VTK::CommonDataModel
 TEST_DEPENDS
+  VTK::CommonCache
   VTK::CommonExecutionModel
   VTK::FiltersGeneral
   VTK::FiltersHybrid

@@ -3,14 +3,17 @@
 #include "vtkOpenGLLight.h"
 
 #include "vtkObjectFactory.h"
+#include "vtkOverrideAttribute.h"
 
 VTK_ABI_NAMESPACE_BEGIN
 vtkStandardNewMacro(vtkOpenGLLight);
 
-// Implement base class method.
-void vtkOpenGLLight::Render(vtkRenderer* vtkNotUsed(ren), int vtkNotUsed(light_index))
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLLight::CreateOverrideAttributes()
 {
-  // all handled by the mappers
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
 }
 
 //------------------------------------------------------------------------------

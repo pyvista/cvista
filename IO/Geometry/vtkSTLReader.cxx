@@ -35,6 +35,16 @@
 #include <vtksys/SystemTools.hxx>
 
 VTK_ABI_NAMESPACE_BEGIN
+
+namespace
+{
+// fixed in STL file format
+constexpr int STL_HEADER_SIZE = 80;
+
+// twelve 32-bit-floating point numbers + 2 byte for attribute byte count = 50 bytes.
+constexpr vtkTypeInt64 STL_TRI_SIZE = 12 * sizeof(float) + sizeof(uint16_t);
+}
+
 vtkStandardNewMacro(vtkSTLReader);
 
 vtkCxxSetObjectMacro(vtkSTLReader, Locator, vtkIncrementalPointLocator);
@@ -281,12 +291,12 @@ int vtkSTLReader::RequestData(vtkInformation* vtkNotUsed(request),
   if (solid == "solid")
   {
     // First word is "solid", which means the data should be ASCII.
-    newPts->Allocate(5000);
+    newPts->Reserve(5000);
     newPolys->AllocateEstimate(10000, 1);
     if (this->ScalarTags)
     {
       newScalars = vtkSmartPointer<vtkFloatArray>::New();
-      newScalars->Allocate(5000);
+      newScalars->ReserveValues(5000);
     }
 
     vtkNew<vtkResourceParser> parser;
@@ -325,13 +335,13 @@ int vtkSTLReader::RequestData(vtkInformation* vtkNotUsed(request),
   if (this->Merging)
   {
     mergedPts = vtkSmartPointer<vtkPoints>::New();
-    mergedPts->Allocate(newPts->GetNumberOfPoints() / 2);
+    mergedPts->Reserve(newPts->GetNumberOfPoints() / 2);
     mergedPolys = vtkSmartPointer<vtkCellArray>::New();
     mergedPolys->AllocateCopy(newPolys);
     if (newScalars)
     {
       mergedScalars = vtkSmartPointer<vtkFloatArray>::New();
-      mergedScalars->Allocate(newPolys->GetNumberOfCells());
+      mergedScalars->ReserveValues(newPolys->GetNumberOfCells());
     }
 
     vtkSmartPointer<vtkIncrementalPointLocator> locator = this->Locator;
@@ -386,6 +396,33 @@ int vtkSTLReader::RequestData(vtkInformation* vtkNotUsed(request),
   output->Squeeze();
 
   return 1;
+}
+
+//------------------------------------------------------------------------------
+bool vtkSTLReader::ReadBinaryTrisField(vtkResourceStream* stream, uint32_t& numTrisField)
+{
+  if (stream->Read(&numTrisField, sizeof(numTrisField)) != sizeof(numTrisField))
+  {
+    return false;
+  }
+  vtkByteSwap::Swap4LE(&numTrisField);
+  return true;
+}
+
+//------------------------------------------------------------------------------
+bool vtkSTLReader::ReadBinaryTrisFile(vtkResourceStream* stream, vtkTypeInt64& numTrisFile)
+{
+  // How many bytes are remaining in the file?
+  vtkTypeInt64 current = stream->Tell();
+  vtkTypeInt64 ulFileLength = stream->Seek(0, vtkResourceStream::SeekDirection::End);
+  stream->Seek(current, vtkResourceStream::SeekDirection::Begin);
+  ulFileLength -= ::STL_HEADER_SIZE + sizeof(uint32_t); // 80 byte - header, 4 byte - triangle count
+  if (ulFileLength < 0 || ulFileLength % ::STL_TRI_SIZE != 0)
+  {
+    return false;
+  }
+  numTrisFile = ulFileLength / ::STL_TRI_SIZE;
+  return true;
 }
 
 //------------------------------------------------------------------------------
@@ -551,6 +588,7 @@ int vtkSTLReader::ReadSTLFast(vtkResourceStream* stream, vtkPolyData* output)
 }
 
 //------------------------------------------------------------------------------
+
 bool vtkSTLReader::ReadBinarySTL(
   vtkResourceStream* stream, vtkPoints* newPts, vtkCellArray* newPolys)
 {
@@ -570,40 +608,40 @@ bool vtkSTLReader::ReadBinarySTL(
     vtkNew<vtkUnsignedCharArray> binaryHeader;
     this->SetBinaryHeader(binaryHeader);
   }
-  constexpr int headerSize = 80;                         // fixed in STL file format
-  this->BinaryHeader->SetNumberOfValues(headerSize + 1); // allocate +1 byte for zero termination
+
+  // The 80 byte header need not be a null-terminated string, so allocate +1 byte for null
+  // termination.
+  this->BinaryHeader->SetNumberOfValues(::STL_HEADER_SIZE + 1);
+
+  // Zero fill everything so that null termination is guaranteed.
   this->BinaryHeader->FillValue(0);
-  if (stream->Read(this->BinaryHeader->GetPointer(0), headerSize) != headerSize)
+
+  if (stream->Read(this->BinaryHeader->GetPointer(0), ::STL_HEADER_SIZE) != ::STL_HEADER_SIZE)
   {
     vtkErrorMacro("STLReader error reading file. Premature EOF while reading header.");
     return false;
   }
+
+  // Even though this is a binary file, provide the header as a C string also.
   this->SetHeader(reinterpret_cast<char*>(this->BinaryHeader->GetPointer(0)));
-  // Remove extra zero termination from binary header
-  this->BinaryHeader->Resize(headerSize);
+
+  // Remove the extra NULL termination from the binary header.
+  this->BinaryHeader->SetNumberOfTuples(::STL_HEADER_SIZE);
+  this->BinaryHeader->Squeeze();
 
   uint32_t numTrisField;
-  if (stream->Read(&numTrisField, sizeof(numTrisField)) != sizeof(numTrisField))
+  if (!vtkSTLReader::ReadBinaryTrisField(stream, numTrisField))
   {
     vtkErrorMacro("STLReader error reading file. Premature EOF while reading triangle count.");
     return false;
   }
-  vtkByteSwap::Swap4LE(&numTrisField);
 
-  // twelve 32-bit-floating point numbers + 2 byte for attribute byte count = 50 bytes.
-  vtkTypeInt64 triSize = 12 * sizeof(float) + sizeof(uint16_t);
-
-  // How many bytes are remaining in the file?
-  vtkTypeInt64 current = stream->Tell();
-  vtkTypeInt64 ulFileLength = stream->Seek(0, vtkResourceStream::SeekDirection::End);
-  stream->Seek(current, vtkResourceStream::SeekDirection::Begin);
-  ulFileLength -= headerSize + sizeof(uint32_t); // 80 byte - header, 4 byte - triangle count
-  if (ulFileLength < 0 || ulFileLength % triSize != 0)
+  vtkTypeInt64 numTrisFile;
+  if (!vtkSTLReader::ReadBinaryTrisFile(stream, numTrisFile))
   {
     vtkErrorMacro("STLReader error reading file. Remaining file length bad.");
     return false;
   }
-  vtkTypeInt64 numTrisFile = ulFileLength / triSize;
 
   // Many .stl files contain bogus triangle count. Let's compare to the remaining file size. If
   // we're being strict, they should match.
@@ -615,20 +653,24 @@ bool vtkSTLReader::ReadBinarySTL(
 
   // now allocate the memory we need for the triangles.
   // note we ignore the triangle count field and read until end of file.
-  newPts->Allocate(numTrisFile * 3);
+  newPts->Reserve(numTrisFile * 3);
   newPolys->AllocateEstimate(numTrisFile, 3);
 
   facet_t facet;
-  for (size_t i = 0; stream->Read(&facet, triSize) > 0; ++i)
+  for (size_t i = 0; stream->Read(&facet, ::STL_TRI_SIZE) > 0; ++i)
   {
     vtkByteSwap::Swap4LE(facet.n);
     vtkByteSwap::Swap4LE(facet.n + 1);
     vtkByteSwap::Swap4LE(facet.n + 2);
-    if (!std::isfinite(facet.n[0]) || !std::isfinite(facet.n[1]) || !std::isfinite(facet.n[2]))
+    if (!this->GetRelaxedConformance()) // If not relaxed, enforce normal vector to be finite.
     {
-      vtkErrorMacro("Normal vector non-finite.");
-      return false;
+      if (!std::isfinite(facet.n[0]) || !std::isfinite(facet.n[1]) || !std::isfinite(facet.n[2]))
+      {
+        vtkErrorMacro("Normal vector non-finite.");
+        return false;
+      }
     }
+    // else we could compute the normal vector from the vertices, but it is not even used here.
 
     vtkByteSwap::Swap4LE(facet.v1);
     vtkByteSwap::Swap4LE(facet.v1 + 1);
@@ -1036,4 +1078,59 @@ void vtkSTLReader::PrintSelf(ostream& os, vtkIndent indent)
     os << "(none)\n";
   }
 }
+
+//------------------------------------------------------------------------------
+bool vtkSTLReader::CanReadFile(const char* filename)
+{
+  vtkNew<vtkFileResourceStream> stream;
+  if (!stream->Open(filename))
+  {
+    return false;
+  }
+  return vtkSTLReader::CanReadFile(stream);
+}
+
+//------------------------------------------------------------------------------
+bool vtkSTLReader::CanReadFile(vtkResourceStream* stream)
+{
+  if (!stream)
+  {
+    return false;
+  }
+
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+  vtkNew<vtkResourceParser> asciiTester;
+  asciiTester->SetStream(stream);
+
+  std::string solid;
+  if (asciiTester->ReadLine(solid, 5) != vtkParseResult::Limit)
+  {
+    return false;
+  }
+
+  if (solid != "solid")
+  {
+    // Skip binary header
+    stream->Seek(::STL_HEADER_SIZE, vtkResourceStream::SeekDirection::Begin);
+
+    uint32_t numTrisField;
+    if (!vtkSTLReader::ReadBinaryTrisField(stream, numTrisField))
+    {
+      return false;
+    }
+
+    vtkTypeInt64 numTrisFile;
+    if (!vtkSTLReader::ReadBinaryTrisFile(stream, numTrisFile))
+    {
+      return false;
+    }
+
+    if (numTrisFile != numTrisField)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 VTK_ABI_NAMESPACE_END

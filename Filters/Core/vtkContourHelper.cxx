@@ -5,6 +5,7 @@
 #include "vtkCell.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
+#include "vtkCellTypes.h"
 #include "vtkDataArray.h"
 #include "vtkIdListCollection.h"
 #include "vtkIncrementalPointLocator.h"
@@ -13,9 +14,19 @@
 
 //------------------------------------------------------------------------------
 VTK_ABI_NAMESPACE_BEGIN
+// VTK_DEPRECATED_IN_9_7_0
 vtkContourHelper::vtkContourHelper(vtkIncrementalPointLocator* locator, vtkCellArray* outVerts,
   vtkCellArray* outLines, vtkCellArray* outPolys, vtkPointData* inPd, vtkCellData* inCd,
-  vtkPointData* outPd, vtkCellData* outCd, int trisEstimatedSize, bool outputTriangles)
+  vtkPointData* outPd, vtkCellData* outCd, int vtkNotUsed(trisEstimatedSize), bool outputTriangles)
+  : vtkContourHelper(
+      locator, outVerts, outLines, outPolys, inPd, inCd, outPd, outCd, outputTriangles)
+{
+}
+
+//------------------------------------------------------------------------------
+vtkContourHelper::vtkContourHelper(vtkIncrementalPointLocator* locator, vtkCellArray* outVerts,
+  vtkCellArray* outLines, vtkCellArray* outPolys, vtkPointData* inPd, vtkCellData* inCd,
+  vtkPointData* outPd, vtkCellData* outCd, bool outputTriangles)
   : Locator(locator)
   , OutVerts(outVerts)
   , OutLines(outLines)
@@ -24,7 +35,6 @@ vtkContourHelper::vtkContourHelper(vtkIncrementalPointLocator* locator, vtkCellA
   , InCd(inCd)
   , OutPd(outPd)
   , OutCd(outCd)
-  , TrisEstimatedSize(trisEstimatedSize)
   , OutputTriangles(outputTriangles)
 {
 }
@@ -33,37 +43,63 @@ vtkContourHelper::vtkContourHelper(vtkIncrementalPointLocator* locator, vtkCellA
 void vtkContourHelper::Contour(
   vtkCell* cell, double value, vtkDataArray* cellScalars, vtkIdType cellId)
 {
-  if (!this->OutputTriangles && cell->GetCellDimension() == 3)
+  if (cell->GetCellType() == VTK_POLYHEDRON)
   {
-    // Retrieve the output triangles of the contour in reusable scratch
-    // structures. These are members of the helper, so they are allocated once
-    // and merely cleared per call instead of being allocated/freed every cell.
-    // Reset() reuses the underlying storage (no free) and InitTraversal()
-    // rewinds the read cursor; the very first call sizes the array, after which
-    // it grows only if a cell ever needs more room. Output is byte-identical:
-    // the same triangles are produced in the same order and the polygon
-    // extraction below is unchanged.
-    vtkCellArray* outTriTemp = this->OutTriTemp;
-    vtkCellData* outTriDataTemp = this->OutTriDataTemp;
-    outTriTemp->Reset();
-    outTriTemp->InitTraversal();
-    outTriDataTemp->Initialize();
+    // vtkPolyhedron outputs polygons (not triangles) from its contour algorithm.
+    // This must be checked before the general 3D cell path below, which assumes
+    // triangle output and feeds it through PolygonBuilder.
+    // When GenerateTriangles is on, we triangulate the polygons here.
+    vtkNew<vtkCellArray> tempPolys;
+    vtkNew<vtkCellData> tempCd;
+    tempCd->Initialize();
 
-    cell->Contour(value, cellScalars, this->Locator, this->OutVerts, this->OutLines, outTriTemp,
-      this->InPd, this->OutPd, this->InCd, cellId, outTriDataTemp);
+    cell->Contour(value, cellScalars, this->Locator, this->OutVerts, this->OutLines, tempPolys,
+      this->InPd, this->OutPd, this->InCd, cellId, tempCd);
 
-    // Add output triangles to the PolygonBuilder in order to merge them into
-    // polygons. NOTE: this is intentionally a fresh, function-local builder.
-    // vtkPolygonBuilder::Reset() does not clear its internal triangle map
-    // (Tris, used for duplicate detection), so a reused builder would carry
-    // state across cells and change the output. Constructing it fresh keeps
-    // behavior byte-identical to upstream.
+    vtkIdType npts = 0;
+    const vtkIdType* pts = nullptr;
+    tempPolys->InitTraversal();
+    while (tempPolys->GetNextCell(npts, pts))
+    {
+      if (!this->OutputTriangles || npts <= 3)
+      {
+        vtkIdType outCellId = this->OutPolys->InsertNextCell(npts, pts);
+        this->OutCd->CopyData(this->InCd, cellId,
+          outCellId + this->OutVerts->GetNumberOfCells() + this->OutLines->GetNumberOfCells());
+      }
+      else
+      {
+        // Fan-triangulate polygon
+        for (vtkIdType i = 1; i + 1 < npts; ++i)
+        {
+          vtkIdType tri[3] = { pts[0], pts[i], pts[i + 1] };
+          vtkIdType outCellId = this->OutPolys->InsertNextCell(3, tri);
+          this->OutCd->CopyData(this->InCd, cellId,
+            outCellId + this->OutVerts->GetNumberOfCells() + this->OutLines->GetNumberOfCells());
+        }
+      }
+    }
+  }
+  else if (!this->OutputTriangles && cell->GetCellDimension() == 3)
+  {
+
+    // Retrieve the output triangles of the contour in temporary structures.
+    this->InitializeTempContainers();
+    this->TempTris->Reset();
+    this->TempTriData->Reset();
+
+    cell->Contour(value, cellScalars, this->Locator, this->OutVerts, this->OutLines, this->TempTris,
+      this->InPd, this->OutPd, this->InCd, cellId, this->TempTriData);
+
+    // Add output triangles to the PolygonBuilder in order to merge them into polygons.
     vtkPolygonBuilder polyBuilder;
     polyBuilder.Reset();
 
     vtkIdType cellSize = 0;
     const vtkIdType* cellVerts = nullptr;
-    while (outTriTemp->GetNextCell(cellSize, cellVerts))
+
+    this->TempTris->InitTraversal();
+    while (this->TempTris->GetNextCell(cellSize, cellVerts))
     {
       if (cellSize == 3)
       {
@@ -80,7 +116,7 @@ void vtkContourHelper::Contour(
     }
 
     // Add constructed polygons to the output.
-    vtkIdListCollection* polyCollection = this->PolyCollection;
+    vtkNew<vtkIdListCollection> polyCollection;
     polyBuilder.GetPolygons(polyCollection);
     for (int polyId = 0; polyId < polyCollection->GetNumberOfItems(); ++polyId)
     {
@@ -97,9 +133,24 @@ void vtkContourHelper::Contour(
   }
   else
   {
-    // We do not need to merge output triangles, so we call the contour method directly.
+    // All other cell types output triangles directly.
     cell->Contour(value, cellScalars, this->Locator, this->OutVerts, this->OutLines, this->OutPolys,
       this->InPd, this->OutPd, this->InCd, cellId, this->OutCd);
   }
+}
+
+//------------------------------------------------------------------------------
+void vtkContourHelper::InitializeTempContainers()
+{
+  if (this->TempContainersInitialized)
+  {
+    return;
+  }
+  // Per-cell contouring produces a small number of triangles in practice.
+  // Using a small fixed upper bound avoids frequent reallocations while
+  // keeping memory overhead negligible.
+  this->TempTris->AllocateEstimate(64, 3);
+  this->TempTriData->Initialize();
+  this->TempContainersInitialized = true;
 }
 VTK_ABI_NAMESPACE_END

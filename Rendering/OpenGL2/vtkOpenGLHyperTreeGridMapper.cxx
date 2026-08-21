@@ -4,15 +4,23 @@
 
 #include "vtkCompositePolyDataMapper.h" // For Mapper3D
 #include "vtkObjectFactory.h"           // For the macro
-#include "vtkOpenGLPolyDataMapper.h"    // For PDMapper
+#include "vtkOverrideAttribute.h"
 
 VTK_ABI_NAMESPACE_BEGIN
-vtkObjectFactoryNewMacro(vtkOpenGLHyperTreeGridMapper);
+vtkStandardNewMacro(vtkOpenGLHyperTreeGridMapper);
 
 //------------------------------------------------------------------------------
 vtkOpenGLHyperTreeGridMapper::vtkOpenGLHyperTreeGridMapper()
 {
   this->Mapper = vtkSmartPointer<vtkCompositePolyDataMapper>::New();
+}
+
+//------------------------------------------------------------------------------
+vtkOverrideAttribute* vtkOpenGLHyperTreeGridMapper::CreateOverrideAttributes()
+{
+  auto* renderingBackendAttribute =
+    vtkOverrideAttribute::CreateAttributeChain("RenderingBackend", "OpenGL", nullptr);
+  return renderingBackendAttribute;
 }
 
 //------------------------------------------------------------------------------

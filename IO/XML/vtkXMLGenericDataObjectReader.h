@@ -7,6 +7,8 @@
  * vtkXMLGenericDataObjectReader reads any type of vtk data object encoded
  * in XML format.
  *
+ * This reader supports reading from vtkResourceStream.
+ *
  * @sa
  * vtkGenericDataObjectReader
  */
@@ -14,13 +16,11 @@
 #ifndef vtkXMLGenericDataObjectReader_h
 #define vtkXMLGenericDataObjectReader_h
 
-#include "vtkDeprecation.h"  // For VTK_DEPRECATED_IN_9_5_0
 #include "vtkIOXMLModule.h"  // For export macro
 #include "vtkSmartPointer.h" // for API
 #include "vtkXMLDataReader.h"
 
 VTK_ABI_NAMESPACE_BEGIN
-class vtkHierarchicalBoxDataSet;
 class vtkImageData;
 class vtkMultiBlockDataSet;
 class vtkOverlappingAMR;
@@ -28,6 +28,7 @@ class vtkPolyData;
 class vtkRectilinearGrid;
 class vtkStructuredGrid;
 class vtkUnstructuredGrid;
+class vtkXMLFileReadTester;
 
 class VTKIOXML_EXPORT vtkXMLGenericDataObjectReader : public vtkXMLDataReader
 {
@@ -52,8 +53,6 @@ public:
    * returned.  (You must also set the filename of the object prior to
    * getting the output.)
    */
-  VTK_DEPRECATED_IN_9_5_0("This function is deprecated, use GetOverlappingAMROutput")
-  vtkHierarchicalBoxDataSet* GetHierarchicalBoxDataSetOutput();
   vtkOverlappingAMR* GetOverlappingAMROutput();
   vtkImageData* GetImageDataOutput();
   vtkMultiBlockDataSet* GetMultiBlockDataSetOutput();
@@ -90,6 +89,11 @@ public:
    */
   static vtkSmartPointer<vtkXMLReader> CreateReader(int data_object_type, bool parallel);
 
+  /**
+   * Return 1 if provided dsname is supported, 0 otherwise.
+   */
+  int CanReadFileWithDataType(const char* dsname) override;
+
 protected:
   vtkXMLGenericDataObjectReader();
   ~vtkXMLGenericDataObjectReader() override;
@@ -112,6 +116,16 @@ protected:
 private:
   vtkXMLGenericDataObjectReader(const vtkXMLGenericDataObjectReader&) = delete;
   void operator=(const vtkXMLGenericDataObjectReader&) = delete;
+
+  int ReadOutputType(std::istream* stream, bool& parallel);
+  int ReadOutputType(vtkXMLFileReadTester* tester, bool& parallel);
+
+  /**
+   * Return an actual vtkDataObjectType from a textual data object type
+   * taking retro compatibility into account.
+   * Returns -1 if not recognised.
+   */
+  int GetTypeIdFromClassName(const std::string& dsname);
 };
 
 VTK_ABI_NAMESPACE_END

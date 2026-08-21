@@ -139,11 +139,9 @@ configure_file(vtkTypeListMacros.h.in vtkTypeListMacros.h)
 # And the ArrayDispatch array list header:
 option(VTK_DISPATCH_AOS_ARRAYS "Include array-of-structs vtkDataArray subclasses in dispatcher." ON)
 option(VTK_DISPATCH_SOA_ARRAYS "Include struct-of-arrays vtkDataArray subclasses in dispatcher." OFF)
-option(VTK_DISPATCH_SCALED_SOA_ARRAYS "Include scaled struct-of-arrays vtkDataArray subclasses in dispatcher." OFF)
 
 option(VTK_DISPATCH_AFFINE_ARRAYS "Include implicit vtkDataArray subclasses based on an affine function backend in dispatcher" OFF)
 option(VTK_DISPATCH_CONSTANT_ARRAYS "Include implicit vtkDataArray subclasses based on a constant backend in dispatcher" OFF)
-option(VTK_DISPATCH_STD_FUNCTION_ARRAYS "Include implicit vtkDataArray subclasses based on std::function in dispatcher" OFF)
 option(VTK_DISPATCH_STRIDED_ARRAYS "Include implicit vtkDataArray subclasses based on a strided backend in dispatcher" OFF)
 option(VTK_DISPATCH_STRUCTURED_POINT_ARRAYS "Include implicit vtkDataArray subclasses based on structured point backend dispatcher" OFF)
 
@@ -168,16 +166,17 @@ option(VTK_WARN_ON_DISPATCH_FAILURE "If enabled, vtkArrayDispatch will print a w
 # CVISTA_DROP_DEAD_ARRAYS=OFF restores the stock instantiations.
 option(CVISTA_DROP_DEAD_ARRAYS
   "cvista: drop instantiations of the PyVista-unused vtkStridedArray + vtkStdFunctionArray families"
-  ON)
+  OFF)  # default OFF on the 9.7 base: 9.7's implicit-array machinery references
+        # vtkStridedArray/vtkStdFunctionArray/vtkStridedImplicitBackend, so the trim
+        # yields undefined typeinfo/symbols (macOS link fails). Re-scope + re-enable
+        # in the 9.7 lever-hardening pass (cvista-config/refork/07).
 
 mark_as_advanced(
   VTK_DISPATCH_AOS_ARRAYS
   VTK_DISPATCH_SOA_ARRAYS
-  VTK_DISPATCH_SCALED_SOA_ARRAYS
 
   VTK_DISPATCH_AFFINE_ARRAYS
   VTK_DISPATCH_CONSTANT_ARRAYS
-  VTK_DISPATCH_STD_FUNCTION_ARRAYS
   VTK_DISPATCH_STRIDED_ARRAYS
   VTK_DISPATCH_STRUCTURED_POINT_ARRAYS
 
@@ -250,6 +249,7 @@ if (NOT CVISTA_SPLIT_BULK_INSTANTIATE)
   endforeach ()
 endif ()
 
+
 foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
   # We never need to instantiate vtkIdType or because they are instantiated
   # by the corresponding array for its native type.
@@ -273,8 +273,7 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
     vtkIndexedArrayInstantiate
     vtkScaledSOADataArrayTemplateInstantiate
     vtkSOADataArrayTemplateInstantiate
-    vtkStructuredPointArrayInstantiate
-    vtkTypedDataArrayInstantiate)
+    vtkStructuredPointArrayInstantiate)
 
   # The dead vtkStridedArray + vtkStdFunctionArray families: their
   # instantiation TUs are only added back when the cut is disabled
@@ -303,8 +302,8 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
   # generate cxx file to instantiate template with this type
   foreach (_prefix IN LISTS _list)
     configure_file(
-      "${CMAKE_CURRENT_SOURCE_DIR}/${_prefix}.cxx.in"
-      "${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${_prefix}.cxx.inc.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/${_prefix}_${_suffix}.cxx.inc"
       @ONLY)
 
     if (CVISTA_SPLIT_BULK_INSTANTIATE)
@@ -332,13 +331,15 @@ foreach (INSTANTIATION_VALUE_TYPE IN LISTS vtk_numeric_types)
       endif()
     else ()
       list(APPEND "bulk_instantiation_sources_${_suffix}"
-        "#include \"${_prefix}_${_suffix}.cxx\"")
+        "#include \"${_prefix}_${_suffix}.cxx.inc\"")
     endif ()
+
   endforeach ()
 endforeach ()
 
 set(classes
   vtkAbstractArray
+  vtkAbstractBuffer
   vtkAnimationCue
   vtkArchiver
   vtkArray
@@ -352,7 +353,6 @@ set(classes
   vtkArrayWeights
   vtkAtomicMutex
   vtkBitArray
-  vtkBitArrayIterator
   vtkBoxMuellerRandomSequence
   vtkBreakPoint
   vtkByteSwap
@@ -426,6 +426,7 @@ set(classes
   vtkObjectFactoryCollection
   vtkOldStyleCallbackCommand
   vtkOutputWindow
+  vtkOverrideAttribute
   vtkOverrideInformation
   vtkOverrideInformationCollection
   vtkPoints
@@ -462,23 +463,28 @@ set(classes
   vtkXMLFileOutputWindow)
 
 set(template_classes
+  vtkAffineArray
   vtkAOSDataArrayTemplate
   vtkArrayDispatch
   vtkArrayInterpolate
   vtkArrayIteratorTemplate
   vtkArrayPrint
+  vtkCompositeArray
+  vtkConstantArray
   vtkDenseArray
-  vtkGenericDataArray
-  vtkMappedDataArray
+  vtkIndexedArray
   vtkScaledSOADataArrayTemplate
   vtkSOADataArrayTemplate
   vtkSparseArray
+  vtkStdFunctionArray
+  vtkStridedArray
+  vtkStructuredPointArray
   vtkThreadedTaskQueue
-  vtkTypedArray
-  vtkTypedDataArray)
+  vtkTypedArray)
 
 set(nowrap_template_classes
   vtkCompositeImplicitBackend
+  vtkGenericDataArray
   vtkImplicitArray
   vtkIndexedImplicitBackend
   vtkStridedImplicitBackend
@@ -555,6 +561,7 @@ set(headers
   vtkAssume.h
   vtkAutoInit.h
   vtkBatch.h
+  vtkBitArrayIterator.h
   vtkBuffer.h
   vtkCompiler.h
   vtkDataArrayIteratorMacro.h
@@ -562,9 +569,9 @@ set(headers
   vtkDataArrayRange.h
   vtkDeprecation.h
   vtkEventData.h
-  vtkGenericDataArrayLookupHelper.h
   vtkIOStream.h
   vtkIOStreamFwd.h
+  vtkLegacy.h
   vtkInformationInternals.h
   vtkMathUtilities.h
   vtkMatrixUtilities.h
@@ -582,13 +589,13 @@ set(headers
   vtkThreadedTaskQueue.h
   vtkType.h
   vtkTypeTraits.h
-  vtkTypedDataArrayIterator.h
   vtkValueFromString.h
   vtkVariantCast.h
   vtkVariantCreate.h
   vtkVariantExtract.h
   vtkVariantInlineOperators.h
   vtkWeakPointer.h
+  vtkWeakPtr.h
   vtkWin32Header.h
   vtkWindows.h
   vtkWrappingHints.h
@@ -694,31 +701,25 @@ endforeach ()
 if (VTK_BUILD_VERSION LESS "20000101")
   set(VTK_EPOCH_VERSION "${VTK_BUILD_VERSION}")
 else ()
-  set(VTK_EPOCH_VERSION "20250514")
+  set(VTK_EPOCH_VERSION "20251220")
 endif ()
 
 set(nowrap_headers
-  vtkAffineArray.h
   vtkAffineImplicitBackend.h
   vtkCVISTAByteCopy.h
   vtkCVISTASMPDefaults.h
   vtkCollectionRange.h
-  vtkCompositeArray.h
-  vtkConstantArray.h
   vtkConstantImplicitBackend.h
   vtkDataArrayAccessor.h
   vtkDataArrayTupleRange_AOS.h
   vtkDataArrayTupleRange_Generic.h
   vtkDataArrayValueRange_AOS.h
   vtkDataArrayValueRange_Generic.h
+  vtkGenericDataArrayLookupHelper.h
   vtkHashCombiner.h
   vtkImplicitArrayTraits.h
-  vtkIndexedArray.h
   vtkInherits.h
   vtkMathPrivate.hxx
-  vtkStridedArray.h
-  vtkStdFunctionArray.h
-  vtkStructuredPointArray.h
   vtkTypeName.h
   ${vtk_smp_nowrap_headers}
   "${CMAKE_CURRENT_BINARY_DIR}/vtkVTK_DISPATCH_IMPLICIT_ARRAYS.h"
@@ -729,7 +730,6 @@ set(generated_headers
   vtkDebugRangeIterators.h
   vtkEndian.h
   vtkFeatures.h
-  vtkLegacy.h
   vtkOptions.h
   vtkPlatform.h
   vtkSMP.h
@@ -877,3 +877,8 @@ vtk_module_link(VTK::CommonCore
 vtk_module_compile_features(VTK::CommonCore
   PUBLIC
     cxx_std_17)
+
+# Add precompiled header to improve build performance
+if(VTK_USE_PCH)
+  vtk_module_precompile_headers(VTK::CommonCore PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/vtkCommonCorePCH.h>")
+endif()

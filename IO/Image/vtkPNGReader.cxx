@@ -7,6 +7,7 @@
 #include "vtkDataArray.h"
 #include "vtkEndian.h"
 #include "vtkErrorCode.h"
+#include "vtkFileResourceStream.h"
 #include "vtkImageData.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
@@ -168,9 +169,8 @@ public:
     unsigned char header[8];
     if (fread(header, 1, 8, fp) != 8)
     {
-      vtkErrorWithObjectMacro(this->PNGReader,
-        "PNGReader error reading file."
-          << " Premature EOF while reading header.");
+      vtkErrorWithObjectMacro(
+        this->PNGReader, "PNGReader error reading file." << " Premature EOF while reading header.");
       return false;
     }
     return this->IsHeaderValid(header);
@@ -633,28 +633,37 @@ void vtkPNGReader::ExecuteDataWithInformation(vtkDataObject* output, vtkInformat
 //------------------------------------------------------------------------------
 int vtkPNGReader::CanReadFile(const char* fname)
 {
-  FILE* fp = vtksys::SystemTools::Fopen(fname, "rb");
-  if (!fp)
+  vtkNew<vtkFileResourceStream> stream;
+  if (!stream->Open(fname))
   {
     return 0;
   }
-  unsigned char header[8];
-  if (fread(header, 1, 8, fp) != 8)
+  return this->CanReadFile(stream);
+}
+
+//------------------------------------------------------------------------------
+int vtkPNGReader::CanReadFile(vtkResourceStream* stream)
+{
+  if (!stream)
   {
-    fclose(fp);
+    return 0;
+  }
+
+  stream->Seek(0, vtkResourceStream::SeekDirection::Begin);
+  unsigned char header[8];
+  if (stream->Read(header, 8) != 8)
+  {
     return 0;
   }
   int is_png = !png_sig_cmp(header, 0, 8);
   if (!is_png)
   {
-    fclose(fp);
     return 0;
   }
   png_structp png_ptr =
     png_create_read_struct(PNG_LIBPNG_VER_STRING, (png_voidp) nullptr, nullptr, nullptr);
   if (!png_ptr)
   {
-    fclose(fp);
     return 0;
   }
 
@@ -662,7 +671,6 @@ int vtkPNGReader::CanReadFile(const char* fname)
   if (!info_ptr)
   {
     png_destroy_read_struct(&png_ptr, (png_infopp) nullptr, (png_infopp) nullptr);
-    fclose(fp);
     return 0;
   }
 
@@ -670,12 +678,9 @@ int vtkPNGReader::CanReadFile(const char* fname)
   if (!end_info)
   {
     png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp) nullptr);
-    fclose(fp);
     return 0;
   }
   png_destroy_read_struct(&png_ptr, &info_ptr, &end_info);
-
-  fclose(fp);
   return 3;
 }
 #ifdef _MSC_VER
@@ -708,7 +713,7 @@ vtkStringArray* vtkPNGReader::GetTextKeys()
 {
   auto keys = this->Internals->TextKeys.GetPointer();
   keys->Initialize();
-  keys->Allocate(static_cast<vtkIdType>(this->Internals->TextKeyValue.size()));
+  keys->ReserveValues(static_cast<vtkIdType>(this->Internals->TextKeyValue.size()));
   for (auto& key : this->Internals->TextKeyValue)
   {
     keys->InsertNextValue(key.first);
@@ -727,7 +732,7 @@ vtkStringArray* vtkPNGReader::GetTextValues()
 {
   auto values = this->Internals->TextValues.GetPointer();
   values->Initialize();
-  values->Allocate(static_cast<vtkIdType>(this->Internals->TextKeyValue.size()));
+  values->ReserveValues(static_cast<vtkIdType>(this->Internals->TextKeyValue.size()));
   for (auto& value : this->Internals->TextKeyValue)
   {
     values->InsertNextValue(value.second);

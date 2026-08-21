@@ -361,9 +361,10 @@ C++ tests
   - ``NO_OUTPUT``: The test does not need to write out any data to the
     filesystem. If it does, a directory which may be written to is passed via
     the ``-T`` flag.
-  - ``WEBGPU_GRAPHICS_BACKEND``: The test should be run using the WebGPU graphics backend.
-    This is only available when building with WebGPU support. It enables WebGPU via
-    setting the environment variable ``VTK_GRAPHICS_BACKEND=WEBGPU``.
+  - ``NO_SERDES``: The test does not do serialization/deserialization testing. If
+    it does, a second test with the suffix ``SerDes` is created which passes the
+    ``--serdes`` flag. Note that only tests that do a regression test on a render
+    window and pass ``--serdes`` will do serdes testing.
 
   Additional flags may be passed to tests using the ``${_vtk_build_test}_ARGS``
   variable or the ``<NAME>_ARGS`` variable.
@@ -373,10 +374,10 @@ function (vtk_add_test_cxx exename _tests)
     NO_DATA
     NO_VALID
     NO_OUTPUT
+    NO_SERDES
     TIGHT_VALID
     LOOSE_VALID
-    LEGACY_VALID
-    WEBGPU_GRAPHICS_BACKEND)
+    LEGACY_VALID)
   _vtk_test_parse_args("${cxx_options}" "cxx" ${ARGN})
   _vtk_test_set_options("${cxx_options}" "" ${options})
 
@@ -475,7 +476,22 @@ function (vtk_add_test_cxx exename _tests)
               ${${_vtk_build_test}_ARGS}
               ${${test_name}_ARGS}
               ${_D} ${_T} ${_V})
-    set_tests_properties("${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}"
+
+    set(test_list "${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}")
+
+    if (VTK_WRAP_SERIALIZATION AND NOT local_NO_SERDES AND NOT local_NO_VALID)
+      ExternalData_add_test("${_vtk_build_TEST_DATA_TARGET}"
+      NAME    "${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}SerDes"
+      COMMAND "${_vtk_test_cxx_pre_args}" "$<TARGET_FILE:${exename}>"
+              "${test_arg}"
+              "${args}"
+              ${${_vtk_build_test}_ARGS}
+              ${${test_name}_ARGS}
+              ${_D} ${_T} ${_V} "--serdes")
+      list(APPEND test_list "${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}SerDes")
+    endif ()
+
+    set_tests_properties(${test_list}
       PROPERTIES
         LABELS "${_vtk_build_test_labels}"
         FAIL_REGULAR_EXPRESSION "${_vtk_fail_regex}"
@@ -484,21 +500,19 @@ function (vtk_add_test_cxx exename _tests)
         ENVIRONMENT "${vtk_testing}"
         SKIP_RETURN_CODE 125 # This must match VTK_SKIP_RETURN_CODE in vtkTesting.h
       )
+    if (VTK_WRAP_SERIALIZATION AND NOT local_NO_SERDES AND NOT local_NO_VALID)
+      set_property(TEST "${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}SerDes" APPEND PROPERTY LABELS SERDES)
+    endif()
     if (CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-      set_tests_properties("${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}"
+      set_tests_properties(${test_list}
         PROPERTIES
           FIXTURES_REQUIRED "HTTP"
         )
     endif ()
     if (_vtk_testing_ld_preload)
-      set_property(TEST "${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}" APPEND
-        PROPERTY
+      set_tests_properties(${test_list}
+        PROPERTIES
           ENVIRONMENT "LD_PRELOAD=${_vtk_testing_ld_preload}")
-    endif ()
-    if (local_WEBGPU_GRAPHICS_BACKEND)
-      set_property(TEST "${_vtk_build_test}Cxx-${vtk_test_prefix}${test_name}" APPEND
-        PROPERTY
-          ENVIRONMENT "VTK_GRAPHICS_BACKEND=WEBGPU")
     endif ()
     list(APPEND ${_tests} "${test_file}")
   endforeach ()

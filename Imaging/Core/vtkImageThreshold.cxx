@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
 // SPDX-License-Identifier: BSD-3-Clause
+
+#define VTK_DEPRECATION_LEVEL 0
 #include "vtkImageThreshold.h"
 
 #include "vtkDataSetAttributes.h"
@@ -7,6 +9,7 @@
 #include "vtkImageProgressIterator.h"
 #include "vtkInformation.h"
 #include "vtkInformationVector.h"
+#include "vtkMathUtilities.h"
 #include "vtkObjectFactory.h"
 #include "vtkStreamingDemandDrivenPipeline.h"
 
@@ -116,81 +119,21 @@ int vtkImageThreshold::RequestInformation(vtkInformation* vtkNotUsed(request),
 // This templated function executes the filter for any type of data.
 template <class IT, class OT>
 void vtkImageThresholdExecute(vtkImageThreshold* self, vtkImageData* inData, vtkImageData* outData,
-  int outExt[6], int id, IT*, OT*)
+  VTK_FUTURE_CONST int outExt[6], int id, IT*, OT*)
 {
   vtkImageIterator<IT> inIt(inData, outExt);
   vtkImageProgressIterator<OT> outIt(outData, outExt, self, id);
-  IT lowerThreshold;
-  IT upperThreshold;
   int replaceIn = self->GetReplaceIn();
-  OT inValue;
   int replaceOut = self->GetReplaceOut();
-  OT outValue;
   IT temp;
 
   // Make sure the thresholds are valid for the input scalar range
-  if (self->GetLowerThreshold() < inData->GetScalarTypeMin())
-  {
-    lowerThreshold = static_cast<IT>(inData->GetScalarTypeMin());
-  }
-  else
-  {
-    if (self->GetLowerThreshold() > inData->GetScalarTypeMax())
-    {
-      lowerThreshold = static_cast<IT>(inData->GetScalarTypeMax());
-    }
-    else
-    {
-      lowerThreshold = static_cast<IT>(self->GetLowerThreshold());
-    }
-  }
-  if (self->GetUpperThreshold() > inData->GetScalarTypeMax())
-  {
-    upperThreshold = static_cast<IT>(inData->GetScalarTypeMax());
-  }
-  else
-  {
-    if (self->GetUpperThreshold() < inData->GetScalarTypeMin())
-    {
-      upperThreshold = static_cast<IT>(inData->GetScalarTypeMin());
-    }
-    else
-    {
-      upperThreshold = static_cast<IT>(self->GetUpperThreshold());
-    }
-  }
+  IT lowerThreshold = vtkMathUtilities::SafeCastFromDouble<IT>(self->GetLowerThreshold());
+  IT upperThreshold = vtkMathUtilities::SafeCastFromDouble<IT>(self->GetUpperThreshold());
 
   // Make sure the replacement values are within the output scalar range
-  if (self->GetInValue() < outData->GetScalarTypeMin())
-  {
-    inValue = static_cast<OT>(outData->GetScalarTypeMin());
-  }
-  else
-  {
-    if (self->GetInValue() > outData->GetScalarTypeMax())
-    {
-      inValue = static_cast<OT>(outData->GetScalarTypeMax());
-    }
-    else
-    {
-      inValue = static_cast<OT>(self->GetInValue());
-    }
-  }
-  if (self->GetOutValue() > outData->GetScalarTypeMax())
-  {
-    outValue = static_cast<OT>(outData->GetScalarTypeMax());
-  }
-  else
-  {
-    if (self->GetOutValue() < outData->GetScalarTypeMin())
-    {
-      outValue = static_cast<OT>(outData->GetScalarTypeMin());
-    }
-    else
-    {
-      outValue = static_cast<OT>(self->GetOutValue());
-    }
-  }
+  OT inValue = vtkMathUtilities::SafeCastFromDouble<OT>(self->GetInValue());
+  OT outValue = vtkMathUtilities::SafeCastFromDouble<OT>(self->GetOutValue());
 
   // Loop through output pixels
   while (!outIt.IsAtEnd())
@@ -236,8 +179,8 @@ void vtkImageThresholdExecute(vtkImageThreshold* self, vtkImageData* inData, vtk
 
 //------------------------------------------------------------------------------
 template <class T>
-void vtkImageThresholdExecute1(
-  vtkImageThreshold* self, vtkImageData* inData, vtkImageData* outData, int outExt[6], int id, T*)
+void vtkImageThresholdExecute1(vtkImageThreshold* self, vtkImageData* inData, vtkImageData* outData,
+  VTK_FUTURE_CONST int outExt[6], int id, T*)
 {
   switch (outData->GetScalarType())
   {
@@ -256,7 +199,7 @@ void vtkImageThresholdExecute1(
 // the datas data types.
 void vtkImageThreshold::ThreadedRequestData(vtkInformation* vtkNotUsed(request),
   vtkInformationVector** vtkNotUsed(inputVector), vtkInformationVector* vtkNotUsed(outputVector),
-  vtkImageData*** inData, vtkImageData** outData, int outExt[6], int id)
+  vtkImageData*** inData, vtkImageData** outData, VTK_FUTURE_CONST int outExt[6], int id)
 {
   switch (inData[0][0]->GetScalarType())
   {

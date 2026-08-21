@@ -35,15 +35,27 @@ protected:
   vtkXMLPartitionedDataSetReader();
   ~vtkXMLPartitionedDataSetReader() override;
 
-  // Read the XML element for the subtree of a the composite dataset.
+  // Get the name of the data set being read.
+  const char* GetDataSetName() override;
+
+  // Read the XML element for the subtree of a composite dataset.
   // dataSetIndex is used to rank the leaf nodes in an inorder traversal.
   void ReadComposite(vtkXMLDataElement* element, vtkCompositeDataSet* composite,
     const char* filePath, unsigned int& dataSetIndex) override;
 
-  // Get the name of the data set being read.
-  const char* GetDataSetName() override;
-
   int FillOutputPortInformation(int, vtkInformation* info) override;
+
+  /**
+   * Create the meta-data from the partitioned dataset collection from the file.
+   */
+  void CreateMetaData(vtkXMLDataElement* ePrimary) override;
+
+  /**
+   * Recursively synchronize the data array selection of the reader for the file specified in the
+   * XML element.
+   */
+  void SyncCompositeDataArraySelections(vtkCompositeDataSet* composite, vtkXMLDataElement* element,
+    const std::string& filePath) override;
 
 private:
   vtkXMLPartitionedDataSetReader(const vtkXMLPartitionedDataSetReader&) = delete;

@@ -104,11 +104,17 @@ public:
    */
   int ComputeNormal(double n[3]);
 
+  /**
+   * Return the ids of the vertices defining edge (`edgeId`).
+   * Ids are related to the cell, not to the dataset.
+   */
+  static const vtkIdType* GetEdgeArray(vtkIdType edgeId);
+
 protected:
   vtkPixel();
-  ~vtkPixel() override;
+  ~vtkPixel() override = default;
 
-  vtkLine* Line;
+  vtkSmartPointer<vtkLine> Line;
 
 private:
   vtkPixel(const vtkPixel&) = delete;

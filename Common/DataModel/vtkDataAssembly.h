@@ -320,12 +320,20 @@ public:
   int GetNumberOfChildren(int parent) const;
 
   /**
-   * Returns the id for a child not at the given index, if valid, otherwise -1.
+   * Returns the unique ID of the child at the specified index under the given parent.
+   * If the parent ID or the index is invalid, this returns -1.
    */
   int GetChild(int parent, int index) const;
 
   /**
-   * Returns the index for a child under a given. -1 if invalid.
+   * Returns the unique ID of the first child with the specified name under the given parent.
+   * Returns -1 if no child with that name is found or if the parent ID is invalid.
+   */
+  int GetChild(int parent, const char* name) const;
+
+  /**
+   * Returns the local index (position) of a specific child node under a given parent.
+   * If the child is not a direct descendant of the parent, or IDs are invalid, this returns -1.
    */
   int GetChildIndex(int parent, int child) const;
 

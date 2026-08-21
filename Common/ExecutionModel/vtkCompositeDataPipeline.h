@@ -25,6 +25,12 @@
  * it will invoke the  vtkStreamingDemandDrivenPipeline passes in a loop,
  * passing a different block each time and will collect the results in a
  * composite dataset.
+ *
+ * @warning impact on filters implementation.
+ * When using the vtkCompositeDataPipeline, two subsequent call to RequestData can be part
+ * of the same global Update (with different block) or not.
+ * Relying on an information (like a cache) from the previous run is then error prone.
+ *
  * @sa
  *  vtkCompositeDataSet
  */

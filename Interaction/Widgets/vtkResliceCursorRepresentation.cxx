@@ -144,7 +144,7 @@ void vtkResliceCursorRepresentation::SetThicknessLabelFormat(const char* formatA
 {
   std::string format = formatArg ? vtk::to_std_format(formatArg) : "";
   const char* formatStr = format.c_str();
-  vtkSetStringBodyMacro(ThicknessLabelFormat, formatStr);
+  vtkSetStringBodyMacro(ThicknessLabelFormat, formatStr)
 }
 
 //------------------------------------------------------------------------------

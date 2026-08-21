@@ -17,18 +17,16 @@
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkOpenGLRenderer;
+class vtkOverrideAttribute;
 
 class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLLight : public vtkLight
 {
 public:
   static vtkOpenGLLight* New();
+  VTK_NEWINSTANCE
+  static vtkOverrideAttribute* CreateOverrideAttributes();
   vtkTypeMacro(vtkOpenGLLight, vtkLight);
   void PrintSelf(ostream& os, vtkIndent indent) override;
-
-  /**
-   * Implement base class method.
-   */
-  void Render(vtkRenderer* ren, int light_index) override;
 
 protected:
   vtkOpenGLLight() = default;
@@ -39,5 +37,6 @@ private:
   void operator=(const vtkOpenGLLight&) = delete;
 };
 
+#define vtkOpenGLLight_OVERRIDE_ATTRIBUTES vtkOpenGLLight::CreateOverrideAttributes()
 VTK_ABI_NAMESPACE_END
 #endif

@@ -158,6 +158,7 @@ XdmfInt32 XdmfTime::Build(){
         ostrstream   StringOutput;
         StringOutput << this->Value << ends;
         this->Set("Value", StringOutput.str());
+        StringOutput.rdbuf()->freeze(0);
     }
     return(XDMF_SUCCESS);
 }

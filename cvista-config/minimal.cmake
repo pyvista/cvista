@@ -50,9 +50,23 @@ endif ()
 
 # --- wrapper-unity: batch generated *Python.cxx into chunked unity TUs ----------
 # ~48% less wrapper-compile CPU at -O3 by amortizing the shared vtkPython*.h parse.
-# CACHE so the value reaches vtk_module_wrap_python's function scope. Emitted code is
-# byte-identical (same generated wrappers, just concatenated) -> API/ABI unchanged.
-set(CVISTA_WRAP_UNITY ON CACHE BOOL "cvista: batch Python wrappers into unity TUs")
+# CACHE so the value reaches vtk_module_wrap_python's function scope.
+#
+# DEFAULTED OFF ON THE 9.7 BASE (re-fork). The "emitted code is byte-identical ->
+# API/ABI unchanged" premise does NOT hold on VTK 9.7 with GCC 14: concatenating
+# wrappers changes the order template instantiations / type completions are first
+# seen within one TU, and 9.7's implicit-array machinery then makes the compiler
+# emit a DIFFERENT vtable slot for a later wrapper's virtual call than the class's
+# own module TU computed (e.g. vtkRectilinearGridOutlineFilter's new virtual
+# GetOutputPointsPrecision landed at vtable+0x2e8 in the unity wrapper vs +0x2d0 in
+# libvtkParallel -> the wrapped getter dispatched off the vtable end and segfaulted
+# into typeinfo for the preceding unity member vtkTemporalPathLineFilter). This is
+# the SAME eager-instantiation-ordering hazard the GCC<12 guard in
+# vtkModuleWrapPython.cmake documents, except on GCC 14 it miscompiles SILENTLY
+# (clean build, runtime crash) instead of erroring. Re-harden in refork/07 (e.g.
+# exclude implicit-array-touching wrappers from batching, or force devirt-safe
+# offsets); until then correctness > the wrapper-compile speedup.
+set(CVISTA_WRAP_UNITY OFF CACHE BOOL "cvista: batch Python wrappers into unity TUs")
 set(CVISTA_WRAP_UNITY_CHUNK 32 CACHE STRING "cvista: wrappers per unity TU")
 
 # --- source-unity: batch each module's *source* .cxx into CMake UNITY_BUILD TUs -

@@ -81,12 +81,12 @@ public:
   {
     // allocate some memory
     auto& polygon = this->Polygon.Local();
-    polygon->PointIds->Allocate(128);
-    polygon->Points->Allocate(128);
+    polygon->PointIds->Reserve(128);
+    polygon->Points->Reserve(128);
 
     // allocate some memory
     auto& tris = this->Triangles.Local();
-    tris->Allocate(128);
+    tris->Reserve(128);
 
     // allocate the per-thread GetCellPoints() scratch
     auto& cellPointIds = this->CellPointIds.Local();
@@ -400,9 +400,9 @@ int vtkMultiObjectMassProperties::RequestData(vtkInformation* vtkNotUsed(request
     // Loop over all polys and traverse unmarked, edge connected polygons. Make sure
     // the objects are valid, and label polygons with object ids.
     this->Wave = vtkIdList::New();
-    this->Wave->Allocate(numPolys / 4 + 1, numPolys);
+    this->Wave->Reserve(numPolys / 4 + 1);
     this->Wave2 = vtkIdList::New();
-    this->Wave2->Allocate(numPolys / 4 + 1, numPolys);
+    this->Wave2->Reserve(numPolys / 4 + 1);
 
     for (vtkIdType polyId = 0; polyId < numPolys; ++polyId)
     {
@@ -600,8 +600,8 @@ void vtkMultiObjectMassProperties::TraverseAndMark(
             wave2->InsertNextId(neiId);
           }
         } // for all edge neighbors
-      }   // for all edges
-    }     // for all cells in this wave
+      } // for all edges
+    } // for all cells in this wave
 
     tmpWave = wave;
     wave = wave2;

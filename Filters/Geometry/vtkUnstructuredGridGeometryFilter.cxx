@@ -944,9 +944,9 @@ int vtkUnstructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(re
 
           ++i;
         } // for each point
-      }   // if point clipping needs checking
-    }     // for all cells
-  }       // if not all visible
+      } // if point clipping needs checking
+    } // for all cells
+  } // if not all visible
 
   vtkIdList* cellIds = vtkIdList::New();
   vtkPoints* newPts = vtkPoints::New();
@@ -966,7 +966,7 @@ int vtkUnstructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(re
   {
     newPts->SetDataType(VTK_DOUBLE);
   }
-  newPts->Allocate(numPts);
+  newPts->Reserve(numPts);
   output->Allocate(numCells);
   outputPD->CopyAllocate(pd, numPts, numPts / 2);
   vtkSmartPointer<vtkIdTypeArray> originalPointIds;
@@ -975,8 +975,7 @@ int vtkUnstructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(re
   {
     originalPointIds = vtkSmartPointer<vtkIdTypeArray>::New();
     originalPointIds->SetName(this->GetOriginalPointIdsName());
-    originalPointIds->SetNumberOfComponents(1);
-    originalPointIds->Allocate(numPts, numPts / 2);
+    originalPointIds->ReserveValues(numPts);
   }
 
   outputCD->CopyAllocate(cd, numCells, numCells / 2);
@@ -985,8 +984,7 @@ int vtkUnstructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(re
   {
     originalCellIds = vtkSmartPointer<vtkIdTypeArray>::New();
     originalCellIds->SetName(this->GetOriginalCellIdsName());
-    originalCellIds->SetNumberOfComponents(1);
-    originalCellIds->Allocate(numCells, numCells / 2);
+    originalCellIds->ReserveValues(numCells);
   }
 
   vtkIdType* pointMap = nullptr;
@@ -1307,7 +1305,7 @@ int vtkUnstructuredGridGeometryFilter::RequestData(vtkInformation* vtkNotUsed(re
         }
       }
     } // if cell is visible
-  }   // for all cells
+  } // for all cells
 
   // Loop over visible surfel (coming from a unique cell) in the hashtable:
   vtkHashTableOfSurfelsCursor cursor;

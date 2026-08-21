@@ -71,6 +71,17 @@ public:
   vtkBooleanMacro(AppendFieldData, vtkTypeBool);
   ///@}
 
+  ///@{
+  /**
+   * Set/Get if we want to use implicit array when appending the composite dataset. Using implicit
+   * array improves the execution time of the filter and reduce the memory consumption of the
+   * output. However, accessing arrays can be slower. Default to false
+   */
+  vtkGetMacro(UseImplicitArray, bool);
+  vtkSetMacro(UseImplicitArray, bool);
+  vtkBooleanMacro(UseImplicitArray, bool);
+  ///@}
+
 protected:
   vtkAppendCompositeDataLeaves();
   ~vtkAppendCompositeDataLeaves() override;
@@ -117,6 +128,8 @@ protected:
 private:
   vtkAppendCompositeDataLeaves(const vtkAppendCompositeDataLeaves&) = delete;
   void operator=(const vtkAppendCompositeDataLeaves&) = delete;
+
+  bool UseImplicitArray = false;
 };
 
 VTK_ABI_NAMESPACE_END

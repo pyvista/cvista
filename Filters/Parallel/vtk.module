@@ -31,8 +31,10 @@ DEPENDS
   VTK::FiltersTexture
   VTK::ParallelCore
 PRIVATE_DEPENDS
+  VTK::CommonCache
   VTK::CommonSystem
   VTK::CommonTransforms
+  VTK::FiltersGeneric
 TEST_DEPENDS
   VTK::FiltersFlowPaths
   VTK::FiltersParallelDIY2

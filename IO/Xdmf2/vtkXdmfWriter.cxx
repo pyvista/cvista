@@ -269,7 +269,7 @@ int vtkXdmfWriter::Write()
   this->DomainMemoryHandler = new vtkXdmfWriterDomainMemoryHandler();
   this->DomainMemoryHandler->InsertIntoRoot(root);
 
-  this->Update();
+  bool ret = this->Update();
 
   root.Build();
   this->DOM->Write();
@@ -277,7 +277,7 @@ int vtkXdmfWriter::Write()
   delete this->DomainMemoryHandler;
   this->DomainMemoryHandler = nullptr;
 
-  return 1;
+  return ret ? 1 : 0;
 }
 
 //------------------------------------------------------------------------------
@@ -822,7 +822,7 @@ int vtkXdmfWriter::CreateTopology(vtkDataSet* ds, xdmf2::XdmfGrid* grid, vtkIdTy
         { return ca->GetNumberOfCells() + ca->GetNumberOfConnectivityIds(); };
         if (ugrid)
         {
-          da->Allocate(countConnSize(ugrid->GetCells()) * ESTIMATE);
+          da->ReserveValues(countConnSize(ugrid->GetCells()) * ESTIMATE);
         }
         else
         {
@@ -832,7 +832,7 @@ int vtkXdmfWriter::CreateTopology(vtkDataSet* ds, xdmf2::XdmfGrid* grid, vtkIdTy
           const vtkIdType sizep = countConnSize(pd->GetPolys());
           const vtkIdType sizes = countConnSize(pd->GetStrips());
           const vtkIdType rtotal = sizev + sizel + sizep + sizes;
-          da->Allocate(rtotal * ESTIMATE);
+          da->ReserveValues(rtotal * ESTIMATE);
         }
 
         vtkIdType cntr = 0;

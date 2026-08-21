@@ -220,15 +220,7 @@ static void vtkWrapPython_GenerateSpecialHeaders(
   free((char**)includedHeaders);
   includedHeaders = NULL;
 
-  /* special case for the way vtkGenericDataArray template is used */
-  if (data && strcmp(data->Name, "vtkGenericDataArray") == 0)
-  {
-    fprintf(fp,
-      "#include \"vtkSOADataArrayTemplate.h\"\n"
-      "#include \"vtkAOSDataArrayTemplate.h\"\n"
-      "#include \"vtkScaledSOADataArrayTemplate.h\"\n");
-  }
-  /* special case for the way vtkGenericDataArray template is used */
+  /* special case for the way vtkAlgorithm is used */
   if (data && strcmp(data->Name, "vtkAlgorithm") == 0)
   {
     fprintf(fp, "#include \"vtkAlgorithmOutput.h\"\n");

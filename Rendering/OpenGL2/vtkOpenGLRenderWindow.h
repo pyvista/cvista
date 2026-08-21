@@ -28,6 +28,7 @@ class vtkOpenGLBufferObject;
 class vtkOpenGLFramebufferObject;
 class vtkOpenGLHardwareSupport;
 class vtkOpenGLQuadHelper;
+class vtkOpenGLArrayTextureBufferCache;
 class vtkOpenGLShaderCache;
 class vtkOpenGLVertexBufferObjectCache;
 class vtkOpenGLVertexArrayObject;
@@ -37,15 +38,18 @@ class vtkTextureObject;
 class vtkTextureUnitManager;
 class vtkGenericOpenGLResourceFreeCallback;
 class vtkOpenGLState;
+class vtkOverrideAttribute;
 
 class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLRenderWindow : public vtkRenderWindow
 {
 public:
   vtkTypeMacro(vtkOpenGLRenderWindow, vtkRenderWindow);
-  void PrintSelf(ostream& os, vtkIndent indent) override;
 #if !(defined(__APPLE__) || defined(__ANDROID__) || defined(__EMSCRIPTEN__))
   static vtkOpenGLRenderWindow* New();
+  VTK_NEWINSTANCE
+  static vtkOverrideAttribute* CreateOverrideAttributes();
 #endif
+  void PrintSelf(ostream& os, vtkIndent indent) override;
 
   /**
    * Begin the rendering process.
@@ -69,6 +73,16 @@ public:
    */
   static void SetGlobalMaximumNumberOfMultiSamples(int val);
   static int GetGlobalMaximumNumberOfMultiSamples();
+  ///@}
+
+  ///@{
+  /**
+   * When set, New() returns a vtkGenericOpenGLRenderWindow instead of
+   * trying hardware-specific backends (X, EGL, etc.).  Used by ParaView's
+   * Qt integration where raw GLX calls must be avoided.
+   */
+  static void SetUseGenericOpenGLRenderWindow(bool val);
+  static bool GetUseGenericOpenGLRenderWindow();
   ///@}
 
   ///@{
@@ -189,6 +203,11 @@ public:
    * Returns the VBO Cache
    */
   vtkOpenGLVertexBufferObjectCache* GetVBOCache();
+
+  /**
+   * Returns the texture-buffer cache used by the vertex-pulling mappers.
+   */
+  vtkOpenGLArrayTextureBufferCache* GetArrayTextureBufferCache();
 
   ///@{
   /**
@@ -663,6 +682,8 @@ private:
   // `this->GetState()`.
   vtkOpenGLState* State;
 };
-
+#if !(defined(__APPLE__) || defined(__ANDROID__) || defined(__EMSCRIPTEN__))
+#define vtkOpenGLRenderWindow_OVERRIDE_ATTRIBUTES vtkOpenGLRenderWindow::CreateOverrideAttributes()
+#endif
 VTK_ABI_NAMESPACE_END
 #endif

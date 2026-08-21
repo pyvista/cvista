@@ -17,7 +17,7 @@
 #include "vtkTextMapper.h"
 #include "vtkTextProperty.h"
 #include "vtkTransform.h"
-#include "vtkTransformPolyDataFilter.h"
+#include "vtkTransformFilter.h"
 #include "vtkWindow.h"
 
 #include <algorithm>
@@ -65,7 +65,7 @@ vtkSliderRepresentation2D::vtkSliderRepresentation2D()
   this->Slider->SetPoints(this->Points);
   this->Slider->SetPolys(this->SliderCells);
 
-  this->SliderXForm = vtkTransformPolyDataFilter::New();
+  this->SliderXForm = vtkTransformFilter::New();
   this->SliderXForm->SetInputData(this->Slider);
   this->SliderXForm->SetTransform(XForm);
 
@@ -91,7 +91,7 @@ vtkSliderRepresentation2D::vtkSliderRepresentation2D()
   this->Tube->SetPoints(this->Points);
   this->Tube->SetPolys(this->TubeCells);
 
-  this->TubeXForm = vtkTransformPolyDataFilter::New();
+  this->TubeXForm = vtkTransformFilter::New();
   this->TubeXForm->SetInputData(this->Tube);
   this->TubeXForm->SetTransform(XForm);
 
@@ -125,7 +125,7 @@ vtkSliderRepresentation2D::vtkSliderRepresentation2D()
   this->Cap->SetPoints(this->Points);
   this->Cap->SetPolys(this->CapCells);
 
-  this->CapXForm = vtkTransformPolyDataFilter::New();
+  this->CapXForm = vtkTransformFilter::New();
   this->CapXForm->SetInputData(this->Cap);
   this->CapXForm->SetTransform(XForm);
 
@@ -429,9 +429,9 @@ void vtkSliderRepresentation2D::BuildRepresentation()
       char label[256];
 
       std::string labelFormat = this->LabelFormat ? vtk::to_std_format(this->LabelFormat) : "";
-      VTK_FORMAT_IF_ERROR_RETURN(
-        auto result = vtk::format_to_n(label, sizeof(label), labelFormat, this->Value);
-        *result.out = '\0', );
+      VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(
+                                   label, sizeof(label), vtk::runtime(labelFormat), this->Value);
+                                 *result.out = '\0', );
       this->LabelMapper->SetInput(label);
       this->LabelProperty->SetFontSize(static_cast<int>(this->LabelHeight * size[1]));
       this->LabelMapper->GetSize(this->Renderer, labelSize);

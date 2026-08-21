@@ -57,6 +57,20 @@ public:
 
   //------------------------------------------------------------------------------
   virtual ValueType map(vtkIdType valueId) const = 0;
+
+  ///@{
+  /**
+   * Get the coordinate arrays used to construct this backend.
+   */
+  virtual vtkDataArray* GetXCoordinates() const = 0;
+  virtual vtkDataArray* GetYCoordinates() const = 0;
+  virtual vtkDataArray* GetZCoordinates() const = 0;
+  ///@}
+
+  /**
+   * Return true if a non-identity direction matrix is being used.
+   */
+  virtual bool GetUsesDirectionMatrix() const = 0;
 };
 
 //------------------------------------------------------------------------------
@@ -84,8 +98,8 @@ public:
   vtkStructuredTPointBackend();
 
   //------------------------------------------------------------------------------
-  vtkStructuredTPointBackend(
-    ArrayTypeX* arrayX, ArrayTypeY* arrayY, ArrayTypeZ* arrayZ, int extent[6], double dirMatrix[9])
+  vtkStructuredTPointBackend(ArrayTypeX* arrayX, ArrayTypeY* arrayY, ArrayTypeZ* arrayZ,
+    VTK_FUTURE_CONST int extent[6], double dirMatrix[9])
     : ArrayX(arrayX)
     , X(vtk::DataArrayValueRange<1>(ArrayX))
     , ArrayY(arrayY)
@@ -304,6 +318,18 @@ public:
 
   //------------------------------------------------------------------------------
   ValueType map(vtkIdType valueId) const override;
+
+  //------------------------------------------------------------------------------
+  vtkDataArray* GetXCoordinates() const override { return this->ArrayX; }
+
+  //------------------------------------------------------------------------------
+  vtkDataArray* GetYCoordinates() const override { return this->ArrayY; }
+
+  //------------------------------------------------------------------------------
+  vtkDataArray* GetZCoordinates() const override { return this->ArrayZ; }
+
+  //------------------------------------------------------------------------------
+  bool GetUsesDirectionMatrix() const override { return UseDirMatrix; }
 };
 VTK_ABI_NAMESPACE_END
 

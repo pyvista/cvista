@@ -69,9 +69,12 @@ vtkObjectBase* vtkDeserializer::ConstructObject(
   if (objectBase == nullptr)
   {
     std::ostringstream scNames;
-    std::copy(superClassNames.begin(), superClassNames.end() - 1,
-      std::ostream_iterator<std::string>(scNames, ", "));
-    scNames << superClassNames.back();
+    if (!superClassNames.empty())
+    {
+      std::copy(superClassNames.begin(), superClassNames.end() - 1,
+        std::ostream_iterator<std::string>(scNames, ", "));
+      scNames << superClassNames.back();
+    }
     vtkErrorMacro(<< "Constructor failed to create instance of " << className
                   << " with superClassNames : " << scNames.str());
   }
@@ -85,7 +88,9 @@ bool vtkDeserializer::DeserializeJSON(
   const auto& state = this->Context->GetState(identifier);
   if (state.empty())
   {
-    return false;
+    // State could have been explicitly ignored
+    vtkDebugMacro(<< "No state found at id=" << identifier);
+    return true;
   }
   std::string className;
   std::vector<std::string> superClassNames;
@@ -127,6 +132,8 @@ bool vtkDeserializer::DeserializeJSON(
     }
     else
     {
+      vtkErrorMacro(<< "Failed to construct object of type " << className
+                    << " at id=" << identifier);
       return false;
     }
   }
@@ -140,10 +147,12 @@ bool vtkDeserializer::DeserializeJSON(
   }
   else if (const auto& f = this->GetHandler(typeid(*objectPtr)))
   {
+    bool success = false;
     if (this->Context->IsProcessing(identifier))
     {
       vtkVLogF(this->GetDeserializerLogVerbosity(), "Prevented recursive deserialization for %s",
         objectPtr->GetObjectDescription().c_str());
+      success = true;
     }
     else
     {
@@ -152,7 +161,7 @@ bool vtkDeserializer::DeserializeJSON(
         vtkMarshalContext::ScopedParentTracker parentTracker(this->Context, identifier);
         vtkVLogScopeF(this->GetDeserializerLogVerbosity(), "Deserialize %s at identifier=%u",
           objectPtr->GetObjectDescription().c_str(), identifier);
-        f(state, objectPtr, this);
+        success = f(state, objectPtr, this);
       }
       catch (std::exception& e)
       {
@@ -162,7 +171,12 @@ bool vtkDeserializer::DeserializeJSON(
       }
     }
     this->Context->AddChild(identifier);
-    return true;
+    return success;
+  }
+  else
+  {
+    vtkErrorMacro(<< "No handler found to deserialize object of type " << objectPtr->GetClassName()
+                  << " at id=" << identifier);
   }
   return false;
 }
@@ -187,22 +201,34 @@ vtkDeserializer::ConstructorType vtkDeserializer::GetConstructor(
   // So we need to reverse the order of `superClassNames` to get correct order ['C','B','A']. This
   // is important for classes that use object factory to create the objects.
 
-  bool isDisabledOverrideClass = false;
+  // whether className is the thing that implements an abstract factory class
+  bool isFactoryOverrideSubclass = false;
   for (auto objectFactory : vtk::Range(vtkObjectFactory::GetRegisteredFactories()))
   {
     for (int i = 0; i < objectFactory->GetNumberOfOverrides(); ++i)
     {
-      if (!objectFactory->GetEnableFlag(i) &&
-        !strcmp(objectFactory->GetClassOverrideWithName(i), className.c_str()))
+      if (!strcmp(objectFactory->GetClassOverrideWithName(i), className.c_str()))
       {
-        isDisabledOverrideClass = true;
+        isFactoryOverrideSubclass = true;
+        break;
       }
     }
-  }
-  if (isDisabledOverrideClass)
-  {
-    for (const auto& superClassName : superClassNames)
+    if (isFactoryOverrideSubclass)
     {
+      // No need to keep scanning factories once a disabled override is found.
+      break;
+    }
+  }
+  if (isFactoryOverrideSubclass)
+  {
+    // Walk the superclasses most-derived first so that the closest factory
+    // override to `className` wins. Iterating least-derived first would match a
+    // base class that also happens to be a factory override (e.g. vtkActor for a
+    // vtkSkybox subclass) before reaching the intended override (vtkSkybox),
+    // constructing the wrong concrete type.
+    for (auto it = superClassNames.rbegin(); it != superClassNames.rend(); ++it)
+    {
+      const auto& superClassName = *it;
       for (auto objectFactory : vtk::Range(vtkObjectFactory::GetRegisteredFactories()))
       {
         for (int i = 0; i < objectFactory->GetNumberOfOverrides(); ++i)

@@ -24,7 +24,7 @@
 #include "vtkSphereSource.h"
 #include "vtkStringFormatter.h"
 #include "vtkTransform.h"
-#include "vtkTransformPolyDataFilter.h"
+#include "vtkTransformFilter.h"
 #include "vtkVectorText.h"
 #include "vtkWindow.h"
 
@@ -51,7 +51,7 @@ vtkSliderRepresentation3D::vtkSliderRepresentation3D()
 
   vtkTransform* xform = vtkTransform::New();
   xform->RotateZ(90.0);
-  this->Cylinder = vtkTransformPolyDataFilter::New(); // align the axis along the x-axis
+  this->Cylinder = vtkTransformFilter::New(); // align the axis along the x-axis
   this->Cylinder->SetInputConnection(this->CylinderSource->GetOutputPort());
   this->Cylinder->SetTransform(xform);
   xform->Delete();
@@ -539,9 +539,9 @@ void vtkSliderRepresentation3D::BuildRepresentation()
     {
       std::string labelFormat = this->LabelFormat ? vtk::to_std_format(this->LabelFormat) : "";
       char label[256];
-      VTK_FORMAT_IF_ERROR_RETURN(
-        auto result = vtk::format_to_n(label, sizeof(label), labelFormat, this->Value);
-        *result.out = '\0', );
+      VTK_FORMAT_IF_ERROR_RETURN(auto result = vtk::format_to_n(
+                                   label, sizeof(label), vtk::runtime(labelFormat), this->Value);
+                                 *result.out = '\0', );
       double bounds[6];
       this->LabelActor->VisibilityOn();
       this->LabelText->SetText(label);

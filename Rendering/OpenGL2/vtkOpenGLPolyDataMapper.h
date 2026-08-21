@@ -39,11 +39,14 @@ class vtkTexture;
 class vtkTextureObject;
 class vtkTransform;
 class vtkOpenGLShaderProperty;
+class vtkOverrideAttribute;
 
 class VTKRENDERINGOPENGL2_EXPORT VTK_MARSHALAUTO vtkOpenGLPolyDataMapper : public vtkPolyDataMapper
 {
 public:
   static vtkOpenGLPolyDataMapper* New();
+  VTK_NEWINSTANCE
+  static vtkOverrideAttribute* CreateOverrideAttributes();
   vtkTypeMacro(vtkOpenGLPolyDataMapper, vtkPolyDataMapper);
   void PrintSelf(ostream& os, vtkIndent indent) override;
 
@@ -58,6 +61,12 @@ public:
    * polydata.
    */
   MapperHashType GenerateHash(vtkPolyData* polydata) override;
+
+  /**
+   * Returns the maximum number of triangles renderable based on OpenGL limits.
+   * Returns the maximum buffer object size as the limit of triangles that can be rendered.
+   */
+  vtkIdType GetMaximumNumberOfTriangles(vtkRenderer* ren) override;
 
   ///@{
   /**
@@ -454,6 +463,7 @@ protected:
 
   // are we currently drawing spheres/tubes
   bool DrawingSpheres(vtkOpenGLHelper& cellBO, vtkActor* actor);
+  bool DrawingLines(vtkOpenGLHelper& cellBO, vtkActor* actor);
   bool DrawingTubes(vtkOpenGLHelper& cellBO, vtkActor* actor);
   bool DrawingTubesOrSpheres(vtkOpenGLHelper& cellBO, vtkActor* actor);
   bool DrawingPoints(vtkOpenGLHelper& cellBO, vtkActor* actor);
@@ -510,5 +520,7 @@ private:
   void operator=(const vtkOpenGLPolyDataMapper&) = delete;
 };
 
+#define vtkOpenGLPolyDataMapper_OVERRIDE_ATTRIBUTES                                                \
+  vtkOpenGLPolyDataMapper::CreateOverrideAttributes()
 VTK_ABI_NAMESPACE_END
 #endif

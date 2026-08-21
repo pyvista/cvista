@@ -407,6 +407,16 @@ public:
 
   ///@{
   /**
+   * Set/Get the center of rotation. Styles and widgets that support rotating
+   * the camera about an arbitrary point may use this instead of the camera
+   * focal point. Default is (0, 0, 0).
+   */
+  vtkSetVector3Macro(CenterOfRotation, double);
+  vtkGetVector3Macro(CenterOfRotation, double);
+  ///@}
+
+  ///@{
+  /**
    * 3Dconnexion device interactor style. Initial value is a pointer to an
    * object of class vtkTdxInteractorStyleCamera.
    */
@@ -420,6 +430,16 @@ public:
    * Called by the callback to process 3DConnexion device events.
    */
   void DelegateTDxEvent(unsigned long event, void* calldata);
+
+  /**
+   * Dolly the renderer's camera to a specific point
+   */
+  static void DollyToPosition(double fact, int* position, vtkRenderer* renderer);
+
+  /**
+   * Translate the renderer's camera
+   */
+  static void TranslateCamera(vtkRenderer* renderer, int toX, int toY, int fromX, int fromY);
 
 protected:
   vtkInteractorStyle();
@@ -452,6 +472,7 @@ protected:
   int PropPicked;      // bool: prop picked?
   double PickColor[3]; // support 2D picking
   double MouseWheelMotionFactor;
+  double CenterOfRotation[3] = { 0.0, 0.0, 0.0 };
 
   // Control the timer duration
   unsigned long TimerDuration; // in milliseconds

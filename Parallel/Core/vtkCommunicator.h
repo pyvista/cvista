@@ -68,7 +68,8 @@ public:
     SCATTER_TAG = 13,
     SCATTERV_TAG = 14,
     REDUCE_TAG = 15,
-    BARRIER_TAG = 16
+    BARRIER_TAG = 16,
+    ALL_TO_ALLV_TAG = 17
   };
 
   enum StandardOperations
@@ -300,6 +301,13 @@ public:
   ///@}
 
   //---------------------- Collective Operations ----------------------
+
+  /**
+   * Exchange variable-sized messages between all processes
+   */
+  virtual int AllToAllVVoidArray(const void* sendBuffer, const int* sendCounts,
+    const int* sendOffsets, void* recvBuffer, const int* recvCounts, const int* recvOffsets,
+    int type);
 
   /**
    * Will block the processes until all other processes reach the Barrier
@@ -1367,6 +1375,14 @@ protected:
   int ReceiveDataObject(vtkDataObject* data, int remoteHandle, int tag, int type = -1);
   int ReceiveElementalDataObject(vtkDataObject* data, int remoteHandle, int tag);
   int ReceiveMultiBlockDataSet(vtkMultiBlockDataSet* data, int remoteHandle, int tag);
+
+  /**
+   * Return the maximum value that the tag can take for tag sending and receive.
+   * The default value is VTK_INT_MAX.
+   * This method can be overridden to return a vendor specific value and may return -1 in case of
+   * failure recovering the value.
+   */
+  virtual int GetTagMaxValue() const { return VTK_INT_MAX; }
 
   int MaximumNumberOfProcesses;
   int NumberOfProcesses;

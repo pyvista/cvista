@@ -35,6 +35,10 @@ static nlohmann::json Serialize_vtkDataSetMapper(
   state["SuperClassNames"].push_back("vtkMapper");
   if (object->GetInput()->IsA("vtkPolyData"))
   {
+    if (auto* inputAlgorithm = object->GetInputAlgorithm())
+    {
+      inputAlgorithm->Update();
+    }
     state["ExtractedPolyData"] = serializer->SerializeJSON(object->GetInput());
   }
   else if (auto polyDataMapper = object->GetPolyDataMapper())
@@ -60,16 +64,27 @@ static nlohmann::json Serialize_vtkDataSetMapper(
   return state;
 }
 
-static void Deserialize_vtkDataSetMapper(
+static bool Deserialize_vtkDataSetMapper(
   const nlohmann::json& state, vtkObjectBase* objectBase, vtkDeserializer* deserializer)
 {
+  bool success = true;
   auto* object = vtkDataSetMapper::SafeDownCast(objectBase);
+  if (!object)
+  {
+    vtkErrorWithObjectMacro(deserializer, << __func__ << ": object not a vtkDataSetMapper");
+    return false;
+  }
   if (auto f = deserializer->GetHandler(typeid(vtkDataSetMapper::Superclass)))
   {
-    f(state, object, deserializer);
+    success &= f(state, object, deserializer);
+  }
+  if (!success)
+  {
+    return false;
   }
   VTK_DESERIALIZE_VTK_OBJECT_FROM_STATE_DIFFERENT_NAMES(
     ExtractedPolyData, InputData, vtkPolyData, state, object, deserializer);
+  return success;
 }
 
 int RegisterHandlers_vtkDataSetMapperSerDesHelper(void* ser, void* deser, void* vtkNotUsed(invoker))

@@ -182,6 +182,9 @@ set(vtk_cmake_wasm_files
   wasm/server.js
   wasm/vtkWasmTest.html.in
   wasm/vtkWasmTestRunner.cmake
+  wasm/IWER/iwer.js
+  wasm/IWER/LICENSE
+  wasm/IWER/README.md
 )
 
 set(vtk_cmake_files_to_install)

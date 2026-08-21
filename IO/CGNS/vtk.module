@@ -20,6 +20,7 @@ PRIVATE_DEPENDS
   VTK::hdf5
   VTK::vtksys
 TEST_DEPENDS
+  VTK::cgns
   VTK::CommonSystem
   VTK::InteractionStyle
   VTK::TestingCore

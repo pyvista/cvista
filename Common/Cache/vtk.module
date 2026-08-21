@@ -1,0 +1,23 @@
+NAME
+  VTK::CommonCache
+LIBRARY_NAME
+  vtkCommonCache
+DESCRIPTION
+  Assorted utility classes for caching purpose
+KIT
+  VTK::Common
+GROUPS
+  StandAlone
+SPDX_LICENSE_IDENTIFIER
+  BSD-3-Clause
+SPDX_COPYRIGHT_TEXT
+  Copyright (c) Ken Martin, Will Schroeder, Bill Lorensen
+DEPENDS
+  VTK::CommonCore
+PRIVATE_DEPENDS
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+TEST_DEPENDS
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+  VTK::TestingCore
