@@ -74,6 +74,7 @@ def main():
                 "corrects_stock": bool(ops.OPS[op_name].get("corrects_stock", False)),
                 "point_data_tol": float(ops.OPS[op_name].get("point_data_tol", 0.0)),
                 "points_only": bool(ops.OPS[op_name].get("points_only", False)),
+                "cell_rotation_relaxed": bool(ops.OPS[op_name].get("cell_rotation_relaxed", False)),
                 "n_arrays": len(arrays),
                 "sha256": array_sha(arrays),
                 "arrays": {k: list(np.asarray(v).shape) for k, v in arrays.items()},
