@@ -12,7 +12,7 @@ from pathlib import Path
 # Derived from the actual built wheel by CI (see the split job). The abi3 build
 # produces e.g. VER=9.6.2.0 / PYTAG=cp312-abi3-manylinux_2_28_x86_64. Fall back to
 # dev values for a local run.
-VER = os.environ.get("CVISTA_WHEEL_VERSION", "9.6.2.dev0")
+VER = os.environ.get("CVISTA_WHEEL_VERSION", "9.7.0.dev0")
 PYTAG = os.environ.get("CVISTA_WHEEL_TAG", "cp312-abi3-manylinux_2_28_x86_64")
 TIERS = {
     "core":      ("cvista",           []),

@@ -10,9 +10,12 @@ set -euo pipefail
 WD=${WD:-/tmp/tier-wheels}
 PYBIN=${PYBIN:-python3}
 LDP=${LDP:-}
-CORE=$(ls "$WD"/cvista-9.6.2*.whl | head -1)
-REND=$(ls "$WD"/cvista_rendering-9.6.2*.whl | head -1)
-IO=$(ls "$WD"/cvista_io-9.6.2*.whl | head -1)
+# Version-agnostic globs: the wheel version tracks the VTK base (9.6.2.N, 9.7.0.N,
+# ...), so match on the project stem alone. 'cvista-' (hyphen) never matches the
+# 'cvista_rendering' / 'cvista_io' underscore stems.
+CORE=$(ls "$WD"/cvista-*.whl | head -1)
+REND=$(ls "$WD"/cvista_rendering-*.whl | head -1)
+IO=$(ls "$WD"/cvista_io-*.whl | head -1)
 V=/tmp/venv-stack; rm -rf "$V"; "$PYBIN" -m venv "$V"
 
 echo "=== 1) install CORE only (no deps) -> IO-free offline compute ==="
