@@ -48,9 +48,10 @@ KIT_TIER = {
     "vtkRendering": "rendering", "vtkInteraction": "rendering",
     "vtkChartsCore": "rendering", "vtkViews": "rendering",
     "vtkIOExtra": "io",
-    # tiered.cmake disables IOParallel/IOParallelXML/IOCGNSReader/IOInfovis, so the
-    # VTK::Parallel kit holds ONLY core modules (FiltersParallel/Extraction/FlowPaths/
-    # ParallelCore/ParallelDIY/ParallelDIY2) -> core tier.
+    # The IO readers in the VTK::Parallel kit (IOParallel/IOParallelXML/IOCGNSReader,
+    # enabled in #269/#271) are placed by module_tier() above, not by this kit map. The
+    # VTK::Parallel KIT lib holds ONLY core modules (FiltersParallel/Extraction/
+    # FlowPaths/ParallelCore/ParallelDIY/ParallelDIY2) -> core tier.
     "vtkParallel": "core",
 }
 
@@ -91,14 +92,18 @@ def module_tier(mod):
     # graph, chemistry). They stay in the rendering tier; since rendering may depend on
     # io (see ALLOW), any IO they pull resolves within rendering∪io∪core.
     # NOTE: vtkIOImport carries the glTF reader/texture relocated in #168.
+    # vtkIOInfovis over-links the Infovis rendering stack (vtkInfovisCore/vtkfreetype/
+    # vtkRendering); those edges are stale (no symbols used) and Linux strips them with
+    # patchelf, but macOS has no LC_LOAD_DYLIB removal, so keep it in the rendering tier
+    # alongside vtkInfovisCore rather than leaving a cross-tier io->rendering edge.
     if m in ("vtkIOExport","vtkIOExportGL2PS","vtkIOImport","vtkIOMINC",
-             "vtkIOChemistry","vtkInfovisCore","vtkInfovisLayout"):
+             "vtkIOChemistry","vtkIOInfovis","vtkInfovisCore","vtkInfovisLayout"):
         return "rendering"
     # The VTK::IO kit modules are now rendering-free and ride the io tier, together
     # with the standalone io-only readers/writers.
     if m in ("vtkIOCore","vtkIOXML","vtkIOXMLParser","vtkIOLegacy","vtkIOImage",
              "vtkIOGeometry","vtkIOPLY","vtkIOCellGrid",
-             "vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIOInfovis","vtkIONetCDF",
+             "vtkIOHDF","vtkIOExodus","vtkIOEnSight","vtkIONetCDF",
              "vtkIOVeraOut","vtkIOSegY","vtkIOFLUENTCFF","vtkIOCGNSReader",
              "vtkIOParallel","vtkIOParallelXML","vtkIOParallelExodus","vtkIOCONVERGECFD",
              "vtkIOXdmf2"):
