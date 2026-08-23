@@ -319,7 +319,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkDSPFilterDefinition
   vtkDSPFilterGroup
   vtkDummyCommunicator
-  vtkDummyController
   vtkDummyGPUInfoList
   vtkDuplicatePolyData
   vtkDynamic2DLabelMapper
