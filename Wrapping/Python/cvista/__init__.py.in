@@ -222,6 +222,35 @@ def on_vtk_module_init_completed():
 # partition_wheels.py, which owns tier assignment) instead of a bare
 # AttributeError.
 
+import re as _re
+
+# Any cvista shared-lib token in a dynamic-loader error, across platforms:
+#   Linux:   "libvtkIO-cvista.so.1: cannot open shared object file"
+#   macOS:   "Library not loaded: @rpath/libvtkIO-cvista.dylib"
+#   Windows: "Could not find module 'vtkIO-cvista.dll'"
+# The stem we key on ("vtkIO-cvista") drops the lib prefix, the extension, and
+# any soversion, matching the keys _lib_tiers.LIBS is generated with.
+_CVISTA_LIB_TOKEN = _re.compile(r'(?:lib)?(vtk\w+?-cvista)(?:\.(?:so|dylib|dll|pyd)[.\d]*)?')
+
+def _missing_lib_tier(exc):
+    """Tier that owns a cvista shared library named in a failed-import error.
+
+    Returns the tier string (e.g. 'io') when the loader failed because a
+    cvista library shipped in another tier wheel is absent, else None. Degrades
+    to None whenever the table is missing or the message names no cvista lib, so
+    the caller falls through to its other diagnoses.
+    """
+    try:
+        from . import _lib_tiers
+    except ImportError:
+        return None
+    for stem in _CVISTA_LIB_TOKEN.findall(str(exc)):
+        tier = _lib_tiers.LIBS.get(stem)
+        if tier is not None:
+            return tier
+    return None
+
+
 def __getattr__(name):
     if name.startswith('_'):
         # Never index private/dunder names; also keeps protocol probes
@@ -254,6 +283,17 @@ def __getattr__(name):
             msg = (
                 f'{name!r} lives in {__name__}.{module_name}, which requires the '
                 f'optional dependency {missing!r}. Install it to use this name.'
+            )
+        # (a2) the module is PRESENT but a cvista shared library it links, shipped
+        # in another (optional) tier, is absent -- e.g. a rendering scene-exporter
+        # links the io tier's libvtkIO and io is not installed. Name the MISSING
+        # library's tier, which differs from the module's own tier.
+        elif (dep_tier := _missing_lib_tier(exc)) and dep_tier != 'core':
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which needs a shared '
+                f'library from the cvista-{dep_tier} tier that is not installed. '
+                f'Install it with: pip install cvista[{dep_tier}]  '
+                f'(or cvista[all] for everything).'
             )
         # (b) the hosting module ships in a tier wheel that is not installed.
         elif tier and tier != 'core':
