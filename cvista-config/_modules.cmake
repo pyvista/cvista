@@ -123,7 +123,6 @@ set(VTK_MODULE_ENABLE_VTK_RenderingLICOpenGL2 NO CACHE STRING "")  # niche line-
 # Keep it enabled; the true MPI filters below stay disabled.
 set(VTK_MODULE_ENABLE_VTK_FiltersParallelMPI NO CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_FiltersParallelStatistics NO CACHE STRING "")
-set(VTK_MODULE_ENABLE_VTK_IOParallelExodus NO CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_IOParallelLSDyna NO CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_IOParallelNetCDF NO CACHE STRING "")
 
