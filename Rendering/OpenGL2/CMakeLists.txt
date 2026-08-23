@@ -223,8 +223,11 @@ foreach(file IN LISTS public_shader_files)
     "${header}")
 endforeach()
 
+# cvista: the blue-noise texture ships pre-decoded (raw single-channel bytes)
+# rather than as a JPEG decoded at runtime, so RenderingOpenGL2 does not depend on
+# the IO tier (vtkJPEGReader). The bytes are the exact vtkJPEGReader output.
 vtk_encode_string(
-  INPUT "textures/BlueNoiseTexture64x64.jpg"
+  INPUT "textures/BlueNoiseTexture64x64.raw"
   HEADER_OUTPUT BlueNoiseTexture64x64_header
   SOURCE_OUTPUT BlueNoiseTexture64x64_source
   EXPORT_SYMBOL "VTKRENDERINGOPENGL2_NO_EXPORT"

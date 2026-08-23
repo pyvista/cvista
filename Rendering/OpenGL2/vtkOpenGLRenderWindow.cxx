@@ -8,9 +8,7 @@
 
 #include "vtkFloatArray.h"
 #include "vtkImageData.h"
-#include "vtkJPEGReader.h"
 #include "vtkLogger.h"
-#include "vtkMemoryResourceStream.h"
 #include "vtkNew.h"
 #include "vtkOpenGLArrayTextureBufferCache.h"
 #include "vtkOpenGLBufferObject.h"
@@ -3082,21 +3080,16 @@ int vtkOpenGLRenderWindow::GetNoiseTextureUnit()
 
   if (this->NoiseTextureObject->GetHandle() == 0)
   {
-    vtkNew<vtkJPEGReader> imgReader;
-
-    vtkNew<vtkMemoryResourceStream> stream;
-    stream->SetBuffer(BlueNoiseTexture64x64, sizeof(BlueNoiseTexture64x64));
-    imgReader->SetStream(stream);
-    imgReader->Update();
-    vtkImageData* textureReader = imgReader->GetOutput();
-
+    // cvista: the blue-noise texture is baked as raw single-channel bytes at build
+    // time; upstream embedded a JPEG here and decoded it at runtime via
+    // vtkJPEGReader. The bytes are the exact vtkJPEGReader output, so the texture
+    // (and every render that samples it) is unchanged, and RenderingOpenGL2 no
+    // longer links the IO tier.
     constexpr int bufferSize = 64 * 64;
     float* noiseTextureData = new float[bufferSize];
     for (int i = 0; i < bufferSize; i++)
     {
-      int const x = i % 64;
-      int const y = i / 64;
-      noiseTextureData[i] = textureReader->GetScalarComponentAsFloat(x, y, 0, 0) / 255.0f;
+      noiseTextureData[i] = BlueNoiseTexture64x64[i] / 255.0f;
     }
 
     // Prepare texture
