@@ -27,13 +27,16 @@ ninja --version
 # LD_LIBRARY_PATH=/tmp/tbb/lib (auditwheel repair bundles libtbb) are set in
 # [tool.cibuildwheel.linux.environment]. Set CVISTA_SMP_BACKEND=STDThread to skip.
 TBB_PREFIX=/tmp/tbb
-if [ "${CVISTA_SMP_BACKEND:-TBB}" = "TBB" ] && [ ! -e "$TBB_PREFIX/lib/cmake/tbb/TBBConfig.cmake" ]; then
+# CMAKE_INSTALL_LIBDIR=lib forces a deterministic layout: AlmaLinux's default
+# GNUInstallDirs puts the config in lib64/cmake/TBB, but the build points TBB_DIR
+# at $TBB_PREFIX/lib/cmake/TBB (CVISTA_TBB_DIR in [environment]), so pin lib.
+if [ "${CVISTA_SMP_BACKEND:-}" = "TBB" ] && [ ! -e "$TBB_PREFIX/lib/cmake/TBB/TBBConfig.cmake" ]; then
   onetbb_src=/tmp/onetbb-src
   rm -rf "$onetbb_src"
   git clone --depth 1 -b v2022.0.0 https://github.com/uxlfoundation/oneTBB "$onetbb_src"
   cmake -S "$onetbb_src" -B "$onetbb_src/bld" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DTBB_TEST=OFF -DTBB_STRICT=OFF \
-    -DCMAKE_INSTALL_PREFIX="$TBB_PREFIX"
+    -DCMAKE_INSTALL_PREFIX="$TBB_PREFIX" -DCMAKE_INSTALL_LIBDIR=lib
   cmake --build "$onetbb_src/bld" --target install
 fi
 ccache --zero-stats || true

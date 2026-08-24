@@ -26,8 +26,9 @@ set(VTK_DEBUG_LEAKS OFF CACHE BOOL "")
 # longer build (~1.5 hrs total). Worth it for production wheels.
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "" FORCE)
 
-# SMP (shared-memory parallelism) backend: set in minimal.cmake (default TBB,
-# override via CVISTA_SMP_BACKEND). The earlier TBB-abandoned note is obsolete:
+# SMP (shared-memory parallelism) backend: set in minimal.cmake (compile default
+# STDThread; the shipped wheels opt into TBB via CVISTA_SMP_BACKEND=TBB). The
+# earlier TBB-abandoned note is obsolete:
 # that failure was Viskores' libviskores_cont needing a oneTBB 2022.x symbol
 # while OSPRay pulled an older libtbb. The trimmed cvista build ships NEITHER
 # module (RenderingRayTracing off; Viskores not in PyVista's closure), so there

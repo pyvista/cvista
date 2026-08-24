@@ -162,11 +162,13 @@ CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 # checkout root (REPO) before invoking cmake, so ccache sees a valid absolute path.
 CCACHE_BASEDIR = "{project}"
 CCACHE_SLOPPINESS = "time_macros,locale,pch_defines"
-# TBB (default SMP backend) provisioning: before-build.sh builds oneTBB to
-# /tmp/tbb. CMAKE_PREFIX_PATH lets find_package(TBB) locate it at configure;
-# LD_LIBRARY_PATH lets `auditwheel repair` find libtbb.so.12 to bundle into the
-# wheel (it becomes a NEEDED of the kit libs). Append so nothing else is hidden.
-CMAKE_PREFIX_PATH = "/tmp/tbb:$CMAKE_PREFIX_PATH"
+# The shipped wheel opts into the TBB SMP backend (the cmake default is STDThread;
+# see cvista-config/minimal.cmake). before-build.sh provisions oneTBB to /tmp/tbb
+# (guarded on CVISTA_SMP_BACKEND=TBB). CVISTA_TBB_DIR points find_package(TBB)
+# straight at the config dir; LD_LIBRARY_PATH lets `auditwheel repair` find
+# libtbb.so.12 to bundle (it becomes a NEEDED of the kit libs).
+CVISTA_SMP_BACKEND = "TBB"
+CVISTA_TBB_DIR = "/tmp/tbb/lib/cmake/TBB"
 LD_LIBRARY_PATH = "/tmp/tbb/lib:$LD_LIBRARY_PATH"
 # CVISTA_BUILD_JOBS is intentionally NOT pinned here: the backend defaults the
 # `cmake --build --parallel` width to os.cpu_count() (ci/cibw/cvista_backend.py
@@ -193,7 +195,11 @@ LD_LIBRARY_PATH = "/tmp/tbb/lib:$LD_LIBRARY_PATH"
 archs = ["arm64"]
 # ccache is NOT on PyPI (no wheel) — install it via Homebrew (preinstalled on the
 # macos-14 runner). cmake/ninja/setuptools/wheel come from pip into the build env.
-before-build = "brew install ccache tbb && python -m pip install 'cmake>=3.22,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
+# delocate is upgraded here: the wheel build already vendors cvista's own kit
+# dylibs into cvista/.dylibs, and older delocate errors ("already exists in wheel
+# but need to copy ...") when it then has to add an EXTERNAL dylib (libtbb) to that
+# pre-existing dir. Recent delocate copies into it cleanly.
+before-build = "brew install ccache tbb && python -m pip install --upgrade delocate && python -m pip install 'cmake>=3.22,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
 # delocate-wheel bundles the dylibs but does NOT strip symbols; repair_macos.py
 # runs delocate then strips local symbol tables (strip -x) + re-signs ad-hoc,
 # mirroring the Linux `auditwheel repair --strip` size win. Set CVISTA_STRIP=0 to
@@ -210,11 +216,12 @@ test-command = "python {project}/ci/smoke_min.py"
 # (ci/cibw/cvista_backend.py _init_cache) resolves this against the repo root.
 CVISTA_CMAKE_INIT = "ci/cmake/macos.cmake"
 CVISTA_TARGET_OS = "macos"
-# TBB (default SMP backend): `brew install tbb` (oneTBB, arm64) in before-build;
-# point find_package(TBB) at the keg. delocate follows the dylib's install_name
-# and bundles libtbb.12.dylib into the wheel. Set CVISTA_SMP_BACKEND=STDThread to
-# opt out. (/opt/homebrew is the stable arm64 Homebrew prefix.)
-CMAKE_PREFIX_PATH = "/opt/homebrew/opt/tbb"
+# The shipped wheel opts into the TBB SMP backend (cmake default is STDThread).
+# `brew install tbb` (oneTBB, arm64) in before-build; CVISTA_TBB_DIR points
+# find_package(TBB) at the keg's config. delocate follows the dylib install_name
+# and bundles libtbb.12.dylib. (/opt/homebrew is the stable arm64 brew prefix.)
+CVISTA_SMP_BACKEND = "TBB"
+CVISTA_TBB_DIR = "/opt/homebrew/opt/tbb/lib/cmake/TBB"
 MACOSX_DEPLOYMENT_TARGET = "11.0"
 _PYTHON_HOST_PLATFORM = "macosx-11.0-arm64"
 CMAKE_C_COMPILER_LAUNCHER = "ccache"
@@ -269,9 +276,8 @@ test-skip = "cp313-* cp314-*"
 # values. The backend resolves this against the repo root.
 CVISTA_CMAKE_INIT = "ci/cmake/windows.cmake"
 CVISTA_FORCE_MSVC = "ON"
-# TBB is the default SMP backend on the shipped (Linux/macOS) wheels. Windows
-# wheels are NOT shipped today (see test-skip note above), so Windows stays on
-# the dependency-free STDThread backend until TBB provisioning (tbb-devel win_amd64
-# wheel or vcpkg + delvewheel bundling of tbb12.dll) is wired and validated.
-# TODO(win-tbb): provision oneTBB for Windows and drop this override.
-CVISTA_SMP_BACKEND = "STDThread"
+# TBB is opted into on the shipped Linux/macOS wheels (CVISTA_SMP_BACKEND=TBB in
+# their [environment] tables). Windows wheels are NOT shipped today (see the
+# test-skip note above) and Windows does not set CVISTA_SMP_BACKEND, so it uses the
+# cmake default STDThread (dependency-free). TODO(win-tbb): provision oneTBB for
+# Windows (tbb-devel win_amd64 wheel or vcpkg + delvewheel bundling of tbb12.dll).

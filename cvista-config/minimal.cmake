@@ -166,13 +166,16 @@ set(VTK_OPENGL_ENABLE_STREAM_ANNOTATIONS OFF CACHE BOOL "")
 set(VTK_DISPATCH_SCALED_SOA_ARRAYS OFF CACHE BOOL "")
 set(VTK_DISPATCH_SOA_ARRAYS OFF CACHE BOOL "")
 
-# SMP backend: default the WHOLE library to TBB instead of VTK's stock Sequential.
-# Every vtkSMPTools::For loop across VTK (TableBasedClip, contour, threshold, the
-# geometry/clip/cutter families, ...) then runs multithreaded out of the box --
-# profiling showed clip alone is ~95% of a volume pipeline and was running
-# single-threaded. TBB and STDThread are both compiled in; this only flips the
-# DEFAULT backend. Sequential/STDThread stay runtime-selectable
-# (vtkSMPTools::SetBackend(...) / VTK_SMP_MAX_THREADS=1).
+# SMP backend. Every vtkSMPTools::For loop across VTK (TableBasedClip, contour,
+# threshold, the geometry/clip/cutter families, ...) runs multithreaded out of the
+# box -- profiling showed clip alone is ~95% of a volume pipeline and was running
+# single-threaded. All backends are compiled in and runtime-selectable
+# (vtkSMPTools::SetBackend(...) / VTK_SMP_MAX_THREADS=1); this sets the DEFAULT.
+#
+# The SHIPPED WHEELS use TBB (opted in via CVISTA_SMP_BACKEND=TBB in the
+# cibuildwheel [environment], where before-build provisions oneTBB). The compile
+# DEFAULT here stays STDThread -- see the CVISTA_SMP_BACKEND block below for why a
+# TBB default would break every non-wheel build path.
 #
 # WHY TBB over STDThread (measured, same binary, runtime SetBackend, 160^3):
 #   vtkTableBasedClipDataSet  Sequential 453ms / STDThread 243ms / TBB 212ms  (~13% over STDThread)
@@ -192,10 +195,25 @@ set(VTK_DISPATCH_SOA_ARRAYS OFF CACHE BOOL "")
 # already loaded. Provisioned at build time per platform (no uniform TBB wheel
 # exists): see ci/cibw. Override with CVISTA_SMP_BACKEND (e.g. STDThread) for a
 # tier/arch whose TBB provisioning is not yet wired.
+# The SHIPPED WHEELS opt into TBB via CVISTA_SMP_BACKEND=TBB in the cibuildwheel
+# [environment] (pyproject.toml), where before-build provisions oneTBB. The cmake
+# DEFAULT stays STDThread (header-only, zero external deps) so the many other build
+# paths -- the SDK, the SMP-parity validator, any downstream C++ consumer of the
+# exported VTK config -- do NOT inherit a find_package(TBB) requirement they cannot
+# satisfy. A TBB-built VTK exports TBB::tbb as a transitive dependency, so TBB must
+# be confined to the build paths that actually provision it.
 if (DEFINED ENV{CVISTA_SMP_BACKEND} AND NOT "$ENV{CVISTA_SMP_BACKEND}" STREQUAL "")
   set(VTK_SMP_IMPLEMENTATION_TYPE "$ENV{CVISTA_SMP_BACKEND}" CACHE STRING "")
 else ()
-  set(VTK_SMP_IMPLEMENTATION_TYPE "TBB" CACHE STRING "")
+  set(VTK_SMP_IMPLEMENTATION_TYPE "STDThread" CACHE STRING "")
+endif ()
+# When TBB is selected, point find_package(TBB) straight at the provisioned config
+# dir (CVISTA_TBB_DIR). Relying on CMAKE_PREFIX_PATH proved unreliable across the
+# build subprocess boundary + the lib/lib64 split; TBB_DIR is the exact cache var
+# find_package(TBB CONFIG) resolves.
+if (VTK_SMP_IMPLEMENTATION_TYPE STREQUAL "TBB" AND DEFINED ENV{CVISTA_TBB_DIR}
+    AND NOT "$ENV{CVISTA_TBB_DIR}" STREQUAL "")
+  set(TBB_DIR "$ENV{CVISTA_TBB_DIR}" CACHE PATH "" FORCE)
 endif ()
 
 # === 3-way toolchain gate for the compiler/linker levers below ================
