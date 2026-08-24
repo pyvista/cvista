@@ -199,7 +199,7 @@ archs = ["arm64"]
 # dylibs into cvista/.dylibs, and older delocate errors ("already exists in wheel
 # but need to copy ...") when it then has to add an EXTERNAL dylib (libtbb) to that
 # pre-existing dir. Recent delocate copies into it cleanly.
-before-build = "brew install ccache tbb && python -m pip install --upgrade delocate && python -m pip install 'cmake>=3.22,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
+before-build = "brew install ccache && python -m pip install 'cmake>=3.22,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
 # delocate-wheel bundles the dylibs but does NOT strip symbols; repair_macos.py
 # runs delocate then strips local symbol tables (strip -x) + re-signs ad-hoc,
 # mirroring the Linux `auditwheel repair --strip` size win. Set CVISTA_STRIP=0 to
@@ -216,12 +216,14 @@ test-command = "python {project}/ci/smoke_min.py"
 # (ci/cibw/cvista_backend.py _init_cache) resolves this against the repo root.
 CVISTA_CMAKE_INIT = "ci/cmake/macos.cmake"
 CVISTA_TARGET_OS = "macos"
-# The shipped wheel opts into the TBB SMP backend (cmake default is STDThread).
-# `brew install tbb` (oneTBB, arm64) in before-build; CVISTA_TBB_DIR points
-# find_package(TBB) at the keg's config. delocate follows the dylib install_name
-# and bundles libtbb.12.dylib. (/opt/homebrew is the stable arm64 brew prefix.)
-CVISTA_SMP_BACKEND = "TBB"
-CVISTA_TBB_DIR = "/opt/homebrew/opt/tbb/lib/cmake/TBB"
+# macOS stays on the STDThread backend for now (cmake default; CVISTA_SMP_BACKEND
+# unset). TBB is enabled on the Linux wheels. The macOS TBB build itself succeeds
+# (brew tbb, find_package via CVISTA_TBB_DIR), but delocate refuses to add an
+# external dylib (libtbb) to the wheel's pre-existing cvista/.dylibs -- that dir is
+# already populated by the VTK wheel machinery, and delocate's guard fires only
+# when it must copy a new external lib into an existing .dylibs. Enabling macOS TBB
+# needs repair_macos.py to vendor + relink libtbb before delocate.
+# TODO(mac-tbb): pre-vendor libtbb in repair_macos.py, then set CVISTA_SMP_BACKEND=TBB.
 MACOSX_DEPLOYMENT_TARGET = "11.0"
 _PYTHON_HOST_PLATFORM = "macosx-11.0-arm64"
 CMAKE_C_COMPILER_LAUNCHER = "ccache"
@@ -276,7 +278,7 @@ test-skip = "cp313-* cp314-*"
 # values. The backend resolves this against the repo root.
 CVISTA_CMAKE_INIT = "ci/cmake/windows.cmake"
 CVISTA_FORCE_MSVC = "ON"
-# TBB is opted into on the shipped Linux/macOS wheels (CVISTA_SMP_BACKEND=TBB in
+# TBB is opted into on the shipped Linux wheels (CVISTA_SMP_BACKEND=TBB in
 # their [environment] tables). Windows wheels are NOT shipped today (see the
 # test-skip note above) and Windows does not set CVISTA_SMP_BACKEND, so it uses the
 # cmake default STDThread (dependency-free). TODO(win-tbb): provision oneTBB for

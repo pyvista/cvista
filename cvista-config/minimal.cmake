@@ -172,10 +172,11 @@ set(VTK_DISPATCH_SOA_ARRAYS OFF CACHE BOOL "")
 # single-threaded. All backends are compiled in and runtime-selectable
 # (vtkSMPTools::SetBackend(...) / VTK_SMP_MAX_THREADS=1); this sets the DEFAULT.
 #
-# The SHIPPED WHEELS use TBB (opted in via CVISTA_SMP_BACKEND=TBB in the
-# cibuildwheel [environment], where before-build provisions oneTBB). The compile
-# DEFAULT here stays STDThread -- see the CVISTA_SMP_BACKEND block below for why a
-# TBB default would break every non-wheel build path.
+# The shipped Linux wheels use TBB (opted in via CVISTA_SMP_BACKEND=TBB in the
+# cibuildwheel [environment], where before-build provisions oneTBB); macOS stays
+# STDThread pending libtbb bundling (see pyproject [tool.cibuildwheel.macos]). The
+# compile DEFAULT here stays STDThread -- see the CVISTA_SMP_BACKEND block below
+# for why a TBB default would break every non-wheel build path.
 #
 # WHY TBB over STDThread (measured, same binary, runtime SetBackend, 160^3):
 #   vtkTableBasedClipDataSet  Sequential 453ms / STDThread 243ms / TBB 212ms  (~13% over STDThread)
