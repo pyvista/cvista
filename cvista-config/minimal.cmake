@@ -166,20 +166,37 @@ set(VTK_OPENGL_ENABLE_STREAM_ANNOTATIONS OFF CACHE BOOL "")
 set(VTK_DISPATCH_SCALED_SOA_ARRAYS OFF CACHE BOOL "")
 set(VTK_DISPATCH_SOA_ARRAYS OFF CACHE BOOL "")
 
-# SMP backend: default the WHOLE library to STDThread instead of VTK's stock
-# Sequential. Every vtkSMPTools::For loop across VTK (TableBasedClip, contour,
-# threshold, the geometry/clip/cutter families, ...) then runs multithreaded out
-# of the box -- profiling showed clip alone is ~95% of a volume pipeline and was
-# running single-threaded (TableBasedClip 202->94ms, 2.15x). STDThread is header-
-# only (std::thread, no external deps) and was already compiled in; this only
-# flips the DEFAULT backend. Sequential stays available and is runtime-selectable
-# (vtkSMPTools::SetBackend("Sequential") / VTK_SMP_MAX_THREADS=1) for users who
-# need stock serial behavior. This is BYTE-EXACT vs stock VTK 9.6.2: VTK's SMP
-# filters use deterministic batched merges, so threaded output == sequential
-# output (validated against stock across the full bit-exact suite). The lone
-# exception, vtkGeometryFilter's thread-order-dependent face emission, is fixed
-# in this same change (deterministic chunk ordering + serial face-hash build).
-set(VTK_SMP_IMPLEMENTATION_TYPE "STDThread" CACHE STRING "")
+# SMP backend: default the WHOLE library to TBB instead of VTK's stock Sequential.
+# Every vtkSMPTools::For loop across VTK (TableBasedClip, contour, threshold, the
+# geometry/clip/cutter families, ...) then runs multithreaded out of the box --
+# profiling showed clip alone is ~95% of a volume pipeline and was running
+# single-threaded. TBB and STDThread are both compiled in; this only flips the
+# DEFAULT backend. Sequential/STDThread stay runtime-selectable
+# (vtkSMPTools::SetBackend(...) / VTK_SMP_MAX_THREADS=1).
+#
+# WHY TBB over STDThread (measured, same binary, runtime SetBackend, 160^3):
+#   vtkTableBasedClipDataSet  Sequential 453ms / STDThread 243ms / TBB 212ms  (~13% over STDThread)
+#   vtkPolyDataNormals        +5% vs STDThread;  vtkImageThreshold +7%; contour/warp within noise.
+# TBB's work-stealing wins on compute-bound irregular loops; neutral on
+# bandwidth-bound ones; no regressions.
+#
+# BYTE-EXACT: VTK's SMP filters use deterministic batched merges, so threaded
+# output == sequential output regardless of backend -- validated on TBB with the
+# full bit-exact suite (838/838 vs stock vtk==9.7.0 at maxULP=0) and thread-count
+# determinism (1/4/8 threads identical). vtkGeometryFilter's thread-order face
+# emission is fixed separately (deterministic chunk ordering + serial face-hash).
+#
+# TBB is a runtime dependency (libtbb). cvista references only oneTBB's stable
+# `tbb::detail::r1` ABI (present since oneTBB 2021.1; soname libtbb.so.12), so a
+# bundled libtbb coexists safely with any libtbb another consumer (MKL/scipy) has
+# already loaded. Provisioned at build time per platform (no uniform TBB wheel
+# exists): see ci/cibw. Override with CVISTA_SMP_BACKEND (e.g. STDThread) for a
+# tier/arch whose TBB provisioning is not yet wired.
+if (DEFINED ENV{CVISTA_SMP_BACKEND} AND NOT "$ENV{CVISTA_SMP_BACKEND}" STREQUAL "")
+  set(VTK_SMP_IMPLEMENTATION_TYPE "$ENV{CVISTA_SMP_BACKEND}" CACHE STRING "")
+else ()
+  set(VTK_SMP_IMPLEMENTATION_TYPE "TBB" CACHE STRING "")
+endif ()
 
 # === 3-way toolchain gate for the compiler/linker levers below ================
 # All the levers from here through the ICF block are GNU-toolchain + ELF/gold
