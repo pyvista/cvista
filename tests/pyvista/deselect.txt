@@ -43,6 +43,14 @@ tests/plotting/test_plotting.py::test_set_environment_texture_cubemap[True]
 # padding; there is no fix that keeps the int32 storage win. See #117.
 tests/core/test_dataobject.py::test_save_compression                            # int32-default lowers compression RATIO (smaller file); by design (#117)
 
+# --- by-design consequence of cvista fixed-size cell storage (won't fix) -------
+# cvista defaults an implicit uniform-cell PolyData to FIXED-SIZE cell-array
+# storage (a storage/perf optimization); stock keeps variable-size. This new test
+# pins that only fixtures explicitly built fixed-size report IsStorageFixedSize(),
+# so cvista's implicit PolyData (name 'PolyData', not '(fixed-size)') asserts
+# True==False. Intentional cvista divergence (FIXED_SIZE_CELL_STORAGE).
+tests/core/test_cells.py::test_offsets_meshes_storage[PolyData]                  # cvista implicit PolyData uses fixed-size storage; by design
+
 # --- intentional cvista build exclusion (won't fix) ---------------------------
 # cvista's module closure excludes IOXdmf2: the vendored ThirdParty/xdmf2 fails to
 # compile on modern libc++ (<strstream> removed) and only backs XdmfReader.
