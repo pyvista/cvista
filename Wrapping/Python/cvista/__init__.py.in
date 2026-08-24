@@ -269,31 +269,36 @@ def __getattr__(name):
         module = importlib.import_module(f'{__name__}.{module_name}')
     except ImportError as exc:
         # The name is known to this build but its module is not importable.
-        # Three distinguishable causes, most actionable first.
+        # Distinguishable causes, most specific first.
         tier = None
         try:
             from . import _module_tiers
             tier = _module_tiers.TIERS.get(module_name)
         except ImportError:
             pass
-        # (a) a THIRD-PARTY import inside the module is unmet -- the pure-Python
-        # helpers (e.g. util.xarray_support) carry optional dependencies.
         missing = getattr(exc, 'name', None)
-        if missing and not missing.startswith(__name__):
-            msg = (
-                f'{name!r} lives in {__name__}.{module_name}, which requires the '
-                f'optional dependency {missing!r}. Install it to use this name.'
-            )
-        # (a2) the module is PRESENT but a cvista shared library it links, shipped
+        # (a1) the module is PRESENT but a cvista shared library it links, shipped
         # in another (optional) tier, is absent -- e.g. a rendering scene-exporter
         # links the io tier's libvtkIO and io is not installed. Name the MISSING
-        # library's tier, which differs from the module's own tier.
-        elif (dep_tier := _missing_lib_tier(exc)) and dep_tier != 'core':
+        # library's tier, which differs from the module's own tier. Checked FIRST:
+        # the loader error names the exact missing cvista lib, an unambiguous
+        # signal, whereas exc.name may arrive bare (e.g. 'vtkIOImport' on abi3)
+        # and be misread as a third-party dependency by the (a2) test below.
+        if (dep_tier := _missing_lib_tier(exc)) and dep_tier != 'core':
             msg = (
                 f'{name!r} lives in {__name__}.{module_name}, which needs a shared '
                 f'library from the cvista-{dep_tier} tier that is not installed. '
                 f'Install it with: pip install cvista[{dep_tier}]  '
                 f'(or cvista[all] for everything).'
+            )
+        # (a2) a THIRD-PARTY import inside the module is unmet -- the pure-Python
+        # helpers (e.g. util.xarray_support) carry optional dependencies. A genuine
+        # third-party miss ("No module named 'xarray'") names no cvista lib, so
+        # (a1) already declined it.
+        elif missing and not missing.startswith(__name__):
+            msg = (
+                f'{name!r} lives in {__name__}.{module_name}, which requires the '
+                f'optional dependency {missing!r}. Install it to use this name.'
             )
         # (b) the hosting module ships in a tier wheel that is not installed.
         elif tier and tier != 'core':
