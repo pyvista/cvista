@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Prove the 3 tier wheels stack: core alone = IO-free offline compute; +io = every
-# reader/writer; +rendering imports (rendering depends on io, installed underneath).
+# reader/writer; +rendering imports. Rendering does NOT hard-require io: step 4
+# proves core rendering works with io absent while the bridge modules that link
+# io raise the install-cvista[io] hint.
 #
 # Env:
 #   WD       tier-wheels dir              (default /tmp/tier-wheels)
@@ -111,4 +113,53 @@ if hard:
     raise SystemExit(1)
 print(f"  flat index exhaustive resolve: {len(_class_index.INDEX) - len(soft)} names [OK]")
 PY
+echo "=== 4) rendering WITHOUT io -> core render OK, bridge modules hint io ==="
+# Optional-io: a fresh venv with core + rendering but NO io. The core renderer
+# must import and instantiate; only the bridge modules that link the io tier
+# (scene import/export, molecule rendering) may fail, and they must fail with
+# the install-cvista[io] hint via the flat namespace, never a bare crash.
+V2=/tmp/venv-noio; rm -rf "$V2"; "$PYBIN" -m venv "$V2"
+"$V2/bin/pip" -q install --no-deps "$CORE" "$REND"
+LD_LIBRARY_PATH="$LDP" "$V2/bin/python" - <<'PY'
+import cvista
+from cvista import _class_index
+# Core rendering: import and instantiate with no io tier present.
+import cvista.vtkRenderingCore  # noqa: F401
+from cvista import vtkPolyDataMapper, vtkRenderer, vtkActor
+print("  core render classes OK without io:",
+      vtkPolyDataMapper().GetClassName(), vtkRenderer().GetClassName(), vtkActor().GetClassName())
+# A bridge module (rendering tier, but links the io tier's libvtkIO) must not
+# import while io is absent.
+try:
+    import cvista.vtkIOExport  # noqa: F401
+    print("  *** cvista.vtkIOExport imported without io tier (unexpected) ***"); raise SystemExit(1)
+except ImportError:
+    print("  cvista.vtkIOExport raises ImportError without io tier [OK]")
+# Flat namespace: every indexed name whose hosting module needs the io tier must
+# raise the install-io hint (the (a2) cross-tier-lib branch), not a bare crash or
+# a wrong-tier hint. Probe the names the index maps to the bridge modules.
+BRIDGE_MODS = {"vtkIOExport", "vtkIOImport", "vtkIOExportGL2PS",
+               "vtkDomainsChemistry", "vtkDomainsChemistryOpenGL2",
+               "vtkRenderingGL2PSOpenGL2"}
+probed = 0
+for _name, _mod in _class_index.INDEX.items():
+    if _mod not in BRIDGE_MODS:
+        continue
+    try:
+        getattr(cvista, _name)
+    except ImportError as e:
+        assert "cvista[io]" in str(e), f"bridge {_name} ({_mod}) missing io hint: {e}"
+        probed += 1
+    else:
+        # A bridge class that happens to be a re-export resolvable from a loaded
+        # module is fine; it just does not exercise the hint.
+        pass
+if probed == 0:
+    print("  *** no bridge name raised the io hint (index/tier mismatch) ***"); raise SystemExit(1)
+print(f"  {probed} bridge name(s) -> install-io hint via flat namespace [OK]")
+# Non-bridge rendering names must still resolve with io absent.
+from cvista import vtkOpenGLRenderer  # noqa: F401
+print("  vtkOpenGLRenderer resolves without io [OK]")
+PY
+
 echo "=== STACKING VALIDATED ==="
