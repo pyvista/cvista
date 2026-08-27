@@ -693,12 +693,41 @@ bool vtkSSAOPass::PostReplaceShaderValues(std::string& vtkNotUsed(vertexShader),
       "  gl_FragData[2] = vec4(normalize(l_ssaoFragNormal), 1.0);\n"
       "}",
       false);
-  }
 
-  vtkShaderProgram::Substitute(fragmentShader, "//VTK::ComputeLighting::Exit",
-    "//VTK::ComputeLighting::Exit\n"
-    "g_dataNormal = -shading_gradient.xyz;",
-    false);
+    // g_dataNormal is the volume's contribution to the SSAO normal G-buffer.
+    // vtkVolumeShaderComposer declares shading_gradient only when the volume
+    // actually shades: the volume property's Shade flag AND a composite-family
+    // blend mode. Emitting this reference unconditionally makes the fragment
+    // shader fail to compile for every other volume ("undefined variable
+    // shading_gradient"), so the volume disappears from the render entirely while
+    // the driver logs one error per frame.
+    //
+    // The condition is read off the generated source rather than re-derived from
+    // the volume property, for two reasons. This module does not depend on
+    // VTK::RenderingVolume, so the blend mode is not reachable here at all. And
+    // the single-volume and multi-volume composers disagree about SLICE_BLEND, so
+    // a second copy of the predicate would be wrong for one of them. Whether the
+    // symbol is declared is the exact question rather than a proxy for it.
+    if (fragmentShader.find("vec4 shading_gradient") != std::string::npos)
+    {
+      vtkShaderProgram::Substitute(fragmentShader, "//VTK::ComputeLighting::Exit",
+        "//VTK::ComputeLighting::Exit\n"
+        "g_dataNormal = -shading_gradient.xyz;",
+        false);
+    }
+    else
+    {
+      // A camera-facing constant. gl_FragData[2] writes normalize() of this, so it
+      // must be non-zero or the normal texture fills with NaN. Such a volume
+      // contributes no data-derived occlusion, which is what the "Shading must be
+      // enabled for volumes to support SSAO" warning in PreRenderProp already
+      // tells the user; the point here is that the program still links.
+      vtkShaderProgram::Substitute(fragmentShader, "//VTK::ComputeLighting::Exit",
+        "//VTK::ComputeLighting::Exit\n"
+        "g_dataNormal = vec3(0.0, 0.0, 1.0);",
+        false);
+    }
+  }
 
   return true;
 }
