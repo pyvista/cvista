@@ -1232,8 +1232,8 @@ PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtk
   // identified as the canonical type for their own name -- so that vtkSkybox(),
   // vtkActor(), vtkPolyDataMapper(), ... return their vtkOpenGL* factory override
   // exactly as stock VTK does. Python-defined subclasses (pytype !=
-  // requestedType) keep their own type. Heap types are refcounted and
-  // PyObject_GC_New borrows a reference, so incref the final type either way.
+  // requestedType) keep their own type. Heap types are refcounted, so incref
+  // the final type either way.
   if (requestedIsWrappedClass && cls->py_type != nullptr)
   {
     pytype = cls->py_type;
@@ -1263,7 +1263,21 @@ PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtk
     pydict = PyDict_New();
   }
 
-  PyVTKObject* self = PyObject_GC_New(PyVTKObject, pytype);
+  // Allocate with PyType_GenericAlloc rather than PyObject_GC_New: a Python
+  // subclass that declares __slots__ has a larger tp_basicsize than
+  // PyVTKObject, and PyObject_GC_New allocates that extra storage without
+  // initializing it.  CPython then Py_XDECREFs whatever the recycled block
+  // happened to hold, both on the first assignment to a slot and again in
+  // clear_slots() during deallocation, which crashes the interpreter.
+  // PyType_GenericAlloc zeroes the whole instance, takes the same single
+  // reference to the type that PyObject_GC_New takes, and GC-tracks the object
+  // itself, so no PyObject_GC_Track() call is needed below.
+  PyVTKObject* self = reinterpret_cast<PyVTKObject*>(PyType_GenericAlloc(pytype, 0));
+  if (self == nullptr)
+  {
+    Py_DECREF(pydict);
+    return nullptr;
+  }
 
   self->vtk_ptr = ptr;
   self->vtk_flags = 0;
@@ -1272,8 +1286,6 @@ PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtk
   self->vtk_buffer = nullptr;
   self->vtk_observers = nullptr;
   self->vtk_weakreflist = nullptr;
-
-  PyObject_GC_Track((PyObject*)self);
 
   // A python object owning a VTK object reference is getting
   // created.  Add the python object's VTK object reference.
