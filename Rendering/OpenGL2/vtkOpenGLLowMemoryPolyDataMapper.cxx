@@ -487,6 +487,47 @@ void vtkOpenGLLowMemoryPolyDataMapper::RenderPieceStart(vtkRenderer* renderer, v
 void vtkOpenGLLowMemoryPolyDataMapper::RenderPieceDraw(vtkRenderer* renderer, vtkActor* actor)
 {
   this->ReadyShaderProgram(renderer);
+
+  // A shader program that failed to build must not be drawn with. On this mapper
+  // the first consequence is a null dereference rather than a bad frame:
+  // ReadyShaderProgram assigns whatever vtkOpenGLShaderCache handed back, and
+  // that is nullptr whenever the program does not compile, link or bind.
+  // SetShaderParameters below already returns quietly on a null program, so the
+  // crash lands one call later, inside the agents:
+  // vtkOpenGLLowMemoryCellTypeAgent::PreDraw sets "enable_lights" on
+  // mapper->ShaderProgram with no check, as does every concrete agent's
+  // PreDrawInternal and the Draw that follows.
+  //
+  // The GL state damage is here too, and it outlives this actor. A failed build
+  // never reaches vtkOpenGLShaderCache's BindShader, so the program left current
+  // belongs to the previous prop, and a draw issued now is issued against that.
+  //
+  // Returning is the whole guard. There is one program for the whole mapper
+  // rather than one per primitive, and this loop keeps no running state that a
+  // later primitive or a later frame depends on: the selection id accounting
+  // (BeginRenderProp, UpdateMaximumPointCellIds) is all done in
+  // RenderPieceStart, so skipping the loop desynchronises nothing.
+  //
+  // No stale-program half is needed either. Both branches of ReadyShaderProgram
+  // assign their result unconditionally, and UpdateShaders clears
+  // ShaderProgramBuilt through GetShader before the rebuild, so a build that
+  // fails after a good frame nulls the program instead of leaving the working
+  // one in place. IsShaderUpToDate returns false immediately on a null program,
+  // so the next render rebuilds from the current sources and one failed build
+  // cannot wedge the mapper.
+  //
+  // The error report is not redundant with the compiler's. vtkShaderProgram
+  // prints the GLSL diagnostic and the numbered source, then returns nullptr and
+  // says nothing more. Without a line from the mapper, a caller looking at a
+  // frame with the actor missing cannot tell a failed build from an empty input.
+  // Raised on every render on purpose: the mapper retries the build every time
+  // through here, so the condition is live rather than historical.
+  if (this->ShaderProgram == nullptr)
+  {
+    vtkErrorMacro("Could not set shader program");
+    return;
+  }
+
   this->SetShaderParameters(renderer, actor);
   for (auto& primitive : this->Primitives)
   {
