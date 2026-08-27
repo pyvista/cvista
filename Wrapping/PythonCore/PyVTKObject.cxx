@@ -1276,6 +1276,16 @@ PyObject* PyVTKObject_FromPointer(PyTypeObject* pytype, PyObject* ghostdict, vtk
   if (self == nullptr)
   {
     Py_DECREF(pydict);
+    // Release the type reference taken above.  Both branches of the #if that
+    // took it are mirrored here, because only one of them is conditional.
+#if defined(Py_LIMITED_API)
+    Py_DECREF(reinterpret_cast<PyObject*>(pytype));
+#else
+    if ((PyType_GetFlags(pytype) & Py_TPFLAGS_HEAPTYPE) != 0)
+    {
+      Py_DECREF(reinterpret_cast<PyObject*>(pytype));
+    }
+#endif
     return nullptr;
   }
 
