@@ -13,6 +13,7 @@
 #include "vtkObjectFactory.h"
 #include "vtkProp.h"
 #include "vtkRange.h"
+#include "vtkRenderPass.h"
 #include "vtkRenderWindow.h"
 #include "vtkRenderer.h"
 #include "vtkRendererCollection.h"
@@ -270,6 +271,12 @@ vtkHardwareSelector::vtkHardwareSelector()
   }
   this->CurrentPass = -1;
   this->ProcessID = -1;
+  // Assigned per prop by Render(). Initialized here so that a BeginRenderProp()
+  // reaching a mapper outside that loop reads a defined value rather than
+  // indeterminate memory: vtkOpenGLHardwareSelector::BeginRenderProp() compares
+  // it against the 2^24-2 prop limit, so an uninitialized value reports a
+  // bogus "Too many props" error for a scene holding a single prop.
+  this->PropID = -1;
   this->PropColorValue[0] = this->PropColorValue[1] = this->PropColorValue[2] = 0;
   this->InPropRender = 0;
   this->UseProcessIdFromData = false;
@@ -368,6 +375,29 @@ bool vtkHardwareSelector::CaptureBuffers()
   this->Renderer->SetPreserveDepthBuffer(0);
   this->Renderer->SetPreserveColorBuffer(0);
 
+  // Suspend the renderer's custom render-pass chain for the capture, the same
+  // way vtkOpenGLHardwareSelector::BeginSelection() suspends multisampling: a
+  // pass chain is display-only compositing, and an id capture cannot survive it.
+  //
+  // A chain renders the props itself, so vtkOpenGLRenderer::UpdateGeometry() --
+  // the only place the selector is handed the props and assigns each one its id
+  // (vtkHardwareSelector::Render) -- is bypassed entirely while a pass is set.
+  // The capture then reads back a buffer no id was ever written to. Even a chain
+  // that did route the props through the selector would defeat it: ids are exact
+  // integers encoded in the color channels, so any pass that resamples or blends
+  // (supersampling, tone mapping, screen-space effects) destroys them, and one
+  // that composites into its own framebuffer leaves the window framebuffer the
+  // capture reads from untouched.
+  //
+  // Suspending here rather than inside the renderer also covers the priming
+  // render vtkOpenGLHardwareSelector::BeginSelection() performs for point
+  // selection, which runs before the selector is attached to the renderer.
+  vtkSmartPointer<vtkRenderPass> originalPass = this->Renderer->GetPass();
+  if (originalPass)
+  {
+    this->Renderer->SetPass(nullptr);
+  }
+
   this->BeginSelection();
 
   // When there are no cell grids, save time by avoiding the cell grid passes.
@@ -412,6 +442,11 @@ bool vtkHardwareSelector::CaptureBuffers()
     }
   }
   this->EndSelection();
+
+  if (originalPass)
+  {
+    this->Renderer->SetPass(originalPass);
+  }
 
   this->Renderer->SetPreserveDepthBuffer(preserveDepth);
   this->Renderer->SetPreserveColorBuffer(preserveColor);
