@@ -303,6 +303,17 @@ void vtkOpenGLLowMemoryBatchedPolyDataMapper::RenderPieceDraw(
   vtkRenderer* renderer, vtkActor* actor)
 {
   this->ReadyShaderProgram(renderer);
+
+  // Same guard the base class applies, repeated because this override never
+  // calls it. ReadyShaderProgram assigns nullptr whenever the program does not
+  // compile, link or bind, and the IsUniformUsed call below dereferences it
+  // without a check, so a failed build faults here rather than rendering badly.
+  if (this->ShaderProgram == nullptr)
+  {
+    vtkErrorMacro("Could not set shader program");
+    return;
+  }
+
   this->SetShaderParameters(renderer, actor);
   this->OverideColorUsed = this->ShaderProgram->IsUniformUsed("overridesColor");
 
