@@ -1052,6 +1052,20 @@ bool vtkOpenGLLowMemoryPolyDataMapper::IsShaderUpToDate(vtkRenderer* renderer, v
   {
     return false;
   }
+  // has the actor's shader property changed? UpdateShaders reads whole-shader
+  // source and every user replacement out of it, so a replacement added, changed
+  // or cleared after the first render only reaches the program if this rebuilds.
+  // vtkOpenGLPolyDataMapper::GetNeedToRebuildShaders has always tested this;
+  // without it here, the mapper ignores vtkShaderProperty for the life of the
+  // actor with no error and no pixel change.
+  if (auto* shaderProperty = actor->GetShaderProperty())
+  {
+    if (this->ShaderBuildTimeStamp < shaderProperty->GetShaderMTime())
+    {
+      vtkDebugMacro(<< "ShaderProperty is outdated");
+      return false;
+    }
+  }
   // have the clipping planes changed?
   if (this->ClippingPlanes && this->ClippingPlanes->GetMTime() > this->ShaderBuildTimeStamp)
   {
