@@ -412,7 +412,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkGenericDataObjectWriter
   vtkGenericEdgeTable
   vtkGenericImageInterpolator
-  vtkGenericOpenGLRenderWindow
   vtkGenericVertexAttributeMapping
   vtkGeometricErrorMetric
   vtkGlobFileNames
@@ -545,7 +544,6 @@ set(CVISTA_NOWRAP_CLASSES
   vtkImageSobel2D
   vtkImageSobel3D
   vtkImageSSIM
-  vtkImageStencilToImage
   vtkImageThresholdConnectivity
   vtkImageToImageStencil
   vtkImageToPolyDataFilter
