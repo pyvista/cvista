@@ -26,14 +26,14 @@ set(VTK_DEBUG_LEAKS OFF CACHE BOOL "")
 # longer build (~1.5 hrs total). Worth it for production wheels.
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "" FORCE)
 
-# SMP (shared-memory parallelism) backend stays at STDThread (VTK's default
-# in recent wheels). TBB integration was attempted and yielded undefined-
-# symbol ImportErrors at .pyi-generation time: Viskores' libviskores_cont
-# expects oneTBB 2022.x symbols (`wait_tree_vertex_interface`) but at runtime
-# the bundled OSPRay/oneTBB resolution picked an older libtbb. Resolving
-# this would need either patching Viskores' TBB version or bundling a
-# single libtbb that both VTK and OSPRay use. Tracked in #4; postmortem in
-# docs/TBB_INTEGRATION.md.
+# SMP (shared-memory parallelism) backend: set in minimal.cmake (compile default
+# STDThread; the shipped wheels opt into TBB via CVISTA_SMP_BACKEND=TBB). The
+# earlier TBB-abandoned note is obsolete:
+# that failure was Viskores' libviskores_cont needing a oneTBB 2022.x symbol
+# while OSPRay pulled an older libtbb. The trimmed cvista build ships NEITHER
+# module (RenderingRayTracing off; Viskores not in PyVista's closure), so there
+# is one consistent libtbb and cvista references only oneTBB's stable r1 ABI.
+# See minimal.cmake and ci/cibw for the per-platform TBB provisioning.
 
 # Production-rendering performance flags.
 # See docs/BUILD_FLAGS.md for the rationale and measured impact of each flag.

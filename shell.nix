@@ -44,7 +44,9 @@ pkgs.mkShell {
 
   shellHook = ''
     export CMAKE_PREFIX_PATH=${pkgs.lib.makeSearchPath "lib/cmake" [
-      pkgs.tbb
+      # TBB's cmake package (TBBConfig.cmake) lives in the dev output, not the
+      # runtime one; find_package(TBB) for the (default) TBB SMP backend needs it.
+      pkgs.tbb.dev
       pkgs.xorg.libX11
       pkgs.xorg.libXext
       pkgs.xorg.libXrandr
