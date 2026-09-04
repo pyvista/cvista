@@ -191,8 +191,17 @@ jobs:
         include:
           - os: macos-14
             runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+            # ThinLTO is cheap and this leg has a cross-run ccache; keep it on.
+            lto: "1"
           - os: windows-latest
             runner: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+            # MSVC /GL+/LTCG whole-program codegen at link is the dominant cost of
+            # the from-scratch Windows build (~50-60 min on the 4-core runner) and
+            # no compiler cache can help a link-time pass. This leg only proves the
+            # wheel BUILDS + imports on MSVC; it ships nothing and feeds no parity
+            # gate, so drop LTO here. The release path (wheels-cibuildwheel.yml)
+            # leaves it on, so shipped wheels stay fully optimized.
+            lto: "0"
     # MSVC/AppleClang full VTK compile; cap below the 360-min default.
     timeout-minutes: 90
     steps:
@@ -220,9 +229,16 @@ jobs:
           arch: x64
       - name: Build wheel + smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
-        # No env here: per-OS config (archs, CVISTA_CMAKE_INIT, ccache launcher,
-        # test-command) is all in pyproject [tool.cibuildwheel.<os>]. The shipped
-        # macOS/Windows wheels stay fully optimized (no CVISTA_LTO=0 override).
+        # Per-OS config (archs, CVISTA_CMAKE_INIT, ccache launcher, test-command)
+        # lives in pyproject [tool.cibuildwheel.<os>]. CVISTA_LTO is passed as a
+        # plain step env var rather than via CIBW_ENVIRONMENT on purpose: the
+        # macOS/Windows builds run outside a container, so the build subprocess
+        # inherits this environment (cibuildwheel seeds it from os.environ) and
+        # cmake reads $ENV{CVISTA_LTO}. CIBW_ENVIRONMENT would instead REPLACE the
+        # pyproject [tool.cibuildwheel.<os>.environment] table (it does not merge),
+        # dropping CVISTA_CMAKE_INIT/CVISTA_FORCE_MSVC and breaking the build.
+        env:
+          CVISTA_LTO: ${{ matrix.lto }}
       - uses: actions/upload-artifact@v4
         with:
           name: cvista-wheels-${{ matrix.os }}
