@@ -31,10 +31,9 @@ import pytest
 
 from cvista.util.numpy_support import vtk_to_numpy
 from cvista.vtkCommonCore import vtkFloatArray, vtkUnsignedCharArray
-from cvista.vtkCommonDataModel import vtkImageData
+from cvista.vtkCommonDataModel import vtkImageData, vtkPiecewiseFunction
 from cvista.vtkRenderingCore import (
     vtkColorTransferFunction,
-    vtkPiecewiseFunction,
     vtkRenderWindow,
     vtkVolume,
     vtkVolumeProperty,
