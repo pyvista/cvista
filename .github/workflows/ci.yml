@@ -193,6 +193,8 @@ jobs:
             runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
             # ThinLTO is cheap and this leg has a cross-run ccache; keep it on.
             lto: "1"
+            # macOS keeps its ccache launcher from pyproject; nothing extra here.
+            cc_launcher: ""
           - os: windows-latest
             runner: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
             # MSVC /GL+/LTCG whole-program codegen at link is the dominant cost of
@@ -202,8 +204,21 @@ jobs:
             # gate, so drop LTO here. The release path (wheels-cibuildwheel.yml)
             # leaves it on, so shipped wheels stay fully optimized.
             lto: "0"
+            # With LTO off the per-TU compile dominates. Windows is the only build
+            # leg without a cross-run compiler cache; sccache (MSVC's ccache) makes
+            # a PR that touches few files recompile only those, matching the
+            # cold-approximately-warm design the ccache legs already have.
+            cc_launcher: "sccache"
     # MSVC/AppleClang full VTK compile; cap below the 360-min default.
     timeout-minutes: 90
+    # SCCACHE_DIR is read by the Windows build (below) and by the cache step;
+    # it is a harmless unused var on macOS (that leg uses ccache from pyproject).
+    # Local-disk backend (no SCCACHE_GHA_ENABLED) so nothing depends on the GHA
+    # cache tokens reaching the cibuildwheel build subprocess; actions/cache
+    # persists the dir across runs, mirroring the ccache legs.
+    env:
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: "2G"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -227,6 +242,19 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      # Install the sccache binary only (no server started, no GHA backend), so
+      # the build subprocess starts a disk-backed server from the env below.
+      - name: Install sccache (Windows)
+        if: runner.os == 'Windows'
+        run: choco install sccache -y --no-progress
+        shell: pwsh
+      - name: Restore sccache (Windows, cross-run)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: cvista-sccache-windows-${{ github.sha }}
+          restore-keys: cvista-sccache-windows-
       - name: Build wheel + smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         # Per-OS config (archs, CVISTA_CMAKE_INIT, ccache launcher, test-command)
@@ -239,6 +267,16 @@ jobs:
         # dropping CVISTA_CMAKE_INIT/CVISTA_FORCE_MSVC and breaking the build.
         env:
           CVISTA_LTO: ${{ matrix.lto }}
+          # sccache on Windows only (empty elsewhere: cmake ignores an empty
+          # launcher, and macOS's pyproject ccache launcher wins over the empty).
+          # The build runs outside a container and inherits this env; the backend
+          # forwards CMAKE_*_COMPILER_LAUNCHER to cmake exactly as it does ccache.
+          CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.cc_launcher }}
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.cc_launcher }}
+      - name: sccache stats (Windows)
+        if: runner.os == 'Windows'
+        run: sccache --show-stats
+        shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
           name: cvista-wheels-${{ matrix.os }}
