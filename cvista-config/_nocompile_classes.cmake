@@ -343,7 +343,6 @@ set(CVISTA_NOCOMPILE_CLASSES
   vtkImageSobel2D
   vtkImageSobel3D
   vtkImageSSIM
-  vtkImageStencilToImage
   vtkImageThresholdConnectivity
   vtkImageToImageStencil
   vtkImageToPolyDataFilter
