@@ -295,6 +295,10 @@ private:
 
   vtkPythonObjectMap* ObjectMap;
   vtkPythonGhostMap* GhostMap;
+  // Ghosts of vtkObjectBase instances that are not vtkObjects. These have no
+  // DeleteEvent observer to evict them, so RemoveObjectFromMap sweeps this
+  // map instead of visiting every ghost in GhostMap.
+  vtkPythonGhostMap* UnobservedGhostMap;
   vtkPythonClassMap* ClassMap;
   vtkPythonClassNameMap* ClassNameMap;
   vtkPythonSpecialTypeMap* SpecialTypeMap;
