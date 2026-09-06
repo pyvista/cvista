@@ -30,6 +30,57 @@ SUMMARY = {
     "io": "cvista IO tier: every VTK reader/writer (XML/legacy/PLY/image/HDF/Exodus/...). Requires cvista.",
 }
 
+# The long description shown on each PyPI project page. Without it PyPI reports
+# "The author of this package has not provided a project description".
+_INTRO = (
+    "cvista is a fast, lean fork of [VTK](https://gitlab.kitware.com/vtk/vtk) 9.6.2, "
+    "maintained by the [PyVista](https://github.com/pyvista) community as a drop-in "
+    "graphics layer for PyVista. It is byte-for-byte identical to stock VTK 9.6.2 by "
+    "default, BSD-3 licensed, and developed in the open at "
+    "[pyvista/cvista](https://github.com/pyvista/cvista). It is not affiliated with Kitware.\n\n"
+    "cvista is published as three tiers that share the `cvista` import package:\n\n"
+    "- `cvista` core: VTK Common/Filters/Imaging compute kernels (rendering-free, IO-free)\n"
+    "- `cvista-rendering`: the OpenGL2/FreeType/Charts/Views rendering stack\n"
+    "- `cvista-io`: every VTK reader and writer\n"
+)
+_LINKS = (
+    "## Links\n\n"
+    "- Source and issues: https://github.com/pyvista/cvista\n"
+    "- PyVista: https://github.com/pyvista/pyvista\n"
+)
+_TIER_BODY = {
+    "core": (
+        "## This package: cvista\n\n"
+        "The base tier. It provides VTK's Common, Filters, and Imaging modules: the data "
+        "model and compute kernels, with no rendering and no data IO. Install it alone for "
+        "offline geometry and array processing, or opt into the other tiers with the "
+        "`rendering`, `io`, and `all` extras.\n\n"
+        "```\npip install cvista            # core only\n"
+        "pip install cvista[rendering] # + rendering tier\n"
+        "pip install cvista[io]        # + data IO tier\n"
+        "pip install cvista[all]       # everything\n```\n"
+    ),
+    "rendering": (
+        "## This package: cvista-rendering\n\n"
+        "Adds VTK's rendering stack (OpenGL2, FreeType, Charts, Views) on top of the cvista "
+        "core, and requires `cvista`. The bridge modules that also need data IO (scene "
+        "import/export, molecule rendering) are optional: install `cvista-rendering[io]` to "
+        "enable them, otherwise those names raise an install-io error while the rest of the "
+        "renderer works.\n\n"
+        "```\npip install cvista-rendering\npip install cvista-rendering[io]  # + IO bridge modules\n```\n"
+    ),
+    "io": (
+        "## This package: cvista-io\n\n"
+        "Adds VTK's full set of readers and writers (XML, legacy, PLY, image formats, HDF, "
+        "Exodus, and more) on top of the cvista core, and requires `cvista`.\n\n"
+        "```\npip install cvista-io\n```\n"
+    ),
+}
+
+
+def description(tier, dist):
+    return f"# {dist.replace('_', '-')}\n\n{_INTRO}\n{_TIER_BODY[tier]}\n{_LINKS}"
+
 # Requires-Python must be derived from the wheel's own python tag, NOT hardcoded:
 # pip filters candidate FILES on their per-file requires-python (PEP 503
 # data-requires-python), so stamping the abi3 floor (>=3.12) onto the legacy
@@ -41,12 +92,15 @@ if not _m:
     sys.exit(f"cannot derive Requires-Python floor from wheel tag {PYTAG!r}")
 REQUIRES_PYTHON = f">={_m.group(1)}.{_m.group(2)}"
 
-def metadata(dist, reqs):
+def metadata(tier, dist, reqs):
     lines = [
         "Metadata-Version: 2.1",
         f"Name: {dist.replace('_','-')}",
         f"Version: {VER}",
-        f"Summary: {SUMMARY[[k for k,v in TIERS.items() if v[0]==dist][0]]}",
+        f"Summary: {SUMMARY[tier]}",
+        "Description-Content-Type: text/markdown",
+        "Home-page: https://github.com/pyvista/cvista",
+        "License: BSD-3-Clause",
         f"Requires-Python: {REQUIRES_PYTHON}",
     ]
     for r in reqs:
@@ -69,7 +123,8 @@ def metadata(dist, reqs):
     if dist == "cvista_rendering":
         lines.append("Provides-Extra: io")
         lines.append(f'Requires-Dist: cvista-io=={VER}; extra == "io"')
-    return "\n".join(lines) + "\n"
+    # Headers, one blank line, then the long-description payload (Metadata 2.1).
+    return "\n".join(lines) + "\n\n" + description(tier, dist) + "\n"
 
 WHEEL = (f"Wheel-Version: 1.0\nGenerator: cvista-partition\nRoot-Is-Purelib: false\n"
          f"Tag: {PYTAG}\n")
@@ -93,7 +148,7 @@ def main(srcroot, outdir):
             else:
                 shutil.copy2(item, dst)
         di = stage/f"{dist}-{VER}.dist-info"; di.mkdir()
-        (di/"METADATA").write_text(metadata(dist, reqs))
+        (di/"METADATA").write_text(metadata(tier, dist, reqs))
         (di/"WHEEL").write_text(WHEEL)
         (di/"top_level.txt").write_text("cvista\n")
         # pack (regenerates RECORD)
