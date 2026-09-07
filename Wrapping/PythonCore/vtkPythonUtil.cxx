@@ -187,8 +187,11 @@ void vtkPythonObjectMap::remove(vtkObjectBase* key)
 // references to.  Python keeps the python 'dict' for VTK objects
 // even when they pass leave the python realm, so that if those
 // VTK objects come back, their 'dict' can be restored to them.
-// Periodically the weak pointers are checked and the dicts of
-// VTK objects that have been deleted are tossed away.
+// The ghost of a vtkObject is tossed away by a DeleteEvent observer
+// when the vtkObject is deleted.  Other vtkObjectBase subclasses have
+// no DeleteEvent, so their ghosts go into a separate map whose weak
+// pointers are checked periodically to toss away the dicts of VTK
+// objects that have been deleted.
 class vtkPythonGhostMap
   : public std::unordered_map<vtkObjectBase*, PyVTKObjectGhost, vtkPythonPointerHash>
 {
@@ -276,6 +279,7 @@ vtkPythonUtil::vtkPythonUtil()
 {
   this->ObjectMap = new vtkPythonObjectMap;
   this->GhostMap = new vtkPythonGhostMap;
+  this->UnobservedGhostMap = new vtkPythonGhostMap;
   this->ClassMap = new vtkPythonClassMap;
   this->ClassNameMap = new vtkPythonClassNameMap;
   this->SpecialTypeMap = new vtkPythonSpecialTypeMap;
@@ -290,6 +294,7 @@ vtkPythonUtil::~vtkPythonUtil()
 {
   delete this->ObjectMap;
   delete this->GhostMap;
+  delete this->UnobservedGhostMap;
   delete this->ClassMap;
   delete this->ClassNameMap;
   delete this->SpecialTypeMap;
@@ -502,15 +507,17 @@ void vtkPythonUtil::RemoveObjectFromMap(PyObject* obj)
       // List of attrs to be deleted
       std::vector<PyObject*> delList;
 
-      // Erase ghosts of VTK objects that have been deleted
-      vtkPythonGhostMap::iterator i = vtkPythonMap->GhostMap->begin();
-      while (i != vtkPythonMap->GhostMap->end())
+      // Erase ghosts of VTK objects that have been deleted.  Only the ghosts
+      // without a DeleteEvent observer have to be checked here, the others
+      // are erased by GhostDeleteCallback.
+      vtkPythonGhostMap::iterator i = vtkPythonMap->UnobservedGhostMap->begin();
+      while (i != vtkPythonMap->UnobservedGhostMap->end())
       {
         if (!i->second.vtk_ptr.GetPointer())
         {
           delList.push_back((PyObject*)i->second.vtk_class);
           delList.push_back(i->second.vtk_dict);
-          vtkPythonMap->GhostMap->erase(i++);
+          vtkPythonMap->UnobservedGhostMap->erase(i++);
         }
         else
         {
@@ -518,17 +525,21 @@ void vtkPythonUtil::RemoveObjectFromMap(PyObject* obj)
         }
       }
 
+      // AddObserver only exists on vtkObject, so the ghosts of other
+      // vtkObjectBase subclasses go into the map that is swept above.
+      vtkObject* vobj = vtkObject::SafeDownCast(pobj->vtk_ptr);
+      vtkPythonGhostMap* ghosts =
+        (vobj ? vtkPythonMap->GhostMap : vtkPythonMap->UnobservedGhostMap);
+
       // Add this new ghost to the map
-      PyVTKObjectGhost& g = (*vtkPythonMap->GhostMap)[pobj->vtk_ptr];
+      PyVTKObjectGhost& g = (*ghosts)[pobj->vtk_ptr];
       g.vtk_ptr = wptr;
       g.vtk_class = Py_TYPE(reinterpret_cast<PyObject*>(pobj));
       g.vtk_dict = pobj->vtk_dict;
       Py_INCREF(reinterpret_cast<PyObject*>(g.vtk_class));
       Py_INCREF(g.vtk_dict);
 
-      // AddObserver only exists on vtkObject, so for non-vtkObject vtkObjectBase
-      // ghosts we fall back to the lazy sweep above.
-      if (vtkObject* vobj = vtkObject::SafeDownCast(pobj->vtk_ptr))
+      if (vobj)
       {
         vtkNew<vtkCallbackCommand> cmd;
         cmd->SetCallback(&vtkPythonUtil::GhostDeleteCallback);
@@ -570,8 +581,14 @@ PyObject* vtkPythonUtil::FindObject(vtkObjectBase* ptr)
   }
 
   // search weak list for object, resurrect if it is there
-  vtkPythonGhostMap::iterator j = vtkPythonMap->GhostMap->find(ptr);
-  if (j != vtkPythonMap->GhostMap->end())
+  vtkPythonGhostMap* ghosts = vtkPythonMap->GhostMap;
+  vtkPythonGhostMap::iterator j = ghosts->find(ptr);
+  if (j == ghosts->end())
+  {
+    ghosts = vtkPythonMap->UnobservedGhostMap;
+    j = ghosts->find(ptr);
+  }
+  if (j != ghosts->end())
   {
     // Resurrecting the object and releasing the ghost's references can run
     // arbitrary Python code (resurrection allocates, which can trigger
@@ -582,7 +599,7 @@ PyObject* vtkPythonUtil::FindObject(vtkObjectBase* ptr)
     // erase the node before any of that can happen; the plain copy moves
     // the class and dict references without touching their refcounts.
     PyVTKObjectGhost ghost = j->second;
-    vtkPythonMap->GhostMap->erase(j);
+    ghosts->erase(j);
     if (ghost.vtk_ptr.GetPointer())
     {
       // Detach the delete observer before we consume the ghost, otherwise it
