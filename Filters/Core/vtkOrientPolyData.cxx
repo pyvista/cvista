@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkOrientPolyData.h"
 
-#include "cvistaFastOrient.h"      // cvista opt-in parallel orientation pass
-#include "vtkCVISTASMPDefaults.h"  // cvista::FastModeEnabled
+#include "cvistaCellConnectivity.h"
+#include "cvistaFastOrient.h"     // cvista opt-in parallel orientation pass
+#include "vtkCVISTASMPDefaults.h" // cvista::FastModeEnabled
 
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
@@ -53,81 +54,118 @@ void vtkOrientPolyData::PrintSelf(ostream& os, vtkIndent indent)
 static constexpr char VTK_CELL_NOT_VISITED = 0;
 static constexpr char VTK_CELL_VISITED = 1;
 
+// Resolve connectivity once per update, including on meshes with many separate
+// components. Links remain valid under reversals; polygon values are read live.
+struct vtkOrientPolyData::TraversalConnectivity
+{
+  const cvistaCellConnectivity Polys;
+  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors EdgeNeighbors;
+
+  TraversalConnectivity(vtkPolyData* input, vtkPolyData* output)
+    : Polys(input->GetNumberOfCells() == input->GetNumberOfPolys() ? output->GetPolys() : nullptr)
+    , EdgeNeighbors(input)
+  {
+  }
+};
+
 //-----------------------------------------------------------------------------
 //  Propagate wave of consistently ordered polygons.
-void vtkOrientPolyData::TraverseAndOrder(vtkPolyData* input, vtkPolyData* output, vtkIdList* wave,
-  vtkIdList* wave2, vtkIdList* cellPointIds, vtkIdList* cellIds, vtkIdList* neighborPointIds,
-  std::vector<char>& visited, vtkIdType& numFlips)
+void vtkOrientPolyData::TraverseAndOrder(const TraversalConnectivity& connectivity,
+  vtkPolyData* output, vtkIdList* wave, vtkIdList* wave2, vtkIdList* cellPointIds,
+  vtkIdList* cellIds, vtkIdList* neighborPointIds, std::vector<char>& visited, vtkIdType& numFlips)
 {
   vtkIdType i, k;
   int j, l, j1;
   vtkIdType numIds, cellId;
-  const vtkIdType* pts;
-  const vtkIdType* neiPts;
-  vtkIdType npts;
-  vtkIdType numNeiPts;
   vtkIdType neighbor;
 
-  // Resolve the input's typed cell links once so the per-edge neighbor lookup
-  // below is inlined here (no cross-.so PLT hop into libvtkCommonDataModel and
-  // no per-call link re-fetch). Bit-for-bit identical to
-  // input->GetCellEdgeNeighbors(); see vtkPolyDataEdgeNeighbors.h.
-  const vtkPolyDataEdgeNeighbors::FastEdgeNeighbors edgeNeighbors(input);
+  const auto& edgeNeighbors = connectivity.EdgeNeighbors;
 
-  // propagate wave until nothing left in wave
-  while ((numIds = wave->GetNumberOfIds()) > 0)
+  // Keep a single traversal for native and general access. The native view
+  // reads output connectivity, so every later visit observes earlier flips.
+  auto traverse = [&](auto getCellPoints)
   {
-    for (i = 0; i < numIds; i++)
+    // propagate wave until nothing left in wave
+    while ((numIds = wave->GetNumberOfIds()) > 0)
     {
-      cellId = wave->GetId(i);
-
-      output->GetCellPoints(cellId, npts, pts, cellPointIds);
-      if (npts < 3)
+      for (i = 0; i < numIds; i++)
       {
-        continue;
-      }
+        cellId = wave->GetId(i);
 
-      for (j = 0, j1 = 1; j < npts; ++j, (j1 = (++j1 < npts) ? j1 : 0)) // for each edge neighbor
-      {
-        edgeNeighbors.Get(cellId, pts[j], pts[j1], cellIds);
-
-        //  Check the direction of the neighbor ordering.  Should be
-        //  consistent with us (i.e., if we are n1->n2, neighbor should be n2->n1).
-        if (cellIds->GetNumberOfIds() == 1 || this->NonManifoldTraversal)
+        const auto [npts, pts] = getCellPoints(cellId, cellPointIds);
+        if (npts < 3)
         {
-          for (k = 0; k < cellIds->GetNumberOfIds(); k++)
+          continue;
+        }
+
+        for (j = 0, j1 = 1; j < npts; ++j, (j1 = (++j1 < npts) ? j1 : 0)) // for each edge neighbor
+        {
+          edgeNeighbors.Get(cellId, pts(j), pts(j1), cellIds);
+
+          //  Check the direction of the neighbor ordering.  Should be
+          //  consistent with us (i.e., if we are n1->n2, neighbor should be n2->n1).
+          if (cellIds->GetNumberOfIds() == 1 || this->NonManifoldTraversal)
           {
-            neighbor = cellIds->GetId(k);
-            if (visited[neighbor] == VTK_CELL_NOT_VISITED)
+            for (k = 0; k < cellIds->GetNumberOfIds(); k++)
             {
-              output->GetCellPoints(neighbor, numNeiPts, neiPts, neighborPointIds);
-
-              for (l = 0; l < numNeiPts; l++)
+              neighbor = cellIds->GetId(k);
+              if (visited[neighbor] == VTK_CELL_NOT_VISITED)
               {
-                if (neiPts[l] == pts[j1])
+                const auto [numNeiPts, neiPts] = getCellPoints(neighbor, neighborPointIds);
+
+                for (l = 0; l < numNeiPts; l++)
                 {
-                  break;
+                  if (neiPts(l) == pts(j1))
+                  {
+                    break;
+                  }
                 }
-              }
 
-              //  Have to reverse ordering if neighbor not consistent
-              if (neiPts[(l + 1) % numNeiPts] != pts[j])
-              {
-                numFlips++;
-                output->ReverseCell(neighbor);
-              }
-              visited[neighbor] = VTK_CELL_VISITED;
-              wave2->InsertNextId(neighbor);
-            } // if cell not visited
-          } // for each edge neighbor
-        } // for manifold or non-manifold traversal allowed
-      } // for all edges of this polygon
-    } // for all cells in wave
+                //  Have to reverse ordering if neighbor not consistent
+                if (neiPts((l + 1) % numNeiPts) != pts(j))
+                {
+                  numFlips++;
+                  output->ReverseCell(neighbor);
+                }
+                visited[neighbor] = VTK_CELL_VISITED;
+                wave2->InsertNextId(neighbor);
+              } // if cell not visited
+            } // for each edge neighbor
+          } // for manifold or non-manifold traversal allowed
+        } // for all edges of this polygon
+      } // for all cells in wave
 
-    // swap wave and proceed with propagation
-    std::swap(wave, wave2);
-    wave2->Reset();
-  } // while wave still propagating
+      // swap wave and proceed with propagation
+      std::swap(wave, wave2);
+      wave2->Reset();
+    } // while wave still propagating
+  };
+
+  // Output cells were rebuilt from the copied polygons. On polys-only inputs,
+  // their global ids are local polygon ids. ReverseCell edits values in place
+  // without reallocating the native connectivity buffers.
+  const auto& polys = connectivity.Polys;
+  if (polys.IsValid())
+  {
+    traverse(
+      [&](vtkIdType id, vtkIdList*)
+      {
+        const auto begin = polys.CellBegin(id);
+        return std::make_pair(
+          polys.CellSize(id), [&, begin](vtkIdType i) { return polys[begin + i]; });
+      });
+  }
+  else
+  {
+    traverse(
+      [&](vtkIdType id, vtkIdList* scratch)
+      {
+        vtkIdType size;
+        const vtkIdType* points;
+        output->GetCellPoints(id, size, points, scratch);
+        return std::make_pair(size, [points](vtkIdType i) { return points[i]; });
+      });
+  }
 }
 
 //----------------------------------------------------------------------------
@@ -223,6 +261,7 @@ int vtkOrientPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   //  with its (already checked) neighbors.
   ///////////////////////////////////////////////////////////////////
   vtkIdType numFlips = 0;
+  const TraversalConnectivity connectivity(input, output);
   // The visited array keeps track of which cells have been visited.
   std::vector<char> visited;
   visited.resize(numberOfCells, VTK_CELL_NOT_VISITED);
@@ -410,8 +449,8 @@ int vtkOrientPolyData::RequestData(vtkInformation* vtkNotUsed(request),
         }
         wave->InsertNextId(bestCellID);
         visited[bestCellID] = VTK_CELL_VISITED;
-        this->TraverseAndOrder(
-          input, output, wave, wave2, cellPointIds, cellIds, neighborPointIds, visited, numFlips);
+        this->TraverseAndOrder(connectivity, output, wave, wave2, cellPointIds, cellIds,
+          neighborPointIds, visited, numFlips);
         wave->Reset();
         wave2->Reset();
       } // if found best cell
@@ -437,8 +476,8 @@ int vtkOrientPolyData::RequestData(vtkInformation* vtkNotUsed(request),
         }
         wave->InsertNextId(cellId);
         visited[cellId] = VTK_CELL_VISITED;
-        this->TraverseAndOrder(
-          input, output, wave, wave2, cellPointIds, cellIds, neighborPointIds, visited, numFlips);
+        this->TraverseAndOrder(connectivity, output, wave, wave2, cellPointIds, cellIds,
+          neighborPointIds, visited, numFlips);
       }
       wave->Reset();
       wave2->Reset();
