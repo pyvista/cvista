@@ -31,7 +31,7 @@ import compare as _compare  # noqa: E402
 # (same points/point-data + same triangle multiset). The assertion below thus
 # checks thread-count invariance of the MESH, not the byte layout.
 THREADED_OPS = [
-    "warp", "warpvector", "normals", "elevation", "cutter_linear", "contour_linear",
+    "warp", "warpvector", "normals", "normals_storage", "elevation", "cutter_linear", "contour_linear",
     "threshold", "cell2point",
 ]
 
