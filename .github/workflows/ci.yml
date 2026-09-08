@@ -138,7 +138,12 @@ jobs:
           #                   (OrderPoints/ParametricCoords) collide under batching.
           #                   Re-enable with excludes in the 9.7 lever-hardening pass
           #                   (cvista-config/refork/07). Byte-identical either way.
-          CIBW_ENVIRONMENT: CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=0
+          # Pass profile flags through without replacing the Linux environment
+          # table, which supplies the ccache directory and compiler launchers.
+          CVISTA_LTO: "0"
+          CVISTA_GATE_O2: "1"
+          CVISTA_SOURCE_UNITY: "0"
+          CIBW_ENVIRONMENT_PASS_LINUX: CVISTA_LTO CVISTA_GATE_O2 CVISTA_SOURCE_UNITY
           # Mount the restored host ccache dir into the build container so ccache
           # actually reads/writes the persisted seed (CCACHE_DIR=/ccache is set in
           # pyproject [tool.cibuildwheel.linux.environment]). Without this mount
@@ -595,7 +600,8 @@ jobs:
           # Ship config: CVISTA_LTO + CVISTA_GATE_O2 left UNSET => -flto=auto + -O3
           # On the 9.7 base CVISTA_SOURCE_UNITY is OFF (linear-cells anon-symbol collision;
           # objects). This is byte-for-byte the wheels-cibuildwheel.yml config.
-          CIBW_ENVIRONMENT: CVISTA_SOURCE_UNITY=0
+          CVISTA_SOURCE_UNITY: "0"
+          CIBW_ENVIRONMENT_PASS_LINUX: CVISTA_SOURCE_UNITY
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-lto:/ccache"
       - uses: actions/upload-artifact@v4
         with:
@@ -718,9 +724,12 @@ jobs:
           # init-cache) so this validates exactly what release-tiers.yml ships.
           CIBW_ARCHS_LINUX: aarch64
           CIBW_MANYLINUX_AARCH64_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
-          CIBW_ENVIRONMENT: >-
-            CVISTA_LTO=0 CVISTA_GATE_O2=1 CVISTA_SOURCE_UNITY=0
-            CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
+          CVISTA_LTO: "0"
+          CVISTA_GATE_O2: "1"
+          CVISTA_SOURCE_UNITY: "0"
+          CVISTA_CMAKE_INIT: ci/cmake/linux-tiered.cmake
+          CIBW_ENVIRONMENT_PASS_LINUX: >-
+            CVISTA_LTO CVISTA_GATE_O2 CVISTA_SOURCE_UNITY CVISTA_CMAKE_INIT
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --strip --plat manylinux_2_28_aarch64 -w {dest_dir} {wheel}"
           CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache-arm:/ccache"
       - uses: actions/upload-artifact@v4
@@ -728,4 +737,3 @@ jobs:
           name: cvista-wheels-linux-arm64-cp312abi3
           path: wheelhouse/*.whl
           if-no-files-found: error
-

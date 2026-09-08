@@ -15,4 +15,6 @@ python -m pip install --upgrade pip
 python -m pip install "cmake>=3.22,<4.2" "ninja>=1.11" "setuptools<81" wheel
 cmake --version | sed -n 1p   # sed reads whole stream; head closes early -> SIGPIPE under pipefail
 ninja --version
-ccache --zero-stats || true
+# Statistics do not need a source path. The backend expands the literal
+# CCACHE_BASEDIR={project} later; clear it for this statistics-only command.
+CCACHE_BASEDIR= ccache --zero-stats || true
