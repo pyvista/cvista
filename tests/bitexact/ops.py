@@ -112,6 +112,7 @@ try:
         vtkFeatureEdges,
         vtkGlyph3D,
         vtkPolyDataNormals,
+        vtkSplitSharpEdgesPolyData,
         vtkQuadricDecimation,
         vtkSimpleElevationFilter,
         vtkSmoothPolyDataFilter,
@@ -1255,6 +1256,155 @@ def op_normals_fallback(dtype, size):
         normals = vtk_to_numpy(vtkPolyDataNormals.GetCellNormals(mesh)).copy()
         result[storage] = normals
         result[storage + ":bits"] = normals.view(np.uint32)
+    return result
+
+
+def make_sharp_edges_mesh(dtype, size, width=32, fixed=False, topology="triangles"):
+    """Synthetic folded sheet with stable face order and identifiable attributes."""
+    yy, xx = np.indices((size, size))
+    coords = np.column_stack(
+        (xx.ravel(), yy.ravel(), (2 * np.minimum(xx % 8, 8 - xx % 8)).ravel())
+    ).astype(dtype)
+    coords[0, 2] = -0.0
+    base = (yy[:-1, :-1] * size + xx[:-1, :-1]).ravel()
+    quads = np.column_stack((base, base + 1, base + size + 1, base + size))
+    triangles = np.stack((quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]), axis=1).reshape(
+        -1, 3
+    )
+    faces = triangles if topology == "triangles" else quads
+    idtype = np.int32 if width == 32 else np.int64
+    conn = faces.ravel().astype(idtype)
+    offsets = np.arange(len(faces) + 1, dtype=idtype) * faces.shape[1]
+    if topology == "mixed":
+        # A third face on an existing edge, repeated vertex, short polygon,
+        # and disconnected fan exercise region boundaries and fallback cases.
+        extra = [[0, 1, size + 1], [0, 0, size], [0, 1], [0, size + 2, size + 3]]
+        conn = np.concatenate((conn, np.array(sum(extra, []), dtype=idtype)))
+        offsets = np.concatenate(
+            (offsets, offsets[-1] + np.cumsum([len(f) for f in extra]))
+        ).astype(idtype)
+    cells = vtkCellArray()
+    vtk_idtype = VTK_INT if width == 32 else VTK_LONG_LONG
+    vtk_conn = numpy_to_vtk(conn, deep=1, array_type=vtk_idtype)
+    if fixed:
+        assert topology != "mixed"
+        cells.SetData(faces.shape[1], vtk_conn)
+    else:
+        cells.SetData(numpy_to_vtk(offsets, deep=1, array_type=vtk_idtype), vtk_conn)
+    assert cells.GetConnectivityArray().GetDataTypeSize() == width // 8
+    assert cells.IsStorageFixedSize() == fixed
+    points = vtkPoints()
+    points.SetData(numpy_to_vtk(coords, deep=1))
+    mesh = vtkPolyData()
+    mesh.SetPoints(points)
+    mesh.SetPolys(cells)
+    for data, count in (
+        (mesh.GetPointData(), len(coords)),
+        (mesh.GetCellData(), len(offsets) - 1),
+    ):
+        ids = numpy_to_vtk(np.arange(count, dtype=np.int32), deep=1)
+        ids.SetName("ids")
+        data.SetScalars(ids)
+    return mesh
+
+
+def op_sharp_edges_storage(dtype, size):
+    """Native layouts and general accessors preserve every split-point id and bit."""
+    result = {}
+    layouts = [
+        (width, fixed, topology)
+        for width in (32, 64)
+        for fixed, topology in (
+            (False, "triangles"),
+            (True, "triangles"),
+            (False, "quads"),
+            (True, "quads"),
+            (False, "mixed"),
+        )
+    ]
+    if size == 12:
+        layouts += [
+            (32, False, kind)
+            for kind in ("generic", "cell_types", "deleted", "editable")
+        ]
+    for width, fixed, topology in layouts:
+        label = f"{width}_{fixed}_{topology}"
+        mesh = make_sharp_edges_mesh(
+            dtype,
+            size,
+            width,
+            fixed,
+            topology if topology in ("triangles", "quads", "mixed") else "mixed",
+        )
+        cells = mesh.GetPolys()
+        if topology == "generic":
+            cells.SetData(
+                numpy_to_vtk(
+                    vtk_to_numpy(cells.GetOffsetsArray()), deep=1, array_type=VTK_SHORT
+                ),
+                numpy_to_vtk(
+                    vtk_to_numpy(cells.GetConnectivityArray()),
+                    deep=1,
+                    array_type=VTK_SHORT,
+                ),
+            )
+            assert cells.GetConnectivityArray().GetDataType() == VTK_SHORT
+        elif topology == "cell_types":
+            verts, lines = vtkCellArray(), vtkCellArray()
+            verts.InsertNextCell(1, [size * size - 1])
+            lines.InsertNextCell(2, [0, 1])
+            mesh.SetVerts(verts)
+            mesh.SetLines(lines)
+            ids = numpy_to_vtk(
+                np.arange(mesh.GetNumberOfCells(), dtype=np.int32), deep=1
+            )
+            ids.SetName("ids")
+            mesh.GetCellData().SetScalars(ids)
+        elif topology == "deleted":
+            mesh.BuildCells()
+            mesh.DeleteCell(0)
+        elif topology == "editable":
+            mesh.EditableOn()
+        result.update(
+            {label + ":input:" + k: v for k, v in capture_dataobject(mesh).items()}
+        )
+        for angle in (0, 30, 180):
+            splitter = vtkSplitSharpEdgesPolyData()
+            splitter.SetInputData(mesh)
+            splitter.SetFeatureAngle(angle)
+            splitter.Update()
+            output = splitter.GetOutput()
+            if angle == 30 and topology == "triangles":
+                assert output.GetNumberOfPoints() > mesh.GetNumberOfPoints()
+            if angle == 180 and topology == "triangles":
+                assert output.GetNumberOfPoints() == mesh.GetNumberOfPoints()
+            result.update(
+                {
+                    f"{label}:{angle}:" + k: v
+                    for k, v in capture_dataobject(output).items()
+                }
+            )
+        # Also check the normals pipeline that consumes the duplicated points.
+        normals = vtkPolyDataNormals()
+        normals.SetInputData(mesh)
+        normals.SetFeatureAngle(30)
+        normals.SetComputeCellNormals(True)
+        normals.Update()
+        result.update(
+            {
+                label + ":normals:" + k: v
+                for k, v in capture_dataobject(normals.GetOutput()).items()
+            }
+        )
+        for key, value in capture_dataobject(mesh).items():
+            assert value.tobytes() == result[label + ":input:" + key].tobytes(), key
+    result.update(
+        {
+            k + ":bits": v.view(np.uint32 if v.dtype.itemsize == 4 else np.uint64)
+            for k, v in list(result.items())
+            if v.dtype.kind == "f"
+        }
+    )
     return result
 
 
@@ -6638,6 +6788,8 @@ OPS = {
                              dtypes=["float32", "float64"], sizes=[8]),
     "normals_storage": dict(fn=op_normals_storage, group="modified",
                             dtypes=["float32", "float64"], sizes=[8, 256]),
+    "sharp_edges_storage": dict(fn=op_sharp_edges_storage, group="modified",
+                                dtypes=["float32", "float64"], sizes=[12, 128]),
     "normals": dict(fn=op_normals, group="modified", dtypes=["float64"], sizes=[24, 48]),
     "contour": dict(fn=op_contour, group="modified", dtypes=["float32", "float64"], sizes=[20, 32]),
     "clip": dict(fn=op_clip, group="modified", dtypes=["float32", "float64"], sizes=[18, 28]),

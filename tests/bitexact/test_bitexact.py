@@ -1,4 +1,4 @@
-"""Bit-exactness regression tests: cvista (this fork) vs stock VTK 9.6.2.
+"""Bit-exactness regression tests: cvista (this fork) vs stock VTK 9.7.0.
 
 Each test asserts that one operation, run under both backends from byte-identical
 inputs, produces byte-identical output across EVERY array (points, all point/cell
@@ -79,11 +79,12 @@ def test_bitexact(results, case_key, op_name):
 
 
 def test_modified_filters_are_covered():
-    """Guard: the original filters and expanded normals cases stay hard gates."""
+    """Guard: the original filters and expanded normals/splitting cases stay hard gates."""
     expected = {
         "decimate", "smooth", "normals", "contour", "clip",
         "threshold", "warp", "glyph", "cell2point",
         "normals_storage", "normals_fallback",
+        "sharp_edges_storage",
     }
     assert _ops.MODIFIED_OPS == expected, (
         f"modified-filter set drifted: {_ops.MODIFIED_OPS} != {expected}"
