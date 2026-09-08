@@ -7,7 +7,7 @@ mirror of upstream VTK. Contributions are GitHub pull requests against `pyvista/
 Read the [README](README.md) first: it is the handoff guide for the build-trim and
 swap-for-faster campaigns and explains every lever referenced below.
 
-cvista has one overriding contract: **it is a bit-exact drop-in for stock VTK 9.6.2.** PyVista
+cvista has one overriding contract: **it is a bit-exact drop-in for stock VTK 9.7.0.** PyVista
 runs against cvista unchanged, and the default build is byte-for-byte identical to stock
 (`maxULP = 0`) save for the one documented abi3 `type.__flags__` divergence. Everything below
 exists to protect that contract while still getting faster.
@@ -20,7 +20,7 @@ filter returns**. Every speedup falls into exactly one of two buckets, decided b
 output is byte-identical to stock:
 
 1. **Byte-identical speedup → may be default-on.** If the change produces output that is
-   byte-for-byte identical to stock VTK 9.6.2 (`maxULP = 0`, integer arrays width-normalized),
+   byte-for-byte identical to stock VTK 9.7.0 (`maxULP = 0`, integer arrays width-normalized),
    it can ship enabled by default. This covers devirtualization, LTO/PGO, SIMD that preserves
    rounding (`-ffp-contract=off` on the FMV'd kernels), int32 width-relaxation (values sacred,
    container width negotiable), and *provably* thread-count-invariant parallel loops
@@ -79,7 +79,7 @@ Build & validate
   toolchain build for parity claims.
 - Run `tests/bitexact/` (stock-vs-cvista dump-and-diff) and, for behavioral changes, the PyVista
   differential suite described in [Parity & validation](README.md#parity--validation). Bar:
-  **zero new failures vs stock `vtk` 9.6.2**.
+  **zero new failures vs stock `vtk` 9.7.0**.
 
 Pull requests
 -------------

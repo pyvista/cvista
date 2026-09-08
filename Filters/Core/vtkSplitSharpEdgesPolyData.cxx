@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "vtkSplitSharpEdgesPolyData.h"
 
+#include "cvistaCellConnectivity.h"
+
 #include "vtkBatch.h"
 #include "vtkCellArray.h"
 #include "vtkCellData.h"
@@ -93,6 +95,9 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
   // call into libvtkCommonDataModel. Bit-for-bit identical; see
   // vtkPolyDataEdgeNeighbors.h.
   vtkPolyDataEdgeNeighbors::FastEdgeNeighbors EdgeNeighbors;
+  // Input connectivity is read-only during marking. For polys-only meshes,
+  // global cell ids are also local polygon ids; mixed cell types use the API.
+  cvistaCellConnectivity Polys;
 
   struct CellPointReplacementInformation
   {
@@ -130,11 +135,64 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
     , CosAngle(std::cos(vtkMath::RadiansFromDegrees(filter->GetFeatureAngle())))
     , Filter(filter)
     , EdgeNeighbors(input)
+    , Polys(input->GetNumberOfCells() == input->GetNumberOfPolys() ? input->GetPolys() : nullptr)
   {
     // initialize batches
     this->PointBatches.Initialize(this->Input->GetNumberOfPoints());
 
     this->CellPointsReplacementInfo.resize(this->Input->GetNumberOfPoints());
+  }
+
+  template <typename PointAt>
+  static void FindPointNeighbors(
+    vtkIdType numPts, PointAt pointAt, vtkIdType pointId, vtkIdType neighbors[2])
+  {
+    if (numPts < 2)
+    {
+      return;
+    }
+    vtkIdType spot = 0;
+    for (; spot < numPts; ++spot)
+    {
+      if (pointAt(spot) == pointId)
+      {
+        break;
+      }
+    }
+    // Preserve the seed-edge order, including the last-vertex special case.
+    if (spot == 0)
+    {
+      neighbors[0] = pointAt(1);
+      neighbors[1] = pointAt(numPts - 1);
+    }
+    else if (spot == numPts - 1)
+    {
+      neighbors[0] = pointAt(spot - 1);
+      neighbors[1] = pointAt(0);
+    }
+    else
+    {
+      neighbors[0] = pointAt(spot + 1);
+      neighbors[1] = pointAt(spot - 1);
+    }
+  }
+
+  vtkIdType GetPointNeighbors(
+    vtkIdType cellId, vtkIdType pointId, vtkIdType neighbors[2], vtkIdList* scratch)
+  {
+    if (this->Polys.IsValid() && this->Input->GetCellType(cellId) != VTK_EMPTY_CELL)
+    {
+      const auto numPts = this->Polys.CellSize(cellId);
+      const auto begin = this->Polys.CellBegin(cellId);
+      FindPointNeighbors(
+        numPts, [&](vtkIdType i) { return this->Polys[begin + i]; }, pointId, neighbors);
+      return numPts;
+    }
+    vtkIdType numPts;
+    const vtkIdType* pts;
+    this->Input->GetCellPoints(cellId, numPts, pts, scratch);
+    FindPointNeighbors(numPts, [&](vtkIdType i) { return pts[i]; }, pointId, neighbors);
+    return numPts;
   }
 
   void Initialize()
@@ -153,8 +211,7 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
     auto& visited = tlData.Visited;
     float* cellNormals = this->CellNormals->GetPointer(0);
 
-    vtkIdType ncells, *cells, edgeId, ptCellId, numPts;
-    const vtkIdType* pts;
+    vtkIdType ncells, *cells, edgeId, ptCellId;
     bool isFirst = vtkSMPTools::GetSingleThread();
     for (vtkIdType batchId = beginBatchId; batchId < endBatchId; ++batchId)
     {
@@ -193,7 +250,7 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
 
         // Loop over all cells and mark the region that each is in.
         int16_t numRegions = 0;
-        vtkIdType spot, neiPt[2], nei, cellId, neiCellId;
+        vtkIdType neiPt[2], nei, cellId, neiCellId;
         float *thisNormal, *neiNormal;
         for (ptCellId = 0; ptCellId < ncells; ptCellId++) // for all cells connected to point
         {
@@ -201,35 +258,9 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
           {
             visited[cells[ptCellId]] = numRegions;
             // okay, mark all the cells connected to this seed cell and using ptId
-            this->Input->GetCellPoints(cells[ptCellId], numPts, pts, tempCellPointIds);
-            if (numPts < 3)
+            if (this->GetPointNeighbors(cells[ptCellId], pointId, neiPt, tempCellPointIds) < 3)
             {
               continue;
-            }
-
-            // find the two edges
-            for (spot = 0; spot < numPts; spot++)
-            {
-              if (pts[spot] == pointId)
-              {
-                break;
-              }
-            }
-
-            if (spot == 0)
-            {
-              neiPt[0] = pts[spot + 1];
-              neiPt[1] = pts[numPts - 1];
-            }
-            else if (spot == (numPts - 1))
-            {
-              neiPt[0] = pts[spot - 1];
-              neiPt[1] = pts[0];
-            }
-            else
-            {
-              neiPt[0] = pts[spot + 1];
-              neiPt[1] = pts[spot - 1];
             }
 
             for (edgeId = 0; edgeId < 2; edgeId++) // for each of the two edges of the seed cell
@@ -249,28 +280,9 @@ struct vtkSplitSharpEdgesPolyData::MarkAndSplitFunctor
                     // visit and arrange to visit next edge neighbor
                     visited[neiCellId] = numRegions;
                     cellId = neiCellId;
-                    this->Input->GetCellPoints(cellId, numPts, pts, tempCellPointIds);
-
-                    for (spot = 0; spot < numPts; spot++)
-                    {
-                      if (pts[spot] == pointId)
-                      {
-                        break;
-                      }
-                    }
-
-                    if (spot == 0)
-                    {
-                      nei = (pts[spot + 1] != nei ? pts[spot + 1] : pts[numPts - 1]);
-                    }
-                    else if (spot == (numPts - 1))
-                    {
-                      nei = (pts[spot - 1] != nei ? pts[spot - 1] : pts[0]);
-                    }
-                    else
-                    {
-                      nei = (pts[spot + 1] != nei ? pts[spot + 1] : pts[spot - 1]);
-                    }
+                    vtkIdType adjacent[2];
+                    this->GetPointNeighbors(cellId, pointId, adjacent, tempCellPointIds);
+                    nei = adjacent[0] != nei ? adjacent[0] : adjacent[1];
 
                   } // if not separated by edge angle
                   else
@@ -432,7 +444,8 @@ int vtkSplitSharpEdgesPolyData::RequestData(vtkInformation* vtkNotUsed(request),
   vtkNew<vtkIdList> newToOldPointsMap;
   newToOldPointsMap->SetNumberOfIds(numInPoints);
   vtkSMPTools::For(0, numInPoints,
-    [&](vtkIdType begin, vtkIdType end) {
+    [&](vtkIdType begin, vtkIdType end)
+    {
       std::iota(newToOldPointsMap->GetPointer(begin), newToOldPointsMap->GetPointer(end), begin);
     });
 

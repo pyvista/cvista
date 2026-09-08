@@ -6,7 +6,7 @@ test proves the threading is deterministic: it runs the same operations under th
 cvista python at VTK_SMP_MAX_THREADS in {1, 4, 8} and asserts the dumped output is
 byte-for-byte identical across all thread counts. Combined with the main
 bit-exactness suite (which compares the default 4-thread cvista against serial stock
-VTK 9.6.2), this shows the enabled filters are bit-identical at 1/4/8 threads AND
+VTK 9.7.0), this shows the enabled filters are bit-identical at 1/4/8 threads AND
 identical to stock.
 
 Only needs the cvista python (BITEXACT_CVISTA_PY); skips cleanly if unset.
@@ -32,7 +32,7 @@ import compare as _compare  # noqa: E402
 # checks thread-count invariance of the MESH, not the byte layout.
 THREADED_OPS = [
     "warp", "warpvector", "normals", "normals_storage", "elevation", "cutter_linear", "contour_linear",
-    "threshold", "cell2point",
+    "threshold", "cell2point", "sharp_edges_storage",
 ]
 
 THREAD_COUNTS = [1, 4, 8]
