@@ -32,7 +32,7 @@ import compare as _compare  # noqa: E402
 # checks thread-count invariance of the MESH, not the byte layout.
 THREADED_OPS = [
     "warp", "warpvector", "normals", "normals_storage", "elevation", "cutter_linear", "contour_linear",
-    "threshold", "cell2point", "sharp_edges_storage",
+    "threshold", "cell2point", "sharp_edges_storage", "orient_storage",
 ]
 
 THREAD_COUNTS = [1, 4, 8]
@@ -73,13 +73,21 @@ def thread_runs(tmp_path_factory):
     return dirs
 
 
+@pytest.fixture(scope="module")
+def thread_comparisons(thread_runs):
+    # The dump directories are complete and immutable after thread_runs. Compare
+    # each thread-count pair once; every filter assertion uses that same result.
+    return {
+        n: _compare.compare_all(thread_runs[1], thread_runs[n])
+        for n in THREAD_COUNTS if n != 1
+    }
+
+
 @pytest.mark.parametrize("nthreads", [n for n in THREAD_COUNTS if n != 1])
 @pytest.mark.parametrize("op_name", THREADED_OPS)
-def test_threaded_filter_is_thread_count_invariant(thread_runs, op_name, nthreads):
+def test_threaded_filter_is_thread_count_invariant(thread_comparisons, op_name, nthreads):
     """Output of a default-threaded filter is byte-identical at 1 vs N threads."""
-    ref = thread_runs[1]
-    other = thread_runs[nthreads]
-    res = _compare.compare_all(ref, other)
+    res = thread_comparisons[nthreads]
     bad = [
         k
         for k, v in res["cases"].items()

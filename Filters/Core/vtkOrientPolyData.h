@@ -101,9 +101,10 @@ private:
   vtkOrientPolyData(const vtkOrientPolyData&) = delete;
   void operator=(const vtkOrientPolyData&) = delete;
 
-  void TraverseAndOrder(vtkPolyData* input, vtkPolyData* output, vtkIdList* wave, vtkIdList* wave2,
-    vtkIdList* cellPointIds, vtkIdList* cellIds, vtkIdList* neighborPointIds,
-    std::vector<char>& visited, vtkIdType& numFlips);
+  struct TraversalConnectivity;
+  void TraverseAndOrder(const TraversalConnectivity& connectivity, vtkPolyData* output,
+    vtkIdList* wave, vtkIdList* wave2, vtkIdList* cellPointIds, vtkIdList* cellIds,
+    vtkIdList* neighborPointIds, std::vector<char>& visited, vtkIdType& numFlips);
 };
 VTK_ABI_NAMESPACE_END
 

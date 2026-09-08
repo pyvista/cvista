@@ -4,7 +4,7 @@ Every operation here is written against the *vtkmodules* API only (no pyvista, n
 ``import vtk``). That is the load-bearing property of this suite: the exact same
 source drives two backends —
 
-  * stock VTK 9.6.2   — ``vtkmodules`` resolves to the upstream wheel
+  * stock VTK 9.7.0   — ``vtkmodules`` resolves to the upstream wheel
   * cvista (this fork)  — the ``_cvista_shim`` redirects ``vtkmodules.*`` -> ``cvista.*``
 
 so the *only* thing that differs between the two runs is the compiled C++
@@ -1398,6 +1398,183 @@ def op_sharp_edges_storage(dtype, size):
         )
         for key, value in capture_dataobject(mesh).items():
             assert value.tobytes() == result[label + ":input:" + key].tobytes(), key
+    result.update(
+        {
+            k + ":bits": v.view(np.uint32 if v.dtype.itemsize == 4 else np.uint64)
+            for k, v in list(result.items())
+            if v.dtype.kind == "f"
+        }
+    )
+    return result
+
+
+def make_orientation_mesh(
+    dtype, size, width=32, fixed=False, topology="triangles", scrambled=True
+):
+    """Folded sheet, disconnected triangles, or closed tetrahedra with stable winding."""
+    mesh = (
+        vtkPolyData()
+        if topology == "closed"
+        else make_sharp_edges_mesh(
+            dtype,
+            size,
+            width,
+            fixed,
+            "triangles" if topology == "disconnected" else topology,
+        )
+    )
+    if topology == "closed":
+        # Two components have equal minimum x, exercising priority-queue ties.
+        tetra = np.array([[0, 0, -0.0], [2, 0, 0], [0, 3, 0], [0, 0, 4]], dtype=dtype)
+        coords = np.concatenate(
+            [tetra + shift for shift in ([0, 0, 0], [0, 8, 1], [7, 0, 0])]
+        )
+        faces = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]])
+        conn = np.concatenate([faces + i * 4 for i in range(3)]).ravel()
+        vtk_type = VTK_INT if width == 32 else VTK_LONG_LONG
+        cells = vtkCellArray()
+        vtk_conn = numpy_to_vtk(conn, deep=1, array_type=vtk_type)
+        if fixed:
+            cells.SetData(3, vtk_conn)
+        else:
+            cells.SetData(
+                numpy_to_vtk(np.arange(13) * 3, deep=1, array_type=vtk_type), vtk_conn
+            )
+        points = vtkPoints()
+        points.SetData(numpy_to_vtk(coords, deep=1))
+        mesh.SetPoints(points)
+        mesh.SetPolys(cells)
+        for data, count in ((mesh.GetPointData(), 12), (mesh.GetCellData(), 12)):
+            ids = numpy_to_vtk(np.arange(count, dtype=np.int32), deep=1)
+            ids.SetName("ids")
+            data.SetScalars(ids)
+    cells = mesh.GetPolys()
+    if topology == "disconnected":
+        conn = vtk_to_numpy(cells.GetConnectivityArray())
+        coords = vtk_to_numpy(mesh.GetPoints().GetData())[conn]
+        point_ids = vtk_to_numpy(mesh.GetPointData().GetScalars())[conn]
+        mesh.GetPoints().SetData(numpy_to_vtk(coords, deep=1))
+        ids = numpy_to_vtk(point_ids, deep=1)
+        ids.SetName("ids")
+        mesh.GetPointData().SetScalars(ids)
+        vtk_type = VTK_INT if width == 32 else VTK_LONG_LONG
+        vtk_conn = numpy_to_vtk(np.arange(len(conn)), deep=1, array_type=vtk_type)
+        if fixed:
+            cells.SetData(3, vtk_conn)
+        else:
+            cells.SetData(cells.GetOffsetsArray(), vtk_conn)
+    if scrambled:
+        for i in range(0, cells.GetNumberOfCells(), 3):
+            cells.ReverseCellAtId(i)
+    return mesh
+
+
+def op_orient_storage(dtype, size):
+    """Compare exact face winding and normals, with the order-relaxed opt-in off."""
+    result = {}
+    layouts = [
+        (width, fixed, topology)
+        for width in (32, 64)
+        for fixed, topology in (
+            (False, "triangles"),
+            (True, "triangles"),
+            (False, "quads"),
+            (True, "quads"),
+            (False, "mixed"),
+            (True, "disconnected"),
+        )
+    ]
+    if size == 12:
+        layouts += [
+            (width, fixed, "closed") for width in (32, 64) for fixed in (False, True)
+        ]
+        layouts += [
+            (32, False, kind)
+            for kind in ("generic", "cell_types", "deleted", "editable")
+        ]
+    for width, fixed, topology in layouts:
+        label = f"{width}_{fixed}_{topology}"
+        mesh = make_orientation_mesh(
+            dtype,
+            size,
+            width,
+            fixed,
+            topology
+            if topology in ("triangles", "quads", "mixed", "closed", "disconnected")
+            else "mixed",
+        )
+        cells = mesh.GetPolys()
+        if topology == "generic":
+            cells.SetData(
+                numpy_to_vtk(
+                    vtk_to_numpy(cells.GetOffsetsArray()), deep=1, array_type=VTK_SHORT
+                ),
+                numpy_to_vtk(
+                    vtk_to_numpy(cells.GetConnectivityArray()),
+                    deep=1,
+                    array_type=VTK_SHORT,
+                ),
+            )
+            assert cells.GetConnectivityArray().GetDataType() == VTK_SHORT
+        elif topology == "cell_types":
+            verts, lines = vtkCellArray(), vtkCellArray()
+            verts.InsertNextCell(1, [size * size - 1])
+            lines.InsertNextCell(2, [0, 1])
+            mesh.SetVerts(verts)
+            mesh.SetLines(lines)
+            ids = numpy_to_vtk(
+                np.arange(mesh.GetNumberOfCells(), dtype=np.int32), deep=1
+            )
+            ids.SetName("ids")
+            mesh.GetCellData().SetScalars(ids)
+        elif topology == "deleted":
+            mesh.BuildCells()
+            mesh.DeleteCell(0)
+        elif topology == "editable":
+            mesh.EditableOn()
+        result.update(
+            {label + ":input:" + k: v for k, v in capture_dataobject(mesh).items()}
+        )
+        for auto, flip, nonmanifold in (
+            (False, False, False),
+            (False, True, False),
+            (False, False, True),
+            (True, False, False),
+            (True, True, True),
+        ):
+            orient = vtkOrientPolyData()
+            orient.SetInputData(mesh)
+            orient.SetAutoOrientNormals(auto)
+            orient.SetFlipNormals(flip)
+            orient.SetNonManifoldTraversal(nonmanifold)
+            orient.Update()
+            if topology == "triangles" and not auto and not flip:
+                assert not np.array_equal(
+                    vtk_to_numpy(cells.GetConnectivityArray()),
+                    vtk_to_numpy(orient.GetOutput().GetPolys().GetConnectivityArray()),
+                )
+            tag = f"{label}:{auto}_{flip}_{nonmanifold}:"
+            result.update(
+                {tag + k: v for k, v in capture_dataobject(orient.GetOutput()).items()}
+            )
+        normals = vtkPolyDataNormals()
+        normals.SetInputData(mesh)
+        normals.SetComputeCellNormals(True)
+        normals.SetAutoOrientNormals(topology == "closed")
+        normals.Update()
+        result.update(
+            {
+                label + ":normals:" + k: v
+                for k, v in capture_dataobject(normals.GetOutput()).items()
+            }
+        )
+        for key, value in capture_dataobject(mesh).items():
+            # Stock shares line cells with its output, so FlipNormals can
+            # reverse input lines. Compare that side effect too, while ensuring
+            # the copied polygon connectivity and points stay untouched.
+            if topology != "cell_types" or key in ("points", "conn:polys"):
+                assert value.tobytes() == result[label + ":input:" + key].tobytes(), key
+            result[label + ":input_after:" + key] = value
     result.update(
         {
             k + ":bits": v.view(np.uint32 if v.dtype.itemsize == 4 else np.uint64)
@@ -6790,6 +6967,8 @@ OPS = {
                             dtypes=["float32", "float64"], sizes=[8, 256]),
     "sharp_edges_storage": dict(fn=op_sharp_edges_storage, group="modified",
                                 dtypes=["float32", "float64"], sizes=[12, 128]),
+    "orient_storage": dict(fn=op_orient_storage, group="modified",
+                           dtypes=["float32", "float64"], sizes=[12, 128]),
     "normals": dict(fn=op_normals, group="modified", dtypes=["float64"], sizes=[24, 48]),
     "contour": dict(fn=op_contour, group="modified", dtypes=["float32", "float64"], sizes=[20, 32]),
     "clip": dict(fn=op_clip, group="modified", dtypes=["float32", "float64"], sizes=[18, 28]),
