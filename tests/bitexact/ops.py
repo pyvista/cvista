@@ -65,12 +65,16 @@ def fast_mode():
 try:
     from vtkmodules.vtkCommonCore import (
         VTK_FLOAT,
+        VTK_INT,
+        VTK_LONG_LONG,
+        VTK_SHORT,
         reference,
         vtkDoubleArray,
         vtkFloatArray,
         vtkIdList,
         vtkMath,
         vtkPoints,
+        vtkSOADataArrayTemplate,
     )
     from vtkmodules.vtkCommonDataModel import (
         vtkCellArray,
@@ -1095,6 +1099,163 @@ def op_normals_smooth(dtype, size):
     n.SetSplitting(False)
     n.Update()
     return n.GetOutput()
+
+
+def make_normals_storage_mesh(dtype, size, width=32, fixed=False, mixed=False):
+    """Synthetic bent grid, including coincident/collinear and signed-zero cases.
+
+    No source normals: GetCellNormals must compute, not reuse an input array.
+    The trailing quad makes the old all-or-nothing shortcut redo its triangles.
+    """
+    yy, xx = np.indices((size, size))
+    coords = np.column_stack(
+        (xx.ravel(), yy.ravel(), ((xx * yy) % 17).ravel() / 19)
+    ).astype(dtype)
+    # Non-axis-aligned flat triangles expose negative-zero cross products;
+    # repeated points exercise vtkPolygon's early return for a zero first edge.
+    special = np.array(
+        [
+            [0, 0, -0.0],
+            [1, 2, -0.0],
+            [2, 1, -0.0],
+            [2, 4, -0.0],
+            [1, -1, 0],
+            [1, 1, 0],
+            [1e-200 if dtype == np.float64 else 1e-30, 0, 0],
+            [0, 1e200 if dtype == np.float64 else 1e30, 0],
+        ],
+        dtype=dtype,
+    )
+    start = len(coords)
+    coords = np.concatenate((coords, special, [[0, 0, 0]])).astype(dtype)
+    base = (yy[:-1, :-1] * size + xx[:-1, :-1]).ravel()
+    triangles = np.stack(
+        (
+            np.column_stack((base, base + 1, base + size + 1)),
+            np.column_stack((base, base + size + 1, base + size)),
+        ),
+        axis=1,
+    ).reshape(-1, 3)
+    triangles = np.concatenate(
+        (
+            triangles,
+            start
+            + np.array(
+                [[0, 1, 2], [0, 0, 2], [0, 1, 3], [1, 0, 2], [0, 4, 5], [0, 6, 7]]
+            ),
+        )
+    )
+    idtype = np.int32 if width == 32 else np.int64
+    conn = triangles.ravel().astype(idtype)
+    offsets = np.arange(len(triangles) + 1, dtype=idtype) * 3
+    if mixed:
+        conn = np.concatenate((conn, np.array([0, 1, size + 1, size], dtype=idtype)))
+        offsets = np.append(offsets, idtype(len(conn))).astype(idtype)
+    cells = vtkCellArray()
+    vtk_idtype = VTK_INT if width == 32 else VTK_LONG_LONG
+    vtk_conn = numpy_to_vtk(conn, deep=1, array_type=vtk_idtype)
+    if fixed:
+        assert not mixed
+        cells.SetData(3, vtk_conn)
+    else:
+        cells.SetData(numpy_to_vtk(offsets, deep=1, array_type=vtk_idtype), vtk_conn)
+    assert cells.GetConnectivityArray().GetDataTypeSize() == width // 8
+    assert cells.IsStorageFixedSize() == fixed
+    points = vtkPoints()
+    points.SetData(numpy_to_vtk(np.ascontiguousarray(coords), deep=1))
+    mesh = vtkPolyData()
+    mesh.SetPoints(points)
+    mesh.SetPolys(cells)
+    # Exercise non-zero polygon offsets and isolated point normals.
+    verts = vtkCellArray()
+    verts.InsertNextCell(1, [len(coords) - 1])
+    lines = vtkCellArray()
+    lines.InsertNextCell(2, [0, 1])
+    mesh.SetVerts(verts)
+    mesh.SetLines(lines)
+    for data, count in (
+        (mesh.GetPointData(), mesh.GetNumberOfPoints()),
+        (mesh.GetCellData(), mesh.GetNumberOfCells()),
+    ):
+        values = numpy_to_vtk(np.arange(count, dtype=np.int32), deep=1)
+        values.SetName("ids")
+        data.SetScalars(values)
+    return mesh
+
+
+def op_normals_storage(dtype, size):
+    """Force every native storage layout, without preprocessing the input.
+
+    At size=256 there are >100k polygons: the actual threaded cell-normal
+    path runs. Capture static cell normals AND the public filter output,
+    including point normals, attributes, geometry, and connectivity.
+    """
+    result = {}
+    for width in (32, 64):
+        for fixed, mixed in ((False, False), (True, False), (False, True)):
+            label = f"{width}_{fixed}_{mixed}"
+            mesh = make_normals_storage_mesh(dtype, size, width, fixed, mixed)
+            result[label + ":direct"] = vtk_to_numpy(
+                vtkPolyDataNormals.GetCellNormals(mesh)
+            ).copy()
+            n = vtkPolyDataNormals()
+            n.SetInputData(mesh)
+            n.SetComputePointNormals(True)
+            n.SetComputeCellNormals(True)
+            n.SetSplitting(False)
+            n.SetConsistency(False)
+            n.Update()
+            result.update(
+                {
+                    label + ":" + k: v
+                    for k, v in capture_dataobject(n.GetOutput()).items()
+                }
+            )
+    # Preserve bit patterns explicitly: the shared float comparator treats
+    # +0 and -0 as equal. These integer views also catch NaN payload changes.
+    result.update(
+        {
+            k + ":bits": v.view(np.uint32 if v.dtype.itemsize == 4 else np.uint64)
+            for k, v in list(result.items())
+            if v.dtype.kind == "f"
+        }
+    )
+    return result
+
+
+def op_normals_fallback(dtype, size):
+    """Generic connectivity and SOA/integral points keep the vtkPolygon semantics."""
+    result = {}
+    for storage in ("generic", "soa", "integral"):
+        mesh = make_normals_storage_mesh(dtype, size, mixed=True)
+        cells = mesh.GetPolys()
+        # Include short polygons for the per-cell vtkPolygon fallback.
+        cells.InsertNextCell(2, [0, 1])
+        cells.InsertNextCell(5, [0, 1, size + 1, size, 0])
+        if storage == "generic":
+            offsets = numpy_to_vtk(
+                vtk_to_numpy(cells.GetOffsetsArray()), deep=1, array_type=VTK_SHORT
+            )
+            conn = numpy_to_vtk(
+                vtk_to_numpy(cells.GetConnectivityArray()), deep=1, array_type=VTK_SHORT
+            )
+            cells.SetData(offsets, conn)
+            assert cells.GetConnectivityArray().GetDataType() == VTK_SHORT
+        elif storage == "soa":
+            coords = vtk_to_numpy(mesh.GetPoints().GetData())
+            soa = vtkSOADataArrayTemplate[dtype]()
+            soa.SetNumberOfComponents(3)
+            soa.SetNumberOfTuples(len(coords))
+            for i, xyz in enumerate(coords):
+                soa.SetTuple(i, xyz)
+            mesh.GetPoints().SetData(soa)
+        else:
+            coords = (np.arange(mesh.GetNumberOfPoints() * 3) % 17).reshape(-1, 3)
+            mesh.GetPoints().SetData(numpy_to_vtk(coords, deep=1, array_type=VTK_INT))
+        normals = vtk_to_numpy(vtkPolyDataNormals.GetCellNormals(mesh)).copy()
+        result[storage] = normals
+        result[storage + ":bits"] = normals.view(np.uint32)
+    return result
 
 
 def op_contour(dtype, size):
@@ -6473,6 +6634,10 @@ OPS = {
     # --- 9 modified filters (HARD GATE) ---
     "decimate": dict(fn=op_decimate, group="modified", dtypes=["float64"], sizes=[24, 48]),
     "smooth": dict(fn=op_smooth, group="modified", dtypes=["float64"], sizes=[24, 48]),
+    "normals_fallback": dict(fn=op_normals_fallback, group="modified",
+                             dtypes=["float32", "float64"], sizes=[8]),
+    "normals_storage": dict(fn=op_normals_storage, group="modified",
+                            dtypes=["float32", "float64"], sizes=[8, 256]),
     "normals": dict(fn=op_normals, group="modified", dtypes=["float64"], sizes=[24, 48]),
     "contour": dict(fn=op_contour, group="modified", dtypes=["float32", "float64"], sizes=[20, 32]),
     "clip": dict(fn=op_clip, group="modified", dtypes=["float32", "float64"], sizes=[18, 28]),

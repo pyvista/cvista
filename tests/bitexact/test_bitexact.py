@@ -79,10 +79,11 @@ def test_bitexact(results, case_key, op_name):
 
 
 def test_modified_filters_are_covered():
-    """Guard: all 9 modified filters are present in the registry and marked."""
+    """Guard: the original filters and expanded normals cases stay hard gates."""
     expected = {
         "decimate", "smooth", "normals", "contour", "clip",
         "threshold", "warp", "glyph", "cell2point",
+        "normals_storage", "normals_fallback",
     }
     assert _ops.MODIFIED_OPS == expected, (
         f"modified-filter set drifted: {_ops.MODIFIED_OPS} != {expected}"
