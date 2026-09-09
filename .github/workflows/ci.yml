@@ -215,7 +215,7 @@ jobs:
             # cold-approximately-warm design the ccache legs already have.
             cc_launcher: "sccache"
     # MSVC/AppleClang full VTK compile; cap below the 360-min default.
-    timeout-minutes: 90
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 90 }}
     # SCCACHE_DIR is read by the Windows build (below) and by the cache step;
     # it is a harmless unused var on macOS (that leg uses ccache from pyproject).
     # Local-disk backend (no SCCACHE_GHA_ENABLED) so nothing depends on the GHA
@@ -271,6 +271,9 @@ jobs:
         # pyproject [tool.cibuildwheel.<os>.environment] table (it does not merge),
         # dropping CVISTA_CMAKE_INIT/CVISTA_FORCE_MSVC and breaking the build.
         env:
+          # Windows minor versions are all built/tested by the tier matrix.
+          # Keep this broader module build to one interpreter per native job.
+          CIBW_BUILD: ${{ runner.os == 'Windows' && 'cp312-*' || 'cp312-* cp313-* cp314-*' }}
           CVISTA_LTO: ${{ matrix.lto }}
           # sccache on Windows only (empty elsewhere: cmake ignores an empty
           # launcher, and macOS's pyproject ccache launcher wins over the empty).

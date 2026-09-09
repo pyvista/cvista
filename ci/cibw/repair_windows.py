@@ -59,13 +59,16 @@ def _bin_dirs(project: str, wheel: str) -> list[str]:
     )
     if match is None:
         raise ValueError(f"Unsupported Windows wheel filename: {wheel}")
-    python_tag, abi_tag, platform_tag = match.groups()
-    base = os.environ.get("CVISTA_BUILD_DIR", os.path.join(project, "build-cibw"))
-    if abi_tag == "abi3" and os.environ.get("CVISTA_BUILD_DIR_PER_ABI") != "1":
-        suffix = "abi3"
-    else:
-        suffix = f"{python_tag}-{platform_tag}"
-    directory = os.path.abspath(f"{base}-{suffix}/bin")
+    python_tag, abi_tag, _ = match.groups()
+    current_tag = f"cp{sys.version_info[0]}{sys.version_info[1]}"
+    if abi_tag != "abi3" and python_tag != current_tag:
+        raise ValueError(f"Repair {python_tag} with its build interpreter, not {current_tag}")
+    # cibuildwheel repairs using the same interpreter that built the wheel.
+    # Share its directory calculation: older Windows Pythons lack SOABI and
+    # use the backend's py310/py311/py312 fallback, not the wheel's cp tag.
+    from cvista_backend import _build_dir
+
+    directory = os.path.abspath(os.path.join(_build_dir(project), "bin"))
     if not os.path.isdir(directory):
         raise FileNotFoundError(f"No DLL directory for this wheel: {directory}")
     return [directory]

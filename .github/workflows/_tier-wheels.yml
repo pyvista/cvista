@@ -258,9 +258,19 @@ jobs:
           if-no-files-found: warn
 
   windows:
-    name: 3-wheel tier split (Windows)
+    name: 3-wheel tier split (Windows ${{ matrix.python }})
     runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.12"
+            tag: cp312
+          - python: "3.13"
+            tag: cp313
+          - python: "3.14"
+            tag: cp314
     # Not containerized: this job-level var is visible to the build directly.
     env:
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
@@ -274,11 +284,11 @@ jobs:
           arch: x64
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - name: Build TIERED wheel (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
-          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          CIBW_BUILD: "${{ matrix.tag }}-*"
           # Replicate pyproject [tool.cibuildwheel.windows.environment] + tiered init-cache.
           CIBW_ENVIRONMENT_WINDOWS: >-
             CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON
@@ -304,7 +314,7 @@ jobs:
       - name: Core import smoke (native)
         shell: pwsh
         run: |
-          $core = Get-ChildItem tier-wheels/cvista-*-cp313-cp313-win_amd64.whl | Select-Object -First 1
+          $core = Get-ChildItem tier-wheels/cvista-*-${{ matrix.tag }}-${{ matrix.tag }}-win_amd64.whl | Select-Object -First 1
           if (-not $core) { Write-Error 'core tier wheel not found in tier-wheels/'; exit 1 }
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
@@ -319,7 +329,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cvista-tier-wheels-windows
+          name: cvista-tier-wheels-windows-${{ matrix.tag }}
           path: tier-wheels/*.whl
           if-no-files-found: warn
 
@@ -459,9 +469,13 @@ jobs:
           if-no-files-found: error
 
   windows-legacy:
-    name: 3-wheel tier split (Windows legacy cp310+cp311)
+    name: 3-wheel tier split (Windows ${{ matrix.tag }})
     runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
-    timeout-minutes: 180
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: [cp310, cp311]
     env:
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
@@ -476,7 +490,7 @@ jobs:
         uses: pypa/cibuildwheel@v3.1.4
         env:
           # Mirror ci.yml build-legacy-windows + the tiered init-cache.
-          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_BUILD: "${{ matrix.tag }}-*"
           CIBW_ENVIRONMENT_WINDOWS: "CVISTA_ABI3=0 CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON"
       - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
         shell: bash
@@ -499,6 +513,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cvista-tier-wheels-windows-legacy
+          name: cvista-tier-wheels-windows-${{ matrix.tag }}
           path: tier-wheels/*.whl
           if-no-files-found: error

@@ -149,7 +149,7 @@ def _abi3_enabled() -> bool:
     return sys.version_info[:2] >= ABI3_FLOOR_VERSION
 
 
-def _build_dir() -> str:
+def _build_dir(project: str | None = None) -> str:
     # SINGLE-WHEEL build tree, a CONSTANT path so the cross-leg ccache hits.
     #
     # The dominant build cost — the python-independent C++ kit + ThirdParty objects
@@ -171,7 +171,7 @@ def _build_dir() -> str:
     #
     # CVISTA_BUILD_DIR_PER_ABI=1 forces a fresh per-SOABI tree even within the abi3
     # group (defeats the cross-leg sharing above; only for debugging one leg).
-    base = os.environ.get("CVISTA_BUILD_DIR", os.path.join(REPO, "build-cibw"))
+    base = os.environ.get("CVISTA_BUILD_DIR", os.path.join(project or REPO, "build-cibw"))
     if _abi3_enabled() and os.environ.get("CVISTA_BUILD_DIR_PER_ABI") != "1":
         return f"{base}-abi3"
     import sysconfig
