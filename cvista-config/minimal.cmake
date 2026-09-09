@@ -542,15 +542,8 @@ if (_CVISTA_TOOLCHAIN STREQUAL "msvc")
   # Windows path ("C:\...\libs") corrupts that source (unknown escape sequence /
   # premature string close). The `LIB` env route sidesteps that entirely.
   #
-  # PART 2 (cross-version dependency): make every find_package() IMPORTED target a
-  # single GLOBAL target so the Python3::Module import-lib retarget in
-  # Utilities/Python (python3XX.lib -> the stable-ABI stub python3.lib, so the
-  # abi3 .pyd depends on python3.dll not python3XX.dll) actually sticks to the
-  # same target WrappingPythonCore links. Without this, each subdir scope holds
-  # its OWN directory-scoped Python3::Module instance and the retarget hits the
-  # wrong one — the link keeps python3XX.lib. Windows/MSVC only (FindPython on
-  # Linux/macOS does not link a version import lib), so the currently-green
-  # platforms are untouched. CMake >= 3.24; harmlessly ignored on older cmake.
+  # Keep FindPython's imported targets available in every module scope.
+  # Utilities/Python selects Python3::SABIModule for Windows abi3 consumers.
   set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON CACHE BOOL "" FORCE)
 endif ()
 

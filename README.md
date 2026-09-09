@@ -28,6 +28,13 @@ maintained by the [PyVista](https://github.com/pyvista) organization. It ships t
 visualization toolkit PyVista already runs on, packaged to be smaller, faster, and released
 on a cadence the community sets.
 
+Python 3.11–3.14 are supported. Python 3.11 has a version-specific wheel;
+Python 3.12–3.14 share one wheel built at the 3.12 ABI3 floor. Windows CI
+downloads that same build artifact for each interpreter and checks tier stacking,
+Python algorithms, file IO, and threaded observers. Python 3.10 is no longer supported.
+The GIL ownership hook uses a CPython export outside the stable ABI, so each new
+Python minor must be validated before it is supported.
+
 cvista gives PyVista users:
 
 - a drop-in replacement for the VTK Python wheel, byte-for-byte identical by default

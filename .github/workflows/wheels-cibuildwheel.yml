@@ -9,7 +9,7 @@
 #   macos   : ci/cmake/macos.cmake (Cocoa GL, ThinLTO), delocate.
 #   windows : ci/cmake/windows.cmake (WGL, /GL /LTCG), delvewheel.
 #
-# [tool.cibuildwheel].build is the cp312..cp314 matrix (Python 3.11 dropped), and
+# [tool.cibuildwheel].build is the cp312..cp314 matrix (Python 3.11 built separately), and
 # the backend builds a SINGLE cp312-abi3 wheel per OS: ONE Py_LIMITED_API
 # 0x030c0000 wheel that loads on CPython 3.12+ (cibuildwheel's abi3 dedup reuses it
 # for cp313/cp314, so cp312 builds and 313/314 reuse). 3.12 is the abi3 floor —

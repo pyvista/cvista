@@ -137,10 +137,12 @@ vtkMatplotlibMathTextUtilities::Availability vtkMatplotlibMathTextUtilities::Che
     vtkSmartPyObject valueStr(PyObject_Str(value));
     vtkMplStartUpDebugMacro("Error during matplotlib import:\n"
       << "\nStack:\n"
-      << (tracebackStr ? const_cast<char*>(PyUnicode_AsUTF8(tracebackStr)) : "(none)")
+      << (tracebackStr ? const_cast<char*>(PyUnicode_AsUTF8AndSize(tracebackStr, nullptr))
+                       : "(none)")
       << "\nValue:\n"
-      << (valueStr ? const_cast<char*>(PyUnicode_AsUTF8(valueStr)) : "(none)") << "\nType:\n"
-      << (typeStr ? const_cast<char*>(PyUnicode_AsUTF8(typeStr)) : "(none)"));
+      << (valueStr ? const_cast<char*>(PyUnicode_AsUTF8AndSize(valueStr, nullptr)) : "(none)")
+      << "\nType:\n"
+      << (typeStr ? const_cast<char*>(PyUnicode_AsUTF8AndSize(typeStr, nullptr)) : "(none)"));
     PyErr_Clear();
     vtkMatplotlibMathTextUtilities::MPLMathTextAvailable = UNAVAILABLE;
   }
@@ -361,14 +363,15 @@ bool vtkMatplotlibMathTextUtilities::CheckForError()
       }
       vtkSmartPyObject typeStr(PyObject_Str(type));
       vtkSmartPyObject valueStr(PyObject_Str(value));
-      vtkWarningMacro(<< "Python exception raised:\n"
-                      << "\nStack:\n"
-                      << (tracebackStr ? const_cast<char*>(PyUnicode_AsUTF8(tracebackStr))
-                                       : "(none)")
-                      << "\nValue:\n"
-                      << (valueStr ? const_cast<char*>(PyUnicode_AsUTF8(valueStr)) : "(none)")
-                      << "\nType:\n"
-                      << (typeStr ? const_cast<char*>(PyUnicode_AsUTF8(typeStr)) : "(none)"));
+      vtkWarningMacro(
+        << "Python exception raised:\n"
+        << "\nStack:\n"
+        << (tracebackStr ? const_cast<char*>(PyUnicode_AsUTF8AndSize(tracebackStr, nullptr))
+                         : "(none)")
+        << "\nValue:\n"
+        << (valueStr ? const_cast<char*>(PyUnicode_AsUTF8AndSize(valueStr, nullptr)) : "(none)")
+        << "\nType:\n"
+        << (typeStr ? const_cast<char*>(PyUnicode_AsUTF8AndSize(typeStr, nullptr)) : "(none)"));
     }
     PyErr_Clear();
     return true;

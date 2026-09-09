@@ -28,10 +28,9 @@ PATH problem — NOT a kit/per-module name mismatch — so ``--add-path <bin>`` 
 the build tree resolves ALL of them (kit DLLs + standalone module DLLs +
 vendored third-party DLLs) in one shot.
 
-The cvista backend (ci/cibw/cvista_backend.py) keys each python leg's build tree by
-SOABI as ``build-cibw-<SOABI>``; this wrapper globs every ``build-cibw*/bin``
-under the project root (plus a couple of fallbacks) and passes them all to
-delvewheel via repeated ``--add-path``.
+Only the current wheel's build tree may supply DLLs. Searching all Python
+build trees can bundle a same-named DLL from an earlier interpreter: a cp311
+wheel then imports python310.dll even though its wrapper imports python311.dll.
 
 USAGE (from pyproject [tool.cibuildwheel.windows] repair-wheel-command):
     python ci/cibw/repair_windows.py . {dest_dir} {wheel}
@@ -42,31 +41,64 @@ root, so the command passes ``.`` as the project arg and this script resolves it
 to an absolute path (and defensively falls back to cwd if an unsubstituted
 ``{project}`` placeholder ever reaches it).
 """
+
 from __future__ import annotations
 
-import glob
 import os
+import re
 import subprocess
 import sys
+import zipfile
 
 
-def _bin_dirs(project: str) -> list[str]:
-    """Every build-tree directory that may hold cvista's runtime DLLs."""
-    patterns = [
-        os.path.join(project, "build-cibw*", "bin"),
-        # CVISTA_BUILD_DIR override (if ever set) lands elsewhere; also honour it.
-        os.path.join(os.environ.get("CVISTA_BUILD_DIR", ""), "*", "bin")
-        if os.environ.get("CVISTA_BUILD_DIR")
-        else "",
-    ]
-    found: list[str] = []
-    for pat in patterns:
-        if not pat:
-            continue
-        for d in glob.glob(pat):
-            if os.path.isdir(d) and d not in found:
-                found.append(d)
-    return found
+def _bin_dirs(project: str, wheel: str) -> list[str]:
+    """Select the DLL directory belonging to this wheel's Python ABI."""
+    match = re.search(
+        r"-(cp\d+)-(abi3|cp\d+)-(win_amd64|win_arm64|win32)\.whl$",
+        os.path.basename(wheel),
+    )
+    if match is None:
+        raise ValueError(f"Unsupported Windows wheel filename: {wheel}")
+    python_tag, abi_tag, _ = match.groups()
+    current_tag = f"cp{sys.version_info[0]}{sys.version_info[1]}"
+    if abi_tag != "abi3" and python_tag != current_tag:
+        raise ValueError(f"Repair {python_tag} with its build interpreter, not {current_tag}")
+    # cibuildwheel repairs using the same interpreter that built the wheel.
+    # Share its directory calculation: older Windows Pythons lack SOABI and
+    # use the backend's py310/py311/py312 fallback, not the wheel's cp tag.
+    from cvista_backend import _build_dir
+
+    directory = os.path.abspath(os.path.join(_build_dir(project), "bin"))
+    if not os.path.isdir(directory):
+        raise FileNotFoundError(f"No DLL directory for this wheel: {directory}")
+    return [directory]
+
+
+def audit_python_imports(wheel: str) -> None:
+    """Reject repaired wheels that import another interpreter's Python DLL."""
+    import pefile
+
+    match = re.search(r"-(cp\d+)-(abi3|cp\d+)-win", os.path.basename(wheel))
+    if match is None:
+        raise ValueError(f"Unsupported Windows wheel filename: {wheel}")
+    python_tag, abi_tag = match.groups()
+    allowed = "python3.dll" if abi_tag == "abi3" else f"python{python_tag[2:]}.dll"
+    wrong = []
+    with zipfile.ZipFile(wheel) as archive:
+        for name in archive.namelist():
+            if not name.lower().endswith((".pyd", ".dll")):
+                continue
+            pe = pefile.PE(data=archive.read(name))
+            for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []):
+                dependency = entry.dll.decode().lower()
+                if re.fullmatch(r"python\d+(?:_d)?\.dll", dependency):
+                    if dependency not in (allowed, "python3.dll"):
+                        wrong.append(f"{name}: {dependency}")
+            pe.close()
+    if wrong:
+        raise RuntimeError(
+            "Wheel imports the wrong Python runtime:\n" + "\n".join(wrong)
+        )
 
 
 def main(argv: list[str]) -> int:
@@ -84,13 +116,7 @@ def main(argv: list[str]) -> int:
         project = os.getcwd()
     project = os.path.abspath(project)
 
-    bin_dirs = _bin_dirs(project)
-    if not bin_dirs:
-        print(
-            f"repair_windows: WARNING: no build-tree bin dir found under {project}; "
-            "delvewheel will rely on PATH only.",
-            file=sys.stderr,
-        )
+    bin_dirs = _bin_dirs(project, wheel)
 
     cmd = ["delvewheel", "repair", "-w", dest_dir]
     for d in bin_dirs:
@@ -101,7 +127,10 @@ def main(argv: list[str]) -> int:
     for d in bin_dirs:
         print(f"  - {d}", flush=True)
     print("+ " + " ".join(cmd), flush=True)
-    return subprocess.call(cmd)
+    subprocess.run(cmd, check=True)
+    repaired = os.path.join(dest_dir, os.path.basename(wheel))
+    audit_python_imports(repaired)
+    return 0
 
 
 if __name__ == "__main__":

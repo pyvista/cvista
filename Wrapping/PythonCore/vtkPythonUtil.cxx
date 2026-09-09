@@ -4,6 +4,7 @@
 #include "vtkPythonUtil.h"
 #include "vtkABINamespace.h"
 #include "vtkPythonOverload.h"
+#include "vtkPythonGilStateCheck.h"
 #include "vtkPythonTypeAccess.h"
 
 #include "PyVTKMethodDescriptor.h"
@@ -305,15 +306,6 @@ vtkPythonUtil::~vtkPythonUtil()
 }
 
 //------------------------------------------------------------------------------
-#if defined(Py_LIMITED_API)
-// PyGILState_Check() is a long-standing exported CPython symbol (since 3.4),
-// present in every interpreter this abi3 wheel can load, but the limited-API
-// headers do not declare it. Declare it ourselves so the threaded-SMP GIL hook
-// can ask "does this thread currently hold the GIL?" -- the one question that
-// makes the release safe for nested For() and non-Python worker threads.
-extern "C" int PyGILState_Check(void);
-#endif
-
 namespace
 {
 // cvista GIL-release hook for threaded SMP backends. Registered with
@@ -326,7 +318,7 @@ void* vtkPythonSMPGilRelease()
 {
   // Only release if THIS thread currently holds the GIL (PyGILState_Check). For
   // nested For() or non-Python worker threads it returns null -> caller no-op.
-  if (Py_IsInitialized() != 0 && PyGILState_Check() != 0)
+  if (Py_IsInitialized() != 0 && vtkPythonGilStateCheck() != 0)
   {
     return PyEval_SaveThread(); // releases the GIL, returns the saved thread state
   }

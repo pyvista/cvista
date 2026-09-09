@@ -134,18 +134,13 @@ def _version_suffix() -> str:
 
 
 def _abi3_enabled() -> bool:
-    """Whether THIS build emits the abi3 (stable-ABI) wheel — the default.
-
-    True unless the CVISTA_ABI3=0 escape hatch is set, OR the build python is below
-    the abi3 floor (3.12) — the stable ABI has no PyMemberDef < 3.12, so a stray
-    pre-3.12 interpreter falls back to a legacy static per-version wheel. With the
-    Python-3.11 drop the supported floor IS 3.12, so in normal CI this is True."""
+    """Use one 3.12+ wheel unless explicitly disabled; 3.11 needs its own wheel."""
     if os.environ.get("CVISTA_ABI3", "1") == "0":
         return False
     return sys.version_info[:2] >= ABI3_FLOOR_VERSION
 
 
-def _build_dir() -> str:
+def _build_dir(project: str | None = None) -> str:
     # SINGLE-WHEEL build tree, a CONSTANT path so the cross-leg ccache hits.
     #
     # The dominant build cost — the python-independent C++ kit + ThirdParty objects
@@ -167,7 +162,7 @@ def _build_dir() -> str:
     #
     # CVISTA_BUILD_DIR_PER_ABI=1 forces a fresh per-SOABI tree even within the abi3
     # group (defeats the cross-leg sharing above; only for debugging one leg).
-    base = os.environ.get("CVISTA_BUILD_DIR", os.path.join(REPO, "build-cibw"))
+    base = os.environ.get("CVISTA_BUILD_DIR", os.path.join(project or REPO, "build-cibw"))
     if _abi3_enabled() and os.environ.get("CVISTA_BUILD_DIR_PER_ABI") != "1":
         return f"{base}-abi3"
     import sysconfig

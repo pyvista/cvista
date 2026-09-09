@@ -158,6 +158,7 @@ if dist_suffix:
     dist_name = f"{dist_name}_{dist_suffix}"
 
 setup(
+    python_requires=">=3.11",
     name=dist_name,
     version=version,
     author='VTK developers',
