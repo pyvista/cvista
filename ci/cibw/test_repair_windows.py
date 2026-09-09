@@ -7,9 +7,15 @@ import unittest
 from unittest.mock import patch
 
 from repair_windows import _bin_dirs
+import cvista_backend
 
 
 class RepairWindowsTests(unittest.TestCase):
+    def test_windows_does_not_advertise_abi3(self):
+        with patch.object(cvista_backend.sys, "platform", "win32"):
+            with patch.dict(os.environ, {"CVISTA_ABI3": "1"}, clear=True):
+                self.assertFalse(cvista_backend._abi3_enabled())
+
     def test_legacy_does_not_search_other_python_builds(self):
         with (
             tempfile.TemporaryDirectory() as project,

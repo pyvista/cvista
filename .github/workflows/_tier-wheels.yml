@@ -272,6 +272,9 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - name: Build TIERED wheel (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
@@ -284,24 +287,24 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip -q install wheel pefile
-          whl=$(ls wheelhouse/cvista-*.whl | head -1); echo "built: $whl"
-          base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
-          python -m wheel unpack "$whl" -d /tmp/unpack
-          initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
-          root=$(dirname "$(dirname "$initpy")")
-          echo "=== wheel root (expect cvista/ + delvewheel cvista.libs/) ==="; ls -la "$root"
-          python cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
-          # NOTE: write the packed wheels to a WORKSPACE-RELATIVE dir, not /tmp.
-          # The pack step is bash (MSYS: /tmp -> C:\Users\...\AppData\Local\Temp)
-          # but the smoke + upload steps are pwsh/node (/tmp -> drive-root C:\tmp).
-          # A relative path resolves to $GITHUB_WORKSPACE identically in all shells.
-          CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
-            python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers tier-wheels
+          mkdir -p tier-wheels
+          for whl in wheelhouse/cvista-*.whl; do
+            echo "built: $whl"
+            base=$(basename "$whl" .whl); ver=$(echo "$base"|cut -d- -f2); tag=$(echo "$base"|cut -d- -f3-)
+            rm -rf /tmp/unpack /tmp/tiers
+            python -m wheel unpack "$whl" -d /tmp/unpack
+            initpy=$(find /tmp/unpack -maxdepth 3 -path '*/cvista/__init__.py' | head -1)
+            root=$(dirname "$(dirname "$initpy")")
+            python cvista-config/wheel-split/partition_wheels.py "$root" /tmp/tiers
+            # Relative output is shared consistently by bash, pwsh, and upload.
+            CVISTA_WHEEL_VERSION="$ver" CVISTA_WHEEL_TAG="$tag" \
+              python cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers tier-wheels
+          done
           ls -la tier-wheels
       - name: Core import smoke (native)
         shell: pwsh
         run: |
-          $core = Get-ChildItem tier-wheels/cvista-*.whl | Select-Object -First 1
+          $core = Get-ChildItem tier-wheels/cvista-*-cp313-cp313-win_amd64.whl | Select-Object -First 1
           if (-not $core) { Write-Error 'core tier wheel not found in tier-wheels/'; exit 1 }
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName

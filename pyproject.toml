@@ -75,6 +75,7 @@ build-frontend = "pip"
 # dedup means cp313/cp314 do NOT rebuild — they reuse and TEST the cp312-abi3
 # wheel — so the matrix yields exactly ONE build and ONE wheel. Set CVISTA_ABI3=0
 # to force a legacy per-version static wheel (escape hatch, reversible).
+# Windows always uses per-version wheels; its GIL hook requires a versioned DLL.
 build = "cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 test-command = "CVISTA_IMPORT_NAME=cvista xvfb-run -a -s '-screen 0 1280x1024x24' python {project}/ci/smoke_test.py"
@@ -187,7 +188,7 @@ CCACHE_SLOPPINESS = "time_macros,locale,pch_defines"
 archs = ["arm64"]
 # ccache is NOT on PyPI (no wheel) — install it via Homebrew (preinstalled on the
 # macos-14 runner). cmake/ninja/setuptools/wheel come from pip into the build env.
-before-build = "brew install ccache && python -m pip install 'cmake>=3.26,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
+before-build = "brew install ccache && python -m pip install 'cmake>=3.22,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
 # delocate-wheel bundles the dylibs but does NOT strip symbols; repair_macos.py
 # runs delocate then strips local symbol tables (strip -x) + re-signs ad-hoc,
 # mirroring the Linux `auditwheel repair --strip` size win. Set CVISTA_STRIP=0 to
@@ -219,7 +220,7 @@ CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 # ===========================================================================
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
-before-build = "pip install delvewheel \"cmake>=3.26,<4.2\" \"ninja>=1.11\" \"setuptools<81\" wheel && python -m unittest discover -s ci/cibw -p test_repair_windows.py"
+before-build = "pip install delvewheel \"cmake>=3.22,<4.2\" \"ninja>=1.11\" \"setuptools<81\" wheel && python -m unittest discover -s ci/cibw -p test_repair_windows.py"
 # cvista builds with VTK_ENABLE_KITS=ON: every DLL a .pyd imports (kit DLLs like
 # vtkRendering / vtkFilters, standalone module DLLs like vtkChartsCore, and the
 # vendored third-party DLLs) is a real file in the build tree's bin/ dir, but
@@ -237,8 +238,9 @@ repair-wheel-command = "python ci/cibw/repair_windows.py . {dest_dir} {wheel}"
 # the global xvfb offscreen-render smoke is Linux-only. Use the minimal
 # import+compute smoke (no render, no xvfb) instead.
 test-command = "python {project}/ci/smoke_min.py"
-# Exercise the same abi3 wheel on every supported interpreter. The smoke also
-# loads FiltersPython, whose native library uses the CPython C API.
+# Windows ships one wheel per Python minor: the SMP GIL hook uses a CPython
+# export absent from python3.dll. Test every interpreter, including the native
+# Python-using FiltersPython library; do not claim these are abi3 wheels.
 
 [tool.cibuildwheel.windows.environment]
 # REPO-relative (see the macos table note): {project} is not expanded in env
