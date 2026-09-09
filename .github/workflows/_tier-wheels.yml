@@ -263,11 +263,24 @@ jobs:
     timeout-minutes: 120
     # Not containerized: this job-level var is visible to the build directly.
     env:
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: "2G"
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Install sccache
+        run: choco install sccache -y --no-progress
+        shell: pwsh
+      - name: Restore the Windows tier compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: cvista-sccache-tiered-windows-abi3-${{ github.sha }}
+          restore-keys: cvista-sccache-tiered-windows-abi3-
       - name: Set up MSVC (vcvars) for the Ninja build
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -290,6 +303,10 @@ jobs:
           # Replicate pyproject [tool.cibuildwheel.windows.environment] + tiered init-cache.
           CIBW_ENVIRONMENT_WINDOWS: >-
             CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON
+      - name: Report compiler-cache statistics
+        if: always()
+        run: sccache --show-stats
+        shell: pwsh
       - name: Partition + pack + AUDIT (pefile link graph; delvewheel cvista.libs)
         shell: bash
         run: |
@@ -360,11 +377,10 @@ jobs:
   # tiers it into cvista / cvista-rendering / cvista-io (3 tier wheels/OS),
   # uploaded as cvista-tier-wheels-<os>-legacy (the publish step's
   # `cvista-tier-wheels-*` pattern picks them up alongside the abi3 artifacts).
-  # The partition step's self-containment audit is the hard gate; the abi3 jobs
-  # already prove stacking, and a cp311 wheel can't be smoke-imported by the
-  # runner's default interpreter, so these skip the stack smoke.
+  # Every platform audits the partition's self-containment. Linux also sets up
+  # Python 3.11 explicitly to verify byte-exact parity and the packed tier stack.
   linux-legacy:
-    name: 3-wheel tier split (linux legacy cp311)
+    name: 3-wheel tier split (linux cp311, glibc 2.28)
     runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 150
     env:
@@ -373,44 +389,33 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Build TIERED legacy wheels (cibuildwheel, cp311)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Make ccache dir world-writable (container build user differs)
+        run: mkdir -p /tmp/cvista-cibw-ccache && chmod 0777 /tmp/cvista-cibw-ccache
+      - name: Restore Python 3.11 compiler cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-cibw-ccache
+          key: cvista-ccache-linux-cp311-manylinux228-${{ github.run_id }}
+          restore-keys: |
+            cvista-ccache-linux-cp311-manylinux228-
+      - name: Build TIERED Python 3.11 wheel and render smoke (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
-          # Mirror ci.yml build-legacy-linux (manylinux2014 / glibc 2.17 baseline,
-          # el7 yum before-all, gold linker) but swap in the tiered init-cache so
-          # the built tree partitions cleanly, and pass the pretend-version through.
           CIBW_BUILD: "cp311-*"
-          CIBW_SKIP: "*-musllinux_*"
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux2014"
-          CIBW_ARCHS_LINUX: "x86_64"
-          CIBW_BEFORE_ALL_LINUX: >-
-            yum install -y epel-release &&
-            yum install -y
-            mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel
-            mesa-libGLU-devel libglvnd-devel
-            libX11-devel libXcursor-devel libXt-devel libXext-devel
-            mesa-dri-drivers xorg-x11-server-Xvfb ccache git &&
-            mkdir -p /ccache && chmod 0777 /ccache
-          CIBW_BEFORE_BUILD_LINUX: "{project}/ci/cibw/before-build.sh"
-          CIBW_ENVIRONMENT_LINUX: >-
-            CVISTA_ABI3=0
-            CVISTA_CMAKE_INIT=ci/cmake/linux-tiered.cmake
-            CVISTA_FAST_LINKER=gold
-            CCACHE_DIR=/ccache
-            CMAKE_C_COMPILER_LAUNCHER=ccache
-            CMAKE_CXX_COMPILER_LAUNCHER=ccache
-            CCACHE_MAXSIZE=30G
-          CIBW_ENVIRONMENT_PASS_LINUX: SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux2014_x86_64 -w {dest_dir} {wheel}"
-          # Skip cibuildwheel's post-build render smoke here. That test installs
-          # the PRE-partition full wheel, whose Requires-Dist pulls matplotlib ->
-          # pillow, and pillow has no manylinux2014/cp310 wheel anymore (pillow 12
-          # baselines manylinux_2_28), so pip tries to compile it from source on
-          # el7 and fails. It is not our deliverable's gate: we ship the TIER
-          # wheels (validated by the partition self-containment audit below), the
-          # abi3 jobs already smoke import+render on 3.12, and the macOS/Windows
-          # legacy legs keep their full smoke (pillow ships wheels there).
-          CIBW_TEST_SKIP: "*"
+          # Inherit the shared manylinux_2_28 image, dnf prerequisites, compiler
+          # cache configuration, and architecture-aware repair from pyproject.
+          # The newer glibc baseline also permits binary plotting dependencies,
+          # so the normal post-build render smoke runs on Python 3.11 again.
+          CVISTA_ABI3: "0"
+          CVISTA_CMAKE_INIT: ci/cmake/linux-tiered.cmake
+          CIBW_CONTAINER_ENGINE: "docker; create_args: -v /tmp/cvista-cibw-ccache:/ccache"
+          CIBW_ENVIRONMENT_PASS_LINUX: >-
+            CVISTA_ABI3 CVISTA_CMAKE_INIT SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA
+      - name: Check Python 3.11 byte-exact parity against stock VTK
+        run: BITEXACT_ABI3=0 ci/run-bitexact.sh wheelhouse python
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq patchelf binutils
@@ -433,6 +438,8 @@ jobs:
               python3 cvista-config/wheel-split/pack_tier_wheels.py /tmp/tiers /tmp/tier-wheels
           done
           echo "=== packed legacy tier wheels ==="; ls -la /tmp/tier-wheels
+      - name: Validate the Python 3.11 tier wheels
+        run: WD=/tmp/tier-wheels PYBIN=python bash cvista-config/wheel-split/validate_stacking.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -496,11 +503,24 @@ jobs:
       matrix:
         tag: [cp311]
     env:
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: "2G"
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Install sccache
+        run: choco install sccache -y --no-progress
+        shell: pwsh
+      - name: Restore the Windows tier compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: cvista-sccache-tiered-windows-${{ matrix.tag }}-${{ github.sha }}
+          restore-keys: cvista-sccache-tiered-windows-${{ matrix.tag }}-
       - name: Set up MSVC (vcvars) for the Ninja build
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -511,6 +531,10 @@ jobs:
           # Mirror ci.yml build-legacy-windows + the tiered init-cache.
           CIBW_BUILD: "${{ matrix.tag }}-*"
           CIBW_ENVIRONMENT_WINDOWS: "CVISTA_ABI3=0 CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON"
+      - name: Report compiler-cache statistics
+        if: always()
+        run: sccache --show-stats
+        shell: pwsh
       - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
         shell: bash
         run: |
