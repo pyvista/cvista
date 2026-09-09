@@ -22,7 +22,7 @@ def main():
               f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}", flush=True)
     assert len(list(directory.glob("*.whl"))) == 3
 
-    run("-m", "pip", "install", "numpy", "pytest", "pefile")
+    run("-m", "pip", "install", "numpy", "matplotlib", "pytest", "pefile")
     from repair_windows import audit_python_imports
 
     for wheel in wheels.values():
@@ -42,6 +42,9 @@ for module in ('vtkRenderingCore', 'vtkIOXML', 'vtkIOCore'):
     run("-c", """
 import importlib.util
 from cvista.vtkRenderingCore import vtkRenderer, vtkPolyDataMapper
+import cvista.vtkRenderingMatplotlib
+from cvista.vtkRenderingFreeType import vtkMathTextFreeTypeTextRenderer
+assert vtkMathTextFreeTypeTextRenderer().MathTextIsSupported()
 assert vtkRenderer() is not None
 assert vtkPolyDataMapper() is not None
 assert importlib.util.find_spec('cvista.vtkIOXML') is None
