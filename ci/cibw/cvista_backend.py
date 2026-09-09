@@ -134,17 +134,8 @@ def _version_suffix() -> str:
 
 
 def _abi3_enabled() -> bool:
-    """Whether THIS build emits the abi3 (stable-ABI) wheel — the default.
-
-    True unless the CVISTA_ABI3=0 escape hatch is set, OR the build python is below
-    the abi3 floor (3.12) — the stable ABI has no PyMemberDef < 3.12, so a stray
-    pre-3.12 interpreter falls back to a legacy static per-version wheel. With the
-    Python-3.11 drop the supported floor IS 3.12, so in normal CI this is True."""
-    # The SMP GIL hook uses PyGILState_Check, which is exported by CPython's
-    # versioned DLL but not by Windows' stable python3.dll. Ship honest
-    # per-interpreter Windows wheels until that hook has a stable-ABI form.
-    # Do not silently advertise a cp312-only DLL as usable on cp313/cp314.
-    if sys.platform == "win32" or os.environ.get("CVISTA_ABI3", "1") == "0":
+    """Use one 3.12+ wheel unless explicitly disabled; 3.11 needs its own wheel."""
+    if os.environ.get("CVISTA_ABI3", "1") == "0":
         return False
     return sys.version_info[:2] >= ABI3_FLOOR_VERSION
 

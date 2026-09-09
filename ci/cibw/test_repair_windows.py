@@ -11,19 +11,39 @@ import cvista_backend
 
 
 class RepairWindowsTests(unittest.TestCase):
-    def test_windows_does_not_advertise_abi3(self):
-        with patch.object(cvista_backend.sys, "platform", "win32"):
-            with patch.dict(os.environ, {"CVISTA_ABI3": "1"}, clear=True):
-                self.assertFalse(cvista_backend._abi3_enabled())
+    def test_windows_abi3_floor(self):
+        for minor in (11, 12, 13, 14):
+            with (
+                self.subTest(minor=minor),
+                patch.object(cvista_backend.sys, "platform", "win32"),
+                patch.object(cvista_backend.sys, "version_info", (3, minor)),
+                patch.dict(os.environ, {"CVISTA_ABI3": "1"}, clear=True),
+            ):
+                self.assertEqual(cvista_backend._abi3_enabled(), minor >= 12)
+
+    def test_abi3_selects_shared_build_directory(self):
+        with tempfile.TemporaryDirectory() as project:
+            current = Path(project, "build-cibw-abi3", "bin")
+            current.mkdir(parents=True)
+            Path(project, "build-cibw-py311", "bin").mkdir(parents=True)
+            with (
+                patch.dict(os.environ, {"CVISTA_ABI3": "1"}, clear=True),
+                patch.object(cvista_backend.sys, "platform", "win32"),
+                patch.object(cvista_backend.sys, "version_info", (3, 12)),
+            ):
+                self.assertEqual(
+                    _bin_dirs(project, "cvista-1-cp312-abi3-win_amd64.whl"),
+                    [str(current)],
+                )
 
     def test_legacy_does_not_search_other_python_builds(self):
         # CPython <=3.12 on Windows omits SOABI; newer versions provide it.
-        for minor, soabi in ((10, None), (11, None), (12, None),
+        for minor, soabi in ((11, None), (12, None),
                              (13, "cp313-win_amd64"), (14, "cp314-win_amd64")):
             with (
                 self.subTest(minor=minor),
                 tempfile.TemporaryDirectory() as project,
-                patch.dict(os.environ, {}, clear=True),
+                patch.dict(os.environ, {"CVISTA_ABI3": "0"}, clear=True),
                 patch.object(cvista_backend.sys, "platform", "win32"),
                 patch.object(cvista_backend.sys, "version_info", (3, minor)),
                 patch("sysconfig.get_config_var", return_value=soabi),
@@ -49,7 +69,7 @@ class RepairWindowsTests(unittest.TestCase):
             current = Path(base + "-py312", "bin")
             current.mkdir(parents=True)
             with (
-                patch.dict(os.environ, {"CVISTA_BUILD_DIR": base}, clear=True),
+                patch.dict(os.environ, {"CVISTA_BUILD_DIR": base, "CVISTA_ABI3": "0"}, clear=True),
                 patch.object(cvista_backend.sys, "platform", "win32"),
                 patch.object(cvista_backend.sys, "version_info", (3, 12)),
                 patch("sysconfig.get_config_var", return_value=None),

@@ -48,7 +48,7 @@
 #              build cost on PRs. Separate ccache namespace + artifact prefix
 #              (…-lto-…) so they never perturb the fast PR build or its seed.
 # Publishing lives in release-tiers.yml, NOT here. On `release: published` that
-# workflow builds the abi3 (cp312+) AND legacy cp310/cp311 wheels, partitions each
+# workflow builds the abi3 (cp312+) AND legacy cp311 wheels, partitions each
 # into the three stackable projects (cvista / cvista-rendering / cvista-io), and
 # trusted-publishes them. This workflow builds + bit-exact/pixel-exact-validates
 # the shipped config on every merge; it no longer publishes anything.
@@ -271,7 +271,7 @@ jobs:
         # pyproject [tool.cibuildwheel.<os>.environment] table (it does not merge),
         # dropping CVISTA_CMAKE_INIT/CVISTA_FORCE_MSVC and breaking the build.
         env:
-          # Windows minor versions are all built/tested by the tier matrix.
+          # Windows tests download one ABI3 tier artifact on each supported minor.
           # Keep this broader module build to one interpreter per native job.
           CIBW_BUILD: ${{ runner.os == 'Windows' && 'cp312-*' || 'cp312-* cp313-* cp314-*' }}
           CVISTA_LTO: ${{ matrix.lto }}

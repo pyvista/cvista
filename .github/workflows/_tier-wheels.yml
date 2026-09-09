@@ -23,7 +23,7 @@ on:
         description: >-
           Force the wheel version (setuptools-scm pretend). Empty = derive from
           the git tag/history as usual. Used to re-publish tier wheels onto an
-          already-tagged release (e.g. adding legacy cp310/cp311 to 9.6.2.3)
+          already-tagged release (e.g. adding legacy cp311 to 9.6.2.3)
           from main without moving the tag.
         type: string
         required: false
@@ -258,19 +258,9 @@ jobs:
           if-no-files-found: warn
 
   windows:
-    name: 3-wheel tier split (Windows ${{ matrix.python }})
+    name: 3-wheel tier split (Windows ABI3 build once)
     runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - python: "3.12"
-            tag: cp312
-          - python: "3.13"
-            tag: cp313
-          - python: "3.14"
-            tag: cp314
     # Not containerized: this job-level var is visible to the build directly.
     env:
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
@@ -284,11 +274,19 @@ jobs:
           arch: x64
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.12'
+      - name: Check stable DLL linking and GIL ownership before the native build
+        shell: pwsh
+        run: |
+          $prefix = python -c "import sys; print(sys.base_prefix)"
+          cl /nologo /EHsc /std:c++17 /DPy_LIMITED_API=0x030c0000 /I"$prefix\include" /ICommon/Core /IWrapping/PythonCore ci/cibw/check_windows_gil.cxx /Fe:check_windows_gil.exe /link /LIBPATH:"$prefix\libs" python3.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./check_windows_gil.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build TIERED wheel (cibuildwheel)
         uses: pypa/cibuildwheel@v3.1.4
         env:
-          CIBW_BUILD: "${{ matrix.tag }}-*"
+          CIBW_BUILD: "cp312-*"
           # Replicate pyproject [tool.cibuildwheel.windows.environment] + tiered init-cache.
           CIBW_ENVIRONMENT_WINDOWS: >-
             CVISTA_CMAKE_INIT=ci/cmake/windows-tiered.cmake CVISTA_FORCE_MSVC=ON
@@ -314,7 +312,7 @@ jobs:
       - name: Core import smoke (native)
         shell: pwsh
         run: |
-          $core = Get-ChildItem tier-wheels/cvista-*-${{ matrix.tag }}-${{ matrix.tag }}-win_amd64.whl | Select-Object -First 1
+          $core = Get-ChildItem tier-wheels/cvista-*-cp312-abi3-win_amd64.whl | Select-Object -First 1
           if (-not $core) { Write-Error 'core tier wheel not found in tier-wheels/'; exit 1 }
           python -m venv C:\v
           C:\v\Scripts\pip.exe -q install --no-deps $core.FullName
@@ -329,23 +327,44 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cvista-tier-wheels-windows-${{ matrix.tag }}
+          name: cvista-tier-wheels-windows-abi3
           path: tier-wheels/*.whl
-          if-no-files-found: warn
+          if-no-files-found: error
 
-  # ── Legacy version-specific tiers (cp310 + cp311) ──────────────────────────
+  windows-test:
+    name: Windows downloaded ABI3 wheels (Python ${{ matrix.python }})
+    needs: windows
+    runs-on: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cvista-tier-wheels-windows-abi3
+          path: downloaded-wheels
+      - name: Test the same downloaded wheels without rebuilding
+        run: python ci/cibw/test_downloaded_windows_wheels.py downloaded-wheels
+
+  # ── Legacy version-specific tiers (cp311) ──────────────────────────
   # The abi3 jobs above cover Python 3.12+ with a single cp312-abi3 wheel. Python
-  # 3.10/3.11 need version-specific wheels (CVISTA_ABI3=0), exactly like ci.yml's
+  # 3.11 needs version-specific wheels (CVISTA_ABI3=0), exactly like ci.yml's
   # build-legacy-* jobs — but built with the TIERED init-cache and then partitioned
-  # into the same three projects. Each job builds two wheels (cp310, cp311) and
-  # tiers EACH into cvista / cvista-rendering / cvista-io (6 tier wheels/OS),
+  # into the same three projects. Each job builds one cp311 wheel and
+  # tiers it into cvista / cvista-rendering / cvista-io (3 tier wheels/OS),
   # uploaded as cvista-tier-wheels-<os>-legacy (the publish step's
   # `cvista-tier-wheels-*` pattern picks them up alongside the abi3 artifacts).
   # The partition step's self-containment audit is the hard gate; the abi3 jobs
-  # already prove stacking, and a cp310/cp311 wheel can't be smoke-imported by the
+  # already prove stacking, and a cp311 wheel can't be smoke-imported by the
   # runner's default interpreter, so these skip the stack smoke.
   linux-legacy:
-    name: 3-wheel tier split (linux legacy cp310+cp311)
+    name: 3-wheel tier split (linux legacy cp311)
     runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 150
     env:
@@ -354,13 +373,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Build TIERED legacy wheels (cibuildwheel, cp310+cp311)
+      - name: Build TIERED legacy wheels (cibuildwheel, cp311)
         uses: pypa/cibuildwheel@v3.1.4
         env:
           # Mirror ci.yml build-legacy-linux (manylinux2014 / glibc 2.17 baseline,
           # el7 yum before-all, gold linker) but swap in the tiered init-cache so
           # the built tree partitions cleanly, and pass the pretend-version through.
-          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_BUILD: "cp311-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_MANYLINUX_X86_64_IMAGE: "manylinux2014"
           CIBW_ARCHS_LINUX: "x86_64"
@@ -422,7 +441,7 @@ jobs:
           if-no-files-found: error
 
   macos-legacy:
-    name: 3-wheel tier split (macOS legacy cp310+cp311)
+    name: 3-wheel tier split (macOS legacy cp311)
     runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
     timeout-minutes: 150
     env:
@@ -431,11 +450,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Build TIERED legacy wheels (cibuildwheel, cp310+cp311)
+      - name: Build TIERED legacy wheels (cibuildwheel, cp311)
         uses: pypa/cibuildwheel@v3.1.4
         env:
           # Mirror ci.yml build-legacy-macos + the tiered init-cache.
-          CIBW_BUILD: "cp310-* cp311-*"
+          CIBW_BUILD: "cp311-*"
           CIBW_ENVIRONMENT_MACOS: >-
             CVISTA_ABI3=0
             CVISTA_CMAKE_INIT=ci/cmake/macos-tiered.cmake
@@ -475,7 +494,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tag: [cp310, cp311]
+        tag: [cp311]
     env:
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
     steps:
@@ -486,7 +505,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Build TIERED legacy wheels (cibuildwheel, cp310+cp311)
+      - name: Build TIERED legacy wheels (cibuildwheel, cp311)
         uses: pypa/cibuildwheel@v3.1.4
         env:
           # Mirror ci.yml build-legacy-windows + the tiered init-cache.

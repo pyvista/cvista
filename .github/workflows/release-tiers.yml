@@ -36,7 +36,7 @@ on:
           Force the wheel version (setuptools-scm pretend). Use to add wheels to
           an already-tagged release from main without moving the tag — e.g. run
           from main with publish=true and pretend_version=9.6.2.3 to append the
-          legacy cp310/cp311 tier wheels to the 9.6.2.3 release (skip-existing
+          legacy cp311 tier wheels to the 9.6.2.3 release (skip-existing
           leaves the already-published abi3 wheels untouched).
         type: string
         required: false
@@ -76,7 +76,7 @@ jobs:
 
   # One publish job per project, each running in the project's OWN environment so
   # its OIDC token carries the environment PyPI expects. Each job uploads ONLY its
-  # project's wheels (abi3 cp312 x 4 platforms + legacy cp310/cp311 x 3 = up to 10). Runs
+  # project's wheels (abi3 cp312 x 4 platforms + legacy cp311 x 3 = up to 7). Runs
   # on a release, or on a manual dispatch with publish=true (e.g. to append legacy
   # wheels to an existing release). skip-existing keeps already-published wheels.
   publish:
@@ -120,7 +120,7 @@ jobs:
           echo "=== ${{ matrix.project }} wheels to publish ==="; ls -l dist
           n=$(ls dist/*.whl 2>/dev/null | wc -l)
           # Per project: abi3 (x86_64/macos-arm/win/linux-aarch64 = 4) + legacy
-          # cp310/cp311 (3 OSes x 2 = 6) = up to 10.
+          # cp311 (3 OSes x 1 = 3) = up to 7.
           # At minimum the 3 abi3 wheels must be present.
           test "$n" -ge 3 || { echo "::error::expected >=3 ${{ matrix.project }} wheels, found $n"; exit 1; }
       - name: Publish ${{ matrix.project }} to PyPI
