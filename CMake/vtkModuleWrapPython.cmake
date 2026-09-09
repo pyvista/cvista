@@ -739,13 +739,8 @@ extern PyObject* PyInit_${_vtk_python_library_name}();
     endforeach ()
     if (WIN32)
       set_property(TARGET "${_vtk_python_target}" PROPERTY SUFFIX ".pyd")
-      # NOTE: the abi3 (Py_LIMITED_API) Windows link fixes live in
-      # Utilities/Python/CMakeLists.txt (one global fix for ALL Python-using
-      # links, incl. the WrappingPythonCore module which is NOT a wrapper target
-      # created here): the CPython libs/ dir is added to the linker search path
-      # so MSVC's #pragma comment(lib,"python3.lib") auto-link resolves (LNK1104),
-      # and Python3::Module's import lib is retargeted to the stable-ABI stub
-      # python3.lib so the .pyd depends on python3.dll, not python3XX.dll.
+      # VTK::Python links Python3::SABIModule on Windows under CVISTA_ABI3;
+      # the wrapper and its native dependencies therefore use python3.dll.
     else ()
       set_property(TARGET "${_vtk_python_target}" PROPERTY SUFFIX ".abi3.so")
     endif ()

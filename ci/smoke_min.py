@@ -59,6 +59,14 @@ def main() -> int:
         print("smoke_min: FAIL — filter produced no cells", file=sys.stderr)
         return 1
 
+    # This module has a native Python-using DLL in addition to its wrapper.
+    # A sphere-only smoke misses wrong-interpreter DLLs and false abi3 tags.
+    algorithms = import_module(f"{IMPORT_NAME}.util.vtkAlgorithm")
+    algorithm = algorithms.VTKPythonAlgorithmBase(nInputPorts=0, nOutputPorts=0)
+    assert algorithm.GetNumberOfInputPorts() == 0
+    assert algorithm.GetNumberOfOutputPorts() == 0
+    print("smoke_min: VTKPythonAlgorithmBase OK")
+
     print("smoke_min: import + compute OK")
     return 0
 

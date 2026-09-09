@@ -187,7 +187,7 @@ CCACHE_SLOPPINESS = "time_macros,locale,pch_defines"
 archs = ["arm64"]
 # ccache is NOT on PyPI (no wheel) — install it via Homebrew (preinstalled on the
 # macos-14 runner). cmake/ninja/setuptools/wheel come from pip into the build env.
-before-build = "brew install ccache && python -m pip install 'cmake>=3.22,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
+before-build = "brew install ccache && python -m pip install 'cmake>=3.26,<4.2' 'ninja>=1.11' 'setuptools<81' wheel"
 # delocate-wheel bundles the dylibs but does NOT strip symbols; repair_macos.py
 # runs delocate then strips local symbol tables (strip -x) + re-signs ad-hoc,
 # mirroring the Linux `auditwheel repair --strip` size win. Set CVISTA_STRIP=0 to
@@ -219,7 +219,7 @@ CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
 # ===========================================================================
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
-before-build = "pip install delvewheel \"cmake>=3.22,<4.2\" \"ninja>=1.11\" \"setuptools<81\" wheel"
+before-build = "pip install delvewheel \"cmake>=3.26,<4.2\" \"ninja>=1.11\" \"setuptools<81\" wheel && python -m unittest discover -s ci/cibw -p test_repair_windows.py"
 # cvista builds with VTK_ENABLE_KITS=ON: every DLL a .pyd imports (kit DLLs like
 # vtkRendering / vtkFilters, standalone module DLLs like vtkChartsCore, and the
 # vendored third-party DLLs) is a real file in the build tree's bin/ dir, but
@@ -237,21 +237,8 @@ repair-wheel-command = "python ci/cibw/repair_windows.py . {dest_dir} {wheel}"
 # the global xvfb offscreen-render smoke is Linux-only. Use the minimal
 # import+compute smoke (no render, no xvfb) instead.
 test-command = "python {project}/ci/smoke_min.py"
-# Test the abi3 wheel only on its BUILD interpreter (cp312) on Windows. The
-# single cp312-abi3 wheel BUILDS, repairs (delvewheel) and imports+computes
-# cleanly on cp312 — which is exactly what this leg exists to prove ("the wheel
-# BUILDS + imports on its native platform"; the numeric/pixel gates are
-# Linux-only). It does NOT yet import on cp313/cp314 on Windows: a Python-using
-# DLL still carries a python3XX.dll dependency (MSVC links the version import lib
-# python312.lib instead of the stable-ABI stub python3.lib for that module), and
-# delvewheel correctly does not vendor the interpreter DLL, so the load fails on a
-# different minor. This is a Windows-ONLY gap — the abi3 cross-version promise is
-# already gated on Linux (the bitexact job installs the one abi3 wheel on BOTH
-# py3.12 and py3.13) and macOS extensions use dynamic lookup (no version dep).
-# Windows wheels are not shipped today. TODO(win-abi3-xver): make every
-# Python-using module link Python3::SABIModule (python3.lib) so the Windows wheel
-# is cross-version, then drop this skip.
-test-skip = "cp313-* cp314-*"
+# Exercise the same abi3 wheel on every supported interpreter. The smoke also
+# loads FiltersPython, whose native library uses the CPython C API.
 
 [tool.cibuildwheel.windows.environment]
 # REPO-relative (see the macos table note): {project} is not expanded in env
