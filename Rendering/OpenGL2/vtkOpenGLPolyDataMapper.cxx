@@ -707,8 +707,6 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderEdges(
       shaders[vtkShader::Geometry]->SetSource(GSSource);
     }
 
-    // discard pixels that are outside the polygon and not an edge
-
     std::string FSSource = shaders[vtkShader::Fragment]->GetSource();
 
     vtkShaderProgram::Substitute(FSSource, "//VTK::Edges::Dec",
@@ -724,17 +722,15 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderEdges(
       "edist[1] = dot(edgeEqn[1].xy, gl_FragCoord.xy) + edgeEqn[1].w;\n"
       "edist[2] = dot(edgeEqn[2].xy, gl_FragCoord.xy) + edgeEqn[2].w;\n"
 
-    // "if (abs(edist[0]) > 0.5*lineWidth && abs(edist[1]) > 0.5*lineWidth && abs(edist[2]) >
-    // 0.5*lineWidth) discard;\n"
-#if !(defined(__APPLE__) && defined(__arm64__))
-      "if (edist[0] < -0.5 && edgeEqn[0].z > 0.0) discard;\n"
-      "if (edist[1] < -0.5 && edgeEqn[1].z > 0.0) discard;\n"
-      "if (edist[2] < -0.5 && edgeEqn[2].z > 0.0) discard;\n"
-#endif
-
-      "edist[0] += edgeEqn[0].z;\n"
-      "edist[1] += edgeEqn[1].z;\n"
-      "edist[2] += edgeEqn[2].z;\n"
+      // Exclude hidden edges from the blend, rather than shifting their distance.
+      // With MSAA, a covered sample can have its pixel center outside the triangle;
+      // the resulting negative distance can make even a shifted edge visible.
+      // The geometry shader does not expand triangles, so rasterization already
+      // clips coverage. Discarding here would remove valid samples and can also
+      // invalidate the derivatives used to compute surface normals below.
+      "if (edgeEqn[0].z > 0.0) edist[0] = lineWidth + 1.0;\n"
+      "if (edgeEqn[1].z > 0.0) edist[1] = lineWidth + 1.0;\n"
+      "if (edgeEqn[2].z > 0.0) edist[2] = lineWidth + 1.0;\n"
 
       "float emix = clamp(0.5 + 0.5*lineWidth - min( min( edist[0], edist[1]), edist[2]), 0.0, "
       "1.0);\n";
@@ -781,7 +777,7 @@ void vtkOpenGLPolyDataMapper::ReplaceShaderEdges(
         "  float A = tnorm.z;\n"
         "  rdist = 0.5*rdist + 0.5*(rdist + A)/(1+abs(A));\n"
 
-        "  float lenZ = clamp(sqrt(1.0 - rdist*rdist),0.0,1.0);\n"
+        "  float lenZ = sqrt(max(0.0, 1.0 - rdist*rdist));\n"
         "  normalVCVSOutput = mix(normalVCVSOutput, normalize(rdist*tnorm + "
         "normalVCVSOutput*lenZ), emix);\n");
     }
