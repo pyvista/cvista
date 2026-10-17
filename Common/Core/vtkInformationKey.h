@@ -188,6 +188,20 @@ protected:
   // Helper for debug leaks support.
   void ConstructClass(const char*);
 
+  // Information keys are process-lifetime singletons registered with
+  // vtkCommonInformationKeyManager / vtkFilteringInformationKeyManager and
+  // vtkInformationKeyLookup on construction and destroyed exclusively by the
+  // key-manager ClassFinalize() at process exit (see ~vtkInformationKey(),
+  // which clears ReferenceCount before ~vtkObjectBase()). MakeKey() carries
+  // VTK_NEWINSTANCE so wrappers transfer the initial reference to PyVTKObject;
+  // without no-op RegisterInternal/UnRegisterInternal overrides, collecting
+  // the Python wrapper (or tearing down vtkPythonObjectMap at Py_FinalizeEx)
+  // drops ReferenceCount to 0 and deletes the key while the key manager,
+  // vtkInformationKeyLookup, and any vtkInformation instances still hold raw
+  // pointers to it (gh-249).
+  void RegisterInternal(vtkObjectBase*, vtkTypeBool check) override;
+  void UnRegisterInternal(vtkObjectBase*, vtkTypeBool check) override;
+
 private:
   vtkInformationKey(const vtkInformationKey&) = delete;
   void operator=(const vtkInformationKey&) = delete;

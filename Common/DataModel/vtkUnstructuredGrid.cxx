@@ -24,6 +24,7 @@
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkSMPTools.h"
 #include "vtkStaticCellLinks.h"
 #include "vtkUnsignedCharArray.h"
 #include "vtkUnstructuredGridCellIterator.h"
@@ -981,9 +982,16 @@ void vtkUnstructuredGrid::BuildLinks()
   // the last step. The rebuild-in-place branch (Links already set, e.g. after the
   // points change) keeps its original behavior -- those calls come from the main
   // thread, not the concurrent lazy-accessor path.
+  vtk::detail::smp::vtkSMPToolsAPI::GilReleaseScope gilScope;
   std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
   if (this->Links)
   {
+    if (this->Links->GetBuildTime() > this->GetMTime() &&
+      this->Links->GetBuildTime() > this->Points->GetMTime() &&
+      this->Links->GetBuildTime() > this->Links->GetMTime())
+    {
+      return; // another thread finished the build while we waited on the lock
+    }
     if (this->Points->GetMTime() > this->Links->GetMTime())
     {
       this->Links->SetDataSet(this);

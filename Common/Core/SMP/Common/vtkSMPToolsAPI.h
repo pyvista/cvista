@@ -101,6 +101,33 @@ public:
   using GilReleaseFn = void* (*)();
   using GilAcquireFn = void (*)(void*);
   static void SetGilCallbacks(GilReleaseFn release, GilAcquireFn acquire);
+
+  // RAII helper: on construction (when enabled and a release callback is
+  // registered) drop the GIL and stash the token; on destruction restore it.
+  // Keyed entirely on the token so nested scopes -- where the caller no longer
+  // holds the GIL and GilRelease returns null -- are no-ops. Public so C++
+  // mutex scopes that call into vtkSMPTools::For (e.g. BuildLinksMutex) can
+  // drop the GIL before acquiring the mutex and avoid AB-BA lock inversion.
+  struct GilReleaseScope
+  {
+    void* State = nullptr;
+    explicit GilReleaseScope(bool enabled = true)
+    {
+      if (enabled && vtkSMPToolsAPI::GilRelease)
+      {
+        this->State = vtkSMPToolsAPI::GilRelease();
+      }
+    }
+    ~GilReleaseScope()
+    {
+      if (this->State && vtkSMPToolsAPI::GilAcquire)
+      {
+        vtkSMPToolsAPI::GilAcquire(this->State);
+      }
+    }
+    GilReleaseScope(const GilReleaseScope&) = delete;
+    GilReleaseScope& operator=(const GilReleaseScope&) = delete;
+  };
   ///@}
 
   //------------------------------------------------------------------------------
@@ -275,31 +302,6 @@ private:
   // registered them; never touched for the Sequential backend.
   static GilReleaseFn GilRelease;
   static GilAcquireFn GilAcquire;
-
-  // RAII helper: on construction (for a threaded backend, when a release
-  // callback is registered) drop the GIL and stash the token; on destruction
-  // restore it. Keyed entirely on the token so nested For() calls -- where the
-  // caller no longer holds the GIL and GilRelease returns null -- are no-ops.
-  struct GilReleaseScope
-  {
-    void* State = nullptr;
-    explicit GilReleaseScope(bool threaded)
-    {
-      if (threaded && vtkSMPToolsAPI::GilRelease)
-      {
-        this->State = vtkSMPToolsAPI::GilRelease();
-      }
-    }
-    ~GilReleaseScope()
-    {
-      if (this->State && vtkSMPToolsAPI::GilAcquire)
-      {
-        vtkSMPToolsAPI::GilAcquire(this->State);
-      }
-    }
-    GilReleaseScope(const GilReleaseScope&) = delete;
-    GilReleaseScope& operator=(const GilReleaseScope&) = delete;
-  };
 
   //--------------------------------------------------------------------------------
   // This operator overload is used to unpack Config parameters and set them
