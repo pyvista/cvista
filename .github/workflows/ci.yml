@@ -438,7 +438,7 @@ jobs:
       - name: pyvista build cvista
         # --yes takes every default: cmake and ninja are pip-installed by the command.
         run: |
-          pyvista build cvista --yes --source . --opt lto=0 \
+          pyvista build cvista --source . --opt lto=0 \
             --build-dir build-pyvista --cache-dir /tmp/cvista-pyvista-build-ccache --no-install
       - name: Smoke test the wheel
         run: |

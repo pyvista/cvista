@@ -416,7 +416,7 @@ cibuildwheel backend uses, reading them from `pyvista-build.toml` at the repo ro
 
 ```bash
 pip install --group build                  # PyVista with the build command
-pyvista build cvista                       # clone + guided build of the release tag
+pyvista build cvista                       # clone + build of the release tag (--interactive to be asked at each step)
 pyvista build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
 ```
 
