@@ -1,7 +1,7 @@
 manifest_version = 1 # read by `pyvista build cvista`
 
 [backend]
-default_ref = "9.7.0.5"
+default_ref = "main"
 import_name = "cvista"
 name = "cvista"
 url = "https://github.com/pyvista/cvista.git"
@@ -29,6 +29,21 @@ help = "Link-time optimisation as in the release wheels (off: 2-3x faster build)
 default = false
 env = "CVISTA_SOURCE_UNITY"
 help = "Unity (batched) compilation of module sources (GCC only; off on the 9.7 base)"
+
+[manylinux] # system packages for --manylinux, as in before-all
+packages = [
+  "libX11-devel",
+  "libXcursor-devel",
+  "libXext-devel",
+  "libXt-devel",
+  "libglvnd-devel",
+  "lld",
+  "mesa-libEGL-devel",
+  "mesa-libGL-devel",
+  "mesa-libGLU-devel",
+  "mesa-libOSMesa-devel",
+  "mold",
+]
 
 [hooks]
 post_build = ["{python} ci/prune_setup_py.py {build_dir}"]

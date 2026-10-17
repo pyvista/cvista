@@ -3,6 +3,7 @@
 
 import contextlib
 import glob
+import json
 import os
 import re
 import subprocess
@@ -12,9 +13,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cib
 
 import cvista_backend  # noqa: E402
 
+OPTIONS_FILE = ".cvista-build-options.json"
+
 USAGE = """\
 usage: pyvista_build_hooks.py version            print VTK_VERSION_SUFFIX for HEAD
-       pyvista_build_hooks.py check <build_dir>  fail when CVISTA_ABI3 cannot build here
+       pyvista_build_hooks.py check <build_dir>  fail when abi3 cannot build here or abi3/lto changed
        pyvista_build_hooks.py retag <build_dir>  give the wheel in <build_dir>/dist the abi3 tag
 """
 
@@ -52,26 +55,58 @@ def _tag_suffix() -> "str | None":
     return None
 
 
+def _sha_suffix() -> str:
+    """Return ``dev0+g<sha8>`` for HEAD."""
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            cwd=cvista_backend.REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        sys.exit(
+            "HEAD is not a release tag and git cannot name it, so the version is unknown"
+        )
+    return f"dev0+g{sha}"
+
+
 def version() -> str:
-    """Return VTK_VERSION_SUFFIX: from the exact tag, else from setuptools_scm."""
+    """Return VTK_VERSION_SUFFIX: from the exact tag, else setuptools_scm, else ``dev0+g<sha>``."""
     suffix = _tag_suffix()
     if suffix is not None:
         return suffix
     try:
         import setuptools_scm  # noqa: F401
     except ImportError:
-        sys.exit(
-            "HEAD is not a release tag and setuptools_scm is not installed, so the "
-            "version cannot be derived; pip install 'setuptools_scm>=8' and run again"
-        )
+        return _sha_suffix()
     with contextlib.redirect_stdout(sys.stderr):
         return cvista_backend._version_suffix()
 
 
 def check(build_dir: str) -> None:
-    """Exit when the configured CVISTA_ABI3 cannot be built with this Python."""
-    if not _abi3_configured(build_dir):
+    """Exit when CVISTA_ABI3 cannot be built here, or when abi3 or LTO changed in this tree."""
+    abi3 = _abi3_configured(build_dir)
+    if abi3:
+        _check_abi3()
+    options = {"abi3": abi3, "lto": os.environ.get("CVISTA_LTO", "")}
+    stamp = os.path.join(build_dir, OPTIONS_FILE)
+    if os.path.isfile(stamp):
+        with open(stamp, encoding="utf-8") as f:
+            before = json.load(f)
+        if before != options:
+            sys.exit(
+                f"abi3/lto changed since {build_dir} was configured ({before} -> {options}), "
+                "and the old compiler flags stay in its CMake cache; run again with --clean"
+            )
         return
+    with open(stamp, "w", encoding="utf-8") as f:
+        json.dump(options, f)
+
+
+def _check_abi3() -> None:
+    """Exit when CVISTA_ABI3 cannot be built with this Python or platform."""
     if sys.version_info < cvista_backend.ABI3_FLOOR_VERSION:
         sys.exit(
             f"CVISTA_ABI3 is ON but Python {sys.version_info[0]}.{sys.version_info[1]} is "

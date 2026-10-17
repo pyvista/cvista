@@ -1,9 +1,7 @@
 """Checks for the `pyvista build cvista` hooks and the manifest they serve."""
 
-import importlib.util
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -28,22 +26,30 @@ def _write_cache(build_dir: str, value: str) -> None:
 def _fake_wheel(dist: Path, name: str) -> Path:
     wheel = dist / name
     with zipfile.ZipFile(wheel, "w") as z:
-        z.writestr("cvista-9.7.0.5.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: cp312-cp312-linux_x86_64\n")
-        z.writestr("cvista-9.7.0.5.dist-info/RECORD", "cvista-9.7.0.5.dist-info/WHEEL,sha256=x,1\n")
+        z.writestr(
+            "cvista-9.7.0.5.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nTag: cp312-cp312-linux_x86_64\n",
+        )
+        z.writestr(
+            "cvista-9.7.0.5.dist-info/RECORD",
+            "cvista-9.7.0.5.dist-info/WHEEL,sha256=x,1\n",
+        )
     return wheel
 
 
 class VersionTests(unittest.TestCase):
-    @unittest.skipUnless(
-        importlib.util.find_spec("setuptools_scm") or hooks._tag_suffix() is not None,
-        "needs setuptools_scm or a release tag on HEAD",
-    )
     def test_stdout_is_one_line(self):
         out = subprocess.run(
-            [sys.executable, str(HOOK), "version"], cwd=REPO, capture_output=True, text=True, check=True
+            [sys.executable, str(HOOK), "version"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertEqual(len(out.splitlines()), 1, out)
-        self.assertRegex(out.strip(), r"^(\d+(\.\d+)*(\.dev\d+)?|dev0|0\.dev0|)$")
+        self.assertRegex(
+            out.strip(), r"^(\d+(\.\d+)*(\.dev\d+)?|dev0|0\.dev0|dev0\+g[0-9a-f]{8}|)$"
+        )
 
     def test_exact_tag(self):
         base = hooks.cvista_backend.VTK_BASE_VERSION
@@ -60,6 +66,20 @@ class VersionTests(unittest.TestCase):
         with patch.object(hooks.subprocess, "run", side_effect=err):
             self.assertIsNone(hooks._tag_suffix())
 
+    def test_sha_fallback_without_setuptools_scm(self):
+        completed = subprocess.CompletedProcess([], 0, stdout="abcdef12\n", stderr="")
+        with (
+            patch.object(hooks, "_tag_suffix", return_value=None),
+            patch.dict(sys.modules, {"setuptools_scm": None}),
+            patch.object(hooks.subprocess, "run", return_value=completed),
+        ):
+            self.assertEqual(hooks.version(), "dev0+gabcdef12")
+        with (
+            patch.object(hooks.subprocess, "run", side_effect=OSError("no git")),
+            self.assertRaises(SystemExit),
+        ):
+            hooks._sha_suffix()
+
 
 class CacheTests(unittest.TestCase):
     def test_abi3_configured(self):
@@ -74,23 +94,53 @@ class CacheTests(unittest.TestCase):
 
     def test_check(self):
         with tempfile.TemporaryDirectory() as build:
+            stamp = Path(build, hooks.OPTIONS_FILE)
             _write_cache(build, "OFF")
             with patch.object(hooks.sys, "version_info", (3, 11)):
                 hooks.check(build)
+            stamp.unlink()
             _write_cache(build, "ON")
-            with patch.object(hooks.sys, "version_info", (3, 11)), self.assertRaises(SystemExit):
+            with (
+                patch.object(hooks.sys, "version_info", (3, 11)),
+                self.assertRaises(SystemExit) as info,
+            ):
                 hooks.check(build)
+            self.assertIn("stable-ABI floor", str(info.exception))
             with (
                 patch.object(hooks.sys, "version_info", (3, 12)),
                 patch.object(hooks.sys, "platform", "win32"),
-                self.assertRaises(SystemExit),
+                self.assertRaises(SystemExit) as info,
             ):
                 hooks.check(build)
+            self.assertIn("LIB=", str(info.exception))
             with (
                 patch.object(hooks.sys, "version_info", (3, 12)),
                 patch.object(hooks.sys, "platform", "linux"),
             ):
                 hooks.check(build)
+            self.assertTrue(stamp.is_file())
+
+    def test_check_options_change(self):
+        with tempfile.TemporaryDirectory() as build:
+            _write_cache(build, "OFF")
+            with patch.dict(hooks.os.environ, {"CVISTA_LTO": "1"}):
+                hooks.check(build)
+                hooks.check(build)
+            with (
+                patch.dict(hooks.os.environ, {"CVISTA_LTO": "0"}),
+                self.assertRaises(SystemExit) as info,
+            ):
+                hooks.check(build)
+            self.assertIn("--clean", str(info.exception))
+            with (
+                patch.dict(hooks.os.environ, {"CVISTA_LTO": "1"}),
+                patch.object(hooks.sys, "version_info", (3, 12)),
+                patch.object(hooks.sys, "platform", "linux"),
+            ):
+                _write_cache(build, "ON")
+                with self.assertRaises(SystemExit) as info:
+                    hooks.check(build)
+            self.assertIn("'abi3': False", str(info.exception))
 
 
 class RetagTests(unittest.TestCase):
@@ -108,10 +158,16 @@ class RetagTests(unittest.TestCase):
             _write_cache(build, "ON")
             hooks.retag(build)
             self.assertEqual(
-                sorted(p.name for p in dist.iterdir()), ["cvista-9.7.0.5-cp312-abi3-linux_x86_64.whl"]
+                sorted(p.name for p in dist.iterdir()),
+                ["cvista-9.7.0.5-cp312-abi3-linux_x86_64.whl"],
             )
-            with zipfile.ZipFile(dist / "cvista-9.7.0.5-cp312-abi3-linux_x86_64.whl") as z:
-                self.assertIn("Tag: cp312-abi3-linux_x86_64", z.read("cvista-9.7.0.5.dist-info/WHEEL").decode())
+            with zipfile.ZipFile(
+                dist / "cvista-9.7.0.5-cp312-abi3-linux_x86_64.whl"
+            ) as z:
+                self.assertIn(
+                    "Tag: cp312-abi3-linux_x86_64",
+                    z.read("cvista-9.7.0.5.dist-info/WHEEL").decode(),
+                )
 
 
 class ManifestTests(unittest.TestCase):
@@ -124,12 +180,27 @@ class ManifestTests(unittest.TestCase):
             for command in commands:
                 script = command.split()[1]
                 self.assertTrue((REPO / script).is_file(), script)
-        self.assertEqual(manifest["backend"]["version_command"].split()[1], "ci/pyvista_build_hooks.py")
+        self.assertEqual(
+            manifest["backend"]["version_command"].split()[1],
+            "ci/pyvista_build_hooks.py",
+        )
+        ref = manifest["backend"]["default_ref"]
         tags = subprocess.run(
-            ["git", "tag", "--list"], cwd=REPO, capture_output=True, text=True, check=True
+            ["git", "tag", "--list"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.split()
-        self.assertIn(manifest["backend"]["default_ref"], tags)
-        self.assertTrue(re.fullmatch(r"\d+(\.\d+)+", manifest["backend"]["default_ref"]))
+        if ref == "main":
+            return
+        self.assertIn(ref, tags)
+        carries = subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}:pyvista-build.toml"],
+            cwd=REPO,
+            check=False,
+        )
+        self.assertEqual(carries.returncode, 0, f"tag {ref} has no pyvista-build.toml")
 
 
 if __name__ == "__main__":
