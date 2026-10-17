@@ -44,9 +44,9 @@ description = "cvista — trimmed PyVista-parity hard-fork of VTK 9.6.2 (vtkmodu
 # Python 3.11 has a version-specific wheel; 3.12+ share one ABI3 wheel.
 requires-python = ">=3.11"
 
-# `pip install --group build` provides `pyvista build cvista` (pyvista#9433, unreleased).
+# `pip install --group build` provides `pyvista build cvista` (pyvista#9435, unreleased).
 [dependency-groups]
-build = ["pyvista @ git+https://github.com/pyvista/pyvista.git@feat/build-cli"]
+build = ["pyvista @ git+https://github.com/pyvista/pyvista.git@feat/build-command"]
 
 # ===========================================================================
 # cibuildwheel — Linux manylinux_2_28 (glibc 2.28, AlmaLinux 8, GCC 14.2.1). The
