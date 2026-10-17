@@ -404,6 +404,52 @@ jobs:
           path: /tmp/rx-out
           if-no-files-found: ignore
 
+  # Builds the wheel through pyvista-build.toml with `pyvista build cvista`.
+  pyvista-build:
+    name: pyvista build cvista (manifest, linux)
+    runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the compiler, GL headers and ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache mold libgl-dev libegl-dev libosmesa6-dev libglu1-mesa-dev \
+            libglvnd-dev libx11-dev libxcursor-dev libxt-dev libxext-dev
+      - name: Restore ccache seed (cross-run)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cvista-pyvista-build-ccache
+          key: cvista-ccache-linux-pyvista-build-${{ github.run_id }}
+          restore-keys: |
+            cvista-ccache-linux-pyvista-build-
+      - name: Install PyVista with the build command
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --group build "setuptools_scm>=8"
+      - name: Hook and manifest tests
+        run: python -m unittest discover -s ci/cibw -p test_pyvista_build_hooks.py
+      - name: pyvista build cvista
+        # --yes takes every default: cmake and ninja are pip-installed by the command.
+        run: |
+          pyvista build cvista --yes --source . --opt lto=0 \
+            --build-dir build-pyvista --cache-dir /tmp/cvista-pyvista-build-ccache --no-install
+      - name: Smoke test the wheel
+        run: |
+          python -m pip install --no-deps build-pyvista/wheelhouse/*.whl
+          CVISTA_IMPORT_NAME=cvista python ci/smoke_min.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cvista-wheel-pyvista-build-linux
+          path: build-pyvista/wheelhouse/*.whl
+          if-no-files-found: error
+
   # Cheap detector so a PR that BUMPS the pin (tests/pyvista/PYVISTA_REF) runs the
   # PyVista gate without needing the `pyvista-full` label — the pin must never
   # advance unvalidated. Plain git diff (no third-party action). Only meaningful

@@ -415,9 +415,15 @@ On any platform, PyVista's build command drives the same init caches and hooks t
 cibuildwheel backend uses, reading them from `pyvista-build.toml` at the repo root:
 
 ```bash
+pip install --group build                  # PyVista with the build command
 pyvista build cvista                       # clone + guided build of the release tag
 pyvista build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
 ```
+
+CI runs the same command on Linux (`pyvista-build` in `ci.yml`), so the manifest is
+exercised on every pull request. Limits: the wheel is not stripped, so it is larger than
+the published one; Windows and Python 3.11 need `--opt abi3=0` (the hook stops the
+configure otherwise); a build off a release tag needs `setuptools_scm` installed.
 
 The nix-based script below remains the Linux reference build.
 

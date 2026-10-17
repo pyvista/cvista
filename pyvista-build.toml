@@ -13,6 +13,7 @@ ninja = ">=1.11"
 
 [cmake]
 init_cache = { linux = "ci/cmake/linux.cmake", macos = "ci/cmake/macos.cmake", windows = "ci/cmake/windows.cmake" }
+macos = ["CMAKE_OSX_DEPLOYMENT_TARGET=11.0"]
 
 [options.abi3]
 cmake = "CVISTA_ABI3={value}"
@@ -25,10 +26,11 @@ env = "CVISTA_LTO"
 help = "Link-time optimisation as in the release wheels (off: 2-3x faster build)"
 
 [options.unity]
-default = true
+default = false
 env = "CVISTA_SOURCE_UNITY"
-help = "Unity (batched) compilation of module sources"
+help = "Unity (batched) compilation of module sources (GCC only; off on the 9.7 base)"
 
 [hooks]
 post_build = ["{python} ci/prune_setup_py.py {build_dir}"]
+post_configure = ["{python} ci/pyvista_build_hooks.py check {build_dir}"]
 post_wheel = ["{python} ci/pyvista_build_hooks.py retag {build_dir}"]
