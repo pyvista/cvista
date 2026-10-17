@@ -746,6 +746,7 @@ bool vtkPolyData::AllocateProportional(vtkPolyData* pd, double ratio)
 void vtkPolyData::DeleteCells()
 {
   // if we have Links, we need to delete them (they are no longer valid)
+  std::scoped_lock lock(this->BuildCellsMutex, this->BuildLinksMutex);
   this->Links = nullptr;
   this->Cells = nullptr;
 }
@@ -807,6 +808,7 @@ void vtkPolyData::BuildCells()
   // then sees this->Cells as either null (and builds under the lock) or
   // complete. (The header still documents the single-thread-first contract; this
   // hardens the convenience path that cvista's default threading relies on.)
+  vtk::detail::smp::vtkSMPToolsAPI::GilReleaseScope gilScope;
   std::lock_guard<std::mutex> lock(this->BuildCellsMutex);
   if (this->Cells)
   {
@@ -879,6 +881,7 @@ void vtkPolyData::BuildCells()
 //------------------------------------------------------------------------------
 void vtkPolyData::DeleteLinks()
 {
+  std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
   this->Links = nullptr;
 }
 
@@ -905,9 +908,16 @@ void vtkPolyData::BuildLinks(int initialSize)
   // publish fully-built last. The rebuild-in-place branches (Links already set,
   // e.g. after the points change) keep their original behavior -- those calls
   // come from the main thread, not the concurrent lazy-accessor path.
+  vtk::detail::smp::vtkSMPToolsAPI::GilReleaseScope gilScope;
   std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
   if (this->Links)
   {
+    if (initialSize == 0 && this->Links->GetBuildTime() > this->GetMTime() &&
+      this->Links->GetBuildTime() > this->Points->GetMTime() &&
+      this->Links->GetBuildTime() > this->Links->GetMTime())
+    {
+      return; // another thread finished the build while we waited on the lock
+    }
     if (initialSize > 0 && this->Links->IsA("vtkCellLinks"))
     {
       static_cast<vtkCellLinks*>(this->Links.Get())->Allocate(initialSize);

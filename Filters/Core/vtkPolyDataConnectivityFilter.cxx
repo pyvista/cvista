@@ -136,6 +136,7 @@ int vtkPolyDataConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(reques
   this->NewScalars = vtkIdTypeArray::New();
   this->NewScalars->SetName("RegionId");
   this->NewScalars->SetNumberOfTuples(numPts);
+  this->NewScalars->Fill(0.0);
   newPts = vtkPoints::New();
 
   // Set the desired precision for the points in the output.

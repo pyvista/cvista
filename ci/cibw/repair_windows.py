@@ -118,7 +118,10 @@ def main(argv: list[str]) -> int:
 
     bin_dirs = _bin_dirs(project, wheel)
 
-    cmd = ["delvewheel", "repair", "-w", dest_dir]
+    # Pass --no-mangle-all so the bundled DLLs in cvista.libs/ retain their
+    # build-tree names (e.g. vtkCommon-cvista.dll), matching the import
+    # libraries (.lib) shipped in cvista-sdk (gh-299).
+    cmd = ["delvewheel", "repair", "--no-mangle-all", "-w", dest_dir]
     for d in bin_dirs:
         cmd += ["--add-path", d]
     cmd.append(wheel)

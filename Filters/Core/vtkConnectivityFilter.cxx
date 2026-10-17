@@ -166,9 +166,11 @@ int vtkConnectivityFilter::RequestData(vtkInformation* vtkNotUsed(request),
 
   this->NewScalars->SetName("RegionId");
   this->NewScalars->SetNumberOfTuples(numPts);
+  this->NewScalars->FillValue(0);
 
   this->NewCellScalars->SetName("RegionId");
   this->NewCellScalars->SetNumberOfTuples(numCells);
+  this->NewCellScalars->FillValue(0);
 
   newPts = vtkPoints::New();
 

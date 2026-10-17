@@ -425,6 +425,10 @@ vtkIdType vtkDelaunay3D::FindEnclosingFaces(double x[3], vtkUnstructuredGrid* Me
   {
     tetraId = tetras->GetId(i);
     Mesh->GetCellPoints(tetraId, npts, tetraPts);
+    // Snapshot the 4 point IDs before GetTetraFaceNeighbor() below calls
+    // Mesh->GetCellPoints(), which clobbers tetraPts when Mesh uses 32-bit
+    // cell storage (gh-221).
+    const vtkIdType tetraPtsLocal[4] = { tetraPts[0], tetraPts[1], tetraPts[2], tetraPts[3] };
     for (j = 0; j < 4; j++)
     {
       insertFace = 0;
@@ -434,24 +438,24 @@ vtkIdType vtkDelaunay3D::FindEnclosingFaces(double x[3], vtkUnstructuredGrid* Me
       switch (j)
       {
         case 0: // face 0: points 0, 1, 2
-          p1 = tetraPts[0];
-          p2 = tetraPts[1];
-          p3 = tetraPts[2];
+          p1 = tetraPtsLocal[0];
+          p2 = tetraPtsLocal[1];
+          p3 = tetraPtsLocal[2];
           break;
         case 1: // face 1: points 1, 2, 3 (must flip order!)
-          p1 = tetraPts[1];
-          p2 = tetraPts[3];
-          p3 = tetraPts[2];
+          p1 = tetraPtsLocal[1];
+          p2 = tetraPtsLocal[3];
+          p3 = tetraPtsLocal[2];
           break;
         case 2: // face 2: points 2, 3, 0
-          p1 = tetraPts[2];
-          p2 = tetraPts[3];
-          p3 = tetraPts[0];
+          p1 = tetraPtsLocal[2];
+          p2 = tetraPtsLocal[3];
+          p3 = tetraPtsLocal[0];
           break;
         case 3: // face 3: points 3, 0, 1 (must flip order!)
-          p1 = tetraPts[3];
-          p2 = tetraPts[1];
-          p3 = tetraPts[0];
+          p1 = tetraPtsLocal[3];
+          p2 = tetraPtsLocal[1];
+          p3 = tetraPtsLocal[0];
           break;
       }
 

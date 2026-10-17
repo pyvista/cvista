@@ -15,6 +15,7 @@
 #include "vtkNew.h"
 #include "vtkObjectFactory.h"
 #include "vtkPointData.h"
+#include "vtkSMPTools.h"
 #include "vtkStaticCellLinks.h"
 #include "vtkStructuredData.h"
 #include "vtkUnsignedCharArray.h"
@@ -529,9 +530,16 @@ void vtkExplicitStructuredGrid::BuildLinks()
   // observe an empty/half-built links object. Serialize builders with a mutex;
   // build the FIRST-build path into a local and publish it fully-built last. The
   // rebuild-in-place branch keeps its original behavior (main-thread path).
+  vtk::detail::smp::vtkSMPToolsAPI::GilReleaseScope gilScope;
   std::lock_guard<std::mutex> lock(this->BuildLinksMutex);
   if (this->Links)
   {
+    if (this->Links->GetBuildTime() > this->GetMTime() &&
+      this->Links->GetBuildTime() > this->Points->GetMTime() &&
+      this->Links->GetBuildTime() > this->Links->GetMTime())
+    {
+      return; // another thread finished the build while we waited on the lock
+    }
     if (this->Points->GetMTime() > this->Links->GetMTime())
     {
       this->Links->SetDataSet(this);

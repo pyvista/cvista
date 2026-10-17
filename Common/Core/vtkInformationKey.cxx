@@ -134,4 +134,10 @@ void vtkInformationKey::ReportAsObjectBase(vtkInformation* info, vtkGarbageColle
 
 //------------------------------------------------------------------------------
 void vtkInformationKey::ConstructClass(const char*) {}
+
+//------------------------------------------------------------------------------
+void vtkInformationKey::RegisterInternal(vtkObjectBase*, vtkTypeBool) {}
+
+//------------------------------------------------------------------------------
+void vtkInformationKey::UnRegisterInternal(vtkObjectBase*, vtkTypeBool) {}
 VTK_ABI_NAMESPACE_END
