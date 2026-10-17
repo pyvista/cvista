@@ -7,12 +7,13 @@
 #if defined(VTK_USE_X)
 #include "vtkDynamicLoader.h"
 
-#include <atomic>
 #include <cstddef>
 #include <dlfcn.h>
+#include <mutex>
 namespace
 {
-std::atomic<std::size_t> RequestId = 0;
+std::mutex X11FunctionsMutex;
+std::size_t RequestId = 0;
 const char* X11_LIBRARY_NAMES[] = { "libX11.so.6", "libX11.so", nullptr };
 #if VTK_HAVE_XCURSOR
 const char* XCURSOR_LIBRARY_NAMES[] = { "libXcursor.so.1", "libXcursor.so", nullptr };
@@ -108,6 +109,7 @@ extern "C"
 {
   void vtkX11FunctionsInitialize()
   {
+    std::lock_guard<std::mutex> lock(X11FunctionsMutex);
     vtkLog(TRACE, "Initializing vtkX11Functions");
     if (++RequestId == 1)
     {
@@ -215,6 +217,7 @@ extern "C"
 
   void vtkX11FunctionsFinalize()
   {
+    std::lock_guard<std::mutex> lock(X11FunctionsMutex);
     vtkLog(TRACE, "Releasing vtkX11Functions");
     if (--RequestId == 0)
     {
