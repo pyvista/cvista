@@ -5906,12 +5906,13 @@ def _tri_cube(o, s, dtype):
 
 
 def op_boolean_union(dtype, size):
-    # vtkBooleanOperationPolyDataFilter (SHIPPED sibling of the latent LoopBoolean
-    # aliasing bug #209). Two overlapping closed triangulated cubes, UNION. BYTE-
-    # EXACT vs stock 9.6.2 (points + polys + BadTriangle/CellSource/Distance/FreeEdge
-    # cell arrays + PointSource) across union/intersection/difference x both
-    # dtypes/sizes in the wheel-diff probe -> STRICT gate, NO relaxation flag. A
-    # COUNT/VALUE red here is a real boolean aliasing bug to escalate (mirror #209).
+    # vtkBooleanOperationPolyDataFilter (SHIPPED sibling of the removed _nocompile
+    # vtkLoopBooleanPolyDataFilter #209). Two overlapping closed triangulated cubes,
+    # UNION. BYTE-EXACT vs stock 9.6.2 (points + polys + BadTriangle/CellSource/
+    # Distance/FreeEdge cell arrays + PointSource) across union/intersection/
+    # difference x both dtypes/sizes in the wheel-diff probe -> STRICT gate, NO
+    # relaxation flag. A COUNT/VALUE red here is a real boolean aliasing bug to
+    # escalate.
     f = vtkBooleanOperationPolyDataFilter()
     f.SetInputData(0, _tri_cube(np.array([0.0, 0.0, 0.0], dtype), float(int(size)), dtype))
     f.SetInputData(1, _tri_cube(np.array([float(int(size) - 1)] * 3, dtype), float(int(size)), dtype))
@@ -7373,8 +7374,9 @@ OPS = {
     #     rebuild cell connectivity + emit/consume BLOCK_I/J/K int cell arrays;
     #     byte-exact points+connectivity+cell-arrays on both dtypes/sizes.
     #   * boolean_union/intersection/difference -- vtkBooleanOperationPolyDataFilter,
-    #     the SHIPPED sibling of the latent LoopBoolean aliasing bug #209. Byte-exact
-    #     points+polys+all cell/point arrays across all 3 operations x dtypes x sizes.
+    #     the SHIPPED sibling of the removed _nocompile LoopBoolean class (#209).
+    #     Byte-exact points+polys+all cell/point arrays across all 3 operations x
+    #     dtypes x sizes.
     "esg_to_ug": dict(fn=op_esg_to_ug, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
     "ug_to_esg": dict(fn=op_ug_to_esg, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
     "boolean_union": dict(fn=op_boolean_union, group="filter", dtypes=["float32", "float64"], sizes=[2, 3]),
