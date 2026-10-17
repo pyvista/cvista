@@ -411,6 +411,16 @@ must actually differ from the serial path (same set), proving the fast kernel ex
 
 ## Building
 
+On any platform, PyVista's build command drives the same init caches and hooks the
+cibuildwheel backend uses, reading them from `pyvista-build.toml` at the repo root:
+
+```bash
+pyvista build cvista                       # clone + guided build of the release tag
+pyvista build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
+```
+
+The nix-based script below remains the Linux reference build.
+
 The build self-execs into a `nix-shell` (`shell.nix`) that provides the GL/EGL/OSMesa/X11
 stack, pins `cmake` 4.1.2, and uses Python 3.13 + `ccache`.
 

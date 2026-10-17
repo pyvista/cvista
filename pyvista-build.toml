@@ -1,0 +1,34 @@
+manifest_version = 1 # read by `pyvista build cvista`
+
+[backend]
+default_ref = "9.7.0.5"
+import_name = "cvista"
+name = "cvista"
+url = "https://github.com/pyvista/cvista.git"
+version_command = "{python} ci/pyvista_build_hooks.py version"
+
+[tools]
+cmake = ">=3.22,<4.2"
+ninja = ">=1.11"
+
+[cmake]
+init_cache = { linux = "ci/cmake/linux.cmake", macos = "ci/cmake/macos.cmake", windows = "ci/cmake/windows.cmake" }
+
+[options.abi3]
+cmake = "CVISTA_ABI3={value}"
+default = true
+help = "Stable-ABI wrappers: one wheel for CPython 3.12+ (off: a wheel for this Python only)"
+
+[options.lto]
+default = true
+env = "CVISTA_LTO"
+help = "Link-time optimisation as in the release wheels (off: 2-3x faster build)"
+
+[options.unity]
+default = true
+env = "CVISTA_SOURCE_UNITY"
+help = "Unity (batched) compilation of module sources"
+
+[hooks]
+post_build = ["{python} ci/prune_setup_py.py {build_dir}"]
+post_wheel = ["{python} ci/pyvista_build_hooks.py retag {build_dir}"]
