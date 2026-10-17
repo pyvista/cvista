@@ -21,7 +21,10 @@
 #include "vtkStringOutputWindow.h"
 #include "vtkStringScanner.h"
 
+#include <chrono>
+#include <mutex>
 #include <sstream>
+#include <thread>
 
 #include "vtk_glad.h"
 #include "vtkglad/include/glad/glx.h"
@@ -225,9 +228,6 @@ int XEventTypeEquals(Display*, XEvent* event, XPointer winptr)
     *(reinterpret_cast<Window*>(winptr)) == reinterpret_cast<XAnyEvent*>(event)->window);
 }
 
-// to manage the static GLADGLXLibraryDisplay correctly.
-std::atomic<unsigned int> vtkGLXLibraryDisplayCleanupCounter{ 0 };
-
 /**
  * The glX symbols are globally defined in glad sources, see glad/src/glx.c.
  * These symbols must be initialized exactly once in the lifetime of an
@@ -245,11 +245,42 @@ std::atomic<unsigned int> vtkGLXLibraryDisplayCleanupCounter{ 0 };
  * of the glX functions will crash with an error message
  * "Maximum number of clients reached". This was a real issue
  * in VTK 9.4.0. See https://gitlab.kitware.com/vtk/vtk/-/issues/19618
+ *
+ * Keep the single per-process GLADGLXLibraryDisplay open once GLX has been
+ * initialized (holding one vtkX11FunctionsInitialize reference so libX11 stays
+ * loaded). Closing it on every last-window destructor violated the
+ * once-per-process GLX symbol invariant, left a dangling Display* pointer that
+ * caused a double-close SIGSEGV when a subsequent unrealized
+ * vtkXOpenGLRenderWindow was destroyed, and dropped the process's X11 client
+ * count to zero between windows (triggering Xvfb server resets when Xvfb runs
+ * without `-noreset`).
  */
-// static Display used for loading GLX extensions with GLAD.
-std::atomic<bool> GLADGLXLibraryDisplayOpened{ false };
+std::mutex GLADGLXLibraryDisplayMutex;
 int GLXVersion = 0;
 Display* GLADGLXLibraryDisplay = nullptr;
+
+Display* vtkOpenXDisplay()
+{
+  Display* dpy = vtkXOpenDisplay(static_cast<char*>(nullptr));
+  if (dpy != nullptr)
+  {
+    return dpy;
+  }
+  const char* displayEnv = vtksys::SystemTools::GetEnv("DISPLAY");
+  if (displayEnv != nullptr && displayEnv[0] != '\0')
+  {
+    for (int delayMs = 1; delayMs <= 64; delayMs *= 2)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+      dpy = vtkXOpenDisplay(static_cast<char*>(nullptr));
+      if (dpy != nullptr)
+      {
+        return dpy;
+      }
+    }
+  }
+  return nullptr;
+}
 }
 
 vtkXVisualInfo* vtkXOpenGLRenderWindow::GetDesiredVisualInfo()
@@ -322,8 +353,6 @@ vtkXOpenGLRenderWindow::vtkXOpenGLRenderWindow()
     return nullptr;
   };
   this->SetOpenGLSymbolLoader(loadFunc, nullptr);
-  // Increment static counter
-  ++::vtkGLXLibraryDisplayCleanupCounter;
 }
 
 // free up memory & close the window
@@ -338,14 +367,6 @@ vtkXOpenGLRenderWindow::~vtkXOpenGLRenderWindow()
   while ((ren = this->Renderers->GetNextRenderer(rit)))
   {
     ren->SetRenderWindow(nullptr);
-  }
-  if (--::vtkGLXLibraryDisplayCleanupCounter == 0)
-  {
-    if (::GLADGLXLibraryDisplay != nullptr)
-    {
-      vtkXCloseDisplay(::GLADGLXLibraryDisplay);
-      GLADGLXLibraryDisplayOpened = false;
-    }
   }
 
   delete this->Internal;
@@ -1408,7 +1429,7 @@ bool vtkXOpenGLRenderWindow::EnsureDisplay()
 {
   if (!this->DisplayId)
   {
-    this->DisplayId = vtkXOpenDisplay(static_cast<char*>(nullptr));
+    this->DisplayId = ::vtkOpenXDisplay();
     if (this->DisplayId == nullptr)
     {
       // Only warn about DISPLAY if on-screen rendering is selected,
@@ -1429,33 +1450,36 @@ bool vtkXOpenGLRenderWindow::EnsureDisplay()
 
 bool vtkXOpenGLRenderWindow::EnsureGLX()
 {
-  if (!::GLADGLXLibraryDisplayOpened.exchange(true))
+  std::lock_guard<std::mutex> lock(::GLADGLXLibraryDisplayMutex);
+  if (::GLXVersion > 0)
   {
-    ::GLADGLXLibraryDisplay = vtkXOpenDisplay(static_cast<char*>(nullptr));
-    if (::GLADGLXLibraryDisplay)
+    return true;
+  }
+
+  if (::GLADGLXLibraryDisplay == nullptr)
+  {
+    vtkX11FunctionsInitialize();
+    ::GLADGLXLibraryDisplay = ::vtkOpenXDisplay();
+    if (::GLADGLXLibraryDisplay == nullptr)
     {
-      ::GLXVersion = gladLoaderLoadGLX(::GLADGLXLibraryDisplay, 0);
-      if (::GLXVersion > 0)
-      {
-        return true;
-      }
-      else
-      {
-        vtkGenericWarningMacro(<< "Failed to load GLX. Please install OpenGL drivers.");
-        return false;
-      }
-    }
-    else
-    {
+      vtkX11FunctionsFinalize();
       vtkGenericWarningMacro(<< "bad X server connection. DISPLAY="
                              << vtksys::SystemTools::GetEnv("DISPLAY"));
       return false;
     }
   }
-  else
+
+  ::GLXVersion = gladLoaderLoadGLX(::GLADGLXLibraryDisplay, 0);
+  if (::GLXVersion > 0)
   {
-    return (::GLXVersion > 0);
+    return true;
   }
+
+  vtkXCloseDisplay(::GLADGLXLibraryDisplay);
+  ::GLADGLXLibraryDisplay = nullptr;
+  vtkX11FunctionsFinalize();
+  vtkGenericWarningMacro(<< "Failed to load GLX. Please install OpenGL drivers.");
+  return false;
 }
 
 // Get this RenderWindow's parent X window id.

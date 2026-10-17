@@ -25,6 +25,27 @@ def find_lib_path(paths, vtk_module_name):
                     return str(resolved_file)
 
 
+class _VTKAliasLoader:
+    _IDENTITY = "__cvista_true_identity__"
+
+    def __init__(self, target_name):
+        self._target_name = target_name
+
+    def create_module(self, spec):
+        mod = importlib.import_module(self._target_name)
+        mod.__dict__.setdefault(
+            self._IDENTITY,
+            (mod.__name__, mod.__spec__, getattr(mod, "__package__", None)),
+        )
+        sys.modules[spec.name] = mod
+        return mod
+
+    def exec_module(self, module):
+        identity = module.__dict__.get(self._IDENTITY)
+        if identity is not None:
+            module.__name__, module.__spec__, module.__package__ = identity
+
+
 class VTKMetaHook(MetaPathFinder):
     """Attach a custom  loaded for vtk native library loading to defer loading of pure python dependencies"""
     def find_spec(self, fullname, path, target=None):
@@ -36,6 +57,13 @@ class VTKMetaHook(MetaPathFinder):
 
             LOADING_STACK.append(fullname)
             return importlib.util.spec_from_file_location(fullname, module_path, loader=VTKLoader(fullname, module_path))
+
+        pkg, dot, rest = fullname.partition(".")
+        if dot and rest.startswith("vtk") and "." not in rest:
+            if sys.modules.get(pkg) is sys.modules.get(__name__):
+                return importlib.util.spec_from_loader(
+                    fullname, _VTKAliasLoader(f"{__name__}.{rest}")
+                )
 
         return None
 
