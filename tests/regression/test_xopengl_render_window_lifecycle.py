@@ -140,3 +140,11 @@ def test_package_alias_submodule_identity(monkeypatch):
     assert c1.__name__ == "cvista.vtkCommonCore"
     assert getattr(cvista, "vtkCommonCore") is c1
     assert not cvista.PENDING_LOADED_MODULES
+
+    # Relocated classes (e.g. vtkPolyDataSilhouette moved from vtkFiltersHybrid
+    # to vtkFiltersHybridRendering) must also be grafted onto the aliased module.
+    fh = importlib.import_module("vtk_module.vtkFiltersHybrid")
+    fhr = importlib.import_module("cvista.vtkFiltersHybridRendering")
+    assert hasattr(fh, "vtkPolyDataSilhouette")
+    assert fh.vtkPolyDataSilhouette is fhr.vtkPolyDataSilhouette
+
