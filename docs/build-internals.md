@@ -416,7 +416,7 @@ init caches and hooks the cibuildwheel backend uses, reading them from `pyvista-
 at the repo root:
 
 ```bash
-pip install --group build                  # pyvista-build, from git until it is on PyPI
+pip install --group build                  # pyvista-build
 pyvista-build cvista                       # clone + build of main (--interactive to be asked at each step)
 pyvista-build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
 ```
