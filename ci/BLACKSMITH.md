@@ -37,11 +37,10 @@ has had availability incidents; the fallback is deliberate).
 
 ## Where each variable is used
 
-- `CVISTA_RUNNER_LINUX` — `ci.yml` (`build`, `build-lto`, `build-legacy-linux`),
-  `sdk.yml` (`build-sdk`), `wheels-cibuildwheel.yml` (linux leg),
-  `wheels-test.yml` (linux leg).
-- `CVISTA_RUNNER_WINDOWS` — `ci.yml` (`build-other-os`, `build-legacy-windows`),
-  the wheels workflows' Windows legs.
+- `CVISTA_RUNNER_LINUX` — `ci.yml` (`build`, `build-lto`), `_tier-wheels.yml`
+  (`linux`, `linux-legacy`), `sdk.yml` (`build-sdk`).
+- `CVISTA_RUNNER_WINDOWS` — `ci.yml` (`build-other-os`), `_tier-wheels.yml`
+  (`windows`, `windows-legacy`).
 - `CVISTA_RUNNER_MACOS` — `ci.yml` (`build-other-os`, `build-legacy-macos`), the
   wheels workflows' macOS legs.
 - `CVISTA_RUNNER_LINUX_SMALL` — `ci.yml` gates (`bitexact`, `regression`,

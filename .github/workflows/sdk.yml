@@ -8,7 +8,7 @@
 # Built for every platform the runtime cvista wheel ships (Linux x86_64, macOS
 # arm64, Windows x64) so downstream consumers can compile against cvista on the
 # same OSes they can import it on. Each leg mirrors the runtime build's per-OS
-# toolchain (ci.yml -> [tool.cibuildwheel.<os>]); ci/build-sdk.sh picks the
+# toolchain (pyvista-build.toml [cmake] init_cache); ci/build-sdk.sh picks the
 # matching init-cache and handles the platform-tag details.
 name: SDK
 
@@ -112,7 +112,7 @@ jobs:
       - name: Install rendering + build deps (Linux)
         if: startsWith(matrix.os, 'linux')
         # Same AlmaLinux 8 package set as the runtime wheel build
-        # (ci.yml -> [tool.cibuildwheel.linux] before-all).
+        # (pyvista-build.toml [manylinux] packages).
         run: |
           dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
             mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \

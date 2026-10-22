@@ -9,10 +9,10 @@ variables is defined, and fall back to GitHub-hosted runners when they are not.
 
 | File | Trigger | What it does |
 |------|---------|--------------|
-| `ci.yml` | PR + push to `main` + release | Build the cp312-abi3 wheel (Linux/macOS/Windows), the cp310/cp311 legacy wheels (`build-legacy-*`, all three OSes), the bit-exact / pixel-exact / regression gates, the main-only LTO legs, and the release publish (abi3 + legacy → PyPI + Release). |
+| `ci.yml` | PR + push to `main` | Build the cp312-abi3 wheel with `pyvista-build cvista` (Linux/macOS/Windows), the bit-exact / pixel-exact / regression gates, the main-only LTO and aarch64 legs. |
+| `_tier-wheels.yml` | called by `ci.yml` (`split`) and `release-tiers.yml` | Build the abi3 and legacy cp311 wheels on every OS and partition them into the three tier wheels. |
+| `release-tiers.yml` | release + dispatch | Publish the tier wheels to PyPI. |
 | `sdk.yml` | path-scoped PR + `main` + release | Build + publish the `cvista-sdk` wheel. |
-| `wheels-cibuildwheel.yml` | tag + dispatch | Full release wheel matrix. |
-| `wheels-test.yml` | dispatch | Manual cross-OS build smoke. |
 
 ## Changing the runners (the only knob)
 
