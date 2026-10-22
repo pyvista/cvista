@@ -8,7 +8,7 @@ url = "https://github.com/pyvista/cvista.git"
 version_command = "{python} ci/pyvista_build_hooks.py version"
 
 [tools]
-cmake = ">=3.22,<4.2"
+cmake = ">=3.26,<4.2" # 3.26: FindPython Development.SABIModule for abi3
 ninja = ">=1.11"
 
 [cmake]

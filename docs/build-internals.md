@@ -392,10 +392,10 @@ must actually differ from the serial path (same set), proving the fast kernel ex
 
 ### Wheel-size lever
 
-6. **Symbol strip (`[repair] strip = true` in `pyvista-build.toml`).** `strip --strip-all` on every shipped `.so` removes
+6. **Symbol strip (`[repair] strip = true` in `pyvista-build.toml`).** `auditwheel repair --strip` on Linux and `strip -x` on macOS remove
    the static symbol table (`.symtab`/`.strtab`, ~40 % of a Release lib — e.g. `libvtkCommon`
    178 → 107 MB) while keeping `.dynsym` (runtime-safe; matches stock manylinux wheels). The
-   strip walks the wheel-staging tree, so all 142 shipped libs (incl. the kit libraries) are
+   strip runs on the repaired wheel, so all 142 shipped libs (incl. the kit libraries) are
    stripped, not just the SDK wrappers. **Measured: with levers 7+8, stripped wheel = 49 MB
    (47 MiB) — ~60 % smaller than the stock `vtk` wheel (~120 MB)** (strip alone, without 7+8,
    was 65 MB). The wheel is already maximally deflate-compressed; re-zipping does not shrink it.
@@ -443,7 +443,7 @@ The init caches also read these environment variables, set on the `pyvista-build
 | `CVISTA_FAST_LINKER` | _(auto)_ | linker choice on Linux (`mold`, `lld`, `gold`) |
 | `CVISTA_PGO` | _(unset)_ | `gen`/`use` phases of profile-guided optimization; orchestrated by `ci/pgo-build.sh` |
 | `CVISTA_WRAP_OPTSIZE` | `1` | `0` disables `-Oz` on the Python wrapper TUs |
-| `CVISTA_DISPATCH_MINIMAL` | `1` | `0` restores the full ~14-type array-dispatch list (vs PyVista's 6) |
+| `CVISTA_DISPATCH_MINIMAL` | _(unset)_ | `1` trims the array-dispatch list to PyVista's 6 types (off on the 9.7 base) |
 
 ```bash
 ./ci/pgo-build.sh    # opt-in PGO build: instrument, train, rebuild (PYVISTA_DIR picks the training checkout)

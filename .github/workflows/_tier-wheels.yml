@@ -49,7 +49,7 @@ jobs:
             cvista-ccache-linux-tiered-
             cvista-ccache-linux-cp312abi3-
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the wheel in the manylinux_2_28 container
         env:
           FORCE_COLOR: "1"
@@ -128,7 +128,7 @@ jobs:
             cvista-ccache-linux-arm64-tiered-
             cvista-ccache-linux-arm64-cp312abi3-
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the wheel in the manylinux_2_28 aarch64 container
         env:
           FORCE_COLOR: "1"
@@ -206,7 +206,7 @@ jobs:
             cvista-ccache-macos-tiered-
             cvista-ccache-macos-14-
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the wheel
         env:
           FORCE_COLOR: "1"
@@ -272,7 +272,7 @@ jobs:
           ./check_windows_gil.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the wheel
         shell: bash
         env:
@@ -280,6 +280,11 @@ jobs:
         run: >-
           pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir "${{ github.workspace }}/.sccache"
+      - name: Audit the Python DLL imports
+        shell: bash
+        run: |
+          python -m pip -q install pefile
+          python ci/test_downloaded_windows_wheels.py audit cvista-build/wheelhouse/*.whl
       - name: Partition + pack + audit (pefile link graph; delvewheel cvista.libs)
         shell: bash
         run: |
@@ -364,7 +369,7 @@ jobs:
           restore-keys: |
             cvista-ccache-linux-cp311-manylinux228-
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the Python 3.11 wheel in the manylinux_2_28 container
         env:
           FORCE_COLOR: "1"
@@ -422,7 +427,7 @@ jobs:
       - name: Install ccache
         run: brew install ccache
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the Python 3.11 wheel
         env:
           FORCE_COLOR: "1"
@@ -488,7 +493,7 @@ jobs:
         with:
           arch: x64
       - name: Install pyvista-build
-        run: uv pip install --system --group build "setuptools_scm>=8"
+        run: uv pip install --system --group build
       - name: Build the ${{ matrix.tag }} wheel
         shell: bash
         env:
