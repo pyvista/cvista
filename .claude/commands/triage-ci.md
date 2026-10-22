@@ -24,7 +24,7 @@ error (not the cascade after it).
 
 `ci.yml` runs these job groups. Match the red one:
 
-- **build (Linux / macOS / Windows cibuildwheel)** — compile, link, codegen, wheel-repair, or
+- **build (Linux / macOS / Windows `pyvista-build cvista`)** — compile, link, codegen, wheel-repair, or
   smoke failure. Common causes: a missing class a kept path references (a trim closure broke —
   see the `module-trimming` skill), a configure-time module cascade, a platform-specific compile
   error (MSVC vcvars, AppleClang), an `abi3` / `python3.lib` link issue on Windows. The smoke
@@ -61,7 +61,7 @@ error (not the cascade after it).
 
 ## Reproduce, then fix
 
-Reproduce locally before changing anything: `PROFILE=fast ./build-cvista.sh` plus the matching
+Reproduce locally before changing anything: `pyvista-build cvista --source . --opt lto=0` plus the matching
 gate script (`ci/run-bitexact.sh`, `ci/run-renderexact.sh`, `ci/run-regression.sh`,
 `ci/run-pyvista.sh`). A gate that fails in CI but not locally is usually environment (runner
 arch, Mesa version, contention), not flakiness — `docs/ci-runners.md` covers the runner matrix.

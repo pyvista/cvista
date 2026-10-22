@@ -62,7 +62,7 @@ Each agent, for its one MR:
    `tests/bitexact/` op to the corrected expectation and note the divergence (see the
    `parity-contract` skill). A crash/guard fix on degenerate input usually leaves valid-input
    output unchanged, so add a regression test for the degenerate case instead.
-4. Build (`PROFILE=fast ./build-cvista.sh`) and run the relevant gate (bitexact / renderexact /
+4. Build (`pyvista-build cvista --source . --opt lto=0`) and run the relevant gate (bitexact / renderexact /
    regression) to prove the fix and the parity story.
 5. Open the PR. The body **must** link the upstream MR
    (`https://gitlab.kitware.com/vtk/vtk/-/merge_requests/<iid>`), summarize the upstream defect

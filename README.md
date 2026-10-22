@@ -231,7 +231,7 @@ your change is in with its evidence attached.
 
 ## Roadmap
 
-- **Wheels everywhere.** A cibuildwheel matrix mirroring PyVista's support set across Linux
+- **Wheels everywhere.** A `pyvista-build` matrix mirroring PyVista's support set across Linux
   x86-64, Linux ARM64, macOS, and Windows, built inside `manylinux` images.
 - **A published SDK.** Ship the development SDK (headers, CMake config, import libraries)
   alongside the runtime wheel so external module repos can build against cvista directly.

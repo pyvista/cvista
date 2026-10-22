@@ -74,9 +74,9 @@ Adding an opt-in fast filter (checklist)
 Build & validate
 ----------------
 
-- Build the wheel with the project's cibuildwheel flow (manylinux, single `cp312-abi3`
-  wheel); see the README [Building](README.md#building) section. Don't hand-roll a local
-  toolchain build for parity claims.
+- Build the wheel with `pyvista-build cvista --source . --manylinux` (the single
+  `cp312-abi3` manylinux wheel); see [Building](docs/build-internals.md#building).
+  Don't hand-roll a local toolchain build for parity claims.
 - Run `tests/bitexact/` (stock-vs-cvista dump-and-diff) and, for behavioral changes, the PyVista
   differential suite described in [Parity & validation](README.md#parity--validation). Bar:
   **zero new failures vs stock `vtk` 9.7.0**.

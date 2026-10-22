@@ -39,7 +39,7 @@ Normal fork releases always carry the `.N` segment.
 
 `setuptools_scm` derives the version from git tags (config in
 `pyproject.toml` `[tool.setuptools_scm]`; consumed by
-`ci/cibw/cvista_backend.py::_version_suffix`, which feeds everything past `9.6.2.`
+`ci/pyvista_build_hooks.py version`, which feeds everything past `9.6.2.`
 to VTK's `setup.py.in` as `VTK_VERSION_SUFFIX`). `cvista-sdk` calls the *same*
 function (`ci/build-sdk.sh`), so the two wheels always match.
 
@@ -93,6 +93,6 @@ the same version — they are released in lockstep.
 ## Rebasing onto a new VTK
 
 When cvista moves to a new upstream VTK (say 9.7.0), bump `VTK_BASE_VERSION`
-(`ci/cibw/cvista_backend.py`) and the base in `pyproject.toml`, then restart the
+(`ci/pyvista_build_hooks.py`) and the base in `pyproject.toml`, then restart the
 segment at `9.7.0.0`. PEP 440 ordering keeps the lines distinct:
 `9.6.2.5 < 9.7.0.0`.
