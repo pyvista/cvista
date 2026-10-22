@@ -1,4 +1,4 @@
-"""Test the exact three ABI3 wheels downloaded from the single Windows build."""
+"""Test the three abi3 Windows wheels in a directory, or `audit <wheel>...` their DLL imports."""
 
 import hashlib
 from pathlib import Path
@@ -38,6 +38,11 @@ def audit_python_imports(wheel: str) -> None:
 
 
 def main():
+    if sys.argv[1] == "audit":
+        for wheel in sys.argv[2:]:
+            audit_python_imports(wheel)
+            print(f"audit: {Path(wheel).name} imports only its own Python DLL", flush=True)
+        return
     directory = Path(sys.argv[1]).resolve()
     wheels = {}
     for project in ("cvista", "cvista_rendering", "cvista_io"):

@@ -369,9 +369,9 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --defaults ci --manylinux
+          pyvista-build cvista --defaults release --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache
-          --opt abi3=0 --opt gate_o2=1
+          --opt abi3=0
       - name: Check Python 3.11 byte-exact parity against stock VTK
         run: BITEXACT_ABI3=0 ci/run-bitexact.sh ${{ runner.temp }}/cvista-build/wheelhouse python
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
@@ -496,6 +496,11 @@ jobs:
         run: >-
           pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir "${{ github.workspace }}/.sccache" --opt abi3=0
+      - name: Audit the Python DLL imports
+        shell: bash
+        run: |
+          python -m pip -q install pefile
+          python ci/test_downloaded_windows_wheels.py audit cvista-build/wheelhouse/*.whl
       - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
         shell: bash
         run: |

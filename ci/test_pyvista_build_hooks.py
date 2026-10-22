@@ -1,5 +1,7 @@
 """Checks for the `pyvista-build cvista` hooks and the manifest they serve."""
 
+import base64
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -123,6 +125,16 @@ class CacheTests(unittest.TestCase):
                 hooks.check(build)
             self.assertIn("--clean", str(info.exception))
             with (
+                patch.dict(hooks.os.environ, {"CVISTA_LTO": "1", "CVISTA_GATE_O2": "0"}),
+            ):
+                hooks.check(build)
+            with (
+                patch.dict(hooks.os.environ, {"CVISTA_LTO": "1", "CVISTA_GATE_O2": "1"}),
+                self.assertRaises(SystemExit) as info,
+            ):
+                hooks.check(build)
+            self.assertIn("'gate_o2': True", str(info.exception))
+            with (
                 patch.dict(hooks.os.environ, {"CVISTA_LTO": "1"}),
                 patch.object(hooks.sys, "version_info", (3, 12)),
             ):
@@ -153,10 +165,15 @@ class RetagTests(unittest.TestCase):
             with zipfile.ZipFile(
                 dist / "cvista-9.7.0.5-cp312-abi3-linux_x86_64.whl"
             ) as z:
-                self.assertIn(
-                    "Tag: cp312-abi3-linux_x86_64",
-                    z.read("cvista-9.7.0.5.dist-info/WHEEL").decode(),
-                )
+                wheel_data = z.read("cvista-9.7.0.5.dist-info/WHEEL")
+                record = z.read("cvista-9.7.0.5.dist-info/RECORD").decode()
+            self.assertIn("Tag: cp312-abi3-linux_x86_64", wheel_data.decode())
+            digest = base64.urlsafe_b64encode(hashlib.sha256(wheel_data).digest())
+            self.assertEqual(
+                record,
+                "cvista-9.7.0.5.dist-info/WHEEL,sha256="
+                f"{digest.rstrip(b'=').decode()},{len(wheel_data)}\n",
+            )
 
 
 class ManifestTests(unittest.TestCase):

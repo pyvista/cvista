@@ -19,7 +19,7 @@ OPTIONS_FILE = ".cvista-build-options.json"
 
 USAGE = """\
 usage: pyvista_build_hooks.py version            print VTK_VERSION_SUFFIX for HEAD
-       pyvista_build_hooks.py check <build_dir>  fail when abi3 cannot build here or abi3/lto changed
+       pyvista_build_hooks.py check <build_dir>  fail when abi3 cannot build here or an option changed
        pyvista_build_hooks.py retag <build_dir>  give the wheel in <build_dir>/dist the abi3 tag
 """
 
@@ -115,21 +115,25 @@ def version() -> str:
 
 
 def check(build_dir: str) -> None:
-    """Exit when CVISTA_ABI3 cannot be built here, or when abi3 or LTO changed in this tree."""
+    """Exit when CVISTA_ABI3 cannot be built here, or when abi3, LTO or gate_o2 changed in this tree."""
     abi3 = _abi3_configured(build_dir)
     if abi3 and sys.version_info < ABI3_FLOOR_VERSION:
         sys.exit(
             f"CVISTA_ABI3 is ON but Python {sys.version_info[0]}.{sys.version_info[1]} is "
             f"below the stable-ABI floor 3.{ABI3_FLOOR_VERSION[1]}; run again with --opt abi3=0"
         )
-    options = {"abi3": abi3, "lto": os.environ.get("CVISTA_LTO", "")}
+    options = {
+        "abi3": abi3,
+        "lto": os.environ.get("CVISTA_LTO", ""),
+        "gate_o2": os.environ.get("CVISTA_GATE_O2") == "1",
+    }
     stamp = os.path.join(build_dir, OPTIONS_FILE)
     if os.path.isfile(stamp):
         with open(stamp, encoding="utf-8") as f:
             before = json.load(f)
         if before != options:
             sys.exit(
-                f"abi3/lto changed since {build_dir} was configured ({before} -> {options}), "
+                f"abi3/lto/gate_o2 changed since {build_dir} was configured ({before} -> {options}), "
                 "and the old compiler flags stay in its CMake cache; run again with --clean"
             )
         return

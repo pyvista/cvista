@@ -39,7 +39,7 @@ echo "profile data: $N .gcda files"
 [ "$N" -ge 100 ] || { echo "ERROR: profile too sparse ($N) — training did not exercise the build"; exit 1; }
 
 echo "::group::PGO phase 3/3 — rebuild with profile (LTO+ICF)"
-rm -f "$BUILD/build/CMakeCache.txt"
+rm -f "$BUILD/build/CMakeCache.txt" "$BUILD/build/.cvista-build-options.json"
 CVISTA_PGO=use CVISTA_ICF=1 pyvista-build cvista --defaults release --source "$REPO" --build-dir "$BUILD"
 echo "::endgroup::"
 

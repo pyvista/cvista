@@ -18,7 +18,7 @@ def get_requires_for_build_wheel(config_settings=None):
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     """Build the wheel with `pyvista-build cvista` and copy it into `wheel_directory`."""
-    build_dir = os.environ.get("CVISTA_BUILD_DIR", os.path.join(REPO, "build-pyvista"))
+    build_dir = os.environ.get("CVISTA_BUILD_DIR", os.path.join(REPO, "cvista-build"))
     cmd = [
         sys.executable,
         "-m",

@@ -159,6 +159,10 @@ jobs:
       - name: Import and compute smoke
         shell: bash
         run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            uv pip install --system pefile
+            python ci/test_downloaded_windows_wheels.py audit cvista-build/wheelhouse/*.whl
+          fi
           uv pip install --system --no-deps cvista-build/wheelhouse/*.whl
           CVISTA_IMPORT_NAME=cvista python ci/smoke_min.py
       - uses: actions/upload-artifact@v4
