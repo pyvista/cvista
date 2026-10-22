@@ -49,6 +49,7 @@ source = "."
 yes = true
 
 [manylinux] # system packages for --manylinux, as in before-all
+env = ["CVISTA_*"] # build knobs the container build takes from the host
 packages = [
   "libX11-devel",
   "libXcursor-devel",

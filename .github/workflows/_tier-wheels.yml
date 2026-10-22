@@ -25,9 +25,6 @@ on:
         required: false
         default: ""
 
-env:
-  PYTHONUTF8: "1" # pyvista-build prints UTF-8 progress; the Windows console is cp1252
-
 jobs:
   linux:
     name: 3-wheel tier split (linux)

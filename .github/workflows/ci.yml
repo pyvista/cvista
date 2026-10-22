@@ -35,9 +35,6 @@ concurrency:
   group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
-env:
-  PYTHONUTF8: "1" # pyvista-build prints UTF-8 progress; the Windows console is cp1252
-
 jobs:
   build:
     name: build cp312-abi3 (manylinux_2_28)
