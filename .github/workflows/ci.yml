@@ -36,7 +36,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CCACHE_SLOPPINESS: time_macros,locale,pch_defines # VTK bakes __DATE__ into a few TUs
   PYTHONUTF8: "1" # pyvista-build prints UTF-8 progress; the Windows console is cp1252
 
 jobs:
