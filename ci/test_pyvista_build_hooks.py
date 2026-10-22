@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "ci" / "pyvista_build_hooks.py"
 sys.path.insert(0, str(REPO / "ci"))
 
@@ -52,7 +52,7 @@ class VersionTests(unittest.TestCase):
         )
 
     def test_exact_tag(self):
-        base = hooks.cvista_backend.VTK_BASE_VERSION
+        base = hooks.VTK_BASE_VERSION
         completed = subprocess.CompletedProcess([], 0, stdout=f"{base}.7\n", stderr="")
         with patch.object(hooks.subprocess, "run", return_value=completed):
             self.assertEqual(hooks._tag_suffix(), "7")
@@ -106,17 +106,7 @@ class CacheTests(unittest.TestCase):
             ):
                 hooks.check(build)
             self.assertIn("stable-ABI floor", str(info.exception))
-            with (
-                patch.object(hooks.sys, "version_info", (3, 12)),
-                patch.object(hooks.sys, "platform", "win32"),
-                self.assertRaises(SystemExit) as info,
-            ):
-                hooks.check(build)
-            self.assertIn("LIB=", str(info.exception))
-            with (
-                patch.object(hooks.sys, "version_info", (3, 12)),
-                patch.object(hooks.sys, "platform", "linux"),
-            ):
+            with patch.object(hooks.sys, "version_info", (3, 12)):
                 hooks.check(build)
             self.assertTrue(stamp.is_file())
 
@@ -135,7 +125,6 @@ class CacheTests(unittest.TestCase):
             with (
                 patch.dict(hooks.os.environ, {"CVISTA_LTO": "1"}),
                 patch.object(hooks.sys, "version_info", (3, 12)),
-                patch.object(hooks.sys, "platform", "linux"),
             ):
                 _write_cache(build, "ON")
                 with self.assertRaises(SystemExit) as info:

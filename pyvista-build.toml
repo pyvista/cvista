@@ -20,6 +20,11 @@ cmake = "CVISTA_ABI3={value}"
 default = true
 help = "Stable-ABI wrappers: one wheel for CPython 3.12+ (off: a wheel for this Python only)"
 
+[options.gate_o2]
+default = false
+env = "CVISTA_GATE_O2"
+help = "Compile at -O2 instead of -O3, as the fast parity gate does (bit-exact either way)"
+
 [options.lto]
 default = true
 env = "CVISTA_LTO"
@@ -29,9 +34,6 @@ help = "Link-time optimisation as in the release wheels (off: 2-3x faster build)
 default = false
 env = "CVISTA_SOURCE_UNITY"
 help = "Unity (batched) compilation of module sources (GCC only; off on the 9.7 base)"
-
-[defaults] # command-line options every build of this tree starts from
-compiler-cache = "auto"
 
 [manylinux] # system packages for --manylinux, as in before-all
 packages = [
@@ -47,6 +49,10 @@ packages = [
   "mesa-libOSMesa-devel",
   "mold",
 ]
+
+[repair] # local symbols stripped; DLL names kept for cvista-sdk
+strip = true
+windows = ["--no-mangle-all"]
 
 [hooks]
 post_build = ["{python} ci/prune_setup_py.py {build_dir}"]
