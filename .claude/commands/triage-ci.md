@@ -61,7 +61,7 @@ error (not the cascade after it).
 
 ## Reproduce, then fix
 
-Reproduce locally before changing anything: `pyvista-build cvista --source . --opt lto=0` plus the matching
+Reproduce locally before changing anything: `pyvista-build cvista --defaults fast` plus the matching
 gate script (`ci/run-bitexact.sh`, `ci/run-renderexact.sh`, `ci/run-regression.sh`,
 `ci/run-pyvista.sh`). A gate that fails in CI but not locally is usually environment (runner
 arch, Mesa version, contention), not flakiness — `docs/ci-runners.md` covers the runner matrix.

@@ -12,7 +12,7 @@ TRAIN_VENV="${TRAIN_VENV:-/tmp/cvista-pgo-train-venv}"
 TRAIN_PYTHON="${TRAIN_PYTHON:-python3}"
 
 echo "::group::PGO phase 1/3 — instrument build"
-CVISTA_PGO=gen CVISTA_ICF=0 pyvista-build cvista --yes --source "$REPO" --build-dir "$BUILD" --opt lto=0 --no-repair
+CVISTA_PGO=gen CVISTA_ICF=0 pyvista-build cvista --defaults ci --source "$REPO" --build-dir "$BUILD" --no-repair
 WHEEL_GEN="$(ls "$BUILD"/build/dist/*.whl)"
 echo "instrumented wheel: $WHEEL_GEN"
 echo "::endgroup::"
@@ -40,7 +40,7 @@ echo "profile data: $N .gcda files"
 
 echo "::group::PGO phase 3/3 — rebuild with profile (LTO+ICF)"
 rm -f "$BUILD/build/CMakeCache.txt"
-CVISTA_PGO=use CVISTA_ICF=1 pyvista-build cvista --yes --source "$REPO" --build-dir "$BUILD" --opt lto=1
+CVISTA_PGO=use CVISTA_ICF=1 pyvista-build cvista --defaults release --source "$REPO" --build-dir "$BUILD"
 echo "::endgroup::"
 
 echo "PGO release wheel: $(ls "$BUILD"/wheelhouse/*.whl)"

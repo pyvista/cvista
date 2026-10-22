@@ -54,9 +54,9 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --manylinux --yes --source .
+          pyvista-build cvista --defaults ci --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache
-          --opt lto=0 --opt gate_o2=1
+          --opt gate_o2=1
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq patchelf binutils
@@ -133,9 +133,9 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --manylinux --yes --source .
+          pyvista-build cvista --defaults ci --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache-arm
-          --opt lto=0 --opt gate_o2=1
+          --opt gate_o2=1
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq patchelf binutils
@@ -211,7 +211,7 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --yes --source . --build-dir cvista-build
+          pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir /tmp/cvista-ccache
       - name: Partition + pack + stack (otool link graph; delocate .dylibs)
         run: |
@@ -278,7 +278,7 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --yes --source . --build-dir cvista-build
+          pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir "${{ github.workspace }}/.sccache"
       - name: Partition + pack + audit (pefile link graph; delvewheel cvista.libs)
         shell: bash
@@ -369,9 +369,9 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --manylinux --yes --source .
+          pyvista-build cvista --defaults ci --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache
-          --opt abi3=0 --opt lto=0 --opt gate_o2=1
+          --opt abi3=0 --opt gate_o2=1
       - name: Check Python 3.11 byte-exact parity against stock VTK
         run: BITEXACT_ABI3=0 ci/run-bitexact.sh ${{ runner.temp }}/cvista-build/wheelhouse python
       - name: Tooling for partition/pack (patchelf, binutils, wheel)
@@ -427,7 +427,7 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --yes --source . --build-dir cvista-build
+          pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir /tmp/cvista-ccache --opt abi3=0
       - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
         run: |
@@ -494,7 +494,7 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --yes --source . --build-dir cvista-build
+          pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir "${{ github.workspace }}/.sccache" --opt abi3=0
       - name: Partition + pack each legacy wheel into 3 tiers (audit is the gate)
         shell: bash

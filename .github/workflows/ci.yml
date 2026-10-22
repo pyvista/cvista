@@ -63,9 +63,9 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --manylinux --yes --source .
+          pyvista-build cvista --defaults ci --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache
-          --opt lto=0 --opt gate_o2=1
+          --opt gate_o2=1
       - name: Install Xvfb + Mesa software GL (llvmpipe)
         run: |
           sudo apt-get update
@@ -154,7 +154,7 @@ jobs:
           FORCE_COLOR: "1"
           CACHE_DIR: ${{ runner.os == 'Windows' && format('{0}/.sccache', github.workspace) || '/tmp/cvista-ccache' }}
         run: >-
-          pyvista-build cvista --yes --source . --build-dir cvista-build
+          pyvista-build cvista --defaults ci --build-dir cvista-build
           --cache-dir "$CACHE_DIR" --opt lto=${{ matrix.lto }}
       - name: Import and compute smoke
         shell: bash
@@ -419,7 +419,7 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --manylinux --yes --source .
+          pyvista-build cvista --defaults release --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache-lto
       - name: Install Xvfb + Mesa software GL (llvmpipe)
         run: |
@@ -538,9 +538,9 @@ jobs:
         env:
           FORCE_COLOR: "1"
         run: >-
-          pyvista-build cvista --manylinux --yes --source .
+          pyvista-build cvista --defaults ci --manylinux
           --build-dir ${{ runner.temp }}/cvista-build --cache-dir /tmp/cvista-ccache-arm
-          --opt lto=0 --opt gate_o2=1
+          --opt gate_o2=1
       - name: Install Xvfb + Mesa software GL (llvmpipe)
         run: |
           sudo apt-get update

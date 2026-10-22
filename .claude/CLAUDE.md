@@ -47,9 +47,9 @@ any filter, kernel, or render path.
 Every wheel is built by `pyvista-build cvista` (install it with `pip install --group build`):
 
 ```bash
-pyvista-build cvista --source .                       # this checkout, LTO on
-pyvista-build cvista --source . --opt lto=0           # fast iteration, LTO off
-pyvista-build cvista --source . --manylinux           # the portable Linux wheel, in Docker
+pyvista-build cvista --defaults release               # this checkout, LTO on
+pyvista-build cvista --defaults fast                  # fast iteration, LTO off, this Python only
+pyvista-build cvista --defaults release --manylinux   # the portable Linux wheel, in Docker
 ```
 
 Validation gates (also run in CI):

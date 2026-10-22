@@ -417,13 +417,15 @@ in CI, from the manifest `pyvista-build.toml` at the repo root: the per-OS init 
 ```bash
 pip install --group build                                   # pyvista-build[tools]
 pyvista-build cvista                                        # clone + build of main
-pyvista-build cvista --source . --opt lto=0 --opt abi3=0    # this checkout, fast iteration
-pyvista-build cvista --source . --manylinux                 # the portable Linux wheel, in Docker
+pyvista-build cvista --defaults fast                        # this checkout, LTO off, this Python only
+pyvista-build cvista --defaults release --manylinux         # the portable Linux wheel, in Docker
 pip wheel .                                                 # the same build through the PEP 517 shim, ci/cvista_pep517.py
 ```
 
 Options (`--opt NAME=VALUE`): `abi3` (on; one wheel for 3.12+), `lto` (on), `gate_o2` (off;
--O2 as the fast parity gate uses) and `unity` (off). Hooks: `ci/pyvista_build_hooks.py`
+-O2 as the fast parity gate uses) and `unity` (off). The manifest's `[defaults.*]` sets bundle
+the usual flags: `fast` for local iteration, `ci` (unattended, LTO off) and `release`
+(unattended, LTO on) for the workflows, with per-leg `--opt` flags after the set. Hooks: `ci/pyvista_build_hooks.py`
 prints the version suffix, checks the tree after configure and gives the wheel its abi3 tag;
 `ci/prune_setup_py.py` prunes dead subpackages before packaging. The repair step strips local
 symbols on Linux and macOS and keeps the DLL names on Windows (`--no-mangle-all`). Changing
