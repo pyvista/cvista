@@ -321,10 +321,10 @@ unset(_cvista_ldflags)
 # so this is safe and lets the compiler inline/devirtualize within each .so —
 # a real win for VTK's virtual-dispatch + template-heavy hot paths. Free: no
 # portability or build-time cost (CPython itself ships with this). Toggle with
-# CVISTA_SEMINTERP=0. clang accepts -fno-semantic-interposition too, so gnu+apple
-# both take it; MSVC has no symbol interposition on PE/COFF (cross-TU inlining is
-# already the default) so the flag has no analogue and is skipped there.
-if (NOT _CVISTA_TOOLCHAIN STREQUAL "msvc" AND NOT "$ENV{CVISTA_SEMINTERP}" STREQUAL "0")
+# CVISTA_SEMINTERP=0. AppleClang ignores the flag with an "argument unused"
+# warning on every TU and MSVC has no symbol interposition on PE/COFF (cross-TU
+# inlining is already the default), so only the gnu toolchain takes it.
+if (_CVISTA_TOOLCHAIN STREQUAL "gnu" AND NOT "$ENV{CVISTA_SEMINTERP}" STREQUAL "0")
   set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} -fno-semantic-interposition" CACHE STRING "" FORCE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-semantic-interposition" CACHE STRING "" FORCE)
 endif ()
