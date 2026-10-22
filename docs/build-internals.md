@@ -411,13 +411,14 @@ must actually differ from the serial path (same set), proving the fast kernel ex
 
 ## Building
 
-On any platform, PyVista's build command drives the same init caches and hooks the
-cibuildwheel backend uses, reading them from `pyvista-build.toml` at the repo root:
+On any platform, [pyvista-build](https://github.com/pyvista/pyvista-build) drives the same
+init caches and hooks the cibuildwheel backend uses, reading them from `pyvista-build.toml`
+at the repo root:
 
 ```bash
-pip install --group build                  # PyVista with the build command
-pyvista build cvista                       # clone + build of main (--interactive to be asked at each step)
-pyvista build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
+pip install --group build                  # pyvista-build, from git until it is on PyPI
+pyvista-build cvista                       # clone + build of main (--interactive to be asked at each step)
+pyvista-build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
 ```
 
 CI runs the same command on Linux (`pyvista-build` in `ci.yml`), so the manifest is

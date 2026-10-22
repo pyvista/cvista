@@ -404,9 +404,9 @@ jobs:
           path: /tmp/rx-out
           if-no-files-found: ignore
 
-  # Builds the wheel through pyvista-build.toml with `pyvista build cvista`.
+  # Builds the wheel through pyvista-build.toml with `pyvista-build cvista`.
   pyvista-build:
-    name: pyvista build cvista (manifest, linux)
+    name: pyvista-build cvista (manifest, linux)
     runs-on: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
     timeout-minutes: 90
     steps:
@@ -416,6 +416,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Install the compiler, GL headers and ccache
         run: |
           sudo apt-get update
@@ -429,20 +430,20 @@ jobs:
           key: cvista-ccache-linux-pyvista-build-${{ github.run_id }}
           restore-keys: |
             cvista-ccache-linux-pyvista-build-
-      - name: Install PyVista with the build command
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --group build "setuptools_scm>=8"
+      - name: Install pyvista-build
+        run: uv pip install --system --group build "setuptools_scm>=8"
       - name: Hook and manifest tests
         run: python -m unittest discover -s ci/cibw -p test_pyvista_build_hooks.py
-      - name: pyvista build cvista
-        # --yes lets the command pip-install the build tools it finds missing.
+      - name: pyvista-build cvista
+        # --yes lets the command install the build tools it finds missing.
+        env:
+          FORCE_COLOR: '1'
         run: |
-          pyvista build cvista --yes --source . --opt lto=0 \
-            --build-dir build-pyvista --cache-dir /tmp/cvista-pyvista-build-ccache --no-install
+          pyvista-build cvista --yes --source . --opt lto=0 \
+            --build-dir build-pyvista --cache-dir /tmp/cvista-pyvista-build-ccache
       - name: Smoke test the wheel
         run: |
-          python -m pip install --no-deps build-pyvista/wheelhouse/*.whl
+          uv pip install --system --no-deps build-pyvista/wheelhouse/*.whl
           CVISTA_IMPORT_NAME=cvista python ci/smoke_min.py
       - uses: actions/upload-artifact@v4
         with:

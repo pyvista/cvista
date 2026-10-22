@@ -1,4 +1,4 @@
-manifest_version = 1 # read by `pyvista build cvista`
+manifest_version = 1 # read by `pyvista-build cvista`
 
 [backend]
 default_ref = "main"

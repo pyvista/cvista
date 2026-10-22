@@ -1,4 +1,4 @@
-"""Checks for the `pyvista build cvista` hooks and the manifest they serve."""
+"""Checks for the `pyvista-build cvista` hooks and the manifest they serve."""
 
 import os
 from pathlib import Path

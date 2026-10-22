@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hooks for `pyvista build cvista`: `version`, `check <build_dir>` and `retag <build_dir>`."""
+"""Hooks for `pyvista-build cvista`: `version`, `check <build_dir>` and `retag <build_dir>`."""
 
 import contextlib
 import glob
@@ -116,7 +116,7 @@ def _check_abi3() -> None:
     if sys.platform == "win32":
         sys.exit(
             "CVISTA_ABI3 is ON but the Windows link needs LIB=<python>/libs in the "
-            "build environment, which pyvista build cannot set; run again with --opt abi3=0"
+            "build environment, which pyvista-build cannot set; run again with --opt abi3=0"
         )
 
 
