@@ -4,8 +4,8 @@ The CI build legs (the only expensive part — all VTK C++ compilation) run on
 [Blacksmith](https://blacksmith.sh) runners when a set of org/repo **variables**
 is defined, and fall back to GitHub-hosted runners when they are not. There is
 **no hardcoded core count** anywhere: the compile width auto-tracks the runner's
-vCPUs (`cvista_backend._jobs()` defaults `cmake --build --parallel` to
-`os.cpu_count()`; `pyproject.toml` no longer pins `CVISTA_BUILD_JOBS`). Scaling a
+vCPUs (`pyvista-build` sizes `cmake --build --parallel` from the runner's cores and
+memory unless `--jobs` is passed). Scaling a
 tier up or down — or rolling back to GitHub — is a one-variable change, never a
 workflow edit.
 
@@ -41,8 +41,10 @@ has had availability incidents; the fallback is deliberate).
   (`linux`, `linux-legacy`), `sdk.yml` (`build-sdk`).
 - `CVISTA_RUNNER_WINDOWS` — `ci.yml` (`build-other-os`), `_tier-wheels.yml`
   (`windows`, `windows-legacy`).
-- `CVISTA_RUNNER_MACOS` — `ci.yml` (`build-other-os`, `build-legacy-macos`), the
-  wheels workflows' macOS legs.
+- `CVISTA_RUNNER_MACOS` — `ci.yml` (`build-other-os`), `_tier-wheels.yml`
+  (`macos`, `macos-legacy`), `sdk.yml` (`build-sdk`), `smp-parity.yml`.
+- `CVISTA_RUNNER_LINUX_ARM64` — `ci.yml` (`build-arm`), `_tier-wheels.yml`
+  (`linux-arm`), `sdk.yml` (`build-sdk`).
 - `CVISTA_RUNNER_LINUX_SMALL` — `ci.yml` gates (`bitexact`, `regression`,
   `renderexact`, `*-lto`, `publish`), `sdk.yml` (`publish-sdk`).
 
@@ -57,7 +59,7 @@ has had availability incidents; the fallback is deliberate).
   cost is justified — see the macOS note above.
 - **Windows Server 2025 runners are Public Beta** — flip via the variable, watch
   the first runs, keep `windows-latest` as the fallback.
-- **Want oversubscription instead of 1 job/core?** Set `CVISTA_BUILD_JOBS` (env or
+- **Want oversubscription instead of 1 job/core?** Pass `--jobs` to `pyvista-build` (or
   variable) in the heavy build step; unset tracks the runner cores.
 - Blacksmith transparently accelerates `actions/cache`, so the existing ccache
   cross-run seed logic keeps working with no change.

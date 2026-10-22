@@ -74,13 +74,12 @@ set(CVISTA_WRAP_UNITY_CHUNK 32 CACHE STRING "cvista: wrappers per unity TU")
 # UNITY_BUILD concatenates several into one TU to amortize that parse (the dominant
 # cold-compile cost). Object code is byte-identical -> bit-exact-safe. The hook
 # (CMake/vtkModule.cmake, after target_sources) is gated by the env knob
-# CVISTA_SOURCE_UNITY (default ON here; CVISTA_SOURCE_UNITY=0 disables). It excludes
+# CVISTA_SOURCE_UNITY (off unless it is 1 or ON). It excludes
 # vtkCommonCore (owned by the array-instantiation TU split, PR #27) plus any
 # module listed in CVISTA_SOURCE_UNITY_EXCLUDE that does not batch clean. The env
-# knob is read at hook time; we default it ON for the production build by exporting
-# it from the pyvista-build init cache, but ALSO record the intended default + the exclude list
-# here so a direct `-C minimal.cmake` configure that sets CVISTA_SOURCE_UNITY=1 in
-# its env behaves identically.
+# knob is read at hook time; `pyvista-build --opt unity=1` exports it, and the
+# exclude list is recorded here so a direct `-C minimal.cmake` configure that sets
+# CVISTA_SOURCE_UNITY=1 in its env behaves identically.
 include("${CMAKE_CURRENT_LIST_DIR}/_source_unity_exclude.cmake")
 set(CVISTA_SOURCE_UNITY_BATCH 8 CACHE STRING "cvista: module source .cxx per unity TU")
 
@@ -130,8 +129,8 @@ set(CMAKE_BUILD_TYPE "Release" CACHE STRING "")
 # values). Distinct from -O1 (which the maintainer was wary of): -O2 is the standard
 # fully-optimized level, just without -O3's most expensive/least-portable passes.
 #
-# Gate-only: enabled via the env knob CVISTA_GATE_O2=1 (set in the PR-gate
-# CIBW_ENVIRONMENT alongside CVISTA_LTO=0). Release builds leave it unset -> -O3.
+# Gate-only: enabled via the env knob CVISTA_GATE_O2=1 (`--opt gate_o2=1` on the
+# PR-gate legs). Release builds leave it unset -> -O3.
 # We override the *_RELEASE flags (not CMAKE_CXX_FLAGS): the per-config Release
 # flags are appended AFTER CMAKE_CXX_FLAGS on the command line, so an -O2 added to
 # CMAKE_CXX_FLAGS would be overridden by Release's -O3 — the override below makes
@@ -444,7 +443,7 @@ endif ()
 # file, processed before -D args are applied and before project(), so a
 # -DCVISTA_*=… cache var would be too late to gate the appends below (and
 # CMAKE_SYSTEM_NAME isn't set yet either). $ENV{} is available now and matches
-# the repo's env-knob idiom (CVISTA_STRIP, CVISTA_LTO, FAST).
+# the repo's env-knob idiom (CVISTA_LTO, CVISTA_GATE_O2, FAST).
 #
 # Gated to gnu (Linux/ELF): -fuse-ld + --icf are ELF-linker features. ld64
 # (macOS) has no --icf and a future macOS arm64 build would opt into

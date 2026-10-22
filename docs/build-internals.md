@@ -392,7 +392,7 @@ must actually differ from the serial path (same set), proving the fast kernel ex
 
 ### Wheel-size lever
 
-6. **Symbol strip (`CVISTA_STRIP=1`).** `strip --strip-all` on every shipped `.so` removes
+6. **Symbol strip (`[repair] strip = true` in `pyvista-build.toml`).** `strip --strip-all` on every shipped `.so` removes
    the static symbol table (`.symtab`/`.strtab`, ~40 % of a Release lib — e.g. `libvtkCommon`
    178 → 107 MB) while keeping `.dynsym` (runtime-safe; matches stock manylinux wheels). The
    strip walks the wheel-staging tree, so all 142 shipped libs (incl. the kit libraries) are
@@ -429,7 +429,9 @@ the usual flags: `fast` for local iteration, `ci` (unattended, LTO off) and `rel
 prints the version suffix, checks the tree after configure and gives the wheel its abi3 tag;
 `ci/prune_setup_py.py` prunes dead subpackages before packaging. The repair step strips local
 symbols on Linux and macOS and keeps the DLL names on Windows (`--no-mangle-all`). Changing
-`abi3` or `lto` in an existing build tree needs `--clean`. Off a release tag the version suffix
+`abi3`, `lto` or `gate_o2` in an existing build tree needs `--clean`. Python 3.11 builds need
+`--opt abi3=0` or `--defaults fast`; the check hook stops the build after configure otherwise.
+Off a release tag the version suffix
 comes from `setuptools_scm` when it is installed, else `dev0+g<sha>`.
 
 The init caches also read these environment variables, set on the `pyvista-build` call:
@@ -440,6 +442,8 @@ The init caches also read these environment variables, set on the `pyvista-build
 | `CVISTA_SEMINTERP` | `1` | `0` restores default semantic interposition (disables intra-`.so` inlining) |
 | `CVISTA_FAST_LINKER` | _(auto)_ | linker choice on Linux (`mold`, `lld`, `gold`) |
 | `CVISTA_PGO` | _(unset)_ | `gen`/`use` phases of profile-guided optimization; orchestrated by `ci/pgo-build.sh` |
+| `CVISTA_WRAP_OPTSIZE` | `1` | `0` disables `-Oz` on the Python wrapper TUs |
+| `CVISTA_DISPATCH_MINIMAL` | `1` | `0` restores the full ~14-type array-dispatch list (vs PyVista's 6) |
 
 ```bash
 ./ci/pgo-build.sh    # opt-in PGO build: instrument, train, rebuild (PYVISTA_DIR picks the training checkout)

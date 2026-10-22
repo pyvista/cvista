@@ -57,7 +57,7 @@ venv** — an un-redirected import must fail loud rather than silently test stoc
 ```bash
 export BITEXACT_STOCK_PY=<stock-venv>/bin/python     # has vtk==9.6.2
 export BITEXACT_CVISTA_PY=<cvista-venv>/bin/python        # has the cvista wheel
-export BITEXACT_CVISTA_LDLP=/nix/store/<gcc>/lib:...    # nix libs the cvista wheel needs
+export BITEXACT_CVISTA_LDLP=<libstdc++ dir>:...           # libs the cvista wheel needs, if any
 cd tests/bitexact
 python -m pytest -v
 python -m pytest -m modified    # hard gate: only the 9 modified filters
