@@ -440,7 +440,7 @@ jobs:
           FORCE_COLOR: '1'
         run: |
           pyvista-build cvista --yes --source . --opt lto=0 \
-            --build-dir build-pyvista --cache-dir /tmp/cvista-pyvista-build-ccache
+            --build-dir build-pyvista --compiler-cache ccache --cache-dir /tmp/cvista-pyvista-build-ccache
       - name: Smoke test the wheel
         run: |
           uv pip install --system --no-deps build-pyvista/wheelhouse/*.whl
