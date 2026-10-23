@@ -254,7 +254,7 @@ jobs:
         run: choco install sccache -y --no-progress
         shell: pwsh
       - name: Restore the Windows tier compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
           key: cvista-sccache-tiered-windows-abi3-${{ github.sha }}
@@ -280,6 +280,12 @@ jobs:
         run: >-
           pyvista-build cvista --defaults release --build-dir cvista-build
           --cache-dir "${{ github.workspace }}/.sccache"
+      - name: Save the Windows tier compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: cvista-sccache-tiered-windows-abi3-${{ github.sha }}
       - name: Audit the Python DLL imports
         shell: bash
         run: |
