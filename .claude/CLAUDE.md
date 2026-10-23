@@ -108,18 +108,3 @@ would only make sense by pointing at a particular downstream consumer, frame it 
 - `module-trimming` (skill): the three trim levers and how to add, remove, or restore classes.
 - `vtk-backport-engineer` (agent): lands a single backport end to end; driven by
   `/backport-vtk`.
-
-## pyvista-build gaps
-
-Knobs the cibuildwheel pipeline had that `pyvista-build` 0.3.0 does not offer. Extend the
-tool rather than reintroducing scripts here.
-
-- `[repair] strip` is a manifest constant; the only escape is `--no-repair`, which also
-  skips bundling. Needs a `--no-strip` flag or an `--opt`-style `[repair]` override.
-- No `CCACHE_MAXSIZE` default or flag: ccache's 5G default applies unless the job env sets
-  it (the old pipeline used 30G).
-- The container takes only the manifest's `[manylinux] env` patterns plus `CCACHE_*`,
-  `SCCACHE_*` and color variables, and no extra mounts. Needs `--env` and `--mount` flags.
-- `repair._rewrite_record` returns silently when a wheel has no RECORD.
-- `CCACHE_BASEDIR` is never set in the container, and a host value is dropped.
-- `version_command` runs on the host only.
