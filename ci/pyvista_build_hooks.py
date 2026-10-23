@@ -25,13 +25,13 @@ usage: pyvista_build_hooks.py version            print VTK_VERSION_SUFFIX for HE
 
 
 def _abi3_configured(build_dir: str) -> bool:
-    """Return the CVISTA_ABI3 value recorded in the build tree's CMake cache."""
+    """Return the CVISTA_ABI3 cache value, whatever entry type cmake stored it with."""
     cache = os.path.join(build_dir, "CMakeCache.txt")
     if not os.path.isfile(cache):
         sys.exit(f"{build_dir} holds no CMakeCache.txt; configure first")
     with open(cache, encoding="utf-8") as f:
         for line in f:
-            m = re.match(r"^CVISTA_ABI3:BOOL=(.*)$", line.strip())
+            m = re.match(r"^CVISTA_ABI3:[A-Z]+=(.*)$", line.strip())
             if m:
                 return m.group(1).upper() in ("ON", "1", "TRUE", "YES")
     return False

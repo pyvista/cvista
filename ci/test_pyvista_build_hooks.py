@@ -19,9 +19,9 @@ sys.path.insert(0, str(REPO / "ci"))
 import pyvista_build_hooks as hooks  # noqa: E402
 
 
-def _write_cache(build_dir: str, value: str) -> None:
+def _write_cache(build_dir: str, value: str, kind: str = "BOOL") -> None:
     Path(build_dir, "CMakeCache.txt").write_text(
-        f"// cache\nCMAKE_BUILD_TYPE:STRING=Release\nCVISTA_ABI3:BOOL={value}\n"
+        f"// cache\nCMAKE_BUILD_TYPE:STRING=Release\nCVISTA_ABI3:{kind}={value}\n"
     )
 
 
@@ -89,6 +89,10 @@ class CacheTests(unittest.TestCase):
             _write_cache(build, "ON")
             self.assertTrue(hooks._abi3_configured(build))
             _write_cache(build, "OFF")
+            self.assertFalse(hooks._abi3_configured(build))
+            _write_cache(build, "ON", "UNINITIALIZED")
+            self.assertTrue(hooks._abi3_configured(build))
+            _write_cache(build, "OFF", "UNINITIALIZED")
             self.assertFalse(hooks._abi3_configured(build))
             os.remove(os.path.join(build, "CMakeCache.txt"))
             with self.assertRaises(SystemExit):
