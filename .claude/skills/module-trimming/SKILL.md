@@ -52,7 +52,7 @@ A PyVista path needs `vtkFooBar`, but it was trimmed and import fails or a filte
      cmake ... -DCVISTA_KEEP_CLASSES="vtkFooBar;vtkBazQux"
      ```
      `CVISTA_KEEP_CLASSES` subtracts each class from both deny-lists, so it compiles and wraps,
-     and leaves the canonical lists untouched. Set via env for `build-cvista.sh`. (Added in #106.)
+     and leaves the canonical lists untouched. Pass it as `-D` to `pyvista-build cvista`. (Added in #106.)
 3. Validate: configure in a fresh build dir, build, `python smoke-cvista.py`, then the bitexact
    gate if the class affects a filter path.
 

@@ -1,16 +1,48 @@
-"""Test the exact three ABI3 wheels downloaded from the single Windows build."""
+"""Test the three abi3 Windows wheels in a directory, or `audit <wheel>...` their DLL imports."""
 
 import hashlib
 from pathlib import Path
+import re
 import subprocess
 import sys
+import zipfile
 
 
 def run(*args):
     subprocess.run([sys.executable, *map(str, args)], check=True, timeout=120)
 
 
+def audit_python_imports(wheel: str) -> None:
+    """Reject repaired wheels that import another interpreter's Python DLL."""
+    import pefile
+
+    match = re.search(r"-(cp\d+)-(abi3|cp\d+)-win", Path(wheel).name)
+    if match is None:
+        raise ValueError(f"Unsupported Windows wheel filename: {wheel}")
+    python_tag, abi_tag = match.groups()
+    allowed = "python3.dll" if abi_tag == "abi3" else f"python{python_tag[2:]}.dll"
+    wrong = []
+    with zipfile.ZipFile(wheel) as archive:
+        for name in archive.namelist():
+            if not name.lower().endswith((".pyd", ".dll")):
+                continue
+            pe = pefile.PE(data=archive.read(name))
+            for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []):
+                dependency = entry.dll.decode().lower()
+                if re.fullmatch(r"python\d+(?:_d)?\.dll", dependency):
+                    if dependency not in (allowed, "python3.dll"):
+                        wrong.append(f"{name}: {dependency}")
+            pe.close()
+    if wrong:
+        raise RuntimeError("Wheel imports the wrong Python runtime:\n" + "\n".join(wrong))
+
+
 def main():
+    if sys.argv[1] == "audit":
+        for wheel in sys.argv[2:]:
+            audit_python_imports(wheel)
+            print(f"audit: {Path(wheel).name} imports only its own Python DLL", flush=True)
+        return
     directory = Path(sys.argv[1]).resolve()
     wheels = {}
     for project in ("cvista", "cvista_rendering", "cvista_io"):
@@ -23,7 +55,6 @@ def main():
     assert len(list(directory.glob("*.whl"))) == 3
 
     run("-m", "pip", "install", "numpy", "matplotlib", "pytest", "pefile")
-    from repair_windows import audit_python_imports
 
     for wheel in wheels.values():
         audit_python_imports(str(wheel))
@@ -69,7 +100,7 @@ with TemporaryDirectory() as directory:
     reader.Update()
     assert reader.GetOutput().GetNumberOfCells() == sphere.GetOutput().GetNumberOfCells()
 """)
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     run(root / "ci/smoke_min.py")
     run("-m", "pytest", "-v", "--tb=short", "-p", "no:cacheprovider",
         root / "tests/regression/test_smp_python_observer_deadlock.py")

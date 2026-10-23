@@ -27,9 +27,11 @@ any filter, kernel, or render path.
 
 - `cvista-config/`: the build profiles and the trim lists (`_modules_minimal.cmake`,
   `_nowrap_classes.cmake`, `_nocompile_classes.cmake`). See the `module-trimming` skill.
-- `ci/`: build and validation scripts (`build-cvista.sh` entry, `run-bitexact.sh`,
-  `run-renderexact.sh`, `run-regression.sh`, `run-pyvista.sh`, `build-sdk.sh`) and the
-  cibuildwheel backend under `ci/cibw/`.
+- `pyvista-build.toml`: the build manifest `pyvista-build cvista` reads (options, hooks,
+  repair settings, manylinux packages). `ci/cmake/`: the per-OS init caches.
+- `ci/`: the build hooks (`pyvista_build_hooks.py`, `prune_setup_py.py`, the PEP 517 shim
+  `cvista_pep517.py`) and the validation scripts (`run-bitexact.sh`, `run-renderexact.sh`,
+  `run-regression.sh`, `run-pyvista.sh`, `build-sdk.sh`).
 - `tests/bitexact/`: the byte-exact gate. `tests/renderexact/`: pixel-exact render gate.
   `tests/regression/`: cvista's own regression scenes. `tests/pyvista/`: the PyVista parity
   suite and its pinned ref (lands with PR #112).
@@ -42,11 +44,12 @@ any filter, kernel, or render path.
 
 ## Build and validate
 
-The build runs inside `nix-shell` (pinned cmake 4.1.2, Python 3.13, GL/EGL/OSMesa). Entry:
+Every wheel is built by `pyvista-build cvista` (install it with `pip install --group build`):
 
 ```bash
-./build-cvista.sh                 # default profile (minimal), LTO on
-PROFILE=fast ./build-cvista.sh    # fast iteration, LTO off
+pyvista-build cvista --defaults release               # this checkout, LTO on
+pyvista-build cvista --defaults fast                  # fast iteration, LTO off, this Python only
+pyvista-build cvista --defaults release --manylinux   # the portable Linux wheel, in Docker
 ```
 
 Validation gates (also run in CI):

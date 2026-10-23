@@ -4,7 +4,7 @@
 PyVista never imports the gtk/tk/wx/test helper subpackages, but VTK's generated
 setup.py hardcodes them in ``packages=[...]``. Remove both the directories and the
 setup.py references so ``setup.py bdist_wheel`` doesn't fail on missing dirs.
-Mirrors the same step in build-cvista.sh.
+Runs as the post_build hook of pyvista-build.toml.
 
 The ``qt`` subpackage is deliberately KEPT: pyvistaqt imports ``vtkmodules.qt``
 (redirected to ``cvista.qt``) for ``PyQtImpl`` / ``QVTKRenderWindowInteractor``, and

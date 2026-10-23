@@ -74,13 +74,12 @@ set(CVISTA_WRAP_UNITY_CHUNK 32 CACHE STRING "cvista: wrappers per unity TU")
 # UNITY_BUILD concatenates several into one TU to amortize that parse (the dominant
 # cold-compile cost). Object code is byte-identical -> bit-exact-safe. The hook
 # (CMake/vtkModule.cmake, after target_sources) is gated by the env knob
-# CVISTA_SOURCE_UNITY (default ON here; CVISTA_SOURCE_UNITY=0 disables). It excludes
+# CVISTA_SOURCE_UNITY (off unless it is 1 or ON). It excludes
 # vtkCommonCore (owned by the array-instantiation TU split, PR #27) plus any
 # module listed in CVISTA_SOURCE_UNITY_EXCLUDE that does not batch clean. The env
-# knob is read at hook time; we default it ON for the production build by exporting
-# it from build-cvista.sh, but ALSO record the intended default + the exclude list
-# here so a direct `-C minimal.cmake` configure that sets CVISTA_SOURCE_UNITY=1 in
-# its env behaves identically.
+# knob is read at hook time; `pyvista-build --opt unity=1` exports it, and the
+# exclude list is recorded here so a direct `-C minimal.cmake` configure that sets
+# CVISTA_SOURCE_UNITY=1 in its env behaves identically.
 include("${CMAKE_CURRENT_LIST_DIR}/_source_unity_exclude.cmake")
 set(CVISTA_SOURCE_UNITY_BATCH 8 CACHE STRING "cvista: module source .cxx per unity TU")
 
@@ -96,15 +95,15 @@ set(CVISTA_SOURCE_UNITY_BATCH 8 CACHE STRING "cvista: module source .cxx per uni
 # no limited-API way to make a static type). See docs/abi3-feasibility.md.
 #
 # A plain local build (or any single -C minimal.cmake configure) is therefore an
-# abi3 build by default. The shipped matrix is a TWO-WHEEL scheme: the cibuildwheel
-# backend (ci/cibw/cvista_backend.py) FORCES CVISTA_ABI3 OFF on the cp311 leg (3.11
+# abi3 build by default. The shipped matrix is a TWO-WHEEL scheme: the CI legacy
+# leg passes --opt abi3=0 to pyvista-build on the cp311 leg (3.11
 # cannot be a stable-ABI floor — see below) so 3.11 ships as a normal static wheel,
 # and keeps it ON for cp312+ to ship the single cp312-abi3 wheel.
 #
 # ESCAPE HATCH: configure with -DCVISTA_ABI3=OFF (or CVISTA_ABI3=0 in the wheel
 # backend env) to build the legacy per-version static-type wheel (strict
 # byte-for-byte parity incl. __flags__), tagged cp3XX-cp3XX as before.
-option(CVISTA_ABI3 "cvista: compile Python wrappers against the CPython stable ABI (Py_LIMITED_API). Default ON (3.12+); the cibuildwheel backend forces OFF on cp311 (static wheel). See docs/abi3-feasibility.md" ON)
+option(CVISTA_ABI3 "cvista: compile Python wrappers against the CPython stable ABI (Py_LIMITED_API). Default ON (3.12+); the cp311 leg builds with --opt abi3=0 (static wheel). See docs/abi3-feasibility.md" ON)
 # 0x030c0000 == CPython 3.12 — the limited-API floor. The resulting abi3 wheel is
 # tagged cp312-abi3 and loads on CPython 3.12+. (3.11 is NOT a valid abi3 floor:
 # PyMemberDef and the Py_T_*/Py_READONLY member constants the heap-type wrappers
@@ -130,8 +129,8 @@ set(CMAKE_BUILD_TYPE "Release" CACHE STRING "")
 # values). Distinct from -O1 (which the maintainer was wary of): -O2 is the standard
 # fully-optimized level, just without -O3's most expensive/least-portable passes.
 #
-# Gate-only: enabled via the env knob CVISTA_GATE_O2=1 (set in the PR-gate
-# CIBW_ENVIRONMENT alongside CVISTA_LTO=0). Release builds leave it unset -> -O3.
+# Gate-only: enabled via the env knob CVISTA_GATE_O2=1 (`--opt gate_o2=1` on the
+# PR-gate legs). Release builds leave it unset -> -O3.
 # We override the *_RELEASE flags (not CMAKE_CXX_FLAGS): the per-config Release
 # flags are appended AFTER CMAKE_CXX_FLAGS on the command line, so an -O2 added to
 # CMAKE_CXX_FLAGS would be overridden by Release's -O3 — the override below makes
@@ -321,10 +320,10 @@ unset(_cvista_ldflags)
 # so this is safe and lets the compiler inline/devirtualize within each .so —
 # a real win for VTK's virtual-dispatch + template-heavy hot paths. Free: no
 # portability or build-time cost (CPython itself ships with this). Toggle with
-# CVISTA_SEMINTERP=0. clang accepts -fno-semantic-interposition too, so gnu+apple
-# both take it; MSVC has no symbol interposition on PE/COFF (cross-TU inlining is
-# already the default) so the flag has no analogue and is skipped there.
-if (NOT _CVISTA_TOOLCHAIN STREQUAL "msvc" AND NOT "$ENV{CVISTA_SEMINTERP}" STREQUAL "0")
+# CVISTA_SEMINTERP=0. AppleClang ignores the flag with an "argument unused"
+# warning on every TU and MSVC has no symbol interposition on PE/COFF (cross-TU
+# inlining is already the default), so only the gnu toolchain takes it.
+if (_CVISTA_TOOLCHAIN STREQUAL "gnu" AND NOT "$ENV{CVISTA_SEMINTERP}" STREQUAL "0")
   set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} -fno-semantic-interposition" CACHE STRING "" FORCE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-semantic-interposition" CACHE STRING "" FORCE)
 endif ()
@@ -444,7 +443,7 @@ endif ()
 # file, processed before -D args are applied and before project(), so a
 # -DCVISTA_*=… cache var would be too late to gate the appends below (and
 # CMAKE_SYSTEM_NAME isn't set yet either). $ENV{} is available now and matches
-# the repo's env-knob idiom (CVISTA_STRIP, CVISTA_LTO, FAST).
+# the repo's env-knob idiom (CVISTA_LTO, CVISTA_GATE_O2, FAST).
 #
 # Gated to gnu (Linux/ELF): -fuse-ld + --icf are ELF-linker features. ld64
 # (macOS) has no --icf and a future macOS arm64 build would opt into
@@ -531,16 +530,15 @@ if (_CVISTA_TOOLCHAIN STREQUAL "msvc")
   unset(_cvista_msvc_link)
 
   # === Windows abi3 (Py_LIMITED_API) link fixes ================================
-  # PART 1 (LNK1104 "cannot open file 'python3.lib'") is handled OUTSIDE cmake:
-  # the backend (ci/cibw/cvista_backend.py::_set_abi3_windows_libdir) prepends the
-  # CPython libs/ dir to the MSVC `LIB` environment variable, which link.exe reads
-  # as a default library search path. That resolves the bare-name python3.lib the
+  # PART 1 (LNK1104 "cannot open file 'python3.lib'") is handled in the top-level
+  # CMakeLists.txt: link_directories() adds the CPython libs/ dir to the default
+  # library search path. That resolves the bare-name python3.lib the
   # #pragma comment(lib,...) auto-links under Py_LIMITED_API, on EVERY link, with
   # no /LIBPATH on the command line. We deliberately do NOT add /LIBPATH to
   # CMAKE_*_LINKER_FLAGS here: ThirdParty/hdf5 embeds the linker flags verbatim
   # into a C string literal (H5build_settings.c), so a flag carrying a quoted
   # Windows path ("C:\...\libs") corrupts that source (unknown escape sequence /
-  # premature string close). The `LIB` env route sidesteps that entirely.
+  # premature string close). link_directories() stays out of those variables.
   #
   # Keep FindPython's imported targets available in every module scope.
   # Utilities/Python selects Python3::SABIModule for Windows abi3 consumers.

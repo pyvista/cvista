@@ -10,7 +10,6 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -101,41 +100,14 @@ gc.collect()
     )
 
 
-def test_repair_windows_passes_no_mangle_all(tmp_path):
-    """Windows delvewheel repair must preserve canonical DLL names for cvista-sdk (#299)."""
-    repo_root = Path(__file__).resolve().parents[2]
-    repair_script = repo_root / "ci" / "cibw" / "repair_windows.py"
-    if not repair_script.is_file():
-        pytest.skip("ci/cibw/repair_windows.py not present in checkout")
+def test_windows_repair_keeps_dll_names():
+    """The Windows repair must preserve canonical DLL names for cvista-sdk (#299)."""
+    import tomllib
 
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("repair_windows", repair_script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    fake_wheel = tmp_path / "cvista-0.2.0-cp313-cp313-win_amd64.whl"
-    fake_wheel.write_bytes(b"")
-    dest_dir = tmp_path / "wheelhouse"
-    dest_dir.mkdir()
-
-    recorded_cmds: list[list[str]] = []
-
-    def fake_run(cmd, check=False):
-        recorded_cmds.append(list(cmd))
-
-    with (
-        patch.object(module, "_bin_dirs", return_value=[str(tmp_path / "bin")]),
-        patch.object(module, "audit_python_imports"),
-        patch("subprocess.run", side_effect=fake_run),
-    ):
-        rc = module.main([str(tmp_path), str(dest_dir), str(fake_wheel)])
-
-    assert rc == 0
-    assert len(recorded_cmds) == 1
-    cmd = recorded_cmds[0]
-    assert cmd[:3] == ["delvewheel", "repair", "--no-mangle-all"]
+    manifest = Path(__file__).resolve().parents[2] / "pyvista-build.toml"
+    with manifest.open("rb") as f:
+        repair = tomllib.load(f)["repair"]
+    assert "--no-mangle-all" in repair["windows"]
 
 
 def test_concurrent_lazy_build_links_and_cells():

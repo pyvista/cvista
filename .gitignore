@@ -17,6 +17,7 @@ __pycache__/
 /build-cvista/
 /build-cvista-trim/
 /build-cvista-*/
+/cvista-build/
 /.pyshim313/
 /.ExternalData/
 *.whl

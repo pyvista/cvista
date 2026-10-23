@@ -11,8 +11,8 @@
 # CMAKE_INSTALL_PREFIX; this script supplies that prefix, populates it with
 # `cmake --install`, then builds the wheel from <build>/wheel_sdks.
 #
-# Per-OS toolchain mirrors the runtime wheel build (ci.yml -> the matching
-# [tool.cibuildwheel.<os>] section): the same CMake init-cache
+# Per-OS toolchain mirrors the runtime wheel build (pyvista-build.toml
+# [cmake] init_cache): the same CMake init-cache
 # (ci/cmake/<os>.cmake) and the same macOS deployment target. The SDK ships the
 # VTK libs UNVENDORED (no auditwheel/delocate/delvewheel repair) so downstream
 # `find_package(VTK)` links them by their real SONAMEs, so the only post-build
@@ -78,18 +78,9 @@ cmpath() {
 # resolves CMAKE_MAKE_PROGRAM and the system compilers.
 export PATH="$PYBIN:$PATH"
 
-# Version suffix straight from the runtime wheel's backend so the SDK wheel
-# version matches cvista exactly (it applies the repo's setuptools_scm config:
-# guess-next-dev, no-local-version, the 9.6.2 base and fallback). _version_suffix()
-# prints a diagnostic to stdout, so capture only the returned value.
-SUFFIX="$("$PYBIN/python" -c "
-import sys, io, contextlib
-sys.path.insert(0, r'$(cmpath "$SRC")/ci/cibw')
-import cvista_backend
-with contextlib.redirect_stdout(io.StringIO()):
-    s = cvista_backend._version_suffix()
-print(s)
-")"
+# Version suffix from the same hook `pyvista-build cvista` runs, so the SDK wheel
+# version matches cvista exactly.
+SUFFIX="$("$PYBIN/python" "$(cmpath "$SRC")/ci/pyvista_build_hooks.py" version)"
 
 # LTO-off / -O2 fast config for the gate (the SDK content is headers + config +
 # tools, not optimizer-sensitive); release uses the same script with CVISTA_LTO
