@@ -434,6 +434,12 @@ symbols on Linux and macOS and keeps the DLL names on Windows (`--no-mangle-all`
 Off a release tag the version suffix
 comes from `setuptools_scm` when it is installed, else `dev0+g<sha>`.
 
+A `--manylinux` build forwards every `CVISTA_*` variable into the container (the manifest's
+`[manylinux] env`). `--env NAME` forwards another one for a single build, and
+`--mount HOST:CONTAINER[:ro]` mounts an extra host directory, for instance a dataset folder
+when reproducing a gate inside the container. The container's ccache holds 30 GB unless
+`CCACHE_MAXSIZE` is set on the host.
+
 The init caches also read these environment variables, set on the `pyvista-build` call:
 
 | var | default | meaning |
