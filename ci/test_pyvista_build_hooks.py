@@ -1,5 +1,7 @@
-"""Checks for the `pyvista build cvista` hooks and the manifest they serve."""
+"""Checks for the `pyvista-build cvista` hooks and the manifest they serve."""
 
+import base64
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -10,16 +12,16 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "ci" / "pyvista_build_hooks.py"
 sys.path.insert(0, str(REPO / "ci"))
 
 import pyvista_build_hooks as hooks  # noqa: E402
 
 
-def _write_cache(build_dir: str, value: str) -> None:
+def _write_cache(build_dir: str, value: str, kind: str = "BOOL") -> None:
     Path(build_dir, "CMakeCache.txt").write_text(
-        f"// cache\nCMAKE_BUILD_TYPE:STRING=Release\nCVISTA_ABI3:BOOL={value}\n"
+        f"// cache\nCMAKE_BUILD_TYPE:STRING=Release\nCVISTA_ABI3:{kind}={value}\n"
     )
 
 
@@ -52,7 +54,7 @@ class VersionTests(unittest.TestCase):
         )
 
     def test_exact_tag(self):
-        base = hooks.cvista_backend.VTK_BASE_VERSION
+        base = hooks.VTK_BASE_VERSION
         completed = subprocess.CompletedProcess([], 0, stdout=f"{base}.7\n", stderr="")
         with patch.object(hooks.subprocess, "run", return_value=completed):
             self.assertEqual(hooks._tag_suffix(), "7")
@@ -88,6 +90,10 @@ class CacheTests(unittest.TestCase):
             self.assertTrue(hooks._abi3_configured(build))
             _write_cache(build, "OFF")
             self.assertFalse(hooks._abi3_configured(build))
+            _write_cache(build, "ON", "UNINITIALIZED")
+            self.assertTrue(hooks._abi3_configured(build))
+            _write_cache(build, "OFF", "UNINITIALIZED")
+            self.assertFalse(hooks._abi3_configured(build))
             os.remove(os.path.join(build, "CMakeCache.txt"))
             with self.assertRaises(SystemExit):
                 hooks._abi3_configured(build)
@@ -106,17 +112,7 @@ class CacheTests(unittest.TestCase):
             ):
                 hooks.check(build)
             self.assertIn("stable-ABI floor", str(info.exception))
-            with (
-                patch.object(hooks.sys, "version_info", (3, 12)),
-                patch.object(hooks.sys, "platform", "win32"),
-                self.assertRaises(SystemExit) as info,
-            ):
-                hooks.check(build)
-            self.assertIn("LIB=", str(info.exception))
-            with (
-                patch.object(hooks.sys, "version_info", (3, 12)),
-                patch.object(hooks.sys, "platform", "linux"),
-            ):
+            with patch.object(hooks.sys, "version_info", (3, 12)):
                 hooks.check(build)
             self.assertTrue(stamp.is_file())
 
@@ -133,9 +129,18 @@ class CacheTests(unittest.TestCase):
                 hooks.check(build)
             self.assertIn("--clean", str(info.exception))
             with (
+                patch.dict(hooks.os.environ, {"CVISTA_LTO": "1", "CVISTA_GATE_O2": "0"}),
+            ):
+                hooks.check(build)
+            with (
+                patch.dict(hooks.os.environ, {"CVISTA_LTO": "1", "CVISTA_GATE_O2": "1"}),
+                self.assertRaises(SystemExit) as info,
+            ):
+                hooks.check(build)
+            self.assertIn("'gate_o2': True", str(info.exception))
+            with (
                 patch.dict(hooks.os.environ, {"CVISTA_LTO": "1"}),
                 patch.object(hooks.sys, "version_info", (3, 12)),
-                patch.object(hooks.sys, "platform", "linux"),
             ):
                 _write_cache(build, "ON")
                 with self.assertRaises(SystemExit) as info:
@@ -164,10 +169,15 @@ class RetagTests(unittest.TestCase):
             with zipfile.ZipFile(
                 dist / "cvista-9.7.0.5-cp312-abi3-linux_x86_64.whl"
             ) as z:
-                self.assertIn(
-                    "Tag: cp312-abi3-linux_x86_64",
-                    z.read("cvista-9.7.0.5.dist-info/WHEEL").decode(),
-                )
+                wheel_data = z.read("cvista-9.7.0.5.dist-info/WHEEL")
+                record = z.read("cvista-9.7.0.5.dist-info/RECORD").decode()
+            self.assertIn("Tag: cp312-abi3-linux_x86_64", wheel_data.decode())
+            digest = base64.urlsafe_b64encode(hashlib.sha256(wheel_data).digest())
+            self.assertEqual(
+                record,
+                "cvista-9.7.0.5.dist-info/WHEEL,sha256="
+                f"{digest.rstrip(b'=').decode()},{len(wheel_data)}\n",
+            )
 
 
 class ManifestTests(unittest.TestCase):

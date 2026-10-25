@@ -63,6 +63,15 @@ option(VTK_WHEEL_BUILD "Build in such a way that Python wheels are supported" OF
 mark_as_advanced(VTK_WHEEL_BUILD)
 if (VTK_WHEEL_BUILD)
   include(vtkWheelPreparation)
+  # cvista: under Py_LIMITED_API MSVC auto-links python3.lib by bare name, so the
+  # CPython libs/ directory has to be on the linker search path.
+  if (WIN32 AND CVISTA_ABI3)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" -c "import os, sys; print(os.path.join(sys.base_prefix, 'libs'))"
+      OUTPUT_VARIABLE _cvista_python_libs
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    link_directories("${_cvista_python_libs}")
+  endif ()
 endif ()
 
 include(CMakeDependentOption)

@@ -35,7 +35,7 @@ and `.claude/CLAUDE.md` first. Stay within this one MR; do not sweep or triage o
      `tests/precision_audit.md`.
    - Degenerate-input guard (crash/nullptr on bad input): add a regression test for the
      degenerate case; valid-input output stays byte-exact.
-4. Build with `PROFILE=fast ./build-cvista.sh` and run the relevant gate
+4. Build with `pyvista-build cvista --defaults fast` and run the relevant gate
    (`ci/run-bitexact.sh` / `ci/run-renderexact.sh` / `ci/run-regression.sh`) to prove the fix
    and the parity outcome. If you cannot build in this environment, say so plainly and leave the
    PR as a draft with the gate steps listed; do not claim a gate passed that you did not run.

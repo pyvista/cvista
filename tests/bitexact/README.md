@@ -59,7 +59,7 @@ runner python with `pytest`+`numpy`:
 export BITEXACT_STOCK_PY=/path/to/stock-venv/bin/python
 export BITEXACT_CVISTA_PY=/path/to/cvista-venv/bin/python
 # cvista wheel built under nix needs the nix runtime libs on its loader path:
-export BITEXACT_CVISTA_LDLP=/nix/store/<gcc-lib>/lib:/nix/store/<zlib>/lib
+export BITEXACT_CVISTA_LDLP=<libstdc++ dir>:<zlib dir>
 export BITEXACT_STOCK_LDLP=...   # only if stock vtk isn't self-contained
 cd tests/bitexact && python -m pytest -v
 # hard gate only:

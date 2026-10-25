@@ -37,7 +37,7 @@ set(VTK_MODULE_ENABLE_VTK_RenderingExternal NO CACHE STRING "")
 set(VTK_MODULE_ENABLE_VTK_GUISupportMFC NO CACHE STRING "")
 
 # Wheel ABI tag: the cp39 .pyd ABI/SOABI is derived from the Python3 interpreter
-# cibuildwheel/the workflow points at; nothing platform-specific needed here.
+# pyvista-build points at; nothing platform-specific needed here.
 
 include("${CMAKE_CURRENT_LIST_DIR}/../../cvista-config/minimal.cmake")
 

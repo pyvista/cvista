@@ -8,7 +8,7 @@
 # Built for every platform the runtime cvista wheel ships (Linux x86_64, macOS
 # arm64, Windows x64) so downstream consumers can compile against cvista on the
 # same OSes they can import it on. Each leg mirrors the runtime build's per-OS
-# toolchain (ci.yml -> [tool.cibuildwheel.<os>]); ci/build-sdk.sh picks the
+# toolchain (pyvista-build.toml [cmake] init_cache); ci/build-sdk.sh picks the
 # matching init-cache and handles the platform-tag details.
 name: SDK
 
@@ -83,9 +83,10 @@ jobs:
     # Windows gets 180: it has no ccache (MSVC) so every run is cold, and with
     # CVISTA_WRAP_UNITY defaulted OFF on the 9.7 base (per-class Python wrappers, ~2x
     # the wrapper-compile work) the cold MSVC build overran the old 90-min cap at ~79%.
-    # The ccache'd Linux/macOS legs finish well under 90. Revisit when the wrapper-unity
-    # lever is re-hardened (cvista-config/refork/07).
-    timeout-minutes: ${{ matrix.os == 'windows' && 180 || 90 }}
+    # The ccache'd Linux/macOS legs finish well under 90, but a cold Linux leg behind a
+    # slow AlmaLinux mirror has taken 95, so Linux gets 120. Revisit when the
+    # wrapper-unity lever is re-hardened (cvista-config/refork/07).
+    timeout-minutes: ${{ matrix.os == 'windows' && 180 || (matrix.os == 'macos' && 90 || 120) }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,9 +113,10 @@ jobs:
       - name: Install rendering + build deps (Linux)
         if: startsWith(matrix.os, 'linux')
         # Same AlmaLinux 8 package set as the runtime wheel build
-        # (ci.yml -> [tool.cibuildwheel.linux] before-all).
+        # (pyvista-build.toml [manylinux] packages).
         run: |
-          dnf install -y mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
+          dnf install -y --setopt=install_weak_deps=False --setopt=fastestmirror=True \
+            mesa-libGL-devel mesa-libEGL-devel mesa-libOSMesa-devel \
             mesa-libGLU-devel libglvnd-devel libX11-devel libXcursor-devel \
             libXt-devel libXext-devel mesa-dri-drivers xorg-x11-server-Xvfb \
             ccache git mold lld
@@ -139,9 +141,10 @@ jobs:
       # build-sdk.sh sets CMAKE_*_COMPILER_LAUNCHER=ccache when ccache is present,
       # but nothing persisted CCACHE_DIR, so every SDK build was a full cold VTK
       # kit compile (~20-30 min on Linux). Pin CCACHE_DIR to a stable path and
-      # restore a per-OS seed keyed by run id (restore-keys prefix match), exactly
-      # like the runtime build in ci.yml: each run SAVES a fresh seed at job end,
-      # so push-to-main / merge_group refresh the seed that PRs restore. Windows
+      # restore a per-OS seed keyed by run id (restore-keys prefix match; the `run-`
+      # separator keeps `linux` from matching `linux-arm64`). The seed is saved
+      # right after the build, whatever the later steps do, so a failed smoke test
+      # or a timeout still leaves the next run warm. Windows
       # has no ccache (MSVC), so it is skipped. Container legs use an in-container
       # path (/ccache); the macOS host uses $HOME.
       - name: Configure ccache dir
@@ -155,14 +158,20 @@ jobs:
           fi
       - name: Restore SDK ccache (cross-run)
         if: matrix.os != 'windows'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: cvista-sdk-ccache-${{ matrix.os }}-${{ github.run_id }}
+          key: cvista-sdk-ccache-${{ matrix.os }}-run-${{ github.run_id }}
           restore-keys: |
-            cvista-sdk-ccache-${{ matrix.os }}-
+            cvista-sdk-ccache-${{ matrix.os }}-run-
       - name: Build cvista-sdk wheel
         run: ci/build-sdk.sh
+      - name: Save SDK ccache (cross-run)
+        if: always() && matrix.os != 'windows'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cvista-sdk-ccache-${{ matrix.os }}-run-${{ github.run_id }}
       - name: Smoke-test the SDK (find_package(VTK))
         run: ci/test-sdk.sh
       - uses: actions/upload-artifact@v4

@@ -56,5 +56,5 @@ publisher must be registered on PyPI first: `cvista` → workflow `ci.yml`, envi
 ## Rebasing onto a new VTK
 
 Out of scope for a normal release. When cvista moves to a new upstream VTK, bump
-`VTK_BASE_VERSION` in `ci/cibw/cvista_backend.py` and the base in `pyproject.toml`, then restart at
+`VTK_BASE_VERSION` in `ci/pyvista_build_hooks.py` and the base in `pyproject.toml`, then restart at
 `9.7.0.0`. See `docs/versioning.md`.

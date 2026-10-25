@@ -145,8 +145,8 @@ green (9,731 passed / 8 pre-existing env-fails / 0 introduced).
    parity-green:** a differential PyVista core+plotting run (2,104 tests) gave byte-identical
    outcomes with vs without ICF (0 regressions), plus the native `smoke-cvista.py` factory/EGL path.
    **Measured −10% wheel (47.1 → 42.2 MiB)**; the fold concentrates in `libvtkCommon` (−19.8%).
-   Disable with `CVISTA_ICF=0 ./build-cvista.sh` for an A/B baseline (gold `--icf=safe` is the
-   strictly-weaker fallback). Linux/gold only; needs `binutils` (in `shell.nix`).
+   Disable with `CVISTA_ICF=0 pyvista-build cvista --source .` for an A/B baseline (gold
+   `--icf=safe` is the strictly-weaker fallback). Linux/gold only; needs `binutils`.
 
 10. **Wrapper TU size-opt (`CVISTA_WRAP_OPTSIZE`, on by default).** The generated `*Python.cxx`
     wrappers are argument-marshalling shims, not hot code, yet they inherit the project `-O3`.
@@ -371,8 +371,7 @@ must actually differ from the serial path (same set), proving the fast kernel ex
     directive): **cvista ships exactly ONE wheel** — the `cp312-abi3` wheel — and 3.12 is the
     minimum supported Python. This collapses the entire `cp312 cp313 cp314` matrix to one build:
     the wrappers (≈85 modules / ~1,664 generated TUs) compile **once** for 3.12+ instead of per
-    minor (cibuildwheel's abi3 dedup reuses the wheel for cp313/cp314 — exactly **one build, one
-    wheel**), plus zero-cost support for every future CPython minor.
+    minor (one build, one wheel), plus zero-cost support for every future CPython minor.
 
     **Bit-exactness.** The abi3 wheel is byte-for-byte identical to stock VTK 9.6.2 on every
     numeric and behavioral fact — `maxULP=0` across the bitexact suite, **numpy zero-copy
@@ -393,10 +392,10 @@ must actually differ from the serial path (same set), proving the fast kernel ex
 
 ### Wheel-size lever
 
-6. **Symbol strip (`CVISTA_STRIP=1`).** `strip --strip-all` on every shipped `.so` removes
+6. **Symbol strip (`[repair] strip = true` in `pyvista-build.toml`).** `auditwheel repair --strip` on Linux and `strip -x` on macOS remove
    the static symbol table (`.symtab`/`.strtab`, ~40 % of a Release lib — e.g. `libvtkCommon`
    178 → 107 MB) while keeping `.dynsym` (runtime-safe; matches stock manylinux wheels). The
-   strip walks the wheel-staging tree, so all 142 shipped libs (incl. the kit libraries) are
+   strip runs on the repaired wheel, so all 142 shipped libs (incl. the kit libraries) are
    stripped, not just the SDK wrappers. **Measured: with levers 7+8, stripped wheel = 49 MB
    (47 MiB) — ~60 % smaller than the stock `vtk` wheel (~120 MB)** (strip alone, without 7+8,
    was 65 MB). The wheel is already maximally deflate-compressed; re-zipping does not shrink it.
@@ -411,62 +410,54 @@ must actually differ from the serial path (same set), proving the fast kernel ex
 
 ## Building
 
-On any platform, PyVista's build command drives the same init caches and hooks the
-cibuildwheel backend uses, reading them from `pyvista-build.toml` at the repo root:
+[pyvista-build](https://github.com/pyvista/pyvista-build) builds every cvista wheel, locally and
+in CI, from the manifest `pyvista-build.toml` at the repo root: the per-OS init caches under
+`ci/cmake/`, the options, the hooks and the repair settings.
 
 ```bash
-pip install --group build                  # PyVista with the build command
-pyvista build cvista                       # clone + build of main (--interactive to be asked at each step)
-pyvista build cvista --source . --opt lto=0 --opt abi3=0   # this checkout, fast iteration
+pip install --group build                                   # pyvista-build[tools]
+pyvista-build cvista                                        # clone + build of main
+pyvista-build cvista --defaults fast                        # this checkout, LTO off, this Python only
+pyvista-build cvista --defaults release --manylinux         # the portable Linux wheel, in Docker
+pip wheel .                                                 # the same build through the PEP 517 shim, ci/cvista_pep517.py
 ```
 
-CI runs the same command on Linux (`pyvista-build` in `ci.yml`), so the manifest is
-exercised on every pull request. Limits: the wheel is not stripped, so it is larger than
-the published one; Windows and Python 3.11 need `--opt abi3=0` (the check hook stops the
-build after configure otherwise); changing `abi3` or `lto` in an existing build tree needs
-`--clean`, since the init cache's compiler flags stay in the CMake cache. Off a release
-tag the version suffix comes from `setuptools_scm` when it is installed, else
-`dev0+g<sha>`. `--manylinux` installs the GL, EGL, OSMesa and X11 headers listed under
-`[manylinux]`.
+Options (`--opt NAME=VALUE`): `abi3` (on; one wheel for 3.12+), `lto` (on), `gate_o2` (off;
+-O2 as the fast parity gate uses) and `unity` (off). The manifest's `[defaults.*]` sets bundle
+the usual flags: `fast` for local iteration, `ci` (unattended, LTO off) and `release`
+(unattended, LTO on) for the workflows, with per-leg `--opt` flags after the set. Hooks: `ci/pyvista_build_hooks.py`
+prints the version suffix, checks the tree after configure and gives the wheel its abi3 tag;
+`ci/prune_setup_py.py` prunes dead subpackages before packaging. The repair step strips local
+symbols on Linux and macOS and keeps the DLL names on Windows (`--no-mangle-all`). Changing
+`abi3`, `lto` or `gate_o2` in an existing build tree needs `--clean`. Python 3.11 builds need
+`--opt abi3=0` or `--defaults fast`; the check hook stops the build after configure otherwise.
+Off a release tag the version suffix
+comes from `setuptools_scm` when it is installed, else `dev0+g<sha>`.
 
-The nix-based script below remains the Linux reference build.
+A `--manylinux` build forwards every `CVISTA_*` variable into the container (the manifest's
+`[manylinux] env`). `--env NAME` forwards another one for a single build, and
+`--mount HOST:CONTAINER[:ro]` mounts an extra host directory, for instance a dataset folder
+when reproducing a gate inside the container. The container's ccache holds 30 GB unless
+`CCACHE_MAXSIZE` is set on the host.
 
-The build self-execs into a `nix-shell` (`shell.nix`) that provides the GL/EGL/OSMesa/X11
-stack, pins `cmake` 4.1.2, and uses Python 3.13 + `ccache`.
-
-```bash
-# Fast iteration wheel (LTO off, stripped) — the per-push smoke build:
-CVISTA_LTO=0 CVISTA_STRIP=1 ./build-cvista.sh
-
-# Release wheel (LTO + ICF + strip) — the shipped default, ~+2% / ~37 MiB:
-CVISTA_LTO=1 CVISTA_ICF=1 CVISTA_STRIP=1 ./build-cvista.sh
-
-# Opt-in: profile-guided build (instrument → train → rebuild), ~26% faster +
-# ~25% smaller but ~3× build time and tuned to a curated filter workload. NOT the
-# shipped default; clones pyvista automatically (or set PYVISTA_DIR to a checkout):
-./ci/pgo-build.sh
-```
-
-Knobs (environment variables):
+The init caches also read these environment variables, set on the `pyvista-build` call:
 
 | var | default | meaning |
 |---|---|---|
-| `PROFILE` | `minimal` | `minimal` (PyVista closure) · `fast`/`linux` (all modules) |
-| `FAST` | `1` | `0` enables LTO (production) |
-| `CVISTA_STRIP` | `0` | `1` strips shipped `.so` symbol tables |
 | `CVISTA_ICF` | `1` | `0` disables gold ICF (link-time identical-code folding); minimal profile only |
-| `CVISTA_WRAP_OPTSIZE` | `1` | `0` disables `-Oz` on the Python wrapper TUs |
-| `CVISTA_DISPATCH_MINIMAL` | `1` | `0` restores the full ~14-type array-dispatch list (vs PyVista's 6) |
-| `CVISTA_LTO` | `1` | `0` disables LTO (`-flto=auto`); minimal profile. Off ≈ ~13 min cold vs ~3× with LTO |
 | `CVISTA_SEMINTERP` | `1` | `0` restores default semantic interposition (disables intra-`.so` inlining) |
+| `CVISTA_FAST_LINKER` | _(auto)_ | linker choice on Linux (`mold`, `lld`, `gold`) |
 | `CVISTA_PGO` | _(unset)_ | `gen`/`use` phases of profile-guided optimization; orchestrated by `ci/pgo-build.sh` |
-| `BUILD` | `./build-cvista` | build directory |
-| `BUILD_JOBS` | `8` | parallel compile jobs |
-| `USE_CCACHE` | `1` | compiler launcher via `ccache` |
+| `CVISTA_WRAP_OPTSIZE` | `1` | `0` disables `-Oz` on the Python wrapper TUs |
+| `CVISTA_DISPATCH_MINIMAL` | _(unset)_ | `1` trims the array-dispatch list to PyVista's 6 types (off on the 9.7 base) |
 
-The wheel lands in `<BUILD>/dist/*.whl`. Cold `-j8` build is ~29 min; warm (ccache)
-rebuilds are minutes. **Always verify a deletion or config change in a *fresh* `BUILD` dir**
-— a dirty incremental cache can hide a `configure`/generate break (see Gotchas).
+```bash
+./ci/pgo-build.sh    # opt-in PGO build: instrument, train, rebuild (PYVISTA_DIR picks the training checkout)
+```
+
+The wheel lands in `<build-dir>/wheelhouse/*.whl`. **Always verify a deletion or config change
+in a *fresh* build dir** (`--clean`); a dirty incremental cache can hide a `configure`/generate
+break (see Gotchas).
 
 ## Repository layout
 
@@ -477,14 +468,15 @@ cvista-config/            # all cvista-specific build policy (the only "our code
   _nowrap_classes.cmake #   Lever A drop list  (1,173 names) — skip Python wrapper, keep C++
   _nocompile_classes.cmake# Lever B drop list  (742 names)  — drop from build entirely
   fast.cmake / linux.cmake / macos.cmake / windows.cmake   # all-module profiles
-build-cvista.sh           # the build driver (nix re-exec, cmake configure, build, strip, wheel)
-shell.nix               # GL/EGL/OSMesa/X11 + toolchain for the build
+pyvista-build.toml      # the build manifest: options, hooks, repair, manylinux packages
+ci/cmake/<os>.cmake     # per-OS init caches on top of cvista-config/minimal.cmake
+ci/pyvista_build_hooks.py # version suffix, post-configure check, abi3 retag
 CMake/vtkModule.cmake            # hosts the NOWRAP + NOCOMPILE hooks (search "CVISTA_")
 CMake/vtkModuleWrapPython.cmake  # hosts the wrapper-unity hook (search "CVISTA_WRAP_UNITY")
 <Area>/<Module>/        # VTK source, trimmed (e.g. Common/Core, Filters/General, ...)
 ```
 
-Everything outside `cvista-config/`, `build-cvista.sh`, `shell.nix`, and the three hook edits in
+Everything outside `cvista-config/`, `ci/`, `pyvista-build.toml`, and the three hook edits in
 `CMake/` is upstream VTK source. The hooks are **inert until the lists are defined**, so the
 tree still builds as stock VTK with a different `-C` cache file.
 
@@ -568,12 +560,9 @@ These cost real time during the campaign; read before extending.
    modules are pinned `YES` (loud-fail) in `_modules_minimal.cmake`.
 5. **Prove deletions in a fresh build dir.** A dirty incremental cache can mask a generate
    break; the first "passing" build after a deletion may just be reusing stale state.
-6. **nix shell python pinning.** `shell.nix` must provide Python 3.13; VTK derives the wheel
-   ABI suffix from the first `python3` on `PATH`. `build-cvista.sh` also installs a
-   `.pyshim313` belt-and-suspenders.
-7. **cmake pin.** nix `cmake` 4.1.2 must be first on `PATH`; a pip `cmake` 4.2.x regresses
-   nested `try_compile`. `build-cvista.sh` handles this.
-8. **C++-source unity is hostile in VTK** (anonymous-namespace symbol collisions across
+6. **cmake pin.** A pip `cmake` 4.2.x regresses nested `try_compile`; the manifest's
+   `[tools]` table keeps `cmake` below 4.2.
+7. **C++-source unity is hostile in VTK** (anonymous-namespace symbol collisions across
    `.cxx`). Only *wrapper* unity is safe. Don't retry C++ unity without an offline
    collision-offender list.
 
@@ -594,8 +583,8 @@ work exactly like the `vtkmodules` equivalents.
 - The Python C wrapper machinery references the package by name —
   `Wrapping/PythonCore/PyVTK*.cxx`, `Wrapping/Tools/vtkWrapPython*.c`, and
   `vtkPythonAppInit.cxx` — all updated `vtkmodules` → `cvista`.
-- `build-cvista.sh` strips/prunes under `$BUILD/cvista` and rewrites the generated
-  `setup.py` package list.
+- The `post_build` hook (`ci/prune_setup_py.py`) prunes under `<build>/cvista` and rewrites
+  the generated `setup.py` package list.
 
 **Validation.** Because the rename changes only the *package name* — the emitted C++ and
 Python wrappers are byte-identical to the `vtkmodules` build that passed the full PyVista

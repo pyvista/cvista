@@ -6,7 +6,7 @@ parity suite (which imports `vtkmodules`) cannot drive it unpatched. This exerci
 renamed package directly: top-level import, the kit submodules, the util/numpy_interface
 shims, a numpy<->vtk roundtrip, a filter pipeline, and an EGL offscreen render.
 
-Run inside the build's nix-shell so EGL/OSMesa resolve, e.g.:
+Run with Mesa EGL/OSMesa on the loader path, e.g.:
 
     pip install dist/cvista-*.whl
     VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow VTK_EGL_DEVICE_INDEX=0 \
