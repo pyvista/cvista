@@ -23,7 +23,7 @@
 #   Windows : x64, MSVC on PATH (vcvars)
 #
 # The abi3 SDK is python-version-independent (wheel.py-api = "py3"), so one wheel
-# per OS serves 3.12+.
+# per OS serves 3.11+.
 #
 #   Usage: ci/build-sdk.sh   (outputs the wheel to ./sdk-dist)
 set -euxo pipefail
