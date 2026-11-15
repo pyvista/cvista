@@ -234,6 +234,10 @@ vtkSMPThreadPool::~vtkSMPThreadPool()
 
   for (auto& threadData : this->Threads)
   {
+    // cvista: notify under the worker's mutex. A worker that has evaluated its wait
+    // predicate (Joining still false) but not yet blocked would otherwise miss this
+    // notification and sleep forever, hanging the join below.
+    std::lock_guard<std::mutex> lock{ threadData->Mutex };
     threadData->ConditionVariable.notify_one();
   }
 

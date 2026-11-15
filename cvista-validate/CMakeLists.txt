@@ -20,7 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # find_package(VTK) errors with "target OpenMP::OpenMP_CXX not found". Resolve
 # them here first; if OpenMP is genuinely absent (SMP backend is STDThread, so it
 # is not actually used) stub an empty imported target so the interface resolves.
-find_package(Threads QUIET)
+find_package(Threads REQUIRED)
 find_package(OpenMP QUIET COMPONENTS CXX)
 if(NOT TARGET OpenMP::OpenMP_CXX)
   add_library(OpenMP::OpenMP_CXX INTERFACE IMPORTED)
@@ -60,3 +60,8 @@ target_link_libraries(cvista_smp_parity PRIVATE ${VTK_LIBRARIES})
 # Required under VTK_ENABLE_KITS: wires each module's object-factory autoinit so
 # concrete overrides (arrays, cells, ...) register before main() runs.
 vtk_module_autoinit(TARGETS cvista_smp_parity MODULES ${VTK_LIBRARIES})
+
+# Regression test for the STDThread pool destructor (lost shutdown wakeup); see
+# threadPoolShutdown.cxx. Uses only CommonCore, so it needs no autoinit.
+add_executable(cvista_thread_pool_shutdown threadPoolShutdown.cxx)
+target_link_libraries(cvista_thread_pool_shutdown PRIVATE VTK::CommonCore Threads::Threads)
