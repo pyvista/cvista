@@ -121,7 +121,7 @@ jobs:
             runner: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
             container: quay.io/pypa/manylinux_2_28_x86_64
           - os: macos
-            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-15' }}
             container: ''
           - os: windows
             runner: ${{ vars.CVISTA_RUNNER_WINDOWS || 'windows-latest' }}
@@ -196,7 +196,7 @@ jobs:
             runner: ${{ vars.CVISTA_RUNNER_LINUX || 'ubuntu-latest' }}
             container: quay.io/pypa/manylinux_2_28_x86_64
           - os: macos
-            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-15' }}
             container: ''
     defaults:
       run:

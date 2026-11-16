@@ -183,7 +183,7 @@ jobs:
 
   macos:
     name: 3-wheel tier split (macOS)
-    runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+    runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-15' }}
     timeout-minutes: 90
     env:
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
@@ -204,7 +204,7 @@ jobs:
           key: cvista-ccache-macos-tiered-${{ github.sha }}
           restore-keys: |
             cvista-ccache-macos-tiered-
-            cvista-ccache-macos-14-
+            cvista-ccache-macos-15-
       - name: Install pyvista-build
         run: uv pip install --system --group build
       - name: Build the wheel
@@ -418,7 +418,7 @@ jobs:
 
   macos-legacy:
     name: 3-wheel tier split (macOS legacy cp311)
-    runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+    runs-on: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-15' }}
     timeout-minutes: 150
     env:
       SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CVISTA: ${{ inputs.scm_pretend_version }}
