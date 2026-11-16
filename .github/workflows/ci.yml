@@ -98,8 +98,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
-            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-14' }}
+          - os: macos-15
+            runner: ${{ vars.CVISTA_RUNNER_MACOS || 'macos-15' }}
             # ThinLTO is cheap and this leg has a cross-run ccache; keep it on.
             lto: "1"
           - os: windows-latest
