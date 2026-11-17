@@ -37,11 +37,52 @@ def audit_python_imports(wheel: str) -> None:
         raise RuntimeError("Wheel imports the wrong Python runtime:\n" + "\n".join(wrong))
 
 
+# VTK DLLs keep their build names so the cvista-sdk import libraries resolve (#299).
+VTK_DLL = re.compile(r"vtk.*-cvista(?P<hash>-[0-9a-f]{32})?\.dll")
+# The MSVC C++ and OpenMP runtimes must be private copies under delvewheel's mangled
+# names, or a process that already loaded an older msvcp140.dll binds cvista to it.
+# vcruntime140 and vcruntime140_1 come with Python and are never bundled.
+MSVC_RUNTIME = re.compile(r"(msvcp\d+(?:_\w+)?|vcomp\d+|concrt\d+)(?P<hash>-[0-9a-f]{32})?\.dll")
+
+
+def audit_dll_names(wheel: str) -> None:
+    """Reject wheels whose VTK DLLs are mangled or whose MSVC runtime is not."""
+    import pefile
+
+    wrong = []
+    with zipfile.ZipFile(wheel) as archive:
+        for name in archive.namelist():
+            if not name.lower().endswith((".pyd", ".dll")):
+                continue
+            base = name.rsplit("/", 1)[-1].lower()
+            if (m := VTK_DLL.fullmatch(base)) and m["hash"]:
+                wrong.append(f"{name}: VTK DLL name is mangled")
+            if (m := MSVC_RUNTIME.fullmatch(base)) and not m["hash"]:
+                wrong.append(f"{name}: bundled MSVC runtime is not mangled")
+            pe = pefile.PE(data=archive.read(name))
+            for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []):
+                dependency = entry.dll.decode().lower()
+                if (m := VTK_DLL.fullmatch(dependency)) and m["hash"]:
+                    wrong.append(f"{name}: imports mangled {dependency}")
+                if (m := MSVC_RUNTIME.fullmatch(dependency)) and not m["hash"]:
+                    wrong.append(f"{name}: imports unmangled {dependency}")
+            pe.close()
+    if wrong:
+        raise RuntimeError("Wheel DLL names are wrong:\n" + "\n".join(wrong))
+
+
+def audit(wheel: str) -> None:
+    """Run every DLL import audit on one repaired wheel."""
+    audit_python_imports(wheel)
+    audit_dll_names(wheel)
+
+
 def main():
     if sys.argv[1] == "audit":
         for wheel in sys.argv[2:]:
-            audit_python_imports(wheel)
-            print(f"audit: {Path(wheel).name} imports only its own Python DLL", flush=True)
+            audit(wheel)
+            print(f"audit: {Path(wheel).name} imports only its own Python DLL, keeps the "
+                  "VTK DLL names and a private MSVC runtime", flush=True)
         return
     directory = Path(sys.argv[1]).resolve()
     wheels = {}
@@ -57,7 +98,7 @@ def main():
     run("-m", "pip", "install", "numpy", "matplotlib", "pytest", "pefile")
 
     for wheel in wheels.values():
-        audit_python_imports(str(wheel))
+        audit(str(wheel))
 
     run("-m", "pip", "install", "--no-deps", wheels["cvista"])
     run("-c", """

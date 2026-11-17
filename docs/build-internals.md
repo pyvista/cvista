@@ -428,7 +428,10 @@ the usual flags: `fast` for local iteration, `ci` (unattended, LTO off) and `rel
 (unattended, LTO on) for the workflows, with per-leg `--opt` flags after the set. Hooks: `ci/pyvista_build_hooks.py`
 prints the version suffix, checks the tree after configure and gives the wheel its abi3 tag;
 `ci/prune_setup_py.py` prunes dead subpackages before packaging. The repair step strips local
-symbols on Linux and macOS and keeps the DLL names on Windows (`--no-mangle-all`). Changing
+symbols on Linux and macOS. On Windows it keeps the VTK DLL names (`--no-mangle vtk*-cvista.dll`)
+so the cvista-sdk import libraries resolve, and mangles the bundled `msvcp140`/`vcomp140` so
+cvista never binds to another package's copy; `ci/test_downloaded_windows_wheels.py audit` checks
+both. Changing
 `abi3`, `lto` or `gate_o2` in an existing build tree needs `--clean`. Python 3.11 builds need
 `--opt abi3=0` or `--defaults fast`; the check hook stops the build after configure otherwise.
 Off a release tag the version suffix
