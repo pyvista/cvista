@@ -28,11 +28,16 @@ cmpath() {
 export PATH="$PYBIN:$PATH"
 
 # pip via the module (Windows pip.exe is in Scripts/, not next to python.exe).
-"$PYBIN/python" -m pip install -U pip pytest virtualenv
+"$PYBIN/python" -m pip install -U pip packaging pytest virtualenv
 
 # package-version parity check (importlib.metadata vs __version__)
 "$PYBIN/python" -m pip install --no-index --find-links "$(cmpath "$OUT")" cvista-sdk
 "$PYBIN/python" -m pytest "$(cmpath "$BUILD_DIR/wheel_sdks/tests/test_package.py")" -v
+
+# The wheel must also resolve for Python 3.11, the floor of the cvista wheel
+# (pip rejects it when Requires-Python excludes 3.11).
+"$PYBIN/python" -m pip download --no-deps --no-index --find-links "$(cmpath "$OUT")" \
+    --python-version 3.11 --only-binary=:all: -d "$(cmpath "$BUILD_DIR/sdk-py311")" cvista-sdk
 
 # find_package(VTK) integration: the test builds a downstream project that
 # depends on cvista-sdk; run it from the wheel dir so its `--find-links .` resolves
