@@ -101,13 +101,14 @@ gc.collect()
 
 
 def test_windows_repair_keeps_dll_names():
-    """The Windows repair must preserve canonical DLL names for cvista-sdk (#299)."""
+    """The Windows repair keeps the VTK DLL names for cvista-sdk (#299) and mangles the rest."""
     import tomllib
 
     manifest = Path(__file__).resolve().parents[2] / "pyvista-build.toml"
     with manifest.open("rb") as f:
-        repair = tomllib.load(f)["repair"]
-    assert "--no-mangle-all" in repair["windows"]
+        args = tomllib.load(f)["repair"]["windows"]
+    assert "--no-mangle-all" not in args
+    assert args[args.index("--no-mangle") + 1] == "vtk*-cvista.dll"
 
 
 def test_concurrent_lazy_build_links_and_cells():

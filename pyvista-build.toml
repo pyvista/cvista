@@ -64,9 +64,9 @@ packages = [
   "mold",
 ]
 
-[repair] # local symbols stripped; DLL names kept for cvista-sdk
+[repair] # local symbols stripped; VTK DLL names kept for cvista-sdk, MSVC runtime mangled
 strip = true
-windows = ["--no-mangle-all"]
+windows = ["--no-mangle", "vtk*-cvista.dll"]
 
 [hooks]
 post_build = ["{python} ci/prune_setup_py.py {build_dir}"]
