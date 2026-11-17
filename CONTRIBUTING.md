@@ -92,4 +92,6 @@ Pull requests
   density and naming.
 
 Upstream VTK lives at <https://gitlab.kitware.com/vtk/vtk>; cvista does not feed changes back
-there and is not affiliated with Kitware.
+there and is not affiliated with Kitware. To read VTK's issue and merge-request history, use
+the read-only mirror at <https://vtk-archive.pyvista.org> (same paths, served from a CDN), which
+keeps automated traffic off Kitware's server.

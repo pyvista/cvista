@@ -58,14 +58,12 @@ A few patterns drove the decision to fork:
   in its own CI after the fact, and the PyVista maintainers file the regressions release by
   release. Asking for contracts or tests around the APIs the community depends on has not
   moved the needle.
-- **Contributions stall.** PyVista has sent fixes upstream for years. Many of them sit
-  unmerged. The path from "a downstream library found and fixed a bug" to "the fix ships in
-  VTK" is long enough that PyVista routinely ships workarounds instead.
-- **Packaging follows Kitware's priorities, not the community's.** Platform coverage and
-  release timing track what Kitware is resourced to do. ARM64 Linux wheels, for one example,
-  arrived long after the hardware was mainstream. The people who depend on VTK have had little
-  say in any of it or are told they need to fork up money to Kitware to get any level of basic
-  support.
+- **Contributions take a long time to land.** PyVista has sent fixes upstream for years, and
+  many are still open. The path from "a downstream library found and fixed a bug" to "the fix
+  ships in VTK" is long enough that PyVista often ships workarounds instead.
+- **Packaging timelines differ.** Platform coverage and release timing follow what the VTK
+  maintainers have the capacity to do, which does not always line up with what PyVista users
+  need. ARM64 Linux wheels, for one example, arrived well after the hardware was mainstream.
 - **Performance has become a ceiling.** For a growing set of filters, VTK's implementation is
   the bottleneck in real PyVista workloads. We are replacing those algorithms with faster ones,
   often with speedups over 50x (we are slowly releasing these in public over time).
@@ -246,9 +244,15 @@ your change is in with its evidence attached.
 
 cvista is a fork of VTK 9.6.2, distributed under VTK's own OSI-approved BSD 3-Clause license
 (see [`Copyright.txt`](Copyright.txt)). Upstream provenance is recorded in the root commit.
-cvista is not affiliated with or endorsed by Kitware, does not feed changes back to the Kitware's
-self-hosted GitLab, and is not a mirror of upstream VTK. For the original project, see
-[vtk.org](https://www.vtk.org/).
+cvista is not affiliated with or endorsed by Kitware, does not send changes back to upstream
+VTK, and is not a mirror of it. For the original project, see [vtk.org](https://www.vtk.org/).
+
+VTK's issue and merge-request history is mirrored read-only at
+[vtk-archive.pyvista.org](https://vtk-archive.pyvista.org), with the same paths as
+gitlab.kitware.com. cvista's tooling and coding agents read upstream history there so that
+backport sweeps and research do not add load to the server VTK's developers work on. Append
+`.md` to any issue or merge-request URL for Markdown, and see
+[`llms.txt`](https://vtk-archive.pyvista.org/llms.txt) for the full URL scheme.
 
 We hold no ill will toward the engineers behind VTK. The fork exists because the PyVista
 community needs a graphics layer it can test, fix, and release on its own terms, and that is a
