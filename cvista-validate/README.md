@@ -142,6 +142,17 @@ cmake --build build-parity
 CI runs this on Linux (GCC), macOS (AppleClang), and Windows (MSVC) via
 `.github/workflows/smp-parity.yml`.
 
+## Thread-pool shutdown test
+
+`cvista_thread_pool_shutdown` (`threadPoolShutdown.cxx`) is built alongside the
+validator and run by `ci/run-smp-parity.sh`. It creates and destroys STDThread
+pools in a loop and fails if a pool destructor blocks, which is how a lost
+shutdown wakeup shows up.
+
+```bash
+./build-parity/cvista_thread_pool_shutdown   # optional arg = iterations
+```
+
 ## Adding a filter
 
 Append a `Case` in `smpParityCases.cxx` with a lambda that wires the filter onto

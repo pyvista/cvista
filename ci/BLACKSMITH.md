@@ -20,11 +20,11 @@ scope to `cvista`. Unset = the GitHub-hosted fallback in parentheses.
 | `CVISTA_RUNNER_LINUX`       | heavy compile + LTO link | `blacksmith-16vcpu-ubuntu-2404` | `ubuntu-latest` |
 | `CVISTA_RUNNER_LINUX_SMALL` | short test gates         | `blacksmith-4vcpu-ubuntu-2404`  | `ubuntu-latest` |
 | `CVISTA_RUNNER_WINDOWS`     | Windows compile          | `blacksmith-16vcpu-windows-2025` | `windows-latest` |
-| `CVISTA_RUNNER_MACOS`       | macOS compile — **leave UNSET for now** | _(see note)_ | `macos-14` |
+| `CVISTA_RUNNER_MACOS`       | macOS compile — **leave UNSET for now** | _(see note)_ | `macos-15` |
 
 > **macOS is intentionally NOT enabled.** The macOS legs are fully wired to read
 > `CVISTA_RUNNER_MACOS`, but the variable is **deliberately left unset** so macOS
-> keeps running on the free GitHub `macos-14` runner. The Blacksmith macOS tier
+> keeps running on the free GitHub `macos-15` runner. The Blacksmith macOS tier
 > (~$0.16/min on 12-vcpu M4) was judged too expensive for the per-run cost. To
 > turn it on later, just set `CVISTA_RUNNER_MACOS` (e.g.
 > `blacksmith-12vcpu-macos-latest`, or `blacksmith-6vcpu-macos-latest` at

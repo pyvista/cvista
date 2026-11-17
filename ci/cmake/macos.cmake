@@ -1,5 +1,5 @@
 # cvista CI init-cache: macOS arm64 (Apple Silicon) wheel.
-#   Runner: GitHub Actions `macos-14` (Apple Silicon / arm64).
+#   Runner: GitHub Actions `macos-15` (Apple Silicon / arm64).
 #   Toolchain: AppleClang (Xcode) + cmake + ninja (NOT nix / NOT GCC).
 #
 # Reuses cvista-config/minimal.cmake for the deny-by-default PyVista module closure

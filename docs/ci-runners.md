@@ -26,7 +26,7 @@ Actions → **Variables**).
 | `CVISTA_RUNNER_LINUX`       | `blacksmith-16vcpu-ubuntu-2404`  | `ubuntu-latest` |
 | `CVISTA_RUNNER_LINUX_SMALL` | `blacksmith-4vcpu-ubuntu-2404`   | `ubuntu-latest` |
 | `CVISTA_RUNNER_WINDOWS`     | `blacksmith-16vcpu-windows-2025` | `windows-latest` |
-| `CVISTA_RUNNER_MACOS`       | _(left unset on purpose)_        | `macos-14` |
+| `CVISTA_RUNNER_MACOS`       | _(left unset on purpose)_        | `macos-15` |
 
 - **Scale a tier**: edit the value (e.g. `16vcpu` → `32vcpu`). Compile width
   auto-tracks the runner cores — nothing in the repo pins a core count.

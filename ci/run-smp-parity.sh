@@ -184,4 +184,8 @@ elif [ "${CVISTA_DEBUGINFO:-0}" = "1" ] || [ "${CVISTA_NATIVE_REPRO:-0}" = "1" ]
 
 else
   "$EXE" "$REPEATS"
+  # Pool-destructor regression test (lost shutdown wakeup); fails on a blocked join.
+  SHUTDOWN_EXE="$BUILD_DIR/cvista_thread_pool_shutdown"
+  [ "$CVISTA_OS" = windows ] && SHUTDOWN_EXE="$SHUTDOWN_EXE.exe"
+  "$SHUTDOWN_EXE"
 fi
