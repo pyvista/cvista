@@ -66,6 +66,19 @@ redirect `vtkmodules` → `cvista` via `tools/cvista_shim.py`. Never install sto
 cvista venv. Details and env vars are in `tests/bitexact/README.md` and the `parity-contract`
 skill.
 
+## Reading upstream VTK history
+
+For VTK issue and merge-request history, default to <https://vtk-archive.pyvista.org>, a
+read-only mirror that keeps automated traffic off Kitware's server. Paths match GitLab, so
+swap the host on any link. Append `.md` to any
+issue or merge-request URL for Markdown with YAML front matter (state, dates, head SHA). See
+<https://vtk-archive.pyvista.org/llms.txt> for the full URL scheme. Read VTK source and fetch
+raw diffs from `github.com/Kitware/VTK`, which carries the same commit SHAs.
+`gitlab.kitware.com` is still the record of truth: use it when the archive is missing
+something or is older than the state you need, a page at a time rather than a crawl.
+Links written into PRs, commits, and the backport ledger stay canonical `gitlab.kitware.com`
+URLs.
+
 ## Contribution workflow
 
 - Branch from `main`; **never push to `main`**. Every change lands through a pull request.

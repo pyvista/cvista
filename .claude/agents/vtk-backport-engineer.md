@@ -25,7 +25,9 @@ and `.claude/CLAUDE.md` first. Stay within this one MR; do not sweep or triage o
 ## Procedure
 
 1. Branch `backport/vtk-mr-<iid>-<short-slug>` from `main`.
-2. Fetch the MR diff (`https://gitlab.kitware.com/vtk/vtk/-/merge_requests/<iid>.diff`). Try
+2. Read the MR at `https://vtk-archive.pyvista.org/vtk/vtk/-/merge_requests/<iid>.md` and fetch
+   its diff from GitHub as `backport-vtk/references/upstream-api.md` shows. Go to
+   `gitlab.kitware.com` only for what the archive does not have yet. Try
    `git apply --3way --whitespace=nowarn`. For rejected hunks, open the file and port the change
    by hand, reading the diff and the MR description for intent. Keep the change minimal and
    matched to surrounding VTK style. Do not pull in unrelated upstream churn.

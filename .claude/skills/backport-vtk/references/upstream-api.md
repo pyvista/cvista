@@ -1,35 +1,41 @@
 # Upstream VTK API and triage reference
 
 Upstream is `vtk/vtk` on `gitlab.kitware.com`, **project id `13`**, default branch `master`.
-cvista is frozen on tag `v9.6.2`. All API access below is read-only and public; no token needed
-for public read (an unauthenticated client is rate-limited but fine for a sweep).
+cvista is frozen on tag `v9.6.2`.
+
+Read MR history from the read-only mirror at <https://vtk-archive.pyvista.org> by default. It
+is a static site on a CDN with the same paths as GitLab, so a sweep adds no load to Kitware's
+server. Its snapshot date is at the top of <https://vtk-archive.pyvista.org/llms.txt>. Raw
+diffs come from `github.com/Kitware/VTK`, which carries the same commit SHAs.
+`gitlab.kitware.com` remains the record of truth; go there when the archive lacks an MR or is
+older than the state you need, a page at a time.
 
 ## List merged MRs since the watermark
 
 ```bash
-# By date floor (first sweep: use the 9.6.2 tag date):
-curl -s "https://gitlab.kitware.com/api/v4/projects/13/merge_requests\
-?state=merged&order_by=updated_at&sort=desc&per_page=100&updated_after=2025-01-01T00:00:00Z"
+# MR list, newest iid first. Page until you pass the watermark iid.
+curl -s "https://vtk-archive.pyvista.org/vtk/vtk/-/merge_requests/page/1" \
+  | grep -oE '/merge_requests/[0-9]+"' | grep -oE '[0-9]+' | uniq
 
-# Paginate with &page=2, &page=3, … until the result array is empty or you pass the watermark.
+# Per MR: title, state, and merge date from the Markdown front matter.
+curl -s "https://vtk-archive.pyvista.org/vtk/vtk/-/merge_requests/<iid>.md" \
+  | sed -n '/^---$/,/^---$/p' | grep -E '^(title|state|merged):'
 ```
 
-Each MR object gives: `iid`, `title`, `merged_at`, `web_url`, `labels`, `milestone.title`,
-`author.username`, `description`. VTK labels are inconsistent, so **do not rely on labels** for
-triage — use the title and the changed files.
+Keep the MRs with `state: merged`. The body of the `.md` is the MR description. VTK labels are
+inconsistent, so **do not rely on labels** for triage; use the title and the changed files.
 
-## Get the changed files for an MR
+## Fetch the MR diff and its changed files
 
-```bash
-curl -s "https://gitlab.kitware.com/api/v4/projects/13/merge_requests/<iid>/changes" \
-  | python3 -c "import sys,json;[print(c['new_path']) for c in json.load(sys.stdin)['changes']]"
-```
-
-## Fetch the MR diff to apply
+VTK merges each MR as a `Merge topic` commit whose message carries `Merge-request: !<iid>`.
+Find that commit on GitHub and diff it against its first parent:
 
 ```bash
-# Plain unified diff for the whole MR:
-curl -sL "https://gitlab.kitware.com/vtk/vtk/-/merge_requests/<iid>.diff" -o /tmp/mr-<iid>.diff
+M=$(gh api -X GET search/commits -f q='repo:Kitware/VTK "Merge-request: !<iid>"' --jq '.items[0].sha')
+curl -sL "https://github.com/Kitware/VTK/compare/$M%5E1...$M.diff" -o /tmp/mr-<iid>.diff
+
+# Changed files:
+grep '^diff --git' /tmp/mr-<iid>.diff | awk '{print substr($4, 3)}'
 
 # Apply onto the cvista tree (no shared history, so 3-way against current paths):
 git apply --3way --whitespace=nowarn /tmp/mr-<iid>.diff
