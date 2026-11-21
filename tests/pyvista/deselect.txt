@@ -20,7 +20,6 @@
 # These FAIL on cvista but PASS on stock 9.6.2 on the same machine. Tracking
 # issues filed on pyvista/cvista; fix each, then delete its line here.
 tests/core/test_helpers.py::test_to_from_trimesh_points_faces                   # regular_faces not zero-copy (#118)
-tests/plotting/test_plotting.py::test_export_gltf                               # glTF export render divergence, same-Mesa (#119)
 
 # --- abi3 heap-type artifact (unavoidable; same family as bitexact __flags__) -
 # cvista's abi3 heap types expose __module__/__doc__ in vars(<wrapped type>);
