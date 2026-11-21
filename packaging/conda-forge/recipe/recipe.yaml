@@ -1,0 +1,218 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/prefix-dev/recipe-format/main/schema.json
+
+context:
+  name: cvista
+  vtk_base_version: "9.7.0"
+  cvista_patch: "0"
+  version: "${{ vtk_base_version }}.${{ cvista_patch }}"
+  build: 0
+
+package:
+  name: ${{ name | lower }}
+  version: ${{ version }}
+
+source:
+  url: https://github.com/pyvista/cvista/archive/refs/tags/${{ version }}.tar.gz
+  # Update sha256 when cutting the ${{ version }} tag on pyvista/cvista.
+  # For local source builds against a checkout, use `path: ../../..` instead.
+  sha256: 0000000000000000000000000000000000000000000000000000000000000000
+
+build:
+  number: ${{ build }}
+  skip:
+    - match(python, "<3.11")
+  script:
+    - if: not win
+      then: ${RECIPE_DIR}/build.sh
+      else: '"%RECIPE_DIR%\\bld.bat"'
+  post_process:
+    - if: unix
+      then:
+        - files:
+            - "*.cmake"
+          regex: '([^;\s"]+/sysroot)'
+          replacement: "$${CONDA_BUILD_SYSROOT}"
+    - if: osx
+      then:
+        - files:
+            - "*.cmake"
+          regex: '([^;\s"]+/MacOSX\d*\.?\d*\.sdk)'
+          replacement: "$${CONDA_BUILD_SYSROOT}"
+
+requirements:
+  build:
+    - ${{ compiler("c") }}
+    - ${{ compiler("cxx") }}
+    - ${{ stdlib("c") }}
+    - cmake >=3.22,<4.2
+    - ninja >=1.11
+    - pkg-config
+    - if: build_platform != target_platform
+      then:
+        - python
+        - cross-python_${{ target_platform }}
+        - numpy
+  host:
+    - python
+    - pip
+    - setuptools <81
+    - setuptools_scm >=8
+    - wheel
+    - numpy
+    # --- Unbundled ThirdParty dependencies (VTK_USE_EXTERNAL=ON) -------------
+    - zlib
+    - libpng
+    - libjpeg-turbo
+    - libtiff
+    - freetype
+    - expat
+    - lz4-c
+    - liblzma-devel
+    - xz
+    - pugixml
+    - jsoncpp
+    - nlohmann_json
+    - fmt
+    - fast_float >=8.0.0
+    - eigen
+    - eigen-abi-devel
+    - utfcpp
+    - hdf5
+    - hdf5 * nompi_*
+    - libnetcdf
+    - libnetcdf * nompi_*
+    - netcdf4
+    - libxml2
+    - libxml2-devel
+    - if: not osx
+      then:
+        - gl2ps
+    # --- Linux rendering & windowing stack (X11/GLX + EGL + OSMesa) ----------
+    - if: linux
+      then:
+        - libgl-devel
+        - libegl-devel
+        - libglvnd-devel
+        - libglx-devel
+        - libopengl-devel
+        - libglu
+        - mesalib
+        - xorg-xproto
+        - xorg-libx11
+        - xorg-libxcursor
+        - xorg-libxext
+        - xorg-libxt
+        - xorg-libxrender
+        - xorg-libxfixes
+  run:
+    - python
+    - ${{ pin_compatible("numpy") }}
+    - matplotlib-base >=2.0.0
+    - nlohmann_json
+    - utfcpp
+    - wslink
+  run_exports:
+    - ${{ pin_subpackage("cvista", upper_bound="x.x.x") }}
+  ignore_run_exports:
+    by_name:
+      - if: linux
+        then:
+          - libgl
+          - libegl
+          - libglvnd
+          - xorg-libxext
+          - xorg-libxt
+          - xorg-libxrender
+          - xorg-libxfixes
+
+tests:
+  - python:
+      imports:
+        - cvista
+        - cvista._class_index
+        - cvista.all
+        - cvista.qt
+        - cvista.util
+        - cvista.util.numpy_support
+        - cvista.util.vtkAlgorithm
+        - cvista.numpy_interface
+        - cvista.numpy_interface.dataset_adapter
+        - cvista.vtkCommonCore
+        - cvista.vtkCommonDataModel
+        - cvista.vtkCommonExecutionModel
+        - cvista.vtkFiltersCore
+        - cvista.vtkFiltersGeneral
+        - cvista.vtkFiltersSources
+        - cvista.vtkImagingCore
+        - cvista.vtkIOCore
+        - cvista.vtkIOXML
+        - cvista.vtkIOImage
+        - cvista.vtkIOGeometry
+        - cvista.vtkIOPLY
+        - cvista.vtkIOHDF
+        - cvista.vtkIOExodus
+        - cvista.vtkIOCGNSReader
+        - cvista.vtkRenderingCore
+        - cvista.vtkRenderingOpenGL2
+        - cvista.vtkRenderingFreeType
+        - cvista.vtkRenderingContextOpenGL2
+        - cvista.vtkRenderingGL2PSOpenGL2
+        - cvista.vtkRenderingVolumeOpenGL2
+        - cvista.vtkInteractionStyle
+        - cvista.vtkInteractionWidgets
+        - cvista.vtkChartsCore
+        - cvista.vtkViewsContext2D
+        - cvista.vtkWebCore
+        - cvista.vtkWebGLExporter
+      pip_check: true
+  - script:
+      - python -c "import importlib.metadata as m; assert m.version('cvista') == '${{ version }}', m.version('cvista')"
+      - python -c "from cvista import vtkPolyData, vtkSphereSource, vtkTriangleFilter, numpy_to_vtk, vtk_to_numpy, VTKPythonAlgorithmBase; s = vtkSphereSource(); s.Update(); tri = vtkTriangleFilter(); tri.SetInputConnection(s.GetOutputPort()); tri.Update(); assert tri.GetOutput().GetNumberOfCells() > 0"
+      - python -c "import cvista; assert not cvista.IsFastEnabled(); cvista.EnableFast(); assert cvista.IsFastEnabled(); cvista.DisableFast(); assert not cvista.IsFastEnabled()"
+    requirements:
+      run:
+        - pip
+        - pytest
+
+about:
+  homepage: https://github.com/pyvista/cvista
+  license: BSD-3-Clause AND MIT AND BSL-1.0 AND Apache-2.0 AND Zlib AND LGPL-2.0-or-later
+  license_file:
+    - Copyright.txt
+    - ThirdParty/cgns/vtkcgns/license.txt
+    - ThirdParty/diy2/vtkdiy2/LICENSE.txt
+    - ThirdParty/diy2/vtkdiy2/LEGAL.txt
+    - ThirdParty/exodusII/vtkexodusII/COPYRIGHT
+    - ThirdParty/exprtk/vtkexprtk/readme.txt
+    - ThirdParty/fast_float/vtkfast_float/LICENSE-MIT
+    - ThirdParty/gl2ps/vtkgl2ps/COPYING.LGPL
+    - ThirdParty/gl2ps/vtkgl2ps/COPYING.GL2PS
+    - ThirdParty/glad/vtkglad/LICENSE
+    - ThirdParty/kissfft/vtkkissfft/COPYING
+    - ThirdParty/loguru/vtkloguru/LICENSE
+    - ThirdParty/pegtl/vtkpegtl/LICENSE
+    - ThirdParty/scn/vtkscn/LICENSE
+    - ThirdParty/token/vtktoken/license.md
+    - ThirdParty/verdict/vtkverdict/LICENSE
+    - ThirdParty/xdmf2/vtkxdmf2/Copyright.txt
+  summary: Trimmed PyVista-parity fork of VTK 9.7.0 (top-level cvista namespace)
+  description: |
+    cvista is a trimmed, fast, community-maintained fork of VTK 9.7.0 built by
+    the PyVista community as a drop-in graphics and compute layer for PyVista.
+    It installs under the top-level `cvista` namespace (with a generated flat
+    lazy class index `from cvista import vtkPolyData`) and suffixes its C++
+    shared libraries (`libvtk*-cvista`) so it coexists cleanly alongside stock
+    `vtk` / `vtkmodules` in the same conda environment.
+
+    Parity note: The conda-forge build links against conda-forge's native
+    compilers and unvendored system libraries (`VTK_USE_EXTERNAL=ON`). It is a
+    functional drop-in validated against PyVista's test suite and cvista's
+    relaxed-order checks, rather than carrying the PyPI wheel's toolchain-pinned
+    `maxULP = 0` byte-exact guarantee.
+  repository: https://github.com/pyvista/cvista
+  documentation: https://github.com/pyvista/cvista/blob/main/README.md
+
+extra:
+  recipe-maintainers:
+    - akaszynski
+    - banesullivan
